@@ -107,7 +107,9 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -273,11 +275,12 @@ function rowCheck(): () => boolean {
 
 /**
  * Throws once the row `ownRow` checks has ended (`rowCheck`), saying what the caller was at.
- * This is what every helper a row's body awaits does on an ended row: `until`, `refreshed`, the
- * clock helpers (`onFakeTimers`, `onPassClock`), `withEnvoyTimings` and the live stack's
- * `waitFor`. The throw ends the abandoned body there, and bun 1.4.4 reports it between the rows,
- * beside the limit's failure of the row that already failed. The file's `beforeEach` has put
- * shared state back for the row after it, so a `finally` of the ended row skips its restore.
+ * This is what every helper a row's body awaits does on an ended row: the probe of each `until`
+ * (`rowProbe`), `heartbeatTicks`, the clock helpers (`onFakeTimers`, `onPassClock`),
+ * `withEnvoyTimings` and the live stack's `waitFor`. The throw ends the abandoned body there, and
+ * bun 1.4.4 reports it between the rows, beside the guard's failure of the row that already
+ * failed. The file's `beforeEach` has put shared state back for the row after it, so a `finally`
+ * of the ended row skips its restore.
  * The code under test drops what an ended row's session does instead (`fromEndedRow`): a throw
  * there would land in the session, not in the body.
  */
@@ -850,14 +853,7 @@ afterAll(() => resetNatsConnectForTests());
 // (row A) ran 20 times in about 10.4 min at 96. A slower pod runs the same load as fewer loops,
 // matched by that row's run time there, so N is one pod's count at the time of its reading.
 
-// A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
-// scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 122.19 ms over
-// 10 runs of the `session_shutdown` budget row at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB
-// pod; 80.06 ms idle over 3 174 invocations. In the `envoy-session-stall` job's step, which runs
-// the freeze row alone, a hook charged to this limit fits that step's room (879 s, the header of
-// the describe `against a real natsd and Envoy listener`): 879 s less the stack's slowest start
-// (249 s), the freeze row's worst (62.9 s), this file's `afterEach` at its worst (7.3 s) and the
-// 30 s kept leaves 529.8 s, and 60 s is inside it.
+// Nothing here waits. The body removes and makes the row's scratch directories.
 beforeEach(() => {
   rowGeneration += 1;
   jest.useRealTimers();
@@ -910,7 +906,7 @@ beforeEach(() => {
   configDirectory = mkdtempSync(join(tmpdir(), "envoy-config-"));
   process.env.ENVOY_CONFIG_FILE = join(configDirectory, "envoy.json");
   writeFileSync(process.env.ENVOY_CONFIG_FILE, `${JSON.stringify(ASKGATE_OFF)}\n`);
-}, 60_000);
+});
 
 /**
  * What stops each thing a row started that would run on past it: a log sink the row registered
@@ -1096,15 +1092,9 @@ function resetFileState(): void {
   ledgerSeam.beforeFailureNotice = undefined;
 }
 
-// A hang guard: what can hang is a managed-timer callback a row scheduled that never settles,
-// which the first `await` below waits for; the second, a session's shutdown (`rowStops`), ends at
-// that shutdown's own 1 s deadline (`SHUTDOWN_DEADLINE_MS` in `envoy.ts`). 60_000. Worst measured
-// cost: 7 275.17 ms, in a whole-file run at 96 busy loops (48 per CPU) on a two-CPU, 8 GiB pod,
-// stopped by its 3 000 s timeout after 359 rows. In the `envoy-session-stall` job's step, which
-// runs the freeze row alone, a hook that hangs to this limit fits that step's room (879 s, the
-// header of the describe `against a real natsd and Envoy listener`): 879 s less the stack's
-// slowest start (249 s), the freeze row's worst (62.9 s), this file's `beforeEach` at its worst
-// (0.1 s) and the 30 s kept leaves 537 s, and 60 s is inside it.
+// What can hang is a managed-timer callback a row scheduled that never settles, which the first
+// `await` below waits for; the second, a session's shutdown (`rowStops`), ends at that shutdown's
+// own 1 s deadline (`SHUTDOWN_DEADLINE_MS` in `envoy.ts`).
 afterEach(async () => {
   rowGeneration += 1;
   // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
@@ -1123,7 +1113,7 @@ afterEach(async () => {
       resetFileState();
     }
   }
-}, 60_000);
+});
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
   clipboardState.error = options.clipboardError;
@@ -1877,8 +1867,8 @@ interface PassClock {
    *  not settled when the turns run out fails here, naming `what`. */
   readonly run: <T>(what: string, pending: Promise<T> | T, turns?: number) => Promise<T>;
   /** Holds as `hold` does until `done()` holds, with no bound of turns: for work that reads a file
-   *  or waits on another process, whose speed no count of turns measures, so the row's limit is
-   *  the wait's hang guard. It ends with its row, as every hold and move does: once the limit
+   *  or waits on another process, whose speed no count of turns measures, so the command's guard
+   *  is the wait's hang guard. It ends with its row, as every hold and move does: once the guard
    *  abandons the row, the file's hooks advance `rowGeneration`, and the wait throws, naming
    *  `what`, rather than spinning on beside the rows after it. */
   readonly wait: (what: string, done: () => boolean) => Promise<void>;
@@ -1914,10 +1904,10 @@ interface PassClock {
 
 /**
  * Runs `body` on the test's clock, for a row that reads how this process's own timers end its
- * work: a pass's deadline, a start's or a follow's bound and its trade's share, a command's limit
- * or a token's renewal. On the test's clock they end at the times the code gives them, whatever
- * the host's speed, while the work between them (restores, dials, requests, reports, in-process
- * here, or a shell a row starts) runs on real turns, which move no clock. `AbortSignal.timeout`,
+ * work: a pass's deadline, a start's or a follow's bound and its trade's share, or a token's
+ * renewal. On the test's clock they end at the times the code gives them, whatever the host's
+ * speed, while the work between them (restores, dials, requests, reports, in-process here, or a
+ * shell a row starts) runs on real turns, which move no clock. `AbortSignal.timeout`,
  * which bun 1.4.4's fake clock holds as it holds `setTimeout`, is watched for the bounds the code
  * arms, because a pass that reaches its `ready` makes no request a row could wait for. `Bun.sleep`
  * is held too, so a row on this clock waits with `hold`, `run`, `wait` or `waitOn`, never with
@@ -2280,8 +2270,8 @@ async function bootSessionPod(
       const before = listener.registrations(manager.id);
       intervals[0]?.();
       await until(
-        () => listener.registrations(manager.id) > before,
-        "the heartbeat's registration"
+        "the heartbeat's registration",
+        rowProbe(() => listener.registrations(manager.id) > before)
       );
       await settle();
     },
@@ -2736,41 +2726,23 @@ async function settle(): Promise<void> {
   }
 }
 
-// Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
-// (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows.
-// The poll carries no deadline of its own: what can hang here is a condition no listener, relay or
-// resubscribe path ever makes true, and the row's own per-test limit is what ends that, naming the
-// test. Once the row has ended, at its limit included, the file's `afterEach` advances
-// `rowGeneration` and the poll throws (`stillOn`), naming what it waited for and saying the row
-// ended, as every helper of this file does then, so the abandoned body goes no further than its
-// wait. Bun 1.4.4 reports such a throw between the rows ("Unhandled error between tests"), beside
-// the limit's failure of the row that already failed, and no later row fails by it. The warning at
-// 2_000 names what the row waits for, once per call, and from then on each poll also yields a real
-// millisecond: `settle()` alone is 25 `setImmediate` round trips and no delay, so a condition that
-// never holds would spin a core beside whatever else runs on the host. The pacing starts only once
-// the wait is already pathological, so a healthy wait is untouched. That pacing is also why this
-// helper is for real-timer scopes only: under `jest.useFakeTimers()` a `Bun.sleep` never resolves
-// (measured on bun 1.4.4: a row awaiting `Bun.sleep(5)` there timed out, where real timers resolve
-// it in 14 ms), so from the first warning on the loop would stop polling. No caller is in such a
-// scope: `jest.useFakeTimers()` is called only in `onFakeTimers`, which `onTestClock`,
-// `onPassClock`, the store-beat row, the context-frame rows and the tmux-place cases that cross the
-// cache's lifetime (`atPlaceLifetime`) run through, and none of them calls this: a row on
-// `onPassClock` waits with its clock's own `hold`, `run`, `wait` and `waitOn`.
-async function until(condition: () => boolean, what: string): Promise<void> {
+/**
+ * The probe of a wait (`until`, `@legion/test-fixtures/wait`) that reads `condition` while the
+ * caller's row runs: a row waits for what the code under test does on real turns or real timers,
+ * such as the resubscribe path's (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which a
+ * busy machine runs later than any fixed sleep allows. The row is the one this call is made in
+ * (`rowCheck`). Once it has ended, the file's `afterEach` advances `rowGeneration` and the probe
+ * throws (`stillOn`), which ends the wait at once, as every helper of this file does then, so an
+ * abandoned body goes no further than its wait. A wait refuses under `jest.useFakeTimers()`, so a
+ * row on the test's clock (`onPassClock`) waits with its clock's own `hold`, `run`, `wait` and
+ * `waitOn` instead.
+ */
+function rowProbe<T>(condition: () => T): () => T {
   const ownRow = rowCheck();
-  const start = performance.now();
-  let warned = false;
-  for (;;) {
-    stillOn(ownRow, `waiting for ${what}`);
-    if (condition()) return;
-    if (!warned && performance.now() - start > 2_000) {
-      warned = true;
-      console.warn(`still waiting for ${what} after 2 s`);
-    }
-    if (warned) await Bun.sleep(1);
-    await settle();
-  }
+  return () => {
+    stillOn(ownRow, "waiting");
+    return condition();
+  };
 }
 
 describe("envoy OMP extension", () => {
@@ -5720,9 +5692,9 @@ describe("envoy OMP extension", () => {
       env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
       stdout: "pipe",
       stderr: "pipe",
-      // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
-      // The runner kills the process of a row it abandons.
-      timeout: 450_000,
+      // Killed at the row's deadline, so a process that never reports fails here, naming it,
+      // before the command's guard.
+      timeout: Math.floor(timeLeft()),
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(started.stdout).text(),
@@ -5734,18 +5706,8 @@ describe("envoy OMP extension", () => {
       throw new Error(`the process that loaded the entry reported nothing: ${stderr}`);
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-    // A hang guard: what can hang is a process that never reports. Main's form of this row, run
-    // row-filtered by `bun test` with no `--timeout`, so at bun's 5 s default, failed 20 runs of
-    // 20. Worst measured cost: 80 506.04 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271 busy
-    // loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-    // 2026-11-21T20:10Z to 20:45Z; 46 698.73 ms at 16 busy loops (the 96 rung) on the two-CPU,
-    // 8 GiB pod of 2026-11-19 18:40Z. Six times the worst is 483 036.23 ms, past the room the
-    // pi-envoy job leaves one hang. That room is 395 s: the job's `timeout-minutes: 15` less the
-    // 505 s its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`). So the room
-    // decides the limit: 390_000, inside that room and 4.8 times the worst. The process's kill
-    // (450 s, `timeout` above) is past the limit, so the limit decides a slow run.
-  }, 390_000);
+    // What can hang is a process that never reports.
+  });
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
@@ -6343,14 +6305,9 @@ console.log(JSON.stringify(args));
         },
       ]);
       expect(notifications).toEqual([]);
-      // A hang guard: what can hang is the session's start or the gated call, whose model and
-      // Dispatch are stand-ins in this process. Worst measured cost: 9 204 ms in envoy.test.ts run
-      // whole at the 96 rung in the Job infra-1580-wfb-j9gmw of the cluster's `builds` namespace,
-      // two CPUs and 8 GiB (139 busy loops, at which row A's runs took 39.1 s against the
-      // calibration's 31.2 s), at cb1c237f, and 5 802 ms in the Job infra-1580-wfh-gwft9 (180 busy
-      // loops, row A 34.0 s) at 7025b6c8. Main's 30_000 is 3.3 times the 9 204 ms, so this takes
-      // 60_000, 6.5 times it.
-    }, 60_000);
+      // What can hang is the session's start or the gated call, whose model and Dispatch are
+      // stand-ins in this process.
+    });
     // A session whose envoy.json is not there still has Dispatch when its variables name one, and
     // the gate binds there: the file is only the switch, and no file leaves it on.
     test("with no envoy.json at ENVOY_CONFIG_FILE and only DISPATCH_URL and its token set, the gate binds and reviews a dispatch ask", async () => {
@@ -6384,10 +6341,8 @@ console.log(JSON.stringify(args));
           data: { tool: "dispatch_ask", outcome: "verdict", decision: "revise" },
         },
       ]);
-      // A hang guard, as in the row above. Worst measured cost: 5 391 ms in the whole-file run of
-      // the Job infra-1580-wfb-j9gmw, at cb1c237f, against which main's 30_000 is 5.6 times, so
-      // this takes 60_000, 11.1 times it.
-    }, 60_000);
+      // What can hang is the session's start or the gated call, as in the row above.
+    });
     // The rules notice is about one session's calls: it goes to the plain log and to that session's
     // UI, never into the notices every later session start shows again.
     test("three rules-check failures in a row raise the rules notice, and a new session start does not show it again", async () => {
@@ -6432,12 +6387,9 @@ console.log(JSON.stringify(args));
       const next: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(next, "ses_askgate_next"));
       expect(next).toEqual([]);
-      // A hang guard: what can hang is a gated call whose review never answers, its model a
-      // stand-in in this process. Worst measured cost: 806 ms in envoy.test.ts run whole at the 96
-      // rung in the Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and
-      // 8 GiB (137 busy loops, at which row A's runs took 31.6 s against the calibration's
-      // 31.2 s), at 06d187e7. Main's 30_000 is 37.2 times that, so it is kept.
-    }, 30_000);
+      // What can hang is a gated call whose review never answers, its model a stand-in in this
+      // process.
+    });
     /**
      * The owner files of `sessionID`'s AskGate record in this test's CLI state directory, each
      * with its path, or null when it names no owner.
@@ -6524,13 +6476,8 @@ console.log(JSON.stringify(args));
       expect(recordOf("ses_askgate_next")).toBeNull();
       expect(existsSync(store)).toBe(false);
       expect(notifications).toEqual([]);
-      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
-      // measured cost: 897 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy
-      // loops, at which row A's runs took 31.6 s against the calibration's 31.2 s), at 06d187e7;
-      // 395 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880.
-      // Main's 30_000 is 33.4 times the worst, so it is kept.
-    }, 30_000);
+      // What can hang is the session's start, its switch or its shutdown.
+    });
     // A process of another pid namespace that shares the state directory (the host, seen from an
     // agent box, or the other way round) cannot look this one up by its pid: it counts the record
     // live, and its prune keeps the store, only while the store keeps changing. So the instance
@@ -6569,12 +6516,8 @@ console.log(JSON.stringify(args));
         jest.advanceTimersByTime(STORE_BEAT_MS);
         expect(existsSync(store)).toBe(false);
       });
-      // A hang guard: what can hang is the session's start or its shutdown, on the fake clock the
-      // row holds. Worst measured cost: 7 596.11 ms over 20 runs at the 96 rung in the Job
-      // infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271 busy
-      // loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-      // 2026-11-21T22:44Z to 23:00Z. 60_000 is 7.9 times the worst.
-    }, 60_000);
+      // What can hang is the session's start or its shutdown, on the fake clock the row holds.
+    });
     // The independent review at 6fd926853, item 1: every session start, switch, branch and host
     // move rebinds a session, and the rebind wrote this process's owner file from OMP_ASKGATE
     // alone. A session on block through its experiments arm then read warn on disk until its main
@@ -6601,13 +6544,8 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
       expect(recordOf("ses_askgate")).toMatchObject([{ pid: process.pid, mode: "block" }]);
       await stop();
-      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
-      // measured cost: 1 498 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy
-      // loops, at which row A's runs took 39.8 s against the calibration's 31.2 s), at 82306880;
-      // 699 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7.
-      // Main's 30_000 is 20.0 times the worst, so it is kept.
-    }, 30_000);
+      // What can hang is the session's start, its switch or its shutdown.
+    });
     // A record AskGate cannot write after a switch turns the CLI's check off for that session, so
     // the user is told at once, as at session start, and not only in the log.
     test("a record that cannot be written after a switch reaches the user as a notice", async () => {
@@ -6644,13 +6582,8 @@ console.log(JSON.stringify(args));
       } finally {
         chmodSync(dir, 0o700);
       }
-      // A hang guard: what can hang is the session's start, its switch or its shutdown. Worst
-      // measured cost: 808 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy
-      // loops, at which row A's runs took 31.6 s against the calibration's 31.2 s), at 06d187e7;
-      // 600 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880.
-      // Main's 30_000 is 37.1 times the worst, so it is kept.
-    }, 30_000);
+      // What can hang is the session's start, its switch or its shutdown.
+    });
     test("no record is written with the switch off, with Dispatch off, or by a task subagent's instance", async () => {
       // The switch off: this suite's default envoy.json turns AskGate off.
       process.env.DISPATCH_URL = "http://dispatch.test";
@@ -6695,13 +6628,8 @@ console.log(JSON.stringify(args));
       } finally {
         transcripts.remove();
       }
-      // A hang guard: what can hang is a session's start, of which the row makes four. Worst
-      // measured cost: 3 099 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy
-      // loops, at which row A's runs took 39.8 s against the calibration's 31.2 s), at 82306880;
-      // 1 586 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7.
-      // Main's 30_000 is 9.7 times the worst, so it is kept.
-    }, 30_000);
+      // What can hang is a session's start, of which the row makes four.
+    });
     // A shell command that changes HOME or XDG_STATE_HOME (a test harness with a temporary home)
     // would resolve another state root, find no record there, and post with no marker.
     test("the session's processes are told DISPATCH_STATE_DIR, the root its record is under, and a value already set stays", async () => {
@@ -6748,13 +6676,8 @@ console.log(JSON.stringify(args));
         if (ownRow()) restoreStateHome();
         rmSync(stateHome, { recursive: true, force: true });
       }
-      // A hang guard: what can hang is a session's start or its shutdown, two of each here. Worst
-      // measured cost: 2 800 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy
-      // loops, at which row A's runs took 39.8 s against the calibration's 31.2 s), at 82306880;
-      // 803 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7.
-      // Main's 30_000 is 10.7 times the worst, so it is kept.
-    }, 30_000);
+      // What can hang is a session's start or its shutdown, two of each here.
+    });
     test("a gated write the CLI logged as unmarked becomes an advisor-gate entry the report counts", async () => {
       gateOn();
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-unmarked");
@@ -6805,12 +6728,8 @@ console.log(JSON.stringify(args));
           },
         },
       ]);
-      // A hang guard: what can hang is a gated call whose review never answers. Its worst reading
-      // is 5 205.66 ms, in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143 busy
-      // loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), so this row's
-      // 30_000 from the base is raised to 60_000, 11.5 times that.
-    }, 60_000);
+      // What can hang is a gated call whose review never answers.
+    });
     /** Every AskGate decision record the session published, read off the Dispatch write itself. */
     const published: Array<Record<string, unknown>> = [];
     /**
@@ -7028,12 +6947,9 @@ console.log(JSON.stringify(args));
       } finally {
         if (ownRow()) delete process.env.OMP_ASKGATE;
       }
-      // A hang guard: what can hang is the wait for the record to land (`recordsLanded`), which
-      // has no deadline of its own. Worst measured cost: 1 707 ms in envoy.test.ts run whole at
-      // the 96 rung in the Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two
-      // CPUs and 8 GiB (137 busy loops, at which row A's runs took 31.6 s against the
-      // calibration's 31.2 s), at 06d187e7. Main's 30_000 is 17.6 times that, so it is kept.
-    }, 30_000);
+      // What can hang is the wait for the record to land (`recordsLanded`), which has no deadline
+      // of its own.
+    });
 
     test("an unmarked dispatch comment publishes no record: no person waits on it", async () => {
       gateOn();
@@ -7235,12 +7151,9 @@ console.log(JSON.stringify(args));
       // write's create made, rather than creating that name again.
       expect(recordWrites).toEqual({ uploads: 1, appends: 2 });
       await run.shutdown();
-      // A hang guard: what can hang is a gated call or the record's write, whose model and
-      // Dispatch are stand-ins in this process. Sized from the tester's round 27: worst measured
-      // cost 21 903 ms over 20 runs at the 96 rung in the Job infra-1580-t27-j1-l27pc of the
-      // cluster's `builds` namespace, two CPUs and 8 GiB (137 busy loops, row A 31.6 s), at
-      // 06d187e7. Main's 30_000 was below six times it, so this takes 140_000, 6.4 times it.
-    }, 140_000);
+      // What can hang is a gated call or the record's write, whose model and Dispatch are
+      // stand-ins in this process.
+    });
 
     /** Appends to the session's ledger a gated write the CLI logged as unmarked. */
     const appendUnmarked = () =>
@@ -7291,15 +7204,8 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("tool_result")?.(PY_RESULT, context);
       await ask("call-3");
       expect(gateOutcomes(fixture.entries)).toEqual(["verdict", "verdict", "unmarked", "breaker"]);
-      // A hang guard: what can hang is a gated call (`ask`) whose review never answers. Its worst
-      // reading was 5 711.36 ms, in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-krows-wf96-xshh4 of the cluster's `builds` namespace, two CPUs and 8 GiB (134
-      // busy loops, at which row A's 5 runs took 34.0 s against the calibration's 31.2 s), so this
-      // row's 30_000 from the base was raised to 60_000, 10.5 times that. Its worst reading now is
-      // 15 383 ms, in envoy.test.ts run whole at the 96 rung in the Job infra-1580-t25-wf2-np8hv
-      // (216 busy loops, row A 37.6 s), at b5a8b94f, so 60_000 is raised to 100_000, 6.5 times
-      // that.
-    }, 100_000);
+      // What can hang is a gated call (`ask`) whose review never answers.
+    });
     test("an unmarked entry leaves the halt's count as it was: the third call without a verdict still halts", async () => {
       gateOn();
       const { default: envoyExtension }: EnvoyModule = await import(
@@ -7329,12 +7235,8 @@ console.log(JSON.stringify(args));
         "no-verdict",
         "halted",
       ]);
-      // A hang guard: what can hang is a gated call (`ask`) whose review never answers. Its worst
-      // reading is 7 677.77 ms, in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-krows-wf96-xshh4 of the cluster's `builds` namespace, two CPUs and 8 GiB (134
-      // busy loops, at which row A's 5 runs took 34.0 s against the calibration's 31.2 s), so this
-      // row's 30_000 from the base is raised to 60_000, 7.8 times that.
-    }, 60_000);
+      // What can hang is a gated call (`ask`) whose review never answers.
+    });
     // The second re-gate of #2159, non-blocking: at the host's default handler limit of 30 s the
     // review deadline is 25 s (the 5 s margin covers the aborted call's usage report and the
     // entry), which measured reviews often pass, and the warning that says so went only
@@ -7404,12 +7306,8 @@ console.log(JSON.stringify(args));
       } finally {
         rmSync(checkout, { recursive: true, force: true });
       }
-      // A hang guard: what can hang is a gated call whose review never answers. Its worst reading
-      // is 5 798.43 ms, in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143 busy
-      // loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), so this row's
-      // 30_000 from the base is raised to 60_000, 10.3 times that.
-    }, 60_000);
+      // What can hang is a gated call whose review never answers.
+    });
 
     test("(b) with askgate.enabled false the gate does not bind: the dispatch ask runs and no model is asked", async () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
@@ -7466,13 +7364,8 @@ console.log(JSON.stringify(args));
       expect(completions).toEqual([]);
       expect(fixture.entries.filter((entry) => entry.customType === "advisor-gate")).toEqual([]);
       expect(notifications.filter((notice) => notice.includes("AskGate"))).toEqual([]);
-      // A hang guard (the package's `--timeout 250000`): what can hang is the session's start or
-      // one of its tool calls. The gate does not bind, so no review runs. Worst measured cost:
-      // 2 199 ms in envoy.test.ts run whole at the 96 rung in the Job infra-1580-r27wf-4rk46 of
-      // the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy loops, at which row A's
-      // runs took 39.8 s against the calibration's 31.2 s), at 82306880; 797 ms in the Job
-      // infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7. The package's 250 s
-      // is 113.7 times the worst.
+      // What can hang is the session's start or one of its tool calls; the command's guard ends
+      // it. The gate does not bind, so no review runs.
     });
 
     test("a switch that does not parse leaves the gate on and is said at session start", async () => {
@@ -7549,13 +7442,8 @@ console.log(JSON.stringify(args));
       } finally {
         if (ownRow()) delete process.env.OMP_ASKGATE_TIMEOUT_MS;
       }
-      // A hang guard (the package's `--timeout 250000`): what can hang is the session's start or
-      // one of its tool calls. The gate did not load, so no review runs. Worst measured cost:
-      // 1 506 ms in envoy.test.ts run whole at the 96 rung in the Job infra-1580-t27-j1-l27pc of
-      // the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy loops, at which row A's
-      // runs took 31.6 s against the calibration's 31.2 s), at 06d187e7; 602 ms in the Job
-      // infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880. The package's 250 s is
-      // 166.0 times the worst.
+      // What can hang is the session's start or one of its tool calls; the command's guard ends
+      // it. The gate did not load, so no review runs.
     });
 
     test("a session that chose OMP_ASKGATE=block keeps the CLI's checks at block when its gate does not load", async () => {
@@ -7607,13 +7495,8 @@ console.log(JSON.stringify(args));
           delete process.env.OMP_ASKGATE_TIMEOUT_MS;
         }
       }
-      // A hang guard (the package's `--timeout 250000`): what can hang is the session's start, the
-      // `dispatch` command run in this process (`runDispatchCli`), or the shutdown. Worst measured
-      // cost: 1 800 ms in envoy.test.ts run whole at the 96 rung in the Job
-      // infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and 8 GiB (148 busy
-      // loops, at which row A's runs took 39.8 s against the calibration's 31.2 s), at 82306880;
-      // 1 493 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at 06d187e7.
-      // The package's 250 s is 138.9 times the worst.
+      // What can hang is the session's start, the `dispatch` command run in this process
+      // (`runDispatchCli`), or the shutdown; the command's guard ends it.
     });
 
     test("a session whose envoy.json location cannot be worked out has no Dispatch, so the gate does not bind", async () => {
@@ -8482,11 +8365,8 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). No reading of this row under load exists. Idle, in envoy.test.ts run whole
-    // on the issue's pod, it took 24.63 ms (bun's junit reporter, 2026-11-25T02:41Z, at 51cf8572
-    // with these edits). 30_000 is kept.
-  }, 30_000);
+    // Every wait above ends by its own count of turns (`onPassClock`).
+  });
 
   test("the confirmation a connection could not answer runs on in the background, and stops when it answers", async () => {
     // The caller is not held past one bound, but the server's answer is still asked for: a subject
@@ -8537,16 +8417,8 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). The readings below are of the real-clock form, whose waits were real 10 ms
-    // ticks, and no longer apply: 13 009.24 ms in envoy.test.ts run whole at the 96 rung in the
-    // Job infra-1580-t24-j13-2dws7 of the cluster's `builds` namespace, two CPUs and 8 GiB (143
-    // busy loops, at which row A's runs took 38.7 s against the calibration's 31.2 s), and
-    // 9 084.64 ms in the Job infra-1580-krows-wf96-xshh4 (134 busy loops, row A 34.0 s). Idle, in
-    // envoy.test.ts run whole on the issue's pod, this form took 17.04 ms (bun's junit reporter,
-    // 2026-11-25T02:41Z, at 51cf8572 with these edits). 90_000 is kept, as no reading of this form
-    // under load exists.
-  }, 90_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   test("a pass that opens many subjects over a connection that answers none waits one bound", async () => {
     // The bound belongs to the connection, not to the open. A reconcile pass opens the agent
@@ -8622,11 +8494,8 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). No reading of this row under load exists. Idle, in envoy.test.ts run whole
-    // on the issue's pod, it took 24.79 ms (bun's junit reporter, 2026-11-25T02:41Z, at 51cf8572
-    // with these edits). 30_000 is kept.
-  }, 30_000);
+    // Every wait above ends by its own count of turns (`onPassClock`).
+  });
 
   test("an open after a reconnect takes a round trip of its own again", async () => {
     // The mark is what lets an open go on unconfirmed, so it must not outlive the connection's
@@ -8675,12 +8544,10 @@ console.log(JSON.stringify(args));
       await stop?.();
     }
     // Not on the test's clock: the start waits its 50 ms bound out in full before the row reads
-    // anything, and the confirmation's 60 s delay is longer than this limit, so no real timer's
-    // order can decide the row. A hang guard: what can hang is a session handler that never
-    // settles, which the row awaits with no bound of its own. No reading of this row under load
-    // exists. Idle, in envoy.test.ts run whole on the issue's pod, it took 79.52 ms (bun's junit
-    // reporter, 2026-11-25T02:41Z, at 51cf8572 with these edits). 30_000 is kept.
-  }, 30_000);
+    // anything, and the confirmation's 60 s delay is far past the row's own run, so no real
+    // timer's order can decide the row. What can hang is a session handler that never settles,
+    // which the row awaits with no bound of its own.
+  });
 
   test("the background confirmation's answer puts the next open back on a round trip", async () => {
     // This is what the background confirmation is for: nothing waits on its result, and what it
@@ -8737,11 +8604,8 @@ console.log(JSON.stringify(args));
       if (ownRow()) natsState.heldFlush = undefined;
       await stop?.();
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). No reading of this row under load exists. Idle, in envoy.test.ts run whole
-    // on the issue's pod, it took 18.75 ms (bun's junit reporter, 2026-11-25T02:41Z, at 51cf8572
-    // with these edits). 30_000 is kept.
-  }, 30_000);
+    // Every wait above ends by its own count of turns (`onPassClock`).
+  });
 
   test("a session's shutdown stops the background confirmation", async () => {
     // The loop outliving its session is a defect of this suite and of the process: on a real
@@ -8795,11 +8659,8 @@ console.log(JSON.stringify(args));
       // the path where an assertion above it fails, which must leave no asking behind either.
       await stop?.();
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). No reading of this row under load exists. Idle, in envoy.test.ts run whole
-    // on the issue's pod, it took 19.88 ms (bun's junit reporter, 2026-11-25T02:41Z, at 51cf8572
-    // with these edits). 30_000 is kept.
-  }, 30_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   // A fixture holding `legion-controller`. Once `gate(role)` is called, the listener holds the
   // next claim of `role` until its `release` resolves. The model's envoy_role_set reaches the move
@@ -9943,13 +9804,9 @@ console.log(JSON.stringify(args));
         await drain();
         expect(regained).toEqual(["legion-controller:reregistered"]);
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-      // 6 112.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the
-      // cluster's `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs
-      // took 32.1 s against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 40.9
-      // times that.
+      // What can hang is the fixture's boot, which loads the extension's module and is waited for
+      // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or
+      // steps (`onPassClock`).
     });
   }
 
@@ -10804,12 +10661,9 @@ console.log(JSON.stringify(args));
       for (let step = 0; step < 20; step += 1) await drain();
       expect(holders.get(role)).toBe("ses_fo");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 6 490.29 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
-    // against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 38.5 times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("a claim the model makes after the listener refused the role to the session is kept by later passes", async () => {
@@ -10940,13 +10794,9 @@ console.log(JSON.stringify(args));
       expect(claimSessions.length).toBe(refusedOnce);
       expect(holders.get(role)).toBe("ses_ab");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 6 501.32 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 38.5
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("an abandoned hold whose session another process heartbeats again is the newer holder: refused once seen, never taken back", async () => {
@@ -11020,13 +10870,9 @@ console.log(JSON.stringify(args));
       await ticks(2);
       expect(holders.has(role)).toBe(false);
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 6 094.86 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 41.0
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   // A hold is its role and the session it was made under, so every hold of one role this process
@@ -11118,12 +10964,10 @@ console.log(JSON.stringify(args));
         expect(holders.get(role)).toBe("ses_tw_c");
       })
     );
-    // A hang guard: what can hang is the fixture's boot, which loads the extension's module and
-    // is waited for with no bound of turns (`waitOn`); every other wait ends by its own count of
-    // turns or steps (`onPassClock`). Worst measured cost: 16 278.12 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T12:31Z to
-    // 12:56Z, so 120_000 is 7.4 times that.
-  }, 120_000);
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
+  });
 
   // A refusal a soft claim records (`refusedRoles`) outlives every later pass for that session:
   // `desiredRole` answers undefined for the role from then on, the next pass sees a role held
@@ -11237,12 +11081,10 @@ console.log(JSON.stringify(args));
         ).toEqual(roleClaimRecord(role, "ses_nr_c"));
       })
     );
-    // A hang guard: what can hang is the fixture's boot, which loads the extension's module and
-    // is waited for with no bound of turns (`waitOn`); every other wait ends by its own count of
-    // turns or steps (`onPassClock`). Worst measured cost: 18 034.20 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T12:56Z to
-    // 13:25Z, so 120_000 is 6.7 times that.
-  }, 120_000);
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
+  });
 
   test("an abandoned hold's session this process registers again is its own hold again, not a newer holder", async () => {
     // As in the row "a role whose hand-back an outage lost ...": the /new waits on a failed
@@ -11322,13 +11164,9 @@ console.log(JSON.stringify(args));
       await clock.run("the two resumes", Promise.all(pending));
       expect(holders.get(role)).toBe("ses_sr_c");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 9 793.71 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 25.5
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   for (const meanwhile of ["the listener reaped it", "a third session took the role"] as const) {
@@ -11410,13 +11248,9 @@ console.log(JSON.stringify(args));
           expect(claimSessions.length).toBe(confirmed);
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-      // 9 098.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the
-      // cluster's `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs
-      // took 33.4 s against the calibration's 31.2 s), at the merge head 0915a5ef. The package's
-      // 250 s is 27.5 times that.
+      // What can hang is the fixture's boot, which loads the extension's module and is waited for
+      // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or
+      // steps (`onPassClock`).
     });
   }
 
@@ -11497,13 +11331,9 @@ console.log(JSON.stringify(args));
       );
       expect(holders.get(role)).toBe("ses_op_c");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 8 689.57 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 28.8
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("a fork's run that ends after the host moved leaves a frame for the session it left unshown", async () => {
@@ -11573,13 +11403,9 @@ console.log(JSON.stringify(args));
       expect(holders.has("reviewer")).toBe(false);
       expect(holders.get("legion-controller")).toBe("ses_oi");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 5 010.18 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 49.9
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   // A release the listener refuses leaves the claim standing: its conditional delete is beaten
@@ -11631,13 +11457,9 @@ console.log(JSON.stringify(args));
       expect(handedBack).toEqual([`notifications.role.${role}@ses_fr`]);
       expect(holders.has(role)).toBe(false);
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 4 485.16 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 55.7
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   // An abandoned hand-back loop walks a live `Map`: a hold a session event inserts behind its
@@ -11730,13 +11552,10 @@ console.log(JSON.stringify(args));
         );
       })
     );
-    // A hang guard: what can hang is the fixture's boot, which loads the extension's module and
-    // is waited for with no bound of turns (`waitOn`); every other wait ends by its own count of
-    // turns or steps (`onPassClock`). 90_000. Worst measured cost: 10 405.19 ms over 20 runs
-    // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-    // 2026-11-21T03:12Z to 03:27Z, and 8 802.09 ms over 20 runs there, 2026-11-20T20:42Z to
-    // 20:59Z, so 90_000 is 8.6 times the worst.
-  }, 90_000);
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
+  });
 
   // A settle abandoned at its deadline mid-hand-back still records the holds whose hand-back
   // failed: while its loop runs they are in neither `pendingHandBacks` nor `abandonedHolds`, and
@@ -11824,12 +11643,10 @@ console.log(JSON.stringify(args));
         expect(holders.get("release-captain")).toBe("ses_rf_ab");
       })
     );
-    // A hang guard: what can hang is the fixture's boot, which loads the extension's module and
-    // is waited for with no bound of turns (`waitOn`); every other wait ends by its own count of
-    // turns or steps (`onPassClock`). Worst measured cost: 21 064.65 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T13:25Z to
-    // 13:44Z, so 150_000 is 7.1 times that.
-  }, 150_000);
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
+  });
 
   // A soft claim takes a live session's role only when it names that session as the one it
   // continues, so this process may name only a hold it still has a right to: once another
@@ -11905,11 +11722,9 @@ console.log(JSON.stringify(args));
         expect(holders.get(role)).toBe("ses_lk");
       })
     );
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot,
-    // which loads the extension's module and is waited for with no bound of turns (`waitOn`);
-    // every other wait ends by its own count of turns or steps (`onPassClock`). No reading of
-    // this row under load exists. Idle, in envoy.test.ts run whole on the issue's pod, it took
-    // 161.79 ms (bun's junit reporter, 2026-11-25T02:41Z, at 51cf8572 with these edits).
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   // A hand-back the listener fails is abandoned whatever session its hold is under, and the
@@ -12042,13 +11857,9 @@ console.log(JSON.stringify(args));
         await ticks(1);
         expect(holders.get(role)).toBe("ses_t3w_c");
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-      // 6 302.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the
-      // cluster's `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs
-      // took 32.1 s against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 39.7
-      // times that.
+      // What can hang is the fixture's boot, which loads the extension's module and is waited for
+      // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or
+      // steps (`onPassClock`).
     });
   }
 
@@ -12141,12 +11952,10 @@ console.log(JSON.stringify(args));
         expect(holders.get(role)).toBe("ses_t7a");
       })
     );
-    // A hang guard: what can hang is the fixture's boot, which loads the extension's module and
-    // is waited for with no bound of turns (`waitOn`); every other wait ends by its own count of
-    // turns or steps (`onPassClock`). Worst measured cost: 23 215.07 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T13:44Z to
-    // 14:00Z, so 150_000 is 6.5 times that.
-  }, 150_000);
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
+  });
 
   test("a role the model claims again in a /new before its pass is carried by a fork that follows", async () => {
     const role = "legion-controller";
@@ -12265,13 +12074,9 @@ console.log(JSON.stringify(args));
       expect(holders.has("legion-controller")).toBe(false);
       expect(holders.get("reviewer")).toBe("ses_mp_fork");
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
-    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
-    // 5 306.64 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 47.1
-    // times that.
+    // What can hang is the fixture's boot, which loads the extension's module and is waited for
+    // with no bound of turns (`waitOn`); every other wait ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("a plugin's claim while NATS is down is refused, and the next pass claims once NATS is back", async () => {
@@ -12853,17 +12658,9 @@ console.log(JSON.stringify(args));
                   expect(h.holders.has(other)).toBe(false);
                 }
               });
-              // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's
-              // boot, which loads the extension's module and is waited for with no bound of turns
-              // (`waitOn`); every other wait ends by its own count of turns (`onPassClock`). Worst
-              // measured cost of its 472 rows together: 769 289.00 ms over 20 runs at the 96 rung
-              // in the Jobs infra-1580-krows-m1a-696gj, infra-1580-krows-m1b-g796k,
-              // infra-1580-krows-m1c-psjrw and infra-1580-krows-m1d-cqfwc, the worst in
-              // infra-1580-krows-m1b-g796k of the cluster's `builds` namespace, two CPUs and 8 GiB
-              // (148 busy loops, at which row A's runs took 36.9 s against the calibration's
-              // 31.2 s), at the merge head 0915a5ef. Its slowest row in the whole-file run at that
-              // head (the Job infra-1580-wf-wfd-hv9dp, 150 busy loops, row A 37.0 s) took
-              // 10 680.90 ms, and the package's 250 s is 23.4 times that.
+              // What can hang is the fixture's boot, which loads the extension's module and is
+              // waited for with no bound of turns (`waitOn`); every other wait ends by its own
+              // count of turns (`onPassClock`).
             });
           }
         }
@@ -13724,10 +13521,9 @@ console.log(JSON.stringify(args));
         ENVOY_SESSION_ROLE: "fan-cloud",
         ENVOY_SESSION_ROLE_SESSION: "ses_pod_parent",
       },
-      // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
-      // It is above the children's own kill too (420 s, `session-pod-process.ts`). The runner
-      // kills the process of a row it abandons, and the children end with it (`runSessionPod`).
-      timeoutMs: 450_000,
+      // Killed at the row's deadline, so a run that hangs fails here, naming the process, before
+      // the command's guard; the children end with it (`runSessionPod`).
+      timeoutMs: Math.floor(timeLeft()),
     });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
@@ -13750,19 +13546,8 @@ console.log(JSON.stringify(args));
         },
       ],
     });
-    // A hang guard: what can hang is a process that never reports. The row's rung is 48, below this
-    // file's: its three processes each load the extension, so at 96 it cost up to 131 805.62 ms,
-    // and at 240 more than 540 s. Worst measured cost: 78 906.82 ms over 20 runs at the 48 rung in
-    // the Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (135 busy loops, half the 271 at which row A's runs took 51.2 s against the calibration's
-    // 31.2 s at the 96 rung), 2026-11-21T19:39Z to 20:06Z; 66 217.75 ms at 15 busy loops (the 48
-    // rung) on a two-CPU, 8 GiB pod. Six times the worst is 473 440.94 ms, past the room the
-    // pi-envoy job leaves one hang. That room is 395 s: the job's `timeout-minutes: 15` less the
-    // 505 s its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`). So the room
-    // decides the limit: 390_000, inside that room and 4.9 times the worst. The children's kill
-    // (420 s, `session-pod-process.ts`) and this process's kill (450 s, `timeoutMs` above) are
-    // past the limit, so the limit decides a slow run.
-  }, 390_000);
+    // What can hang is a process that never reports.
+  });
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
     const role = "librarian";
@@ -13970,7 +13755,10 @@ console.log(JSON.stringify(args));
     expect(refusedAt).toBeGreaterThanOrEqual(0);
     // The next heartbeat carries the rest, and no registration after the refusal names it again.
     intervals[0]?.();
-    await until(() => registrations.length >= refusedAt + 3, "the heartbeat's registrations");
+    await until(
+      "the heartbeat's registrations",
+      rowProbe(() => registrations.length >= refusedAt + 3)
+    );
     const carriedAgain = registrations
       .slice(refusedAt + 1)
       .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)));
@@ -13982,12 +13770,8 @@ console.log(JSON.stringify(args));
     expect(registrations.at(-1)).toEqual(
       expect.arrayContaining(["notifications.dispatch.issue.PRIV-1.>"])
     );
-    // A hang guard, not a bound on work: what can hang is the wait (`until`) for the heartbeat's
-    // registrations, which has no deadline of its own. The limit is the package's `--timeout
-    // 250000`. Worst measured cost: 5 610.77 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB (106 busy
-    // loops, at which row A's runs took 32.2 s against the calibration's 31.2 s), at the merge
-    // head 0915a5ef. The package's 250 s is 44.6 times that.
+    // What can hang is the wait (`until`) for the heartbeat's registrations, which ends at the
+    // row's deadline.
   });
 
   // The edge can start refusing a topic it accepted before, as when the broker's answer for the
@@ -14048,11 +13832,14 @@ console.log(JSON.stringify(args));
       const refusedAt = registrations.length;
       intervals[0]?.();
       await until(
-        () => registrations.length >= refusedAt + 2,
-        "the heartbeat's refused registration and the one after it"
+        "the heartbeat's refused registration and the one after it",
+        rowProbe(() => registrations.length >= refusedAt + 2)
       );
       intervals[0]?.();
-      await until(() => registrations.length >= refusedAt + 3, "the next heartbeat's registration");
+      await until(
+        "the next heartbeat's registration",
+        rowProbe(() => registrations.length >= refusedAt + 3)
+      );
       await settle();
 
       expect(told()).toHaveLength(1);
@@ -14062,12 +13849,9 @@ console.log(JSON.stringify(args));
     } finally {
       await stop();
     }
-    // A hang guard, not a bound on work: what can hang is a wait (`until`) for a registration that
-    // never comes, which has no deadline of its own. Worst measured cost: 14 315.99 ms over 20 runs
-    // at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds` namespace,
-    // where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s, 2026-11-21T21:18Z to
-    // 21:33Z, so 90_000 is 6.3 times that.
-  }, 90_000);
+    // What can hang is a wait (`until`) for a registration that never comes, which ends at the
+    // row's deadline.
+  });
 
   // Registrations are not serialized: the tool's and a heartbeat's can both carry a topic the edge
   // refuses, and both be refused. The topic stops being followed once, so the session is told of
@@ -14121,9 +13905,15 @@ console.log(JSON.stringify(args));
       const subscribing = subscribeTool.execute("", {
         topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
       });
-      await until(() => held.length === 1, "the tool's registration in flight");
+      await until(
+        "the tool's registration in flight",
+        rowProbe(() => held.length === 1)
+      );
       intervals[0]?.();
-      await until(() => held.length === 2, "the heartbeat's registration in flight");
+      await until(
+        "the heartbeat's registration in flight",
+        rowProbe(() => held.length === 2)
+      );
       for (const release of held.splice(0)) release();
       const subscribed = await subscribing;
       await settle();
@@ -14136,12 +13926,9 @@ console.log(JSON.stringify(args));
     } finally {
       await stop();
     }
-    // A hang guard, not a bound on work: what can hang is a wait (`until`) for a registration in
-    // flight that never comes, which has no deadline of its own. Worst measured cost: 11 313.31 ms
-    // over 20 runs at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds`
-    // namespace, where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s,
-    // 2026-11-21T21:38Z to 21:54Z, so 90_000 is 8.0 times that.
-  }, 90_000);
+    // What can hang is a wait (`until`) for a registration in flight that never comes, which ends
+    // at the row's deadline.
+  });
 
   // The tool names as refused only what its own registration was refused: a topic the session
   // stopped following meanwhile, by an unsubscribe or a session switch, was subscribed, not
@@ -14178,7 +13965,10 @@ console.log(JSON.stringify(args));
     }
     try {
       const subscribing = subscribeTool.execute("", { topics: [`${kept}.>`] });
-      await until(() => held.length === 1, "the tool's registration in flight");
+      await until(
+        "the tool's registration in flight",
+        rowProbe(() => held.length === 1)
+      );
       await unsubscribeTool.execute("", { topics: [kept, `${kept}.>`] });
       for (const release of held.splice(0)) release();
       const subscribed = await subscribing;
@@ -14188,12 +13978,9 @@ console.log(JSON.stringify(args));
     } finally {
       await stop();
     }
-    // A hang guard, not a bound on work: what can hang is the wait (`until`) for the tool's
-    // registration in flight, which has no deadline of its own. Worst measured cost: 15 311.14 ms
-    // over 20 runs at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds`
-    // namespace, where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s,
-    // 2026-11-21T22:00Z to 22:22Z, so 120_000 is 7.8 times that.
-  }, 120_000);
+    // What can hang is the wait (`until`) for the tool's registration in flight, which ends at the
+    // row's deadline.
+  });
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
@@ -14411,12 +14198,71 @@ console.log(JSON.stringify(args));
     expect(regained).toEqual([{ role, reason: "reclaimed" }]);
   });
 
+  /**
+   * Drives a session's heartbeat by hand (`intervals[0]`) and counts the registrations the
+   * listener stand-in accepts: the stand-in's fetch calls `accept()` for each one. Each wait
+   * answers with the count the listener reached, and ends at its row's deadline, naming what it
+   * waited for (`@legion/test-fixtures/wait`). Once its row has ended, each wait throws
+   * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension into
+   * the rows after it, and it answers no count once its row has ended.
+   */
+  function heartbeatTicks(intervals: readonly (() => void)[]) {
+    let registrations = 0;
+    /** Told of the next registration the listener accepts, while `registered` waits for one. */
+    let told: (() => void) | undefined;
+    return {
+      /** The listener accepted a registration: the stand-in's fetch calls this for each one. */
+      accept: (): void => {
+        registrations += 1;
+        told?.();
+      },
+      /** How many registrations the listener has accepted. */
+      registrations: (): number => registrations,
+      /**
+       * Ticks once, and waits for the listener to accept the next registration. It is for a tick
+       * no pass is running at: that tick starts a pass, and the pass registers. It never ticks
+       * again. A tick while that pass runs, once a whole refresh interval has passed since the
+       * last registration, meets a stall, and the heartbeat says so.
+       */
+      registered: async (): Promise<number> => {
+        const ownRow = rowCheck();
+        stillOn(ownRow, "waiting for a tick's registration");
+        const accepted = Promise.withResolvers<void>();
+        told = accepted.resolve;
+        try {
+          intervals[0]?.();
+          await settled("the tick's registration", accepted.promise);
+        } finally {
+          told = undefined;
+        }
+        stillOn(ownRow, "waiting for a tick's registration");
+        return registrations;
+      },
+      /**
+       * Ticks until the listener has accepted one more registration, and answers the count. A
+       * tick that lands inside the refresh interval posts nothing, so the wait's probe ticks
+       * again, at the wait's own pace, until the count moves: a refresh is awaited where it
+       * shows, at the listener.
+       */
+      refreshed: (): Promise<number> => {
+        const ownRow = rowCheck();
+        const seen = registrations;
+        return until("a tick's refresh of the registration", () => {
+          stillOn(ownRow, "ticking for a refresh");
+          if (registrations !== seen) return registrations;
+          intervals[0]?.();
+          return undefined;
+        });
+      },
+    };
+  }
+
   test("heartbeat ticks while this session is the live holder issue no claim and append no transcript entry", async () => {
-    const ownRow = rowCheck();
     const role = "legion-controller";
     const roleClaims: unknown[] = [];
     let roleReads = 0;
-    let registrations = 0;
+    const intervals: (() => void)[] = [];
+    const ticks = heartbeatTicks(intervals);
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
@@ -14432,7 +14278,7 @@ console.log(JSON.stringify(args));
           topics: [`notifications.role.${role}`],
         });
       }
-      if (url.pathname === "/v1/interests/subscribe") registrations += 1;
+      if (url.pathname === "/v1/interests/subscribe") ticks.accept();
       return responseWithRegistration(input, init, {});
     };
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-quiet");
@@ -14441,7 +14287,6 @@ console.log(JSON.stringify(args));
       regained.push({ role: regainedRole, reason });
     });
     const fixture = createPi();
-    const intervals: (() => void)[] = [];
     const context: SessionContext = {
       ...sessionContext("ses_quiet"),
       setInterval: (callback) => intervals.push(callback),
@@ -14452,15 +14297,16 @@ console.log(JSON.stringify(args));
     const claimEntries = () =>
       fixture.entries.filter((entry) => entry.customType === "envoy-role-claim");
     expect(claimEntries()).toHaveLength(1);
-    expect(registrations).toBe(1);
+    expect(ticks.registrations()).toBe(1);
 
+    // Each tick's pass registers, then reads the role and finds this session its holder: the
+    // row lets that pass run on past its registration before it ticks again.
     for (let tick = 0; tick < 3; tick += 1) {
-      intervals[0]?.();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      stillOn(ownRow, "ticking the heartbeat");
+      await ticks.registered();
+      await settle();
     }
 
-    expect(registrations).toBe(4);
+    expect(ticks.registrations()).toBe(4);
     expect(roleReads).toBe(3);
     expect(roleClaims).toEqual([roleClaimBody("ses_quiet", role)]);
     expect(claimEntries()).toHaveLength(1);
@@ -14565,6 +14411,8 @@ console.log(JSON.stringify(args));
     process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
     const role = "legion-controller";
     let registryDown = false;
+    const intervals: (() => void)[] = [];
+    const ticks = heartbeatTicks(intervals);
     const roleClaims: unknown[] = [];
     globalThis.fetch = async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
@@ -14581,6 +14429,7 @@ console.log(JSON.stringify(args));
           topics: [`notifications.role.${role}`],
         });
       }
+      if (url.pathname === "/v1/interests/subscribe") ticks.accept();
       return responseWithRegistration(input, init, {});
     };
     const { default: envoyExtension }: EnvoyModule = await import(
@@ -14593,7 +14442,6 @@ console.log(JSON.stringify(args));
       hooked.resolve();
     });
     const fixture = createPi();
-    const intervals: (() => void)[] = [];
     const notifications: string[] = [];
     const warned = Promise.withResolvers<void>();
     const context: SessionContext = {
@@ -14613,32 +14461,30 @@ console.log(JSON.stringify(args));
 
     registryDown = true;
     intervals[0]?.();
-    await warned.promise;
+    await settled("the heartbeat's warning", warned.promise);
     // Let the failed tick's own `.finally` release the healing guard before the next tick.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(regained).toEqual([]);
 
     registryDown = false;
     intervals[0]?.();
-    await hooked.promise;
+    await settled("the regain hook", hooked.promise);
     expect(regained).toEqual([{ role, reason: "reregistered" }]);
     // The claim survived: only the explicit hard claim ever went out.
     expect(roleClaims).toEqual([roleClaimBody("ses_outage", role)]);
+    // The hook fires detached; let the tick's own chain release the healing latch.
+    await settle();
 
-    // The following healthy tick is quiet again.
-    intervals[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The following healthy tick is quiet again: its registration lands, and once its pass has
+    // run on past it, the hook has fired no second time.
+    await ticks.registered();
+    await settle();
     expect(regained).toHaveLength(1);
     expect(
       notifications.filter((message) => message.includes("registry heartbeat failed"))
     ).toHaveLength(1);
-    // A hang guard (the package's `--timeout 250000`): what can hang is the wait for the
-    // heartbeat's warning (`warned`) or for the regain hook (`hooked`), neither of which has a
-    // deadline of its own. Worst measured cost: 1 405 ms in envoy.test.ts run whole at the 96
-    // rung in the Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and
-    // 8 GiB (137 busy loops, at which row A's runs took 31.6 s against the calibration's
-    // 31.2 s), at 06d187e7; 599 ms in the Job infra-1580-r27wf-4rk46 (148 busy loops, row A
-    // 39.8 s), at 82306880. The package's 250 s is 177.9 times the worst.
+    // What can hang is the wait for the heartbeat's warning, for the regain hook or for the quiet
+    // tick's registration, each of which ends at the row's deadline.
   });
 
   test("a regain hook that never settles does not block the next heartbeat tick's registration", async () => {
@@ -14706,67 +14552,6 @@ console.log(JSON.stringify(args));
     expect(notifications).toEqual([]);
   });
 
-  /**
-   * Drives a session's heartbeat by hand (`intervals[0]`) against a listener stand-in that counts
-   * the registrations it accepts (`registrations`). `onAccepted` sets the callback the stand-in
-   * calls at the next registration it accepts, or clears it. Each wait answers with the count the
-   * listener reached. Neither wait carries a deadline of its own: a registration that never comes
-   * is left to the row's own limit, which names the test, rather than decided on a deadline here,
-   * which would hand the caller a stale count and say nothing about why. Once that limit has
-   * ended the row, the file's `afterEach` advances `rowGeneration`, and each wait throws
-   * (`stillOn`) before its next tick and in place of its answer: it ticks no dead extension into
-   * the rows after it, and it answers no count once its row has ended.
-   */
-  function heartbeatTicks(
-    intervals: readonly (() => void)[],
-    registrations: () => number,
-    onAccepted: (told: (() => void) | undefined) => void
-  ) {
-    return {
-      /**
-       * Ticks once, and waits for the listener to accept the next registration. It is for a tick
-       * no pass is running at: that tick starts a pass, and the pass registers. It never ticks
-       * again. A tick while that pass runs, once a whole refresh interval has passed since the
-       * last registration, meets a stall, and the heartbeat says so.
-       */
-      registered: async (): Promise<number> => {
-        const ownRow = rowCheck();
-        stillOn(ownRow, "waiting for a tick's registration");
-        const waiting = Promise.withResolvers<void>();
-        onAccepted(() => waiting.resolve());
-        intervals[0]?.();
-        await waiting.promise;
-        onAccepted(undefined);
-        stillOn(ownRow, "waiting for a tick's registration");
-        return registrations();
-      },
-      /**
-       * Ticks until the listener has accepted one more registration. A tick that lands inside the
-       * refresh interval posts nothing, so this ticks again after a grace instead of deciding on
-       * one tick, and a refresh is awaited where it shows — at the listener. It polls until the
-       * count moves.
-       */
-      refreshed: async (): Promise<number> => {
-        const seen = registrations();
-        const ownRow = rowCheck();
-        while (registrations() === seen) {
-          stillOn(ownRow, "ticking for a refresh");
-          // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
-          // posts nothing, so this hands the loop on to the next tick.
-          const waiting = Promise.withResolvers<void>();
-          onAccepted(() => waiting.resolve());
-          const grace = setTimeout(() => waiting.resolve(), 250);
-          intervals[0]?.();
-          await waiting.promise;
-          clearTimeout(grace);
-          onAccepted(undefined);
-        }
-        stillOn(ownRow, "ticking for a refresh");
-        return registrations();
-      },
-    };
-  }
-
   test("a pass stuck on a listener call that never answers still lets later ticks refresh the registration", async () => {
     // The registration refresh is the last step of a pass. A listener socket that neither answers
     // nor errors used to hold every later pass behind it for the life of the process: the pane's
@@ -14787,9 +14572,8 @@ console.log(JSON.stringify(args));
         let wedgePass = false;
         const wedged = Promise.withResolvers<void>();
         const answered = Promise.withResolvers<void>();
-        let registrations = 0;
-        /** Told of the next registration the listener accepts, while `refreshed` waits for one. */
-        let accepted: (() => void) | undefined;
+        const intervals: (() => void)[] = [];
+        const { accept, registrations, refreshed } = heartbeatTicks(intervals);
         globalThis.fetch = async (input, init) => {
           if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
             // The call the pass awaits, as a socket that is accepted and never answered leaves it:
@@ -14799,8 +14583,7 @@ console.log(JSON.stringify(args));
               wedged.resolve();
               await answered.promise;
             } else {
-              registrations += 1;
-              accepted?.();
+              accept();
             }
           }
           return responseWithRegistration(input, init, {});
@@ -14809,27 +14592,19 @@ console.log(JSON.stringify(args));
           "./envoy.ts?heartbeat-wedged-pass"
         );
         const fixture = createPi();
-        const intervals: (() => void)[] = [];
         const context: SessionContext = {
           ...sessionContext("ses_wedged_pass"),
           setInterval: (callback) => intervals.push(callback),
         };
-        const { refreshed } = heartbeatTicks(
-          intervals,
-          () => registrations,
-          (told) => {
-            accepted = told;
-          }
-        );
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
-        expect(registrations).toBe(1);
+        expect(registrations()).toBe(1);
 
         wedgePass = true;
         intervals[0]?.();
         // The pass is inside that call, so its own registration never reached the listener.
         await wedged.promise;
-        expect(registrations).toBe(1);
+        expect(registrations()).toBe(1);
 
         // A refresh interval with nothing accepted: the tick posts the registration itself.
         const second = await refreshed();
@@ -14843,13 +14618,9 @@ console.log(JSON.stringify(args));
         for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
       }
     );
-    // A hang guard: what can hang is a refresh that never comes (`refreshed`), which a tick with
-    // no refresh of its own leaves for good, since the wedged pass outlasts the limit. The row's
-    // work is a handful of ticks. Worst measured cost: 8 110 ms over 20 runs at the 96 rung in
-    // the Jobs infra-1580-r30tka-w852q and infra-1580-r30tkb-twv9q of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (140 and 109 busy loops for the 96 rung, row A 35.9 s and
-    // 34.0 s), at 6ecd329a with `heartbeatTicks`. 90_000 is 11 times the worst.
-  }, 90_000);
+    // What can hang is a refresh that never comes (`refreshed`), which a tick with no refresh of
+    // its own leaves for good, since the wedged pass outlasts the row.
+  });
 
   test("a role move that never settles still lets the next tick refresh the registration", async () => {
     // What a wedged envoy_role_set or a wedged Legion claim leaves behind: the role-move queue is
@@ -14874,9 +14645,8 @@ console.log(JSON.stringify(args));
         let wedgeRoleRead = false;
         const parked = Promise.withResolvers<void>();
         const answered = Promise.withResolvers<void>();
-        let registrations = 0;
-        /** Told of the next registration the listener accepts, while a tick waits for one. */
-        let accepted: (() => void) | undefined;
+        const intervals: (() => void)[] = [];
+        const ticks = heartbeatTicks(intervals);
         globalThis.fetch = async (input, init) => {
           const url = new URL(input.toString());
           if (url.pathname === `/v1/roles/${role}`) {
@@ -14896,38 +14666,27 @@ console.log(JSON.stringify(args));
               topics: [`notifications.role.${role}`],
             });
           }
-          if (url.pathname === "/v1/interests/subscribe") {
-            registrations += 1;
-            accepted?.();
-          }
+          if (url.pathname === "/v1/interests/subscribe") ticks.accept();
           return responseWithRegistration(input, init, {});
         };
         const { default: envoyExtension }: EnvoyModule = await import(
           "./envoy.ts?heartbeat-wedged-move"
         );
         const fixture = createPi();
-        const intervals: (() => void)[] = [];
         const context: SessionContext = {
           ...sessionContext("ses_wedged_move"),
           setInterval: (callback) => intervals.push(callback),
         };
-        const ticks = heartbeatTicks(
-          intervals,
-          () => registrations,
-          (told) => {
-            accepted = told;
-          }
-        );
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
-        expect(registrations).toBe(1);
+        expect(ticks.registrations()).toBe(1);
 
         // This tick's pass registers, then parks in the role move it awaits.
         wedgeRoleRead = true;
         expect(await ticks.registered()).toBe(2);
         await parked.promise;
-        expect(registrations).toBe(2);
+        expect(ticks.registrations()).toBe(2);
 
         // The move is still in flight, and a tick refreshes the registration regardless.
         expect(await ticks.refreshed()).toBeGreaterThan(2);
@@ -14937,12 +14696,9 @@ console.log(JSON.stringify(args));
         for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
       }
     );
-    // A hang guard, not a bound on the row's work: what can hang is a refresh that never comes
-    // (`heartbeatTicks`), which a tick with no refresh of its own leaves for good, since the parked
-    // move outlasts the limit. The row's work is a few ticks. Worst measured cost: 6 991 ms over
-    // 20 runs at the 96 rung in the Jobs infra-1580-r30tka-w852q and infra-1580-r30tkb-twv9q
-    // (above), at 6ecd329a with this row. Six times that is 41 946 ms, rounded up to 45_000.
-  }, 45_000);
+    // What can hang is a refresh that never comes (`heartbeatTicks`), which a tick with no refresh
+    // of its own leaves for good, since the parked move outlasts the row.
+  });
 
   test("a whole stall says so once in the pane and once in the log, and a healthy tick says nothing", async () => {
     // A stall lasts as long as the wedged call does, and every tick inside it meets the same
@@ -14964,9 +14720,8 @@ console.log(JSON.stringify(args));
         let wedgePass = false;
         const wedged = Promise.withResolvers<void>();
         const answered = Promise.withResolvers<void>();
-        let registrations = 0;
-        /** Told of the next registration the listener accepts, while a tick waits for one. */
-        let accepted: (() => void) | undefined;
+        const intervals: (() => void)[] = [];
+        const ticks = heartbeatTicks(intervals);
         globalThis.fetch = async (input, init) => {
           if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
             // The call the pass awaits, as a socket that is accepted and never answered leaves it.
@@ -14975,8 +14730,7 @@ console.log(JSON.stringify(args));
               wedged.resolve();
               await answered.promise;
             } else {
-              registrations += 1;
-              accepted?.();
+              ticks.accept();
             }
           }
           return responseWithRegistration(input, init, {});
@@ -14990,23 +14744,15 @@ console.log(JSON.stringify(args));
         });
         try {
           const fixture = createPi();
-          const intervals: (() => void)[] = [];
           const notifications: string[] = [];
           const context: SessionContext = {
             ...sessionContext("ses_stall_once"),
             setInterval: (callback) => intervals.push(callback),
             ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
           };
-          const ticks = heartbeatTicks(
-            intervals,
-            () => registrations,
-            (told) => {
-              accepted = told;
-            }
-          );
           await envoyExtension(fixture.pi);
           await fixture.handlers.get("session_start")?.({}, context);
-          expect(registrations).toBe(1);
+          expect(ticks.registrations()).toBe(1);
 
           // A healthy tick before any stall is silent.
           expect(await ticks.registered()).toBe(2);
@@ -15021,7 +14767,7 @@ console.log(JSON.stringify(args));
           // The pass is inside that call, so its registration never reached the listener, and no
           // tick has met the stall yet.
           await wedged.promise;
-          expect(registrations).toBe(2);
+          expect(ticks.registrations()).toBe(2);
           expect(notifications).toEqual([]);
 
           // Three refreshes inside the one stall, each posted by a tick on its own. A tick says
@@ -15057,14 +14803,10 @@ console.log(JSON.stringify(args));
         }
       }
     );
-    // A hang guard, not a bound on the row's work: what can hang is a registration that never
-    // reaches the listener (`heartbeatTicks`). That is a refresh that never comes inside the
-    // stall, which lasts past the limit, or a pass that never registers. A pass that never
-    // reaches the wedged call hangs too (`wedged`). The row's work is a few ticks. Worst measured
-    // cost: 7 502 ms over 20 runs at the 96 rung in the Jobs infra-1580-r30tka-w852q and
-    // infra-1580-r30tkb-twv9q (above), at 6ecd329a with this row. Six times that is 45 012 ms,
-    // rounded up to 50_000.
-  }, 50_000);
+    // What can hang is a registration that never reaches the listener (`heartbeatTicks`). That is
+    // a refresh that never comes inside the stall, which lasts past the row, or a pass that never
+    // registers. A pass that never reaches the wedged call hangs too (`wedged`).
+  });
 
   // The backstop's clock is per session: a registration accepted for the session the host has
   // left says nothing about the one running now. A `/new` during a wedged pass is exactly that —
@@ -15153,12 +14895,8 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). 120_000. Worst measured cost: 19 286.27 ms over 20 runs at 16 busy loops
-    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:59Z to 21:16Z,
-    // and 11 187.24 ms over 20 runs there, 2026-11-21T03:28Z to 03:41Z, so 120_000 is 6.2 times the
-    // worst.
-  }, 120_000);
+    // Every wait above ends by its own count of turns (`onPassClock`).
+  });
 
   test("the first healthy tick after a stall re-asserts the role once as a re-registration", async () => {
     // The listener reaps a role claim whose holder left the session registry, so a stall that
@@ -15240,13 +14978,8 @@ console.log(JSON.stringify(args));
         for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
       })
     );
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost: 14 503.68 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
-    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T20:35Z
-    // to 20:54Z; 6 116.87 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
-    // of 2026-11-19 18:40Z, 2026-11-21T15:17Z to 15:31Z. 90_000 is 6.2 times the worst.
-  }, 90_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   test("a task that answers after its deadline writes nothing over what a newer one settled", async () => {
     // An abandoned task cannot be cancelled, only fenced. When its call finally answers it must
@@ -15400,11 +15133,8 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // A hang guard (the package's `--timeout 250000`): what can hang is the extension's module
-    // load, which is waited for with no bound of turns (`waitOn`); every other wait ends by its
-    // own count of turns or steps (`onPassClock`). No reading of this row under load exists.
-    // Idle, in envoy.test.ts run whole on the issue's pod, it took 27.70 ms (bun's junit reporter,
-    // 2026-11-25T02:41Z, at 51cf8572 with these edits).
+    // What can hang is the extension's module load, which is waited for with no bound of turns
+    // (`waitOn`); every other wait ends by its own count of turns or steps (`onPassClock`).
   });
 
   test("an agent stream control subject whose connection closes under its round trip is closed, not left for no pass to reopen", async () => {
@@ -15503,11 +15233,8 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // A hang guard (the package's `--timeout 250000`): what can hang is the extension's module
-    // load, which is waited for with no bound of turns (`waitOn`); every other wait ends by its
-    // own count of turns or steps (`onPassClock`). No reading of this row under load exists.
-    // Idle, in envoy.test.ts run whole on the issue's pod, it took 31.86 ms (bun's junit reporter,
-    // 2026-11-25T02:41Z, at 51cf8572 with these edits).
+    // What can hang is the extension's module load, which is waited for with no bound of turns
+    // (`waitOn`); every other wait ends by its own count of turns or steps (`onPassClock`).
   });
 
   test("a failed role read does not make the next healthy heartbeat report a regain", async () => {
@@ -15585,13 +15312,14 @@ console.log(JSON.stringify(args));
     const role = "legion-controller";
     let registryDown = false;
     let roleReadBroken = false;
-    let registrations = 0;
+    const intervals: (() => void)[] = [];
+    const ticks = heartbeatTicks(intervals);
     const roleClaims: unknown[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         if (registryDown) throw new Error("network unreachable");
-        registrations += 1;
+        ticks.accept();
       }
       if (url.pathname === `/v1/roles/${role}`) {
         // A body the client cannot parse fails immediately, without the transport's 5xx retry.
@@ -15619,7 +15347,6 @@ console.log(JSON.stringify(args));
       hooked.resolve();
     });
     const fixture = createPi();
-    const intervals: (() => void)[] = [];
     const warned = Promise.withResolvers<void>();
     const context: SessionContext = {
       ...sessionContext("ses_late_regain"),
@@ -15634,41 +15361,36 @@ console.log(JSON.stringify(args));
     await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
-    expect(registrations).toBe(1);
+    expect(ticks.registrations()).toBe(1);
 
     registryDown = true;
     intervals[0]?.();
-    await warned.promise;
+    await settled("the heartbeat's warning", warned.promise);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // Tick N+1: its registration lands, and its pass then fails at the role read, with no regain.
     registryDown = false;
     roleReadBroken = true;
-    intervals[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(registrations).toBe(2);
+    expect(await ticks.registered()).toBe(2);
+    await settle();
     expect(regained).toEqual([]);
 
     roleReadBroken = false;
     intervals[0]?.();
-    await hooked.promise;
+    await settled("the regain hook", hooked.promise);
     // The hook fires detached; let the tick's own chain release the healing latch.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(regained).toEqual([{ role, reason: "reregistered" }]);
     // The claim survived throughout: only the explicit hard claim ever went out.
     expect(roleClaims).toEqual([roleClaimBody("ses_late_regain", role)]);
 
-    // A further healthy tick adds nothing.
-    intervals[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(registrations).toBe(4);
+    // A further healthy tick adds nothing: its registration lands, and once its pass has run on
+    // past it, the hook has fired no second time.
+    expect(await ticks.registered()).toBe(4);
+    await settle();
     expect(regained).toHaveLength(1);
-    // A hang guard (the package's `--timeout 250000`): what can hang is the wait for the
-    // heartbeat's warning (`warned`) or for the regain hook (`hooked`), neither of which has a
-    // deadline of its own. Worst measured cost: 1 696 ms in envoy.test.ts run whole at the 96
-    // rung in the Job infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs and
-    // 8 GiB (148 busy loops, at which row A's runs took 39.8 s against the calibration's
-    // 31.2 s), at 82306880; 1 314 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A
-    // 31.6 s), at 06d187e7. The package's 250 s is 147.4 times the worst.
+    // What can hang is the wait for the heartbeat's warning, for the regain hook or for a tick's
+    // registration, each of which ends at the row's deadline.
   });
 
   test("registers a self-subscribed interest on session start", async () => {
@@ -15953,8 +15675,8 @@ console.log(JSON.stringify(args));
         // Settled either way: the line that says the reply landed, or a second reply on the
         // attempt, or the failure the delivery prints.
         await until(
-          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0,
-          "the reply's outcome"
+          "the reply's outcome",
+          rowProbe(() => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0)
         );
         await settle();
         return { replies, warnings, failures: failures() };
@@ -17280,33 +17002,16 @@ console.log(JSON.stringify(args));
        *  writes its shell's pid to `pid` there before it waits, and that shell leads the command's
        *  process group (`src/typed-shell.ts` spawns it detached), so the afterEach kills the group
        *  before it removes the directory: a command the code under test failed to stop ends with
-       *  its row, whether the row returned or the runner abandoned it at its limit. */
+       *  its row, whether the row returned or the runner abandoned it at its limit. The two rows
+       *  that hold a command's limit on Bun's fake clock write no pid: a wait of theirs that fails
+       *  runs that held limit, which ends the command. */
       const workDirectories: string[] = [];
-      // The limit most rows of this describe name (`200_000`): a hang guard, not a bound on work.
-      // Not `setDefaultTimeout`: bun 1.4.4 applies a default set in a describe to every describe
-      // registered after it, the rest of this file's, and over `--timeout` too
-      // (measured: a row of a later describe timed out at a 100 ms default set in an earlier one,
-      // with and without `--timeout 250000`). What can hang is a wait with no deadline of its own,
-      // which each row makes after `bootShellSession`: an `until` for a command that never starts,
-      // never writes its pid or never ends, or a reply that never arrives. 200_000. Worst measured
-      // cost: 32 303.12 ms, the row "runs a command for the session the host moved to while another
-      // session's still runs", over 20 runs of it alone at the 96 rung in the Job
-      // infra-1580-krows-j1-rl89g of the cluster's `builds` namespace, two CPUs and 8 GiB (311 busy
-      // loops, at which row A's runs took 35.9 s against the calibration's 31.2 s),
-      // 2026-11-21T20:01Z to 20:14Z, so 200_000 is 6.2 times that. On the two-CPU, 8 GiB pod of
-      // 2026-11-19 18:40Z at that rung, the worst over 20 runs of this describe was 10 476.19 ms,
-      // and one run of "hands the agent no copy when the host moved on with no session event" alone
-      // cost 25 497.91 ms, which main's 20_000 cut. The row "stops a command past its limit and
-      // says when, keeping what it printed" runs its limit on the test's clock (`onPassClock`) and
-      // waits for its shell with no bound of its own: its worst over 20 runs of it alone was
-      // 13 188.07 ms on that pod and 26 893.41 ms in that Job. Two rows name another limit: "the
-      // agent's copy of the report, ..." names 60_000, with a reading of its own, and main's row
-      // "trades once for the addressed session when the host leaves while its command runs"
-      // names 30_000.
+      // What can hang in a row of this describe is a wait for its command, which each row makes
+      // after `bootShellSession`: a command that never starts, never writes its pid or never ends,
+      // or a reply that never arrives. A wait through `until` ends at the row's deadline, naming
+      // what it waited for.
 
-      // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
-      // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
-      // describe at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
+      // The poll below waits at most 1_000 turns for a killed group to end.
       afterEach(async () => {
         // Bun runs this hook before the file's own `afterEach`, which puts real timers back, so a
         // row its limit abandoned on the test's clock (`onPassClock`) reaches it with fake timers
@@ -17345,7 +17050,7 @@ console.log(JSON.stringify(args));
           }
           rmSync(directory, { recursive: true, force: true });
         }
-      }, 60_000);
+      });
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -17378,7 +17083,10 @@ console.log(JSON.stringify(args));
        * waiting out its limit.
        */
       const commandRunning = async (work: string, replies: readonly unknown[], what: string) => {
-        await until(() => existsSync(join(work, "running")) || replies.length > 0, what);
+        await until(
+          what,
+          rowProbe(() => existsSync(join(work, "running")) || replies.length > 0)
+        );
         expect(replies).toEqual([]);
       };
 
@@ -17486,10 +17194,10 @@ console.log(JSON.stringify(args));
         // Taken, with no turn awaited: the host wrote no message for the line, and the record is
         // there all the same.
         await until(
-          () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-ran"),
-          "the shell command's message to be recorded as taken"
+          "the shell command's message to be recorded as taken",
+          rowProbe(() => ledgerRecords(fixture.entries).includes("dispatch-shell-command-ran"))
         );
-      }, 200_000);
+      });
 
       // A host busy with a turn as the command ends queues the agent's copy for its next prompt
       // and fires `message_start` and `message_end` for it then (dispatch://INFRA-5271 review).
@@ -17518,12 +17226,8 @@ console.log(JSON.stringify(args));
           ...LOCAL_ENVOY_NOTICE,
           dispatchMessageId: DIRECT_MESSAGE_ID,
         });
-        // A hang guard: what can hang is the shell session's boot or its real `printf`. Worst
-        // measured cost: 8 837 ms in envoy.test.ts run whole at the 96 rung in the Job
-        // infra-1580-wfb-j9gmw of the cluster's `builds` namespace, two CPUs and 8 GiB (139 busy
-        // loops, at which row A's runs took 39.1 s against the calibration's 31.2 s), at cb1c237f.
-        // Main's 20_000 is 2.3 times that, so this takes 60_000, 6.8 times it.
-      }, 60_000);
+        // What can hang is the shell session's boot or its real `printf`.
+      });
 
       test("runs it in the directory the session's context names", async () => {
         const { agent, delivered, replied, replies, work } = await bootShellSession(
@@ -17538,7 +17242,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: `!pwd -P\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
         });
-      }, 200_000);
+      });
 
       test("answers a command that printed nothing", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
@@ -17555,7 +17259,7 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: "!true\n\nThe command printed nothing.",
         });
-      }, 200_000);
+      });
 
       test("names a failing command's status in the frame and in the reply", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
@@ -17571,110 +17275,107 @@ console.log(JSON.stringify(args));
           "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
         expect(streamFrames()[0]?.message.parts).toEqual([{ text: answer, type: "text" }]);
         expect(replies[0]?.body).toMatchObject({ body: answer });
-      }, 200_000);
+      });
 
+      // The limit is the module's own timer, so the row holds it on Bun's fake clock from before
+      // the message is pushed, and judges it from both sides: once the command has printed and
+      // written its mark, the clock moves to 1 ms short of the limit and the command must still
+      // answer a ping, and only then does the clock move past the limit. A limit that fires early
+      // - at half of it, say - kills the command before that answer, and the row fails naming it.
+      // The message, Dispatch's answers and the command itself still run on the real event loop
+      // (`@legion/test-fixtures/fake-clock`). On the real clock a 1,000 ms limit decided this row:
+      // a shell that starts later than that is stopped before it has printed anything. The one
+      // wait's bound is the row's deadline, read before the clock is held.
       test("stops a command past its limit and says when, keeping what it printed", async () => {
-        // The command writes its pid first, for the describe's `afterEach`, which kills its group.
-        // It then prints, marks that it printed, and answers each `ping` file the row writes in
-        // its directory with a `pong` file until it is stopped.
-        const command = [
-          "echo $$ > pid && printf early && : > printed",
-          "while :; do if [ -f ping ]; then rm -f ping; : > pong; fi; sleep 0.01; done",
-        ].join(" && ");
-        const { agent, delivered, replies, work } = await bootShellSession(
-          "shell-command-stopped",
-          {
-            accept: () => ({ accepted: true, body: `!${command}` }),
-            limitMs: 1_000,
-          }
-        );
-
-        // The limit is this process's own timer, so it runs on the test's clock (`onPassClock`),
-        // held until the shell has printed: on the real clock a shell slow enough to start, on a
-        // loaded host, was stopped before it printed, and the row read "printed nothing". Held,
-        // the limit ends the command only once its `printed` file says the output is in the pipe.
-        const stoppedAfterMs = await onPassClock(async (clock) => {
-          const spawnedAt = clock.now();
+        const command =
+          "!printf early; : > printed;" +
+          " while :; do if [ -f ping ]; then rm -f ping; : > pong; fi; sleep 0.01; done";
+        const { agent, replies, work } = await bootShellSession("shell-command-stopped", {
+          accept: () => ({ accepted: true, body: command }),
+          limitMs: 1_000,
+        });
+        const boundMs = Math.floor(timeLeft());
+        const moments = [
+          "the command's mark that it printed",
+          "the command's answer to a ping 1 ms short of its limit",
+        ];
+        let taken = 0;
+        jest.useFakeTimers();
+        try {
           agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-          // The shell is a real subprocess, whose start no count of turns measures, so the row
-          // waits for its `printed` file with the clock held and no bound of its own (`wait`): a
-          // bound on turns would race the shell as the old limit did. The row's 200_000 is the
-          // hang guard for a shell that neither prints nor ends, a defect. A shell that ends first,
-          // by its exit code or a signal, is answered, and that answer ends the wait too. The wait
-          // throws once that limit abandons the row, and the rows after it start on real timers
-          // (the file's `beforeEach`), so they inherit neither a spinning wait nor a fake clock.
-          await clock.wait(
-            "the shell's printed file",
-            () => existsSync(join(work, "printed")) || replies.length > 0
-          );
-          // The shell's own work moved no clock, and the command is still running.
-          expect(clock.now()).toBe(spawnedAt);
-          expect(replies).toHaveLength(0);
-          // One step short of the limit the command still runs, which it shows by answering a
-          // ping with its `pong` file. A command stopped early writes no `pong` and is answered
-          // instead, and that answer ends the wait too. Both the `pong` and the answer come from
-          // a real subprocess, whose speed no count of turns measures, so the wait has no bound
-          // of its own (`wait`). At the limit the command is stopped. The reply's own message
-          // names the configured limit, so the test's clock at the reply is what says when the
-          // stop came.
-          await clock.advance(999);
-          writeFileSync(join(work, "ping"), "");
-          await clock.wait(
-            "the command's answer to a ping 1 ms short of its limit",
-            () => existsSync(join(work, "pong")) || replies.length > 0
-          );
-          expect(replies).toHaveLength(0);
-          await clock.advance(1);
-          // The reply waits on the stopped shell's end, a real subprocess's too, so with no bound
-          // of its own either.
-          await clock.wait("the reply", () => replies.length > 0);
-          await clock.run("the delivery", delivered(1));
-          return clock.now() - spawnedAt;
-        });
+          await turnsUntil(() => replies.length > 0, "the reply to the command", {
+            boundMs,
+            state: () => `waiting for ${moments[taken] ?? "the reply after its limit"}`,
+            each: () => {
+              if (taken === 0 && existsSync(join(work, "printed"))) {
+                taken = 1;
+                jest.advanceTimersByTime(999);
+                writeFileSync(join(work, "ping"), "");
+              } else if (taken === 1 && existsSync(join(work, "pong"))) {
+                taken = 2;
+                jest.advanceTimersByTime(1);
+              }
+            },
+          });
+        } finally {
+          // A wait that failed leaves the command running: its held limit ends it.
+          if (replies.length === 0) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
-        expect(stoppedAfterMs).toBe(1_000);
+        if (taken < moments.length) {
+          throw new Error(
+            `the command was answered before ${moments[taken]}: ${Bun.inspect(replies[0]?.body)}`
+          );
+        }
         expect(replies[0]?.body).toMatchObject({
-          body: `!${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
+          body: `${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
         });
-      }, 200_000);
+      });
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
       // second message is taken while the first command still runs. The first command's limit is
-      // held on the test's clock (`onPassClock`) until the second has been answered, so the first
-      // is still running then however late the second is taken; the clock then moves to the
-      // limit, and the first is answered as stopped. On the real clock a 1,000 ms limit could end
-      // the first command before the second was taken.
+      // held on Bun's fake clock until the second has been answered, so the first is still running
+      // then however late the second is taken; the clock then moves to the limit, and the first is
+      // answered as stopped. On the real clock a 1,000 ms limit could end the first command before
+      // the second was taken.
       test("answers a second command naming the one still running", async () => {
         const { agent, replies } = await bootShellSession("shell-command-busy", {
-          accept: (count) => ({
-            accepted: true,
-            body: count === 1 ? "!echo $$ > pid && sleep 600" : "!printf hi",
-          }),
+          accept: (count) => ({ accepted: true, body: count === 1 ? "!sleep 600" : "!printf hi" }),
           limitMs: 1_000,
         });
-        await onPassClock(async (clock) => {
+        const boundMs = Math.floor(timeLeft());
+        let limited = false;
+        jest.useFakeTimers();
+        try {
           agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
           agent.push(
             directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
           );
-          // The first command is a real shell, whose start no count of turns measures, so each
-          // wait has no bound of its own (`wait`); the row's 200_000 is the hang guard.
-          await clock.wait("the reply to the second command", () =>
-            replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))
-          );
-          await clock.advance(1_000);
-          await clock.wait("the reply to the first command", () => replies.length >= 2);
-        });
+          await turnsUntil(() => replies.length >= 2, "the replies to both commands", {
+            boundMs,
+            state: () => (limited ? "the first's limit had passed" : "the second had no reply"),
+            each: () => {
+              if (limited || !replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))) return;
+              limited = true;
+              jest.advanceTimersByTime(1_000);
+            },
+          });
+        } finally {
+          // A wait that failed leaves the first command running: its held limit ends it.
+          if (replies.length < 2) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
-          body: "!printf hi\n\nThe command was not run: this session is still running !echo $$ > pid && sleep 600.",
+          body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
         });
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toMatchObject(
           {
-            body: "!echo $$ > pid && sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
+            body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
-      }, 200_000);
+      });
 
       test("cuts output past the bound and says so", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession("shell-command-cut", {
@@ -17692,7 +17393,7 @@ console.log(JSON.stringify(args));
             )
           ),
         });
-      }, 200_000);
+      });
 
       // The mark is one `!`, and the rest is the command whatever it starts with.
       test("runs the rest of the line, and answers with the shell's own failure", async () => {
@@ -17712,7 +17413,7 @@ console.log(JSON.stringify(args));
         });
         // Nothing is hidden from the model: it reads the same report.
         expect(sends[0]?.content).toContain("The command ended with exit status 127.");
-      }, 200_000);
+      });
 
       // Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER),
       // so output that holds one would leave the person with no answer at all and their message
@@ -17732,10 +17433,10 @@ console.log(JSON.stringify(args));
         expect(JSON.stringify(replies[0]?.body)).not.toContain("\\u0000");
         expect(JSON.stringify(streamFrames()[0]?.message.parts)).not.toContain("\\u0000");
         await until(
-          () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-nul"),
-          "the shell command's message to be recorded as taken"
+          "the shell command's message to be recorded as taken",
+          rowProbe(() => ledgerRecords(fixture.entries).includes("dispatch-shell-command-nul"))
         );
-      }, 200_000);
+      });
 
       // The host can refuse the agent's copy (`pi.sendMessage` throws on a host mid-switch), and
       // the person's message must be taken all the same: the command has run, and a redelivery
@@ -17751,10 +17452,12 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-send-throws"));
 
         await until(
-          () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-send-throws"),
-          "the shell command's message to be recorded as taken though the send threw"
+          "the shell command's message to be recorded as taken though the send threw",
+          rowProbe(() =>
+            ledgerRecords(fixture.entries).includes("dispatch-shell-command-send-throws")
+          )
         );
-      }, 200_000);
+      });
 
       // `/new` and `/resume` fire `session_switch`, not `session_shutdown`, so neither stops a
       // running command: a command asked of one session can end with the host on another. The
@@ -17807,7 +17510,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 200_000);
+      });
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -17856,7 +17559,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 200_000);
+      });
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -17918,7 +17621,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 200_000);
+      });
 
       // The same move, made inside the Dispatch accept the delivery awaits: a `/new` whose
       // `session_switch` lands there has moved the plugin's own `sessionID`, and its working
@@ -17983,7 +17686,7 @@ console.log(JSON.stringify(args));
             .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
             .filter((frame) => frame.kind === "message")
         ).toEqual([]);
-      }, 200_000);
+      });
 
       // The two windows before the capture. Every row above moves the host after the session
       // the message was addressed to has been read off the live id; these two move it before,
@@ -18087,8 +17790,10 @@ console.log(JSON.stringify(args));
             inbox
           );
           await until(
-            () => warnings.some((warning) => warning.includes("the session it names is closed")),
-            "the delivery the moved host did not take to be reported"
+            "the delivery the moved host did not take to be reported",
+            rowProbe(() =>
+              warnings.some((warning) => warning.includes("the session it names is closed"))
+            )
           );
           // The acknowledgement went out and started the move, so the window this row is about
           // is the one the move landed in.
@@ -18125,7 +17830,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 200_000);
+      });
 
       // The second window: the read of the message whole. A person's message whose body the
       // event carried in part is read through Dispatch before anything is captured, and a
@@ -18167,8 +17872,10 @@ console.log(JSON.stringify(args));
             })
           );
           await until(
-            () => warnings.some((warning) => warning.includes("the session it names is closed")),
-            "the delivery the moved host did not take to be reported"
+            "the delivery the moved host did not take to be reported",
+            rowProbe(() =>
+              warnings.some((warning) => warning.includes("the session it names is closed"))
+            )
           );
           // The read happened and the move was made inside it, so the window this row is about
           // is the one the move landed in.
@@ -18195,7 +17902,7 @@ console.log(JSON.stringify(args));
         } finally {
           stopSink();
         }
-      }, 200_000);
+      });
 
       // The last window of the four: the command has ended and its reply has not gone out. The
       // host is handed the agent's copy there, and this row makes it leave at that moment - its
@@ -18273,7 +17980,7 @@ console.log(JSON.stringify(args));
             .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
             .filter((frame) => frame.kind === "message")
         ).toEqual([]);
-      }, 200_000);
+      });
 
       // The same window, read on the credential rather than on the actor: the row above holds
       // the session the reply names, and this one the session it is signed as.
@@ -18293,8 +18000,13 @@ console.log(JSON.stringify(args));
       // resolved for the session open when it goes out (`currentSessionID`) would be signed
       // with the token minted for ses_after_shell, and the person's own message would be
       // answered under the credential of the conversation they never wrote to.
+      //
+      // The row waits for its reply up to its own deadline rather than under a 20 s guard of its
+      // own: a shell that starts later than that ran the command past the guard, bun failed the
+      // row and started the next while this row's session still ran, and the command then
+      // answered into the row below, under the same session id - a third trade on that row's
+      // broker, or a second reply presented to it - and this row's cleanup never ran.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
-        const ownRow = rowCheck();
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
         // A pod's projected service-account token, which is the identity this machine trades.
@@ -18320,112 +18032,102 @@ console.log(JSON.stringify(args));
           process.env.ENVOY_TOKEN = LISTENER_TOKEN;
           let live = "ses_delivery";
           let switched: Promise<unknown> | undefined;
-          // The accept is bounded by a timer of this process (`USER_TURN_ACCEPT_TIMEOUT_MS`,
-          // 10 s, armed as the delivery makes the accept's client), which the broker's trades
-          // and the shell's run must beat: the row runs on the test's clock (`onPassClock`) from
-          // the boot on, where that timer never moves, and the trades and the command run on real
-          // turns. On the real clock a host slow enough to stretch them past 10 s failed the row.
-          await onPassClock(async (clock) => {
-            const { accepts, agent, fixture, replies } = await clock.waitOn(
-              "the boot",
-              bootShellSession("shell-command-broker-signed-reply", {
-                accept: () => ({ accepted: true, body: "!printf hi" }),
-                beforeSend: (content) => {
-                  // The report, not a notice the move itself sends: the move is made once, and
-                  // the cards the switch sends afterwards leave it alone.
-                  if (switched !== undefined) return;
-                  if (!String(content).includes("A person ran this shell command")) return;
-                  // The host moves its own id first and fires the event after, as it does on a
-                  // `/new`: from here the session the message was addressed to is open nowhere,
-                  // and `DISPATCH_SESSION_ID` names the conversation the host moved to.
-                  live = "ses_after_shell";
-                  switched = fixture.handlers.get("session_switch")?.(
-                    { reason: "new" },
-                    sessionContext("ses_after_shell")
-                  );
-                },
-                dispatch: async (url, init) => {
-                  if (url.origin !== "http://broker.test") return undefined;
-                  // The broker's token endpoint: the trade's form names the session its token is
-                  // written under, and the broker keeps the token it mints against that session.
-                  const session =
-                    new URLSearchParams(await new Response(init?.body ?? null).text()).get(
-                      "session"
-                    ) ?? "";
-                  traded.push(session);
-                  const token = fixtureSecret("broker");
-                  minted.set(token, session);
-                  return Response.json({
-                    access_token: token,
-                    expires_in: 600,
-                    issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-                    token_type: "DPoP",
-                  });
-                },
-                dispatchCredential: "broker",
-                hostSessionID: () => live,
-              })
-            );
-            // What each Dispatch request was signed with: the accept keeps its own in `accepts`,
-            // and the reply's reaches nothing the fixture records.
-            const answered = rowFetch();
-            globalThis.fetch = async (input, init) => {
-              const url = new URL(input.toString());
-              if (url.host === "dispatch.test") {
-                presented.push({
-                  signedAs: sessionSignedAs(
-                    minted,
-                    new Headers(init?.headers).get("Authorization")
-                  ),
-                  path: url.pathname,
+          const { accepts, agent, fixture, replies } = await bootShellSession(
+            "shell-command-broker-signed-reply",
+            {
+              accept: () => ({ accepted: true, body: "!printf hi" }),
+              beforeSend: (content) => {
+                // The report, not a notice the move itself sends: the move is made once, and
+                // the cards the switch sends afterwards leave it alone.
+                if (switched !== undefined) return;
+                if (!String(content).includes("A person ran this shell command")) return;
+                // The host moves its own id first and fires the event after, as it does on a
+                // `/new`: from here the session the message was addressed to is open nowhere,
+                // and `DISPATCH_SESSION_ID` names the conversation the host moved to.
+                live = "ses_after_shell";
+                switched = fixture.handlers.get("session_switch")?.(
+                  { reason: "new" },
+                  sessionContext("ses_after_shell")
+                );
+              },
+              dispatch: async (url, init) => {
+                if (url.origin !== "http://broker.test") return undefined;
+                // The broker's token endpoint: the trade's form names the session its token is
+                // written under, and the broker keeps the token it mints against that session.
+                const session =
+                  new URLSearchParams(await new Response(init?.body ?? null).text()).get(
+                    "session"
+                  ) ?? "";
+                traded.push(session);
+                const token = fixtureSecret("broker");
+                minted.set(token, session);
+                return Response.json({
+                  access_token: token,
+                  expires_in: 600,
+                  issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                  token_type: "DPoP",
                 });
-              }
-              return await answered(input, init);
-            };
-
-            agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
-            // The command is a real shell, whose run no count of turns measures (`wait`).
-            await clock.wait("the reply", () => replies.length > 0);
-            // The hand-over happened, so the move was made in the window this row is about and
-            // not after the reply had gone out.
-            expect(switched).toBeDefined();
-            await clock.run("the switch", switched);
-
-            // One reply, on the person's own message, answering as the session that message was
-            // addressed to and carrying what the command printed.
-            expect(replies).toEqual([
-              {
-                body: {
-                  actor: { id: "ses_delivery", kind: "session" },
-                  attempt: 1,
-                  body: "!printf hi\n\n```\nhi\n```",
-                },
-                path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
               },
-            ]);
-            // And signed as that session: the reply and the accept both presented the token the
-            // broker minted for ses_delivery, and the broker was asked for no other session.
-            expect(presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
-              {
-                signedAs: "ses_delivery",
-                path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+              dispatchCredential: "broker",
+              hostSessionID: () => live,
+            }
+          );
+          // What each Dispatch request was signed with: the accept keeps its own in `accepts`,
+          // and the reply's reaches nothing the fixture records.
+          const answered = rowFetch();
+          globalThis.fetch = async (input, init) => {
+            const url = new URL(input.toString());
+            if (url.host === "dispatch.test") {
+              presented.push({
+                signedAs: sessionSignedAs(minted, new Headers(init?.headers).get("Authorization")),
+                path: url.pathname,
+              });
+            }
+            return await answered(input, init);
+          };
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
+          await until(
+            "the reply to the command",
+            rowProbe(() => replies.length >= 1)
+          );
+          // The hand-over happened, so the move was made in the window this row is about and
+          // not after the reply had gone out.
+          expect(switched).toBeDefined();
+          await switched;
+
+          // One reply, on the person's own message, answering as the session that message was
+          // addressed to and carrying what the command printed.
+          expect(replies).toEqual([
+            {
+              body: {
+                actor: { id: "ses_delivery", kind: "session" },
+                attempt: 1,
+                body: "!printf hi\n\n```\nhi\n```",
               },
-            ]);
-            expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
-              "ses_delivery",
-            ]);
-            // One trade, for this session: a reply under way when the move's pass runs keeps the
-            // client the accept traded for (`underWay`), so the pass forgets it only after.
-            expect(traded).toEqual(["ses_delivery"]);
-          });
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // And signed as that session: the reply and the accept both presented the token the
+          // broker minted for ses_delivery, and the broker was asked for no other session.
+          expect(presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              signedAs: "ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
+            "ses_delivery",
+          ]);
+          // One trade, for this session: a reply under way when the move's pass runs keeps the
+          // client the accept traded for (`underWay`), so the pass forgets it only after.
+          expect(traded).toEqual(["ses_delivery"]);
         } finally {
-          if (ownRow()) {
-            restore();
-            // A token this process traded is held under its session for the life of the process.
-            forgetBrokerClients();
-          }
+          restore();
+          // A token this process traded is held under its session for the life of the process.
+          forgetBrokerClients();
         }
-      }, 200_000);
+      });
 
       // The window between the accept and the reply: the host leaves while the command runs, and
       // the move's pass runs to its end before the command does. The session the message was
@@ -18472,7 +18174,10 @@ console.log(JSON.stringify(args));
           agent.push(directDispatchEnvelope("steer", "shell-command-broker-left-while-running"));
           // The command is running: the host leaves, and the move's pass runs to its end, before
           // the command is let go.
-          await until(() => existsSync(started), "the command to be running");
+          await until(
+            "the command to be running",
+            rowProbe(() => existsSync(started))
+          );
           await moveHost(fixture, other);
           writeFileSync(go, "");
           await replied(1);
@@ -18507,7 +18212,7 @@ console.log(JSON.stringify(args));
           stopSink();
           broker.stop();
         }
-      }, 30_000);
+      });
 
       // The same credential, on an accept Dispatch answers twice. The row above moves the host
       // after its one accept attempt has gone out, so that attempt traded before the move
@@ -18599,7 +18304,7 @@ console.log(JSON.stringify(args));
         } finally {
           broker.stop();
         }
-      }, 200_000);
+      });
 
       /** The sentence a report carries when the agent of the session the command was asked of
        *  was handed no copy of it (`shellCommandWithheldReport` in `src/typed-shell.ts`). */
@@ -18661,7 +18366,7 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
-      }, 200_000);
+      });
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
@@ -18703,7 +18408,7 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
-      }, 200_000);
+      });
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -18729,11 +18434,14 @@ console.log(JSON.stringify(args));
         // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
         // the group, can answer EPERM.
         let written = "";
-        await until(() => {
-          written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
-          // A command that ends before it writes its pid is answered, which ends the wait too.
-          return /^\d+\n$/u.test(written) || replies.length > 0;
-        }, "the command to write its pid");
+        await until(
+          "the command to write its pid",
+          rowProbe(() => {
+            written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+            // A command that ends before it writes its pid is answered, which ends the wait too.
+            return /^\d+\n$/u.test(written) || replies.length > 0;
+          })
+        );
         expect(replies).toEqual([]);
         const pid = Number(written);
         expect(pid).toBeGreaterThan(0);
@@ -18749,8 +18457,8 @@ console.log(JSON.stringify(args));
           body: "!echo $$ > pid && exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
         // What can hang here is also a shutdown that does not end the command, whose reply then
-        // never arrives: the row's 200_000, its hang guard.
-      }, 200_000);
+        // never arrives, which the command's guard ends.
+      });
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
@@ -18780,7 +18488,7 @@ console.log(JSON.stringify(args));
         });
         expect(sends).toEqual([]);
         expect(streamFrames()).toEqual([]);
-      }, 200_000);
+      });
 
       test("a BTW is answered by the model and runs no command", async () => {
         const { agent, replied, replies, sends } = await bootShellSession("shell-command-btw", {
@@ -18793,7 +18501,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({ body: "The model's answer." });
         expect(streamFrames()).toEqual([]);
         expect(sends).toEqual([]);
-      }, 200_000);
+      });
 
       test("a broadcast keeps its card and runs no command", async () => {
         const { agent, delivered, replies, sends } =
@@ -18813,7 +18521,7 @@ console.log(JSON.stringify(args));
         });
         expect(streamFrames()).toEqual([]);
         expect(replies).toEqual([]);
-      }, 200_000);
+      });
 
       // The plugin's one input handler passes on every line whose source is not `extension`, so a
       // line typed at the session's own terminal keeps the host's own shell mode.
@@ -18827,7 +18535,7 @@ console.log(JSON.stringify(args));
         ).toBeUndefined();
         expect(streamFrames()).toEqual([]);
         expect(fixture.deliveries).toEqual([]);
-      }, 200_000);
+      });
 
       // The negative control: the same line without the mark is a prompt, and runs nothing.
       test("runs nothing for a line that does not start with the mark", async () => {
@@ -18846,7 +18554,7 @@ console.log(JSON.stringify(args));
         });
         expect(streamFrames()).toEqual([]);
         expect(replies).toEqual([]);
-      }, 200_000);
+      });
     });
 
     // The windows the `!` rows above hold, on the two other branches of a delivery: a typed
@@ -18903,10 +18611,12 @@ console.log(JSON.stringify(args));
 
           agent.push(frame);
           await until(
-            () =>
-              accepts.length > 0 ||
-              warnings.some((warning) => warning.includes("the session it names is closed")),
-            "the delivery to be accepted or reported as not taken"
+            "the delivery to be accepted or reported as not taken",
+            rowProbe(
+              () =>
+                accepts.length > 0 ||
+                warnings.some((warning) => warning.includes("the session it names is closed"))
+            )
           );
 
           // Nothing was accepted, so Dispatch still holds the attempt to send; nothing reached
@@ -18924,11 +18634,14 @@ console.log(JSON.stringify(args));
           // is taken: accepted as that session, and run as the person typed it.
           await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
           await until(
-            () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
-            "the resumed session's agent subject to be subscribed again"
+            "the resumed session's agent subject to be subscribed again",
+            rowProbe(() => natsState.controls.get("notifications.agent.ses_delivery") !== agent)
           );
           natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
-          await until(() => inputs.length === 1, "the person's line to reach the host");
+          await until(
+            "the person's line to reach the host",
+            rowProbe(() => inputs.length === 1)
+          );
 
           expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
           expect(inputs).toEqual([
@@ -19028,10 +18741,12 @@ console.log(JSON.stringify(args));
 
             agent.push(frame);
             await until(
-              () =>
-                carding().length > 0 ||
-                warnings.some((warning) => warning.includes("the session it names is closed")),
-              "the delivery to be carded or reported as not taken"
+              "the delivery to be carded or reported as not taken",
+              rowProbe(
+                () =>
+                  carding().length > 0 ||
+                  warnings.some((warning) => warning.includes("the session it names is closed"))
+              )
             );
 
             expect(moved).toBe(true);
@@ -19059,13 +18774,13 @@ console.log(JSON.stringify(args));
             // frame this session was shown.
             await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
             await until(
-              () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
-              "the resumed session's agent subject to be subscribed again"
+              "the resumed session's agent subject to be subscribed again",
+              rowProbe(() => natsState.controls.get("notifications.agent.ses_delivery") !== agent)
             );
             natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
             await until(
-              () => carding().length === 1,
-              "the card to reach the session the frame names"
+              "the card to reach the session the frame names",
+              rowProbe(() => carding().length === 1)
             );
 
             expect(accepts).toEqual([]);
@@ -19216,15 +18931,11 @@ console.log(JSON.stringify(args));
           stopSink();
           broker.stop();
         }
-        // A hang guard, not a bound on work: what can hang is the boot, which loads the
-        // extension's module (`waitOn`), and the wait for the refusal (`clock.wait`). No count of
-        // turns measures either: the module load is the runtime's work, and each of the refusal's
-        // two trades reads the pod's token from disk, real I/O.
-        // Worst measured cost: 16 495.61 ms over 20 runs at the 96 rung in the Job
-        // infra-1580-krows-k1-bwwd4 of the cluster's `builds` namespace, two CPUs and 8 GiB (177
-        // busy loops, at which row A's runs took 37.7 s against the calibration's 31.2 s),
-        // 2026-11-22T07:36Z to 07:50Z. 120_000 is 7.3 times the worst.
-      }, 120_000);
+        // What can hang is the boot, which loads the extension's module (`waitOn`), and the wait
+        // for the refusal (`clock.wait`). No count of turns measures either: the module load is
+        // the runtime's work, and each of the refusal's two trades reads the pod's token from
+        // disk, real I/O.
+      });
 
       // The same window on the card branch: the accept moves the host and Dispatch then refuses
       // it, so the delivery is a card and `sendCard` would hand it to the conversation the host
@@ -19255,10 +18966,12 @@ console.log(JSON.stringify(args));
 
           agent.push(frame);
           await until(
-            () =>
-              carded().length > 0 ||
-              warnings.some((warning) => warning.includes("a card was not shown here")),
-            "the card to be shown or reported as not shown"
+            "the card to be shown or reported as not shown",
+            rowProbe(
+              () =>
+                carded().length > 0 ||
+                warnings.some((warning) => warning.includes("a card was not shown here"))
+            )
           );
 
           expect(accepts).toHaveLength(1);
@@ -19271,13 +18984,13 @@ console.log(JSON.stringify(args));
           // this session was shown.
           await fixture.handlers.get("session_switch")?.({ reason: "resume" }, context);
           await until(
-            () => natsState.controls.get("notifications.agent.ses_delivery") !== agent,
-            "the resumed session's agent subject to be subscribed again"
+            "the resumed session's agent subject to be subscribed again",
+            rowProbe(() => natsState.controls.get("notifications.agent.ses_delivery") !== agent)
           );
           natsState.controls.get("notifications.agent.ses_delivery")?.push(frame);
           await until(
-            () => carded().length === 1,
-            "the card to reach the session the person wrote to"
+            "the card to reach the session the person wrote to",
+            rowProbe(() => carded().length === 1)
           );
 
           // Dispatch recorded the attempt above, so the copy is a card and asks for no second
@@ -19414,16 +19127,10 @@ console.log(JSON.stringify(args));
           stopSink();
           broker.stop();
         }
-        // A hang guard, not a bound on work: what can hang is the boot, which loads the
-        // extension's module (`waitOn`), and the wait for the answer (`clock.wait`). No count of
-        // turns measures either: the module load is the runtime's work, and the answer's trade
-        // reads the pod's token from disk, real I/O.
-        // Worst measured cost: 14 205.94 ms over 20 runs at the 96 rung in the Job
-        // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224
-        // busy loops, at which row A's runs took 37.5 s against the calibration's 31.2 s),
-        // 2026-11-22T10:36Z to 10:50Z, and 13 304.07 ms in the Job infra-1580-krows-k1-bwwd4 (177
-        // busy loops, row A at 37.7 s), 2026-11-22T07:52Z to 08:10Z. 90_000 is 6.3 times the worst.
-      }, 90_000);
+        // What can hang is the boot, which loads the extension's module (`waitOn`), and the wait
+        // for the answer (`clock.wait`). No count of turns measures either: the module load is the
+        // runtime's work, and the answer's trade reads the pod's token from disk, real I/O.
+      });
 
       // A BTW's whole body is read inside the delivery, and its side turn and answer run off the
       // relay (`offWorker`) after the delivery has returned. The host leaves inside the side turn,
@@ -20097,14 +19804,9 @@ console.log(JSON.stringify(args));
       });
 
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
-      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. Worst measured cost: 28 998.26 ms
-      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
-      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
-      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T19:05Z to 20:04Z;
-      // 8 793.18 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 180_000 is 6.2 times
-      // the worst.
-    }, 180_000);
+      // What can hang is the session's boot, or a handler that waits on a timer of the test's
+      // clock, which moves only as the row moves it.
+    });
 
     // The reading a turn's last message is owed is held, not dropped: a turn whose last message
     // ends inside the interval - a short reply, a quick tool round - is the last reading of that
@@ -20134,14 +19836,9 @@ console.log(JSON.stringify(args));
         jest.advanceTimersByTime(50);
       });
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
-      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. Worst measured cost: 58 794.68 ms
-      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
-      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
-      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T20:35Z to 21:07Z;
-      // 8 501.09 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 360_000 is 6.1 times
-      // the worst.
-    }, 360_000);
+      // What can hang is the session's boot, or a handler that waits on a timer of the test's
+      // clock, which moves only as the row moves it.
+    });
 
     // No older reading may follow a newer one. The trailing frame is due at the interval's end,
     // and a message that ends after that time but before the timer's callback runs publishes at
@@ -20178,14 +19875,9 @@ console.log(JSON.stringify(args));
       });
       // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
-      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. Worst measured cost: 39 504.04 ms
-      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
-      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
-      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T21:44Z to 22:34Z;
-      // 18 701.39 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 240_000 is 6.1 times
-      // the worst.
-    }, 240_000);
+      // What can hang is the session's boot, or a handler that waits on a timer of the test's
+      // clock, which moves only as the row moves it.
+    });
 
     // A host that reports no window is a session the viewer must draw no ring for, whatever it
     // drew before: a model with no window, or a runner with no breakdown to answer from.
@@ -20263,13 +19955,8 @@ console.log(JSON.stringify(args));
         // The very frame the viewer was sent, its `seq` included.
         expect(replayed.at(-1)).toEqual(publishedContext().at(-1));
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the session's boot,
-      // awaited on the real clock with no bound of the row's own; every wait on the test's clock
-      // ends by its own count of turns (`onPassClock`). Worst measured cost: 8 197.65 ms over 20
-      // runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds`
-      // namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against
-      // the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 30.5 times
-      // that.
+      // What can hang is the session's boot, awaited on the real clock with no bound of its own;
+      // every wait on the test's clock ends by its own count of turns (`onPassClock`).
     });
 
     // The negative control of the check: a session context with no `getContextUsage` publishes no
@@ -20405,10 +20092,12 @@ console.log(JSON.stringify(args));
             JSON.stringify(delivery.content).includes(address)
           );
         await until(
-          () =>
-            carded().length > 0 ||
-            warnings.some((warning) => warning.includes("a card was not shown here")),
-          "the card to be shown or reported as not shown"
+          "the card to be shown or reported as not shown",
+          rowProbe(
+            () =>
+              carded().length > 0 ||
+              warnings.some((warning) => warning.includes("a card was not shown here"))
+          )
         );
 
         // The switch's own notice is the only delivery: nothing of the person's message reached
@@ -20498,10 +20187,12 @@ console.log(JSON.stringify(args));
               JSON.stringify(delivery.content).includes(address)
             );
           await until(
-            () =>
-              carded().length > 0 ||
-              warnings.some((warning) => warning.includes("a card was not shown here")),
-            "the card to be shown or reported as not shown"
+            "the card to be shown or reported as not shown",
+            rowProbe(
+              () =>
+                carded().length > 0 ||
+                warnings.some((warning) => warning.includes("a card was not shown here"))
+            )
           );
 
           // The card, picture and all, is the moved-to conversation's for the comment, and
@@ -20570,7 +20261,10 @@ console.log(JSON.stringify(args));
         fixture.deliveries.filter((delivery) =>
           JSON.stringify(delivery.content).includes(`dispatch-${named}`)
         );
-      await until(() => carded(slug).length > 0, "the comment's card");
+      await until(
+        "the comment's card",
+        rowProbe(() => carded(slug).length > 0)
+      );
       expect(carded(slug).flatMap((card) => card.content as unknown[])).toEqual([
         { type: "text", text: expect.stringContaining(address) },
         image,
@@ -20608,8 +20302,8 @@ console.log(JSON.stringify(args));
       movedRelay.push(storedComment(unshown, "No picture in this one"));
 
       await until(
-        () => carded(unshown).length > 0,
-        "the stored comment that conversation was never shown"
+        "the stored comment that conversation was never shown",
+        rowProbe(() => carded(unshown).length > 0)
       );
       await settle();
 
@@ -20647,7 +20341,10 @@ console.log(JSON.stringify(args));
         );
       // The host's own write of the card, which is what records the frame.
       const write = async (slug: string): Promise<void> => {
-        await until(() => carded(slug).length > 0, `the card of ${slug}`);
+        await until(
+          `the card of ${slug}`,
+          rowProbe(() => carded(slug).length > 0)
+        );
         const card = carded(slug)[0];
         if (card === undefined) throw new Error("the card was not handed");
         const { options: _options, ...written } = card;
@@ -20662,7 +20359,10 @@ console.log(JSON.stringify(args));
       expect(recorded()).toContain(`dispatch-${first}`);
 
       agent.push(commentNotification(second, `Look:\n\n![shot.png](${addressOf(second)})`));
-      await until(() => carded(second).length > 0, "the second comment's card");
+      await until(
+        "the second comment's card",
+        rowProbe(() => carded(second).length > 0)
+      );
       // The host is on another conversation from here on, with no handler fired for the move, so
       // what it writes from here on goes into that conversation's file.
       live = "ses_after_write";
@@ -20713,10 +20413,12 @@ console.log(JSON.stringify(args));
             JSON.stringify(delivery.content).includes(address)
           );
         await until(
-          () =>
-            carded().length > 0 ||
-            warnings.some((warning) => warning.includes("a card was not shown here")),
-          "the card to be shown or reported as not shown"
+          "the card to be shown or reported as not shown",
+          rowProbe(
+            () =>
+              carded().length > 0 ||
+              warnings.some((warning) => warning.includes("a card was not shown here"))
+          )
         );
 
         expect(carded()).toEqual([]);
@@ -21303,7 +21005,10 @@ console.log(JSON.stringify(args));
           `Look:\n\n![shot.png](${early})\n![kept.png](${kept})\n![late.png](${late})`
         )
       );
-      await until(() => fixture.deliveries.length >= 3, "the three cards");
+      await until(
+        "the three cards",
+        rowProbe(() => fixture.deliveries.length >= 3)
+      );
       await settle();
 
       // The ledger passed over every frame it holds; each handled attempt is a card with no accept.
@@ -23046,13 +22751,8 @@ console.log(JSON.stringify(args));
           await session.shutDown();
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
-      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
-      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
-      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
-      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
-      // package's 250 s is 14.4 times it.
+      // What can hang is the boot, a heartbeat's registration or the shutdown, should one wait on
+      // a timer, which the test's clock never runs here; the command's guard ends it.
     });
 
     test("the first registration waits on no reading, and the next carries its place", async () => {
@@ -23109,13 +22809,8 @@ console.log(JSON.stringify(args));
           await session.shutDown();
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
-      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
-      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
-      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
-      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
-      // package's 250 s is 14.4 times it.
+      // What can hang is the boot, a heartbeat's registration or the shutdown, should one wait on
+      // a timer, which the test's clock never runs here; the command's guard ends it.
     });
 
     test("a refused reading registers no place and clears the one it held", async () => {
@@ -23135,13 +22830,8 @@ console.log(JSON.stringify(args));
           await session.shutDown();
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
-      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
-      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
-      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
-      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
-      // package's 250 s is 14.4 times it.
+      // What can hang is the boot, a heartbeat's registration or the shutdown, should one wait on
+      // a timer, which the test's clock never runs here; the command's guard ends it.
     });
 
     test("a timed-out reading registers the last place read", async () => {
@@ -23161,13 +22851,8 @@ console.log(JSON.stringify(args));
           await session.shutDown();
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
-      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
-      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
-      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
-      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
-      // package's 250 s is 14.4 times it.
+      // What can hang is the boot, a heartbeat's registration or the shutdown, should one wait on
+      // a timer, which the test's clock never runs here; the command's guard ends it.
     });
 
     test("a reading that throws still registers the session, without a place", async () => {
@@ -23777,15 +23462,8 @@ console.log(JSON.stringify(args));
     } finally {
       if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Run row-filtered by `bun test` with no `--timeout`, so at bun's 5 s
-    // default, it failed 3 runs in 20 at the 96 rung. Worst measured cost: 21 492.85 ms over 20
-    // runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took 53.6 s against
-    // the calibration's 31.2 s), 2026-11-21T18:47Z to 19:04Z; 6 797.06 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T16:22Z to
-    // 16:42Z. 150_000 is 7.0 times the worst.
-  }, 150_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
   // start blocks the event loop as a fresh one does, and its pass also reads the interests the
@@ -23848,15 +23526,8 @@ console.log(JSON.stringify(args));
     } finally {
       if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Run row-filtered by `bun test` with no `--timeout`, so at bun's 5 s
-    // default, it failed 4 runs in 20 at the 96 rung. Worst measured cost: 15 482.87 ms over 20
-    // runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took 53.6 s against
-    // the calibration's 31.2 s), 2026-11-21T19:09Z to 19:22Z; 9 881.88 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T16:42Z to
-    // 17:01Z. 120_000 is 7.8 times the worst.
-  }, 120_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   // A pod whose first dial the hub closed registers on its next pass seconds later; without a word
   // that it receives again, the session reads the outage notice as its state for its life.
@@ -23898,8 +23569,10 @@ console.log(JSON.stringify(args));
       // The background retry's pass dials, opens the relay and registers.
       intervals.at(-1)?.();
       await until(
-        () => notifications.some((m) => m.includes("inbound messages reach this session again")),
-        "the restored notice"
+        "the restored notice",
+        rowProbe(() =>
+          notifications.some((m) => m.includes("inbound messages reach this session again"))
+        )
       );
       expect(warnings.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
       expect(
@@ -23965,7 +23638,10 @@ console.log(JSON.stringify(args));
         await natsState.connections[0]?.close();
         natsState.controls.get(relay)?.end();
         natsState.controls.get(control)?.end();
-        await until(() => natsState.failConnects < 99, "the relay's own redial");
+        await until(
+          "the relay's own redial",
+          rowProbe(() => natsState.failConnects < 99)
+        );
         await settle();
 
         // A registration sent outside a pass while the subject is missing - here the one a new
@@ -23989,10 +23665,12 @@ console.log(JSON.stringify(args));
         const beforeHeartbeat = natsState.failConnects;
         heartbeat();
         await until(
-          () =>
-            natsState.failConnects < beforeHeartbeat &&
-            notifications.some((m) => m.includes("registry heartbeat failed")),
-          "the heartbeat's dial and its failure"
+          "the heartbeat's dial and its failure",
+          rowProbe(
+            () =>
+              natsState.failConnects < beforeHeartbeat &&
+              notifications.some((m) => m.includes("registry heartbeat failed"))
+          )
         );
         await settle();
         for (const part of Object.values(told())) expect(part).toHaveLength(1);
@@ -24006,8 +23684,10 @@ console.log(JSON.stringify(args));
         natsState.failConnects = 0;
         heartbeat();
         await until(
-          () => notifications.some((m) => m.includes("inbound messages reach this session again")),
-          "the restored notice"
+          "the restored notice",
+          rowProbe(() =>
+            notifications.some((m) => m.includes("inbound messages reach this session again"))
+          )
         );
         await settle();
         expect(natsState.connectedNames).toHaveLength(2);
@@ -24022,8 +23702,8 @@ console.log(JSON.stringify(args));
           .get(`notifications.agent.${id}`)
           ?.push(forwardedRoleEnvelope("legion-controller", "after the relay came back", "back"));
         await until(
-          () => fixture.messages.some((m) => m.includes("after the relay came back")),
-          "the message relayed on the new connection"
+          "the message relayed on the new connection",
+          rowProbe(() => fixture.messages.some((m) => m.includes("after the relay came back")))
         );
       } finally {
         stopSink();
@@ -24058,14 +23738,17 @@ console.log(JSON.stringify(args));
 
         natsState.failSubscribes = 1;
         first?.end();
-        await until(() => natsState.failSubscribes === 0, "the control subject's own resubscribe");
+        await until(
+          "the control subject's own resubscribe",
+          rowProbe(() => natsState.failSubscribes === 0)
+        );
         await settle();
         expect(natsState.controls.get(control)).toBe(first);
 
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
         await until(
-          () => natsState.controls.get(control) !== first,
-          "the heartbeat's open of the control subject"
+          "the heartbeat's open of the control subject",
+          rowProbe(() => natsState.controls.get(control) !== first)
         );
         expect(natsState.controls.get(control)?.active()).toBe(true);
         expect(natsState.connectedNames).toHaveLength(1);
@@ -24207,13 +23890,9 @@ console.log(JSON.stringify(args));
         await session.stop();
       }
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
-    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
-    // 6 988.62 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 35.8
-    // times that.
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
@@ -24272,13 +23951,9 @@ console.log(JSON.stringify(args));
         await session.stop();
       }
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
-    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
-    // 7 321.18 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 34.1
-    // times that.
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
@@ -24330,12 +24005,9 @@ console.log(JSON.stringify(args));
         await session.stop();
       }
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
-    // ends by its own count of turns or steps (`onPassClock`). Worst measured cost: 7 715.69 ms
-    // over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against the
-    // calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 32.4 times that.
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("two opens of the live view's control subject that race each other take it once", async () => {
@@ -24390,13 +24062,9 @@ console.log(JSON.stringify(args));
         await session.stop();
       }
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
-    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
-    // 8 495.78 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
-    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 29.4
-    // times that.
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
@@ -24435,13 +24103,8 @@ console.log(JSON.stringify(args));
         }
       })
     );
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). Worst measured cost: 11 110.50 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace, two CPUs and 8 GiB (226 busy
-    // loops, at which row A's runs took 36.6 s against the calibration's 31.2 s), 2026-11-21T20:38Z
-    // to 20:54Z; 5 776.74 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
-    // of 2026-11-19 18:40Z, 2026-11-21T04:11Z to 04:25Z. 90_000 is 8.1 times the worst.
-  }, 90_000);
+    // Every wait above ends by its own count of turns (`onPassClock`).
+  });
 
   // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
   // of connections lists: the image's build-commit stamp, else a packed build's release version,
@@ -24517,15 +24180,9 @@ console.log(JSON.stringify(args));
         setNatsConnectForTests(natsStandInConnect);
       }
     });
-    // A hang guard: what can hang is the import of the row's own instance, or a session's boot or
-    // shutdown, each held for at most 10_000 turns of the test's clock. Worst measured cost:
-    // 17 999 ms over 20 runs at the 96 rung in the tester's Job infra-1580-t26-k3-7rbtq of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A's runs took
-    // 32.0 s against the calibration's 31.2 s), at fe0e876b; 10 102 ms over 20 runs in the Job
-    // infra-1580-cn-mbxl9 (217 busy loops, row A 38.3 s) at bb5b4535; on the real clock, 5 404 ms
-    // over 20 runs in the Job infra-1580-r26-gd-v7fxf (116 busy loops, row A 39.9 s) at 0fba4c77.
-    // 120_000 is 6.7 times the worst.
-  }, 120_000);
+    // What can hang is the import of the row's own instance, or a session's boot or shutdown, each
+    // held for at most 10_000 turns of the test's clock.
+  });
 
   for (const { row, error, shown, withheld } of [
     {
@@ -24710,19 +24367,10 @@ console.log(JSON.stringify(args));
       );
       await stop();
     });
-    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for each pass's work up
-    // to its bound (`clock.wait`), which has no bound of turns, because the start's trade reads the
-    // pod's token from disk, real I/O. The readings below were taken with that wait bounded by
-    // turns (`hold`). Worst measured cost: 19 597.69 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace, two CPUs and 8 GiB (226 busy
-    // loops, at which row A's runs took 36.6 s against the calibration's 31.2 s), 2026-11-21T19:16Z
-    // to 19:34Z; 13 026.49 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
-    // of 2026-11-19 18:40Z, 2026-11-20T20:24Z to 20:42Z, and 12 273.40 ms over 20 runs there,
-    // 2026-11-21T02:55Z to 03:12Z. 120_000 is 6.1 times the worst. At the merge head 0915a5ef:
-    // 12 212.80 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m5-9nptt of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (177 busy loops, at which row A's runs took
-    // 33.4 s against the calibration's 31.2 s).
-  }, 120_000);
+    // What can hang is `readPass`'s wait for each pass's work up to its bound (`clock.wait`),
+    // which has no bound of turns, because the start's trade reads the pod's token from disk, real
+    // I/O.
+  });
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
    *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session.
@@ -24877,17 +24525,9 @@ console.log(JSON.stringify(args));
       );
       await stop();
     });
-    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for the start's work up
-    // to its bound (`clock.wait`), which has no bound of turns, because its trade reads the pod's
-    // token from disk, real I/O. The readings below were taken with that wait bounded by turns
-    // (`hold`). Worst measured cost: 23 310.35 ms over 20 runs at 16 busy loops (the 96 rung) on
-    // the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T02:38Z to 02:55Z, the next worst of
-    // those 20 being 11 460.22 ms, and 7 282.53 ms over 20 runs there, 2026-11-20T18:13Z to 18:28Z,
-    // so 150_000 is 6.4 times the worst. At the merge head 0915a5ef: 10 616.45 ms over 20 runs at
-    // the 96 rung in the Job infra-1580-krows-m5-9nptt of the cluster's `builds` namespace, two
-    // CPUs and 8 GiB (177 busy loops, at which row A's runs took 33.4 s against the calibration's
-    // 31.2 s).
-  }, 150_000);
+    // What can hang is `readPass`'s wait for the start's work up to its bound (`clock.wait`),
+    // which has no bound of turns, because its trade reads the pod's token from disk, real I/O.
+  });
 
   test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
     // The start has nothing to do until it holds a token, so it waits for ready: the retry
@@ -24951,15 +24591,9 @@ console.log(JSON.stringify(args));
       notifications.some(({ message }) => message.includes("the trade for the session's token"))
     ).toBe(false);
     await stop();
-    // A hang guard, not a bound on work: what can hang is a wait for a trade's read of the pod's
-    // token from disk or for the start's dial (`clock.wait`, `clock.waitOn`), which has no bound
-    // of turns: the read is real I/O. Worst measured cost: 16 611.29 ms over 20 runs at the 96
-    // rung in the Job infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and
-    // 8 GiB (257 busy loops, at which row A's runs took 53.6 s against the calibration's 31.2 s),
-    // 2026-11-21T19:27Z to 19:46Z; 8 494.35 ms over 20 runs at 16 busy loops (the 96 rung) on the
-    // two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T14:32Z to 14:48Z. 120_000 is 7.2 times
-    // the worst.
-  }, 120_000);
+    // What can hang is a wait for a trade's read of the pod's token from disk or for the start's
+    // dial (`clock.wait`, `clock.waitOn`), which has no bound of turns: the read is real I/O.
+  });
 
   test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
     // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
@@ -24999,7 +24633,10 @@ console.log(JSON.stringify(args));
         0
       );
       // The start's token, and the trade the drop started.
-      await until(() => minted.size === 2, "the trade the drop started");
+      await until(
+        "the trade the drop started",
+        rowProbe(() => minted.size === 2)
+      );
       expect([...minted.values()]).toEqual(["ses_first_dial_refused", "ses_first_dial_refused"]);
       expect(warnings.filter((message) => message.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(
         1
@@ -25009,13 +24646,9 @@ console.log(JSON.stringify(args));
       stopSink();
       if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
-    // A hang guard, not a bound on work: what can hang is the wait for the start (`clock.waitOn`),
-    // which has no bound of turns, because each of its trades reads the pod's token from disk,
-    // real I/O. Worst measured cost: 19 101.82 ms over 20 runs at the 96 rung, 257 busy loops in
-    // a two-CPU, 8 GiB Job of the cluster's `builds` namespace, where row A's 5 runs averaged
-    // 53.6 s against the calibration's 31.2 s, 2026-11-21T22:26Z to 22:40Z, so 120_000 is 6.3
-    // times that.
-  }, 120_000);
+    // What can hang is the wait for the start (`clock.waitOn`), which has no bound of turns,
+    // because each of its trades reads the pod's token from disk, real I/O.
+  });
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
@@ -25101,15 +24734,10 @@ console.log(JSON.stringify(args));
       expect(traded).toContain("ses_switch_to");
     });
     await stop();
-    // A hang guard, not a bound on work: what can hang is the wait for the start, the follow's
-    // reconnect or the switch (`clock.waitOn`, `clock.wait`), which has no bound of turns, because
-    // the start's and the follow's trades read the pod's token from disk, real I/O.
-    // Worst measured cost: 16 302.04 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224 busy
-    // loops, at which row A's runs took 37.5 s against the calibration's 31.2 s), 2026-11-22T10:52Z
-    // to 11:08Z, and 9 388.74 ms in the Job infra-1580-krows-k4-hvx8t (129 busy loops, row A at
-    // 31.5 s), 2026-11-22T06:33Z to 06:40Z. 120_000 is 7.4 times the worst.
-  }, 120_000);
+    // What can hang is the wait for the start, the follow's reconnect or the switch
+    // (`clock.waitOn`, `clock.wait`), which has no bound of turns, because the start's and the
+    // follow's trades read the pod's token from disk, real I/O.
+  });
 
   test("the keeper's warning of a refused token reaches the session as a notice, once", async () => {
     // A token the server refuses though it is live is a session that stops receiving, which the
@@ -25143,18 +24771,9 @@ console.log(JSON.stringify(args));
       "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
     ]);
     await stop();
-    // A hang guard, not a bound on work: what can hang is the wait for the start (`clock.waitOn`),
-    // which has no bound of turns, because its trade reads the pod's token from disk, real I/O. The
-    // readings below were taken with that wait bounded by turns (`run`). Worst measured cost:
-    // 13 789.10 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took
-    // 53.6 s against the calibration's 31.2 s), 2026-11-21T19:51Z to 20:10Z; 6 742.65 ms over 20
-    // runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-    // 2026-11-21T14:48Z to 15:03Z. 90_000 is 6.5 times the worst. At the merge head 0915a5ef:
-    // 11 484.65 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m5-9nptt of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (177 busy loops, at which row A's runs took
-    // 33.4 s against the calibration's 31.2 s).
-  }, 90_000);
+    // What can hang is the wait for the start (`clock.waitOn`), which has no bound of turns,
+    // because its trade reads the pod's token from disk, real I/O.
+  });
 
   test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
     // ENVOY_HEARTBEAT_MS=10000 ENVOY_PASS_DEADLINE_MS=10000: the follow takes at most 8 s of the
@@ -25242,20 +24861,10 @@ console.log(JSON.stringify(args));
       await switching;
       await stop();
     });
-    // A hang guard, not a bound on work: what can hang is the wait for the boot or for the follow's
-    // trade (`clock.waitOn`, `clock.wait`), which has no bound of turns, because each trade reads
-    // the pod's token from disk, real I/O. Worst measured cost: 16 391 ms at the 96 rung in the
-    // Job infra-1580-t25-r5-mnnq5 of the cluster's `builds` namespace (257 busy loops, row A
-    // 38.4 s), at b5a8b94f. 100_000 is 6.1 times that. The earlier readings below were taken with
-    // those waits bounded by turns (`run`, `hold`): 13 513.21 ms over 20 runs at 16 busy loops
-    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z,
-    // with the boot on the real clock; with the boot on the test clock, 12 258.67 ms over 20 runs
-    // there, 2026-11-20T17:58Z to 18:13Z, and 8 259.09 ms, 2026-11-21T02:21Z to 02:38Z. So 90_000
-    // was 6.7 times the worst of them. At the merge head 0915a5ef: 8 187.40 ms over 20 runs at the
-    // 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs
-    // and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the calibration's
-    // 31.2 s).
-  }, 100_000);
+    // What can hang is the wait for the boot or for the follow's trade (`clock.waitOn`,
+    // `clock.wait`), which has no bound of turns, because each trade reads the pod's token from
+    // disk, real I/O.
+  });
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
     // The move to the new session's token fails (its trade is refused outright, a refusal no
@@ -25336,19 +24945,9 @@ console.log(JSON.stringify(args));
     expect(replayed.join("\n")).not.toContain(marker);
     expect(natsState.controls.get(oldControl)?.active()).toBe(false);
     await stop();
-    // A hang guard, not a bound on work: what can hang is the wait for the start or the switch
-    // (`clock.waitOn`), which has no bound of turns, because each of their trades reads the pod's
-    // token from disk, real I/O. The readings below were taken with those waits bounded by turns
-    // (`run`). Worst measured cost: 20 903.37 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-k4-hvx8t of the cluster's `builds` namespace, two CPUs and 8 GiB (129 busy
-    // loops, at which row A's runs took 31.5 s against the calibration's 31.2 s), 2026-11-22T05:22Z
-    // to 05:31Z; 19 027.39 ms over 20 runs in the Job infra-1580-krows-j4-2w4bc (257 busy loops,
-    // row A at 53.6 s), 2026-11-21T20:14Z to 20:31Z; 8 261.56 ms over 20 runs at 16 busy loops (the
-    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z. 150_000
-    // is 7.2 times the worst. At the merge head 0915a5ef: 2 706.69 ms over 20 runs at the 96 rung
-    // in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (106 busy loops, at which row A's runs took 32.2 s against the calibration's 31.2 s).
-  }, 150_000);
+    // What can hang is the wait for the start or the switch (`clock.waitOn`), which has no bound
+    // of turns, because each of their trades reads the pod's token from disk, real I/O.
+  });
 
   // Not decided by the host's speed: the viewer's replay settles on promises alone, so it has run
   // before the 50 ms sleep ends.
@@ -25390,13 +24989,9 @@ console.log(JSON.stringify(args));
     expect(replayed).toContain(ownTurn);
     expect(replayed).not.toContain(returnedTurn);
     await stop();
-    // A hang guard: what can hang is the session's start, its switch, a turn's end
-    // (`message_end`) or its shutdown. Worst measured cost: 602 ms in envoy.test.ts run whole at
-    // the 96 rung in the Job infra-1580-r27wf-4rk46 of the cluster's `builds` namespace, two CPUs
-    // and 8 GiB (148 busy loops, at which row A's runs took 39.8 s against the calibration's
-    // 31.2 s), at 82306880; 298 ms in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A
-    // 31.6 s), at 06d187e7. Main's 30_000 is 49.8 times the worst, so it is kept.
-  }, 30_000);
+    // What can hang is the session's start, its switch, a turn's end (`message_end`) or its
+    // shutdown.
+  });
 
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
     // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
@@ -25490,15 +25085,10 @@ console.log(JSON.stringify(args));
       expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
       expect(minted).toHaveLength(traded);
     });
-    // A hang guard, not a bound on work: what can hang is the wait for the start's follow, the
-    // start, the keeper's reconnect or the shutdown (`clock.wait`, `clock.waitOn`), which has no
-    // bound of turns, because each waits on a trade that reads the pod's token from disk, real
-    // I/O. Worst measured cost: 26 206 ms in envoy.test.ts run whole at the 96 rung in the
-    // tester's Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (137 busy loops, row A 31.6 s), at 06d187e7; 21 887.67 ms over 20 runs at
-    // the 96 rung in the Job infra-1580-krows-k6-fhhlx (224 busy loops, row A 37.5 s),
-    // 2026-11-22T10:04Z to 10:17Z. 160_000 is 6.1 times the worst.
-  }, 160_000);
+    // What can hang is the wait for the start's follow, the start, the keeper's reconnect or the
+    // shutdown (`clock.wait`, `clock.waitOn`), which has no bound of turns, because each waits on
+    // a trade that reads the pod's token from disk, real I/O.
+  });
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -25880,8 +25470,8 @@ console.log(JSON.stringify(args));
     // must have left nothing behind that suppresses a retry, so recovery still happens.
     reopened?.end();
     await until(
-      () => natsState.controls.get(home) !== reopened,
-      "the relay subject to be subscribed again after its genuine death"
+      "the relay subject to be subscribed again after its genuine death",
+      rowProbe(() => natsState.controls.get(home) !== reopened)
     );
 
     const recovered = natsState.controls.get(home);
@@ -25898,8 +25488,10 @@ console.log(JSON.stringify(args));
         )
       );
     await until(
-      () => fixture.messages.some((m) => m.includes("delivered after a genuine iterator death")),
-      "the message sent on the recovered subscription"
+      "the message sent on the recovered subscription",
+      rowProbe(() =>
+        fixture.messages.some((m) => m.includes("delivered after a genuine iterator death"))
+      )
     );
   });
 
@@ -26103,8 +25695,8 @@ console.log(JSON.stringify(args));
     // Kill the iterator the way a closed/errored connection does.
     first?.end();
     await until(
-      () => natsState.controls.get(relay) !== first,
-      "the relay subject to be subscribed again after its iterator ended"
+      "the relay subject to be subscribed again after its iterator ended",
+      rowProbe(() => natsState.controls.get(relay) !== first)
     );
 
     const second = natsState.controls.get(relay);
@@ -26115,8 +25707,8 @@ console.log(JSON.stringify(args));
       .get("notifications.agent.ses_deaf")
       ?.push(forwardedRoleEnvelope("legion-controller", "post-recovery message", "recovery"));
     await until(
-      () => fixture.messages.some((m) => m.includes("post-recovery message")),
-      "the message sent on the recovered subscription"
+      "the message sent on the recovered subscription",
+      rowProbe(() => fixture.messages.some((m) => m.includes("post-recovery message")))
     );
   });
 
@@ -26177,13 +25769,8 @@ console.log(JSON.stringify(args));
       message.includes("registry heartbeat failed")
     );
     expect(warnings).toHaveLength(1);
-    // A hang guard (the package's `--timeout 250000`): what can hang is the wait for the
-    // heartbeat's warning (`warned`), which has no deadline of its own. Worst measured cost:
-    // 4 098 ms in envoy.test.ts run whole at the 96 rung in the Job infra-1580-t27-j1-l27pc of
-    // the cluster's `builds` namespace, two CPUs and 8 GiB (137 busy loops, at which row A's
-    // runs took 31.6 s against the calibration's 31.2 s), at 06d187e7; 1 195 ms in the Job
-    // infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880. The package's 250 s is
-    // 61.0 times the worst.
+    // What can hang is the wait for the heartbeat's warning (`warned`), which the command's guard
+    // ends.
   });
 
   test("a registration that times out is retried once inside forty seconds, and a success returns the cadence to the heartbeat", async () => {
@@ -26311,12 +25898,8 @@ console.log(JSON.stringify(args));
       expect(scheduled[1]?.delayMs).toBeGreaterThanOrEqual(20_000);
       expect(scheduled[1]?.delayMs).toBeLessThanOrEqual(40_000);
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the load of the extension's
-    // module, waited for with no bound of turns (`waitOn`); every other wait ends by its own count
-    // of turns or steps (`onPassClock`). Worst measured cost: 6 992.03 ms over 20 runs at the 96
-    // rung in the Job infra-1580-krows-m3-9p4bh of the cluster's `builds` namespace, two CPUs and
-    // 8 GiB (131 busy loops, at which row A's runs took 32.1 s against the calibration's 31.2 s),
-    // at the merge head 0915a5ef. The package's 250 s is 35.8 times that.
+    // What can hang is the load of the extension's module, waited for with no bound of turns
+    // (`waitOn`); every other wait ends by its own count of turns or steps (`onPassClock`).
   });
 
   test("a rebind during a network outage notifies instead of failing the handler", async () => {
@@ -26430,22 +26013,10 @@ console.log(JSON.stringify(args));
     // that waits the drain out reaches neither of these, because `onTestClock` fails it above.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(natsState.drainStarted).toBe(true);
-    // A hang guard rather than a budget: the handler runs on the test's clock, and `onTestClock`
-    // fails it at once when it does not end, so what can still hang on real time is the module's
-    // import and `session_start`, ahead of `onTestClock`. The row's own cost as it stands, read
-    // from bun's junit reporter on this two-CPU pod: 63.57 / 66.97 / 198.97 ms (min/median/max
-    // over 5 idle runs), and 707.61 / 1_699.56 / 4_438.23 ms over 20 runs under 96 busy loops, 48
-    // per CPU, this row's acceptance rung. Its worst reading since is 17 301 ms, a calibration run
-    // at 140 busy loops in the tester's Job infra-1580-t26-k1-blw8l of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB, whose 5 runs took 44.1 s each against the calibration's
-    // 31.2 s to 40 s, so heavier than the 96 rung; at the 96 rung, 13 383.05 ms in the Job
-    // infra-1580-krows-j1-rl89g (311 busy loops, at which this row's 5 runs took 35.9 s). So
-    // 120_000 is 6.9 times the worst. At the base the row had no limit of its own, so under
-    // `bun run test` it carried the package's `--timeout 250000` (package.json). This limit
-    // replaces that one. It stays well inside the pi-envoy job's `timeout-minutes: 15`
-    // (.github/workflows/ci-job-pi-envoy.yaml), so a hang reddens with this test named instead of
-    // cancelling the job, which names nothing.
-  }, 120_000);
+    // The handler runs on the test's clock, and `onTestClock` fails it at once when it does not
+    // end, so what can still hang on real time is the module's import and `session_start`, ahead
+    // of `onTestClock`.
+  });
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -26555,15 +26126,8 @@ console.log(JSON.stringify(args));
 
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(registrationPendingAtDelete).toBe(false);
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Run row-filtered by `bun test` with no `--timeout`, so at bun's 5 s
-    // default, it failed 5 runs in 20 at the 96 rung. Worst measured cost: 14 400.50 ms over 20
-    // runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took 53.6 s against
-    // the calibration's 31.2 s), 2026-11-21T20:59Z to 21:13Z; 6 641.99 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T17:01Z to
-    // 17:19Z. 90_000 is 6.2 times the worst.
-  }, 90_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   // The wait above is bounded on the shutdown path, because Oh My Pi abandons a shutdown handler
   // after 2 s: a registration slower than the wait must not cost the DELETE. One never sent
@@ -26638,14 +26202,8 @@ console.log(JSON.stringify(args));
       );
       await clock.run("the subscribe", subscribing);
     });
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost of this form: 7 493.41 ms over 20 runs at the 96 rung in
-    // the Job infra-1580-krows-bnew-f5hnq of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (183 busy loops, at which row A's runs took 32.1 s against the calibration's 31.2 s),
-    // 2026-11-22T00:11Z to 00:23Z, so 120_000 is 16.0 times that. The real-clock form it replaced
-    // cost up to 10 901.29 ms over 20 runs at the 96 rung (infra-1580-krows-j5-sjzwb, where it
-    // failed once) and 41 315.25 ms over 40 runs at the 240 rung (infra-1580-krows-b240old-6qdvp).
-  }, 120_000);
+    // Every wait above ends by its own count of turns or steps (`onPassClock`).
+  });
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
   // left registered it reads as live, and then as unresponsive, for an hour of peers' sends.
@@ -27138,7 +26696,7 @@ describe("consumer delivery", () => {
     else await options.clock.stepping("the boot", started, 1_000);
     if (options.withoutRelay !== true) {
       const registered = () => registrations.length > 0;
-      if (options.clock === undefined) await until(registered, "the first registration");
+      if (options.clock === undefined) await until("the first registration", rowProbe(registered));
       else
         await options.clock.held(
           "the first registration did not reach the listener with the test's clock held",
@@ -27165,7 +26723,8 @@ describe("consumer delivery", () => {
           (delivery) =>
             delivery.customType === "envoy-message" && delivery.content.includes(eventID)
         ),
-      /** The listener relays stored message `seq`; answers the reply inbox it carried. */
+      /** The listener relays stored message `seq`; answers the reply inbox it carried. The inbox
+       *  names this boot's query, so a second boot's replies never read the first one's. */
       relay: (
         seq: number,
         data: string,
@@ -27179,7 +26738,7 @@ describe("consumer delivery", () => {
         const controls = natsState.controls.get(RELAY);
         if (controls === undefined) throw new Error("the relay subject was never subscribed");
         inboxes += 1;
-        const inbox = `_INBOX.relay.${seq}.${inboxes}`;
+        const inbox = `_INBOX.relay.${query}.${seq}.${inboxes}`;
         controls.push(data, inbox, {
           [RelayHeader.subject]: frame.subject ?? AGENT,
           [RelayHeader.streamSeq]: String(seq),
@@ -27203,7 +26762,7 @@ describe("consumer delivery", () => {
         const before = registrations.length;
         for (const interval of intervals) interval();
         const sent = () => registrations.length > before;
-        if (clock === undefined) await until(sent, "the heartbeat's registration");
+        if (clock === undefined) await until("the heartbeat's registration", rowProbe(sent));
         else
           await clock.held(
             "the heartbeat's registration did not reach the listener with the test's clock held",
@@ -27216,7 +26775,10 @@ describe("consumer delivery", () => {
         stillOn(ownRow, "reporting a reconnect");
         const before = registrations.length;
         pushNatsStatus("reconnect");
-        await until(() => registrations.length > before, "the reconnect's registration");
+        await until(
+          "the reconnect's registration",
+          rowProbe(() => registrations.length > before)
+        );
         await settle();
       },
       /** The streaming turn takes every card it holds: the host writes each, in order. */
@@ -27263,7 +26825,10 @@ describe("consumer delivery", () => {
     expect(first?.delivery?.resume).toBeUndefined();
 
     const inbox = session.relay(7, peer("registration"));
-    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+    await until(
+      "the frame's done",
+      rowProbe(() => session.replies(inbox).includes("done"))
+    );
     await session.tick();
 
     const renewed = session.registrations.at(-1);
@@ -27338,26 +26903,28 @@ describe("consumer delivery", () => {
         );
       }
     });
-    // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait on
-    // the test's clock ends by its own count of turns (`onPassClock`). The limit is the package's
-    // `--timeout 250000`. Worst measured cost: 9 501.84 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-m4-lbs74 of the cluster's `builds` namespace, two CPUs and 8 GiB (172 busy
-    // loops, at which row A's runs took 33.1 s against the calibration's 31.2 s), at the merge
-    // head 0915a5ef. The package's 250 s is 26.3 times that.
+    // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+    // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+    // count of turns (`onPassClock`).
   });
 
   test("a frame written before a restart and relayed again after it is answered done and not shown again", async () => {
     const first = await bootConsumer("consumer-restart-a");
     const frame = peer("restart");
     const before = first.relay(4, frame);
-    await until(() => first.replies(before).includes("done"), "the first copy's done");
+    await until(
+      "the first copy's done",
+      rowProbe(() => first.replies(before).includes("done"))
+    );
     await first.stop();
 
     const second = await bootConsumer("consumer-restart-b", { entries: first.entries() });
     expect(second.registrations[0]?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 4 });
     const again = second.relay(4, frame, { delivered: 2 });
-    await until(() => second.replies(again).includes("done"), "the second copy's done");
+    await until(
+      "the second copy's done",
+      rowProbe(() => second.replies(again).includes("done"))
+    );
 
     expect(second.replies(again)).toEqual(["received", "done"]);
     expect(first.cards("evt-restart")).toHaveLength(1);
@@ -27371,7 +26938,10 @@ describe("consumer delivery", () => {
     await first.follow(issueTopic);
     await settle();
     const inbox = first.relay(4, peer("follows"));
-    await until(() => first.replies(inbox).includes("done"), "the frame's done");
+    await until(
+      "the frame's done",
+      rowProbe(() => first.replies(inbox).includes("done"))
+    );
 
     const states = first.fixture.entries
       .filter((entry) => entry.customType === "envoy-consumer-state")
@@ -27496,8 +27066,8 @@ describe("consumer delivery", () => {
 
     await fixture.handlers.get("session_start")?.({}, firstContext);
     await until(
-      () => natsState.controls.get(deliverSubject(first))?.active() === true,
-      "the first session's relay subject"
+      "the first session's relay subject",
+      rowProbe(() => natsState.controls.get(deliverSubject(first))?.active() === true)
     );
     const firstRelay = natsState.controls.get(deliverSubject(first));
     const states = consumerStates();
@@ -27509,8 +27079,8 @@ describe("consumer delivery", () => {
     // subscriber, which a server answers no-responders, and the new id is answered.
     await fixture.handlers.get("session_switch")?.({}, sessionContext(next));
     await until(
-      () => natsState.controls.get(deliverSubject(next))?.active() === true,
-      "the new session's relay subject"
+      "the new session's relay subject",
+      rowProbe(() => natsState.controls.get(deliverSubject(next))?.active() === true)
     );
     // The switch tells the session its id changed; that notice is the one card it is shown.
     const shown = cards().length;
@@ -27523,8 +27093,8 @@ describe("consumer delivery", () => {
     await settle();
     // The session subscribes its relay subject again, and is answered again.
     await until(
-      () => natsState.controls.get(deliverSubject(next)) !== nextRelay,
-      "the relay subject subscribed again"
+      "the relay subject subscribed again",
+      rowProbe(() => natsState.controls.get(deliverSubject(next)) !== nextRelay)
     );
     const reopened = natsState.controls.get(deliverSubject(next));
     expect(await probe(reopened)).toEqual(["done"]);
@@ -27582,13 +27152,8 @@ describe("consumer delivery", () => {
 
         expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the load of the
-      // extension's module in the boot, awaited with no bound of turns; every other wait ends by
-      // its own count of turns or steps (`onPassClock`). Worst measured cost: 7 491.00 ms over 20
-      // runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's `builds`
-      // namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s against
-      // the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 33.4 times
-      // that.
+      // What can hang is the load of the extension's module in the boot, awaited with no bound of
+      // turns; every other wait ends by its own count of turns or steps (`onPassClock`).
     });
   }
 
@@ -27602,7 +27167,10 @@ describe("consumer delivery", () => {
     });
 
     const inbox = session.relay(9, targetedDispatchEnvelope("btw", "late-btw"), { delivered: 2 });
-    await until(() => session.replies(inbox).includes("done"), "the late BTW's done");
+    await until(
+      "the late BTW's done",
+      rowProbe(() => session.replies(inbox).includes("done"))
+    );
 
     const cards = session.cards("dispatch-late-btw");
     expect(cards).toHaveLength(1);
@@ -27663,7 +27231,10 @@ describe("consumer delivery", () => {
         targetedDispatchEnvelope("btw", "late-btw-moved", { bodyTruncated: true }),
         { delivered: 2 }
       );
-      await until(() => session.replies(inbox).includes("nak"), "the late BTW's nak");
+      await until(
+        "the late BTW's nak",
+        rowProbe(() => session.replies(inbox).includes("nak"))
+      );
 
       expect(moved).toBe(true);
       expect(session.cards("dispatch-late-btw-moved")).toHaveLength(0);
@@ -27708,8 +27279,8 @@ describe("consumer delivery", () => {
         for (const delivered of [1, 2, 3]) {
           inbox = session.relay(seq, peer(label), { delivered });
           await until(
-            () => session.replies(inbox).length > 1,
-            `the answer to delivery ${delivered} of ${label}`
+            `the answer to delivery ${delivered} of ${label}`,
+            rowProbe(() => session.replies(inbox).length > 1)
           );
         }
         return session.replies(inbox);
@@ -27802,15 +27373,10 @@ describe("consumer delivery", () => {
       expect(session.dispatchReplies).toHaveLength(1);
       expect(session.cards("dispatch-btw-running")).toHaveLength(0);
     });
-    // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
-    // on the test's clock ends by its own count of turns (`onPassClock`).
-    // Worst measured cost: 11 500.75 ms at the 96 rung in the Job infra-1580-t24-j1-pw5d6 of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (65 busy loops, at which row A took
-    // 37.8 s), at 919ee888; 7 978.20 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-k5-kzv8d (145 busy loops, at which row A's runs took 36.0 s against the
-    // calibration's 31.2 s), 2026-11-22T06:31Z to 06:40Z. 90_000 is 7.8 times the worst.
-  }, 90_000);
+    // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+    // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+    // count of turns (`onPassClock`).
+  });
 
   test("a card Escape cleared from the queue between received and done is shown once afterwards, and done only after that write", async () => {
     const session = await bootConsumer("consumer-queue-cleared", { turn: "streaming" });
@@ -27851,13 +27417,9 @@ describe("consumer delivery", () => {
       await session.tick(clock);
       expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
     });
-    // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait on
-    // the test's clock ends by its own count of turns (`onPassClock`). The limit is the package's
-    // `--timeout 250000`. Worst measured cost: 5 297.37 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB (106 busy
-    // loops, at which row A's runs took 32.2 s against the calibration's 31.2 s), at the merge
-    // head 0915a5ef. The package's 250 s is 47.2 times that.
+    // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+    // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+    // count of turns (`onPassClock`).
   });
 
   // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
@@ -27877,11 +27439,13 @@ describe("consumer delivery", () => {
         1,
         JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
       );
-      // The answer that settles the frame: `done` once it is taken, `nak` once it failed. No
-      // deadline: main's `until` took one (30_000 here), this file's ends at the row's limit.
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed. Main's
+      // `until` took a deadline of its own here (30_000); this wait ends at the row's deadline.
       await until(
-        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
-        "the frame's settling answer"
+        "the frame's settling answer",
+        rowProbe(
+          () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak")
+        )
       );
 
       expect(session.replies(inbox)).toEqual(["received", "done"]);
@@ -27902,17 +27466,8 @@ describe("consumer delivery", () => {
       stopSink();
       await stop();
     }
-    // A hang guard: what can hang is the consumer's boot or its delivery of the frame. Main's
-    // #5220, which the merge of main 67dcae63 brought here, bounds a card's layout by its size, so
-    // the payload nested 9,999 deep no longer overflows the encoder's stack, and the row's own
-    // work is no longer seconds of CPU: it took 126 to 139 ms over 3 runs with no load on the
-    // issue's pod, at b96dcc3e. Its rung is this file's 96 again. Worst measured cost: 23 308 ms
-    // over 20 runs at the 96 rung in the Job infra-1580-r30np96-kzkf8 of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (205 busy loops, at which row A's runs took 37.1 s against the
-    // calibration's 31.2 s), at b96dcc3e. Six times that is 139 848 ms, rounded up to 150_000,
-    // 6.4 times it, inside the 395 s the pi-envoy job leaves one hang
-    // (`ci-job-pi-envoy.yaml:26-31`).
-  }, 150_000);
+    // What can hang is the consumer's boot or its delivery of the frame.
+  });
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");
@@ -27967,12 +27522,18 @@ describe("consumer delivery", () => {
       }),
     });
     session.relay(1, removal);
-    await until(() => session.registrations.length > followed, "the registration without it");
+    await until(
+      "the registration without it",
+      rowProbe(() => session.registrations.length > followed)
+    );
     expect(session.registrations.at(-1)?.topics).not.toContain(issueTopic);
 
     const late = JSON.stringify({ ...JSON.parse(peer("after-removal")), topic: issueSubject });
     const inbox = session.relay(2, late, { subject: issueSubject });
-    await until(() => session.replies(inbox).includes("done"), "the unfollowed frame's done");
+    await until(
+      "the unfollowed frame's done",
+      rowProbe(() => session.replies(inbox).includes("done"))
+    );
     expect(session.cards("evt-after-removal")).toHaveLength(0);
   });
 
@@ -28031,13 +27592,9 @@ describe("consumer delivery", () => {
         // The card the host keeps is the one it was handed.
         expect(card.content).not.toContain("delivered:");
       });
-      // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-      // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
-      // on the test's clock ends by its own count of turns (`onPassClock`). The limit is the
-      // package's `--timeout 250000`. Worst measured cost: 10 520.74 ms over 20 runs at the 96
-      // rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds` namespace, two CPUs
-      // and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against the calibration's
-      // 31.2 s), at the merge head 0915a5ef. The package's 250 s is 23.8 times that.
+      // What can hang is the boot's wait for its first registration (`bootConsumer`, on the real
+      // clock), which ends at the row's deadline; every wait on the test's clock ends by its own
+      // count of turns (`onPassClock`).
     });
 
     // The mirror of the case above: a machine whose clock runs 4 h 45 min ahead of the listener's
@@ -28054,7 +27611,10 @@ describe("consumer delivery", () => {
       const frame = JSON.stringify({ ...JSON.parse(peer("card-age-clocks")), issued_at: sentAt });
 
       session.relay(1, frame);
-      await until(() => session.cards("evt-card-age-clocks").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-clocks").length > 0)
+      );
       await session.take();
       const [card] = session.cards("evt-card-age-clocks");
       if (card === undefined) throw new Error("the card was not handed");
@@ -28086,7 +27646,10 @@ describe("consumer delivery", () => {
       process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
-      await until(() => session.cards("evt-card-age-moved").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-moved").length > 0)
+      );
       await session.take();
 
       // The host resumes a session it left, whose file holds no record of this event: what that
@@ -28155,14 +27718,8 @@ describe("consumer delivery", () => {
       expect(live).not.toContain(movedIso);
       // Returning to it reads the same bytes, so the provider's prompt cache reads them again.
       expect(liveAgain).toBe(live);
-      // A hang guard (the package's `--timeout 250000`): what can hang is the boot's wait for its
-      // first registration (`bootConsumer`'s `until`) or the wait for the relayed card (`until`),
-      // neither of which has a deadline of its own. Worst measured cost: 3 596 ms in
-      // envoy.test.ts run whole at the 96 rung in the Job infra-1580-t27-j1-l27pc of the cluster's
-      // `builds` namespace, two CPUs and 8 GiB (137 busy loops, at which row A's runs took 31.6 s
-      // against the calibration's 31.2 s), at 06d187e7; 1 403 ms in the Job
-      // infra-1580-r27wf-4rk46 (148 busy loops, row A 39.8 s), at 82306880. The package's 250 s is
-      // 69.5 times the worst.
+      // What can hang is the boot's wait for its first registration (`bootConsumer`) or the wait
+      // for the relayed card, each of which ends at the row's deadline.
     });
 
     // The delivery a session first gives a card goes into its file once, at the card's
@@ -28171,7 +27728,10 @@ describe("consumer delivery", () => {
     test("a card's write records its delivery in the session once", async () => {
       const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
       session.relay(1, peer("card-age-recorded"));
-      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await until(
+        "the relayed card",
+        rowProbe(() => session.cards("evt-card-age-recorded").length > 0)
+      );
       await session.take();
       const [card] = session.cards("evt-card-age-recorded");
       if (card === undefined) throw new Error("the card was not handed");
@@ -28265,8 +27825,8 @@ describe("consumer delivery", () => {
     /** Boots a session following INFRA-370's topic, relays the comment event - cut, or the
      *  stand-in when `omitted` - on the session's own consumer, the one path a frame reaches it
      *  by, and answers the comment read with `read`. Returns the card its agent was prompted
-     *  with. The rows that call it carry a hang guard each, because what can hang is a card
-     *  that is never delivered for the relayed comment event. */
+     *  with. What can hang is a card that is never delivered for the relayed comment event: the
+     *  wait for the frame's done ends at the row's deadline, naming it. */
     async function cardForCutComment(
       name: string,
       read: (path: string) => Response | undefined,
@@ -28283,7 +27843,10 @@ describe("consumer delivery", () => {
       const inbox = session.relay(1, cutCommentEnvelope(CUT_SUBJECT, omitted), {
         subject: CUT_SUBJECT,
       });
-      await until(() => session.replies(inbox).includes("done"), "the cut comment's done");
+      await until(
+        "the cut comment's done",
+        rowProbe(() => session.replies(inbox).includes("done"))
+      );
       const card = session.cards("dispatch-cut-1")[0]?.content;
       if (card === undefined) throw new Error("no card was delivered for the cut comment");
       return card;
@@ -28305,12 +27868,7 @@ describe("consumer delivery", () => {
       // blank lines (one quoted scalar), and no note, because nothing is missing.
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("first part only");
-      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
-      // (`cardForCutComment`). Worst measured cost: 23 198.69 ms over 20 runs at the 96 rung in the
-      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
-      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-      // 2026-11-21T21:11Z to 21:34Z. 150_000 is 6.5 times the worst.
-    }, 150_000);
+    });
 
     test("keeps the part it carried, and the note, when that read fails", async () => {
       const card = await cardForCutComment("cut-comment-read-fails", (path) =>
@@ -28324,12 +27882,7 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `the body is its first part only; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
-      // (`cardForCutComment`). Worst measured cost: 14 392.75 ms over 20 runs at the 96 rung in the
-      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
-      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-      // 2026-11-21T21:38Z to 21:58Z. 90_000 is 6.3 times the worst.
-    }, 90_000);
+    });
 
     test("is prompted with that body for a stand-in the bus left with no body at all", async () => {
       const reads: string[] = [];
@@ -28349,12 +27902,7 @@ describe("consumer delivery", () => {
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("too large for the bus");
-      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
-      // (`cardForCutComment`). Worst measured cost: 10 003.29 ms over 20 runs at the 96 rung in the
-      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
-      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-      // 2026-11-21T22:02Z to 22:21Z. 90_000 is 9.0 times the worst.
-    }, 90_000);
+    });
 
     test("gives the note for a stand-in whose read fails, having no body to keep", async () => {
       const card = await cardForCutComment(
@@ -28370,12 +27918,7 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
-      // (`cardForCutComment`). Worst measured cost: 12 804.12 ms over 20 runs at the 96 rung in the
-      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
-      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-      // 2026-11-21T22:25Z to 22:40Z. 90_000 is 7.0 times the worst.
-    }, 90_000);
+    });
 
     // The comment changed after its event was written. The card re-reads it, so it prints the
     // comment as it stands: the deleted line every read prints in place of the body a delete
@@ -28402,15 +27945,7 @@ describe("consumer delivery", () => {
       );
       expect(card).not.toContain(CARRIED);
       expect(card).not.toContain("first part only");
-      // A hang guard: what can hang is a card that is never delivered for the relayed comment
-      // event (`cardForCutComment`). Worst measured cost: 4 500 ms in envoy.test.ts run whole at
-      // the 96 rung in the Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two
-      // CPUs and 8 GiB (137 busy loops, at which row A's runs took 31.6 s against the
-      // calibration's 31.2 s), at 06d187e7, where its four siblings on the same helper took
-      // 4 313 to 4 993 ms. It takes the 150_000 of the sibling "is prompted with the body the
-      // comment route answers", whose worst over 20 runs is the highest of the four
-      // (23 198.69 ms). 150_000 is 33.3 times this row's worst.
-    }, 150_000);
+    });
 
     test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
       const card = await cardForCutComment("cut-comment-edited", (path) =>
@@ -28432,10 +27967,7 @@ describe("consumer delivery", () => {
       );
       expect(card).not.toContain(CARRIED);
       expect(card).not.toContain("first part only");
-      // A hang guard, as in the row above. Worst measured cost: 2 697 ms in envoy.test.ts run
-      // whole at the 96 rung in the Job infra-1580-t27-j1-l27pc (137 busy loops, row A 31.6 s), at
-      // 06d187e7. It takes the same 150_000, 55.6 times that.
-    }, 150_000);
+    });
   });
 });
 
@@ -28447,58 +27979,40 @@ describe("consumer delivery", () => {
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", () => {
-  // The room one hang has in this file's step of the `envoy-session-stall` job
-  // (`.github/workflows/ci-job-envoy-session-stall.yaml`) is 879 s: the job's
-  // `timeout-minutes: 20`, less the 319 s from the job's start to this step's in the slowest of
-  // its ten runs on this branch from d7aa4f9b to 919ee888 (run 45070043835, at a61f3fc7), and
-  // less the 2 s at most that the steps run after a failed step took in those runs (the ci-ok
-  // report, which runs `if: always()`, and the post steps). The steps after this one, the
-  // claude-envoy step among them, are not counted: a step that fails skips them. Each limit
-  // below is sized for one hang, that hook or row at its limit and every other at its worst, and
-  // keeps 30 s for the `afterAll`'s stop (worst 4.7 s) and the teardown.
+  // This describe runs in a step of its own of the `envoy-session-stall` job
+  // (`.github/workflows/ci-job-envoy-session-stall.yaml`), whose `--timeout` is the one guard of
+  // its hooks and its row.
   let stack: EnvoyStack | undefined;
   let stopStack: (() => Promise<void>) | undefined;
   beforeAll(async () => {
     const start = startStoppableEnvoyStack({ work: stackDirectory });
     stopStack = start.stop;
     stack = await start.started;
-    // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
-    // `go build` and waits for each to serve. Worst measured cost: 249 197.32 ms over 20 runs at
-    // the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
-    // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the calibration's
-    // 31.2 s), 2026-11-22T08:32Z to 09:41Z, where the base's 120_000 failed 10 starts in 20 in the
-    // Job infra-1580-krows-kf-6s8tw. Six times the worst is 1 495 s, past the room above, so the
-    // room decides: 879 s less the 30 s kept is 849 s, and 840_000 is 3.4 times the worst.
-  }, 840_000);
+    // What can hang is the stack's start, which builds natsd and the listener with `go build`
+    // and waits for each to serve.
+  });
   afterAll(async () => {
     await stopStack?.();
-    // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
-    // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
-    // is 12.8 times the worst. A stop that hangs to this limit fits the room above: 879 s less
-    // the stack's slowest start (249 s, the `beforeAll` above), the freeze row's worst (62.9 s)
-    // and the file's `beforeEach` and `afterEach` at their worst (0.1 s and 7.3 s, their comments
-    // at the top of the file) leaves 559.7 s, and 60 s is inside it. This limit takes the place
-    // of the 30 s kept.
-  }, 60_000);
+    // What can hang is the stop of natsd or the listener, which a start cut off makes too.
+  });
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
-  // polls the real clock until its condition holds. A deadline is passed only where the time it
+  // asks again until its condition holds (`until`). A deadline is passed only where the time it
   // bounds is what the row asserts: the freeze scenario's recovery within `RECOVERY_BOUND_MS`
   // (`stall-scenario.ts`). The scenario passes no deadline but the recovery's. A wait given none,
-  // such as the registration's below and the scenario's others, ends at the row's limit, its hang
-  // guard, which names the row; and every wait throws once its row has ended (`stillOn`), before
-  // each poll and in place of its answer, as `until` does, rather than poll the live listener on
-  // into the rows after it or return into them. It throws too on the poll after natsd or the
-  // listener exits (`EnvoyStack.exited`), naming that exit, and names it in place of the error a
-  // read meets once one has. These rows run only under `LEGION_E2E_ENVOY_STACK=1`, which CI's
-  // `envoy-session-stall` job sets.
+  // such as the registration's below and the scenario's others, ends at the row's deadline,
+  // naming what it waited for; and every wait throws once its row has ended (`stillOn`), rather
+  // than poll the live listener on into the rows after it or return into them. It throws too once
+  // natsd or the listener has exited (`EnvoyStack.exited`), naming that exit, and names it in
+  // place of the error a read meets once one has. These rows run only under
+  // `LEGION_E2E_ENVOY_STACK=1`, which CI's `envoy-session-stall` job sets.
   async function waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
     what: string
   ): Promise<void> {
     const ownRow = rowCheck();
-    for (;;) {
+    await until(what, async () => {
       stillOn(ownRow, `waiting for ${what}`);
       let met: boolean;
       try {
@@ -28510,14 +28024,14 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
         throw new Error(`waiting for ${what}: ${exited}`, { cause: error });
       }
       stillOn(ownRow, `waiting for ${what}`);
-      if (met) return;
+      if (met) return true;
       const exited = stack?.exited();
       if (exited !== undefined) throw new Error(`waiting for ${what}: ${exited}`);
       if (deadline !== undefined && Date.now() > deadline) {
         throw new Error(`timed out waiting for ${what}`);
       }
-      await Bun.sleep(100);
-    }
+      return false;
+    });
   }
 
   test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
@@ -28591,23 +28105,9 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
       // row and still closes the proxy.
       await Promise.all([stop(), closeProxy()]);
     }
-    // A hang guard, not a bound on work: what can hang is a wait for the registration or a
-    // message that never comes. The row's cost is the freeze's own recovery, about 30 s of
-    // nats.js's ping and dial timers: 30 192.92, 30 182.69, 30 213.03 and 30 247.69 ms in CI's
-    // `envoy-session-stall` job at d92de35e, 688f9be7, 4410f2a3 and d7aa4f9b (runs 44935616558,
-    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 62 899.22 ms over 20 runs
-    // at the 96 rung in the Job infra-1580-krows-kf3-s6lzm of the cluster's `builds` namespace,
-    // two CPUs and 8 GiB (155 busy loops, at which row A's runs took 38.2 s against the
-    // calibration's 31.2 s), 2026-11-22T18:18Z to 19:59Z; 55 599.76 ms in the Job
-    // infra-1580-krows-kf2-9tp5g (152 busy loops, row A at 37.7 s), 2026-11-22T11:58Z to 13:44Z,
-    // and 53 995.87 ms in the Job infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s),
-    // 2026-11-22T08:32Z to 09:41Z. 390_000 is 6.2 times the worst. The step's
-    // `-t "NATS path freezes"` selects this row alone, so no other row of the file runs in that
-    // step. A row that hangs to this limit fits the room above: 879 s less the stack's slowest
-    // start (249 s, the `beforeAll` above), the file's `beforeEach` and `afterEach` at their
-    // worst (0.1 s and 7.3 s, their comments at the top of the file) and the 30 s kept leaves
-    // 592.6 s, and 390 s is inside it.
-  }, 390_000);
+    // What can hang is a wait for the registration or a message that never comes. The row's
+    // cost is the freeze's own recovery, about 30 s of nats.js's ping and dial timers.
+  });
 });
 
 // The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
@@ -28694,16 +28194,10 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
           else process.env.NATS_NKEY_SEED = originalSeed;
         }
       }
-      // A hang guard: what can hang is the session's start on a real connection, or a wait of
+      // What can hang is the session's start on a real connection, or a wait of
       // `runReplayGrantScenario` for a replay answer or for the server's log of the refused
-      // publish; none of them has a deadline of its own. The row runs only with LEGION_E2E=1,
-      // which the whole-file Jobs infra-1580-t27-j1-l27pc and infra-1580-r27wf-4rk46 did not set.
-      // Worst measured cost: 177.60 ms, in CI's pi-envoy job at 473ab6ae (run 45515356217), and
-      // 172.17 ms at 06d187e7 (run 45437325102). Main's 60_000 is 337.8 times the worst, so it is
-      // kept. The pi-envoy job leaves one hang 395 s: its `timeout-minutes: 15` less the 505 s
-      // its workflow records as its longest run (`ci-job-pi-envoy.yaml:26-31`), which is longer
-      // than its 331 s in run 45515356217. 60 s is inside that room.
-    }, 60_000);
+      // publish, which ends at the row's deadline. The row runs only with LEGION_E2E=1.
+    });
   }
 );
 
@@ -28935,7 +28429,10 @@ describe("an envelope that carries the role field", () => {
       const session = await boot(query);
       try {
         session.agent.push(JSON.stringify(envelope));
-        await until(() => session.cards().length === 1, "the frame's card");
+        await until(
+          "the frame's card",
+          rowProbe(() => session.cards().length === 1)
+        );
         const inbox = await session.tool("envoy_inbox").execute("", {});
         // Each card's marker is minted fresh (`envoyCard`, src/card-wake.ts), so the row compares
         // everything else the card holds.
@@ -28967,7 +28464,10 @@ describe("an envelope that carries the role field", () => {
     const session = await boot("role-field-copy");
     try {
       session.agent.push(JSON.stringify(withoutRole));
-      await until(() => session.cards().length === 1, "the first copy's card");
+      await until(
+        "the first copy's card",
+        rowProbe(() => session.cards().length === 1)
+      );
       session.agent.push(JSON.stringify(withRole), "_INBOX.role-field-copy");
       // A later message, so that its card says the copy before it has been read.
       session.agent.push(
@@ -28977,7 +28477,10 @@ describe("an envelope that carries the role field", () => {
           dedupe_key: "agent.ses_role_field.fedcba9876543210fedcba9876543210",
         })
       );
-      await until(() => session.cards().length === 2, "the later message's card");
+      await until(
+        "the later message's card",
+        rowProbe(() => session.cards().length === 2)
+      );
 
       expect(session.cards().map((card) => card.content.match(/\n {2}id: (\S+)/)?.[1])).toEqual([
         withoutRole.event_id,

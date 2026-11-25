@@ -125,9 +125,10 @@ if (start === undefined) throw new Error("the extension registered no session_st
 await start({}, context);
 
 /**
- * This script for `session`, started the way `spawn` names, and what it reported. A child that
- * hangs is killed at 420 s, which is after the row's own limit of 390 s and before this process's
- * own kill at 450 s, so the row's limit decides a slow run.
+ * This script for `session`, started the way `spawn` names, and what it reported. The row kills
+ * this process at its own deadline, and each child exits when the pipe this process holds open to
+ * it ends (`runReportingProcess`), so a child that hangs ends with this process. Its 420 s kill
+ * bounds only a child run by hand, outside such a row.
  */
 async function child(
   spawn: "no env" | "process.env",
