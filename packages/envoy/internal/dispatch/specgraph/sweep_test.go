@@ -244,14 +244,22 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // toward met, and no wait toward ends, and the sweep gives a refusal no right. refusalsTakeOut states
 // as data, for each base, which results each refusal takes out; at each subject at another commit
 // than A, such a refusal reads as the base with those results taken out of results.json
-// (withoutResultsOf), so a refusal that takes out more or less than its row says fails by the row.
-// A refusal that the table does not name takes out nothing that counts at another subject. The
-// sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each commit that a
-// record of the base names, for each check of its approved spec that the base does not refuse
-// there, and reads each one back as the reader reads it, against the refusals that it means, built
-// before its writer runs (refusalAdded, refusalRead). A row of the table that names no refusal that
-// the sweep adds, a base that is no base of the sweeps, and a seq that names no one result of the
-// row's check fail the test by name.
+// (withoutResultsOf). The comparison reads states, not reasons, so a refusal that takes out more
+// or less than its row says fails by the row where the difference moves a state at such a subject:
+// one that keeps a pass or a caught failing example of A, as carry's caught failing example
+// planted on c1, which would read the check true at c2 and at m2; and one that takes out a failure
+// of A, as the failure of the test of c1 in the base where a pass and a caught failing example of
+// the test of m2 come before it, which would read the check true at m2. A failing example of A
+// that missed its fault, taken out beside a caught one of A, moves only a reason in these bases
+// (failing_example_missed to no_failing_example), and no base holds a run that could not run, so
+// TestCheckState's rows, not this sweep, pin that a refusal keeps both. A refusal that the table
+// does not name takes out nothing that counts at another subject. The sweep adds one refusal at a
+// time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
+// for each check of its approved spec that the base does not refuse there, and reads each one back
+// as the reader reads it, against the refusals that it means, built before its writer runs
+// (refusalAdded, refusalRead). A row of the table that names no refusal that the sweep adds, a base
+// that is no base of the sweeps, and a seq that names no one result of the row's check fail the
+// test by name.
 func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -333,10 +341,11 @@ func refusalsTakeOut() map[string][]refusalOut {
 	// at c1 alone (the rule that replaces The Spec's R8: "A result counts only at the commit that it
 	// read"); of each base of production-and-graph that keeps its program check of production, a
 	// refusal at c1 takes out that check's pass and caught failing example of test_commit c1 (seq 1
-	// and 2), and keeps its failing run (seq 3); and of each base of wait-cycle, a refusal at b1 takes
-	// out the caught failing example planted on b1 of each of its checks, whose runs read m1. A base
-	// whose only subject is the refused commit, as one-commit-two-answers, has no row: no result of
-	// it counts at another subject.
+	// and 2), and keeps its failing run (seq 3), which in the base where a pass and a caught failing
+	// example of the test of m2 (seq 7 and 8) come before it keeps that check false at m2; and of
+	// each base of wait-cycle, a refusal at b1 takes out the caught failing example planted on b1 of
+	// each of its checks, whose runs read m1. A base whose only subject is the refused commit, as
+	// one-commit-two-answers, has no row: no result of it counts at another subject.
 	carry := []refusalOut{{"c1", code, []int64{2}}}
 	production := []refusalOut{{"c1", program, []int64{1, 2}}}
 	waitCycle := []refusalOut{
@@ -355,15 +364,16 @@ func refusalsTakeOut() map[string][]refusalOut {
 			[]refusalOut{{"m2", code, []int64{9}}}),
 		"earlier-text":         {{"c0", "messages-come-in-the-order-of-their-writes", []int64{2}}},
 		"production-and-graph": production,
-		"production-and-graph with CI's refusal at c1 of its check of the graph as a query of production":                 production,
-		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent":                              production,
-		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent of production":                production,
-		"production-and-graph with CI's refusal at c1 of its query of the graph":                                          production,
-		"production-and-graph with its program check of production as a program check of the graph":                       production,
-		"production-and-graph with test_commit c1 on the failing run of its check of the graph as a query of production":  production,
-		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent":               production,
-		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent of production": production,
-		"production-and-graph with test_commit c1 on the failing run of its query of the graph":                           production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as a query of production":                      production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent":                                   production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent of production":                     production,
+		"production-and-graph with CI's refusal at c1 of its query of the graph":                                               production,
+		"production-and-graph with a pass and a caught failing example of the test of m2 before the failure of the test of c1": production,
+		"production-and-graph with its program check of production as a program check of the graph":                            production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as a query of production":       production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent":                    production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent of production":      production,
+		"production-and-graph with test_commit c1 on the failing run of its query of the graph":                                production,
 		"refusal":    carry,
 		"silent-leg": {{"c1", code, []int64{2}}},
 		"silent-leg with its matrix dropped at m2": {{"c1", code, []int64{2}}},

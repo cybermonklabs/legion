@@ -89,7 +89,7 @@ type builtBase struct {
 	check    func(t *testing.T, name string, fsys fstest.MapFS)
 }
 
-// builtBases is each base that the sweeps read and no scenario holds, by its name: nineteen
+// builtBases is each base that the sweeps read and no scenario holds, by its name: twenty
 // shapes. silent-leg with the job's matrix dropped after c1: one run of no matrix at m2 that ended
 // with no result at m2, so the check reads unknown (ci_fault) there. Two of carry where a failure
 // and a later pass count at one subject, so the check reads unknown there (disagree; R7: "A pass
@@ -134,21 +134,28 @@ type builtBase struct {
 // read the check's earlier pass true. And two of production-and-graph with its program check of
 // production written as another kind: as a program check of the graph, whose runs read the
 // transaction tx1 and count at the commit of their test, and as an agent of production, whose block
-// names no test. Each of the nineteen reads, at the subjects of its shape, the state that the shape
-// gives its check (readsAt): the nine above the states that their shapes are for, and the ten of
-// production-and-graph their check of the graph, or the check that they write, in the state that
-// the check's kind gives its results; the eight that write a check also read it as its kind
-// (readsAs). A state does not show each fact that a builder adds (a base that holds a test_commit or
-// a refusal reads the same state with that fact as without it, by the rule that the base is for),
-// so each base built from carry and each of the eight of production-and-graph that hold a
-// test_commit or a refusal also reads back the facts that its builder adds, as the reader reads
-// them, from a statement of those facts apart from the builder's input: each record that a builder
-// of carry adds, with its kind, outcome, commit, planted_on and seq; and a run of the check that
-// failed and names test_commit c1, or CI's refusal of the check at c1. Each
-// builder writes its base's files by writers of the package (resultsAdded, lastPlantedOnLeftOut,
-// ...), each a function that gets the tree of one file of that base and the plain data
-// that it adds, so that no writer can name another base or this table. It is a function that gives
-// a new table at each call, as each table that a sweep reads is (sweepMaps).
+// names no test. And production-and-graph with a pass of its program check of production and a
+// failing example that caught its fault, each of the test of m2, before the failure of the test of
+// c1: the check reads false at m2 by that failure, which counts there by the ties. CI's refusal of
+// the check at c1 takes out c1's pass and caught failing example and keeps that failure (R48), so
+// the check still reads false, and a rule by which a refusal took out each result of its commit
+// would read the pass of m2 true, a state that the refusal sweep compares (refusalsTakeOut). Each
+// of the twenty reads, at the subjects of its shape, the state that the shape gives its check
+// (readsAt): the nine above the states that their shapes are for, the ten of production-and-graph
+// their check of the graph, or the check that they write, in the state that the check's kind gives
+// its results, and the last its program check of production false; the eight that write a check
+// also read it as its kind (readsAs). A state does not show each fact that a builder adds (a base
+// that holds a test_commit or a refusal reads the same state with that fact as without it, by the
+// rule that the base is for), so each base built from carry, each of the eight of
+// production-and-graph that hold a test_commit or a refusal, and the last also read back the facts
+// that their builder adds, as the reader reads them, from a statement of those facts apart from the
+// builder's input: each record that a builder of carry adds, with its kind, outcome, commit,
+// planted_on and seq; a run of the check that failed and names test_commit c1, or CI's refusal of
+// the check at c1; and the pass and the caught failing example of the test of m2, with their seq.
+// Each builder writes its base's files by writers of the package (resultsAdded,
+// lastPlantedOnLeftOut, ...), each a function that gets the tree of one file of that base and the
+// plain data that it adds, so that no writer can name another base or this table. It is a function
+// that gives a new table at each call, as each table that a sweep reads is (sweepMaps).
 func builtBases() map[string]builtBase {
 	const code, faultPath, secondPath = "a-restart-loses-no-message", "packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/store.go"
 	const graph, program = "the-graph-holds-a-delivery-of-each-message", "a-production-restart-loses-no-message"
@@ -358,6 +365,26 @@ func builtBases() map[string]builtBase {
 			readsAt(t, name, fsys, program, kind.want, "m2")
 		}}
 	}
+	// The last base adds to production-and-graph's records of its program check of production, a
+	// pass under d1 at 10:00, a caught failing example at 10:05 and a failure under d1 at 11:00, each
+	// of the test of c1, a copy of the pass at 10:30 and of the caught failing example at 10:35,
+	// each of the test of m2.
+	table["production-and-graph with a pass and a caught failing example of the test of m2 before the failure of the test of c1"] = builtBase{"production-and-graph", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
+		from := cloneFiles(fsys)
+		return editTree(t, fsys, "results.json", resultsAdded([]addedResult{
+			{0, map[string]any{"test_commit": "m2", "at": "2026-11-12T10:30:00Z", "seq": 7}},
+			{1, map[string]any{"test_commit": "m2", "at": "2026-11-12T10:35:00Z", "seq": 8}}})), from
+	}, func(t *testing.T, name string, fsys fstest.MapFS) {
+		of := func(s Scenario, kind ResultKind, outcome Outcome, deploy string, seq int64) bool {
+			return slices.ContainsFunc(s.Results, func(r Result) bool {
+				return r.Check == program && r.Kind == kind && r.Outcome == outcome && r.Deploy == deploy && r.TestCommit == "m2" && r.Seq == seq
+			})
+		}
+		if s, err := ReadScenario(fsys); err != nil || !of(s, ResultRun, OutcomePass, "d1", 7) || !of(s, ResultFailingExample, OutcomeFail, "", 8) {
+			t.Fatalf("%s: the reader does not read the pass of the test of m2 under d1 of seq 7 and its caught failing example of seq 8 (%v)", name, err)
+		}
+		readsAt(t, name, fsys, program, failed, "m2")
+	}}
 	return table
 }
 
@@ -375,8 +402,8 @@ type addedResult struct {
 	set  map[string]any
 }
 
-// resultsAdded is the writer of a base built from carry that adds to the tree of results.json that
-// it is handed a record for each of adds.
+// resultsAdded is the writer of results.json that adds to the tree that it is handed a record for
+// each of adds.
 func resultsAdded(adds []addedResult) treeEdit {
 	return func(v any) any {
 		results := v.([]any)
