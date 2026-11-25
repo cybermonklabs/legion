@@ -1068,14 +1068,16 @@ function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unk
   return { ...named, act: read.success ? read.data : "not shown" };
 }
 
-/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`: the card's
- *  `dispatch` block (DispatchCardEvent) as JSON text - its owner, type, actor, relation and payload
- *  or compact record, with a body read whole in place of the part the frame carried - and never
- *  the frame's payload, so a key readDispatchPayload dropped reaches no card. A block
- *  JSON.stringify cannot write (it recurses as the encoder
+/** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`, held to `bound` at
+ *  every step: the card's `dispatch` block (DispatchCardEvent) as JSON text - its owner, type,
+ *  actor, relation and payload or compact record, with a body read whole in place of the part the
+ *  frame carried - and never the frame's payload, so a key readDispatchPayload dropped reaches no
+ *  card. A block JSON.stringify cannot write (it recurses as the encoder
  *  does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
  *  `bound`, is shown by its owner, its type, its actor (`headerActor`) and the reason. A header
- *  `bound` cannot hold either keeps the owner, the type and the reason. */
+ *  `bound` cannot hold either (the card's other fields repeat the issue key, and its reply command
+ *  quotes the key for a shell) keeps the owner, the type and the reason alone, and a card that
+ *  cannot hold even those is the reason alone. */
 function dispatchCardAsText(
   rendered: Readonly<Record<string, unknown>>,
   event: DispatchCardEvent,
@@ -1094,25 +1096,19 @@ function dispatchCardAsText(
       : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound);
   if (asText !== undefined) return asText;
   const notShown = `not shown: ${reason}`;
-  const actor = headerActor(event.actor);
+  const header = { owner: event.owner, type: event.type };
   return (
     encodeWithin(
       {
         envoy: {
           ...rendered,
-          dispatch: {
-            owner: event.owner,
-            type: event.type,
-            actor,
-            payload: notShown,
-          },
+          dispatch: { ...header, actor: headerActor(event.actor), payload: notShown },
         },
       },
       bound
     ) ??
-    encode({
-      envoy: { ...rendered, dispatch: { owner: event.owner, type: event.type, payload: notShown } },
-    })
+    encodeWithin({ envoy: { dispatch: { ...header, payload: notShown } } }, bound) ??
+    encode({ envoy: { dispatch: { payload: notShown } } })
   );
 }
 

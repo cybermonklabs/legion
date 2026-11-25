@@ -2080,6 +2080,74 @@ describe("renderInbound non-dispatch envelopes", () => {
       });
     });
 
+    // The card's other fields repeat the event's issue key, and its reply command quotes the key
+    // for a shell (each `'` written `'\''`, whose backslash the card escapes again), so a key of
+    // quotes lays out in several times the frame's bytes, header and all. Such a card keeps the
+    // owner, the type and the reason alone, within the bound `payloadShownAsText` names.
+    test("a Dispatch card whose header the bound cannot hold keeps its owner, type and reason within the bound", () => {
+      const key = "'".repeat(1_000_000);
+      const raw = JSON.stringify(
+        envelope({
+          event_id: "dispatch-quoted-key",
+          source: "dispatch",
+          payload: JSON.stringify({
+            issue_key: key,
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            payload: { id: "comment-9", body: "Slice 3 is pushed." },
+          }),
+        })
+      );
+      const rendered = renderInbound(raw, reader);
+
+      const bound = Number(
+        /^its layout is larger than the (\d+) bytes a card holds$/.exec(
+          rendered.payloadShownAsText ?? ""
+        )?.[1]
+      );
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card of a ${Buffer.byteLength(raw)}-byte frame whose issue key is quotes: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(card.envoy).toEqual({
+        dispatch: {
+          owner: key,
+          type: "comment.created",
+          payload: `not shown: ${rendered.payloadShownAsText}`,
+        },
+      });
+    });
+
+    // The owner of a document's event is read from the topic the host names, which the frame's
+    // bytes do not bound, so a card may not hold even the owner; it is then the reason alone.
+    test("a Dispatch card that cannot hold even its owner is its reason alone, within the bound", () => {
+      const slug = "s".repeat(2 * INBOUND_CARD_MAX_BYTES);
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-long-slug",
+            source: "dispatch",
+            payload: JSON.stringify({
+              issue_key: null,
+              type: "comment.created",
+              actor: { kind: "user", id: "alice" },
+              payload: { id: "comment-9", body: "Slice 3 is pushed." },
+            }),
+          })
+        ),
+        reader,
+        `notifications.dispatch.document.PUB.${slug}.comment.created`
+      );
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(Buffer.byteLength(rendered.content)).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+      expect(decode(rendered.content)).toEqual({
+        envoy: { dispatch: { payload: `not shown: ${BOUND}` } },
+      });
+    });
+
     // A Dispatch payload readDispatchPayload reads no event of is shown as unrecognised and
     // none of its text, however deep: the edge passes a Dispatch frame only by the event it reads.
     test("a Dispatch payload nested 9,999 deep that is no event shows none of its text", () => {
