@@ -124,18 +124,12 @@ export interface AskAnswerForm {
    *  closed under the reader, else the one its caller handed. */
   readonly displayedAsk: AskWithTrees;
   readonly edits: AskEditWithTrees[];
-  /** Set as the reader presses the compact body's disclosure open: the press is a move into the
-   *  box it reveals, which the body focuses once the box is drawn. */
-  readonly focusNoteOnOpen: { current: boolean };
   readonly isApproval: boolean;
   readonly isSubmitting: boolean;
   readonly mutation: KeyedWriteResult<Ask, AnswerPress, unknown>;
   /** Ask back has nothing to send, read as `cannotAnswer` is. */
   readonly nothingToAskBack: boolean;
   readonly otherSelected: boolean;
-  /** Whether the compact body's disclosure, which folds the answer box and its actions, is
-   *  open. Only a compact body reads it. */
-  readonly ownWordsOpen: boolean;
   readonly questionChoice: boolean;
   /** Whether the answer box stood for a reason the option picked needs at the body's last
    *  commit, so the box takes the focus as it comes to stand for one, and not again when a body
@@ -148,14 +142,12 @@ export interface AskAnswerForm {
   /** Whether the form refuses a press: a write of it is out, or, inside `NoTooltips`, the read of
    *  the thread after its landing is not yet drawn. */
   readonly refusing: boolean;
-  readonly requiresReason: (label: string) => boolean;
   readonly selectRealOption: (label: string) => void;
   readonly selected: string[];
   readonly sendAnswer: (text: string) => void;
   readonly sendClarification: () => void;
   readonly setAnswerText: Dispatch<SetStateAction<string>>;
   readonly setAnswerTextOf: (askId: string, next: SetStateAction<string>) => void;
-  readonly setOwnWordsOpen: Dispatch<SetStateAction<boolean>>;
   readonly setQuestionChoice: Dispatch<SetStateAction<boolean>>;
   readonly startChanging: () => void;
   readonly submit: (event: FormEvent<HTMLFormElement>) => void;
@@ -163,7 +155,6 @@ export interface AskAnswerForm {
   readonly submitHint: string | undefined;
   readonly toggleOther: () => void;
   readonly threadQuery: UseQueryResult<AskRead, Error>;
-  readonly trimmedAnswer: string;
   readonly unsentAnswer: string;
   /** The files pasted or dropped into the answer box, each uploaded and its text added to the
    *  answer of the ask it was pasted under. */
@@ -580,18 +571,6 @@ export function useAskAnswerForm({
   // it where they can read and copy it, since the box it was in has gone. Their own answer is not
   // this: it left as a draft the moment the server recorded it.
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
-  // The compact body's disclosure (`AskBody`): whether it is open, and the press that opens it.
-  // A change seeds the current answer's note; a compact body shows it rather than folding text
-  // the save would send behind its disclosure. Set while rendering the first changing render,
-  // React's pattern for state derived from a prop change, so the field is never hidden a frame.
-  // Only a compact body reads the disclosure, so the seed of a full body's form shows nothing.
-  const [ownWordsOpen, setOwnWordsOpen] = useState(false);
-  const [seededFor, setSeededFor] = useState(false);
-  if (changing !== seededFor) {
-    setSeededFor(changing);
-    if (changing && answerText.trim() !== "") setOwnWordsOpen(true);
-  }
-  const focusNoteOnOpen = useRef(false);
   const reasonFieldShownBefore = useRef(false);
   // A file's text joins the answer of the ask it was pasted or dropped under, which its press
   // carries (`useDraftUpload`, `setAnswerTextOf`); only text added to the field on screen puts its
@@ -629,11 +608,11 @@ export function useAskAnswerForm({
     mutation.isSuccess ? mutation.submittedAt : 0,
     clarification.isSuccess ? clarification.submittedAt : 0
   );
-  // The landing is recorded while rendering, React's pattern for state derived from a change (as
-  // `seededFor` is): an effect would let one render between the landing and the record reach the
-  // screen, and a press then would be taken. `readAfter` is when the thread read on the page at
-  // the landing was made; the form waits for a newer one while the thread is being read. Outside
-  // `NoTooltips` nothing waits, so nothing is recorded and the form renders as on `main`.
+  // The landing is recorded while rendering, React's pattern for state derived from a change: an
+  // effect would let one render between the landing and the record reach the screen, and a press
+  // then would be taken. `readAfter` is when the thread read on the page at the landing was made;
+  // the form waits for a newer one while the thread is being read. Outside `NoTooltips` nothing
+  // waits, so nothing is recorded and the form renders as on `main`.
   const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
     readAfter: null,
     write: landedWrite,
@@ -682,26 +661,22 @@ export function useAskAnswerForm({
     disabledWhileOut,
     displayedAsk,
     edits,
-    focusNoteOnOpen,
     isApproval,
     isSubmitting,
     mutation,
     nothingToAskBack: held?.nothingToAskBack ?? trimmedAnswer === "",
     otherSelected,
-    ownWordsOpen,
     questionChoice,
     reasonFieldShownBefore,
     reasonRequired,
     refusedWhileOut,
     refusing,
-    requiresReason,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
     setAnswerText,
     setAnswerTextOf,
-    setOwnWordsOpen,
     setQuestionChoice,
     startChanging,
     submitGuard,
@@ -709,7 +684,6 @@ export function useAskAnswerForm({
     submitHint,
     toggleOther,
     threadQuery,
-    trimmedAnswer,
     unsentAnswer,
     upload,
   };

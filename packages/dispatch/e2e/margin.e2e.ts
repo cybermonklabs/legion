@@ -717,7 +717,6 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await alicePage.getByRole("tab", { name: "Spec" }).click();
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
-    await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
@@ -795,9 +794,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await setSheet(page, testInfo.project.name, true);
     const card = needsYouCards(page).getByTestId(`ask-${ask.id}`);
     await expect(card).toContainText("severity table shape");
-    await expect(
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    ).toBeVisible();
+    await expect(card.getByLabel("Your answer")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath(`margin-long-options-${testInfo.project.name}.png`),
     });

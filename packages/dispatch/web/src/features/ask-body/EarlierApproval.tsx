@@ -5,6 +5,7 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { useTooltips } from "../../components/tooltips";
 import { dangerText, textMutedOnSurface } from "../../theme/classes";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
@@ -58,10 +59,12 @@ function ApprovedChangeView({
 
 /**
  * The approval an approval request follows, when the document has one: `Approved at version N
- * on <date> by <who>.` and a **Show diff** control that reveals `ApprovedChangeView`. Renders
- * nothing for a first request, whose `approval` carries no `approved`. `agentNames` is how the
- * ask body names the approver (`ask-agent.tsx`); the reading pane's head, which draws it beside
- * its own approval chip, names it as every surface of today's pages does.
+ * on <date> by <who>`, with no full stop at its end, and a **Show diff** control that reveals
+ * `ApprovedChangeView`. Renders nothing for a first request, whose `approval` carries no
+ * `approved`. Inside `NoTooltips` its date carries no `title`, as no time there does.
+ * `agentNames` is how the ask body names the approver (`ask-agent.tsx`); the reading pane's
+ * head, which draws it beside its own approval chip, names it as every surface of today's pages
+ * does.
  */
 export function EarlierApproval({
   agentNames = "live",
@@ -71,6 +74,7 @@ export function EarlierApproval({
   approval: AskApproval;
 }): ReactNode {
   const [diffOpen, setDiffOpen] = useState(false);
+  const tooltips = useTooltips();
   const { approved } = approval;
   if (approved === undefined) {
     return null;
@@ -81,11 +85,11 @@ export function EarlierApproval({
         {`${ASK_APPROVAL_WORDS.approved.at_version} `}
         {approved.version}
         {` ${ASK_APPROVAL_WORDS.approved.on}`}{" "}
-        <time dateTime={approved.at} title={approved.at}>
+        <time dateTime={approved.at} title={tooltips ? approved.at : undefined}>
           {approved.at.slice(0, 10)}
         </time>{" "}
         {`${ASK_APPROVAL_WORDS.approved.by} `}
-        <AskAgent actor={approved.by} agentNames={agentNames} inline />.
+        <AskAgent actor={approved.by} agentNames={agentNames} inline />
       </p>
       <DisclosureToggle
         expanded={diffOpen}

@@ -122,12 +122,6 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
 
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
-const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
-
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */
 function focusedRow(): HTMLElement | null {
   return focusedMatching(ROW_SELECTOR);
@@ -1192,19 +1186,9 @@ export function Inbox({
       id: "answer",
       keys: "Enter",
       label: `Answer the ${acted} ask`,
-      run: () => {
-        // A decision block's compact card folds its answer box behind "Add a note or answer in
-        // your own words"; Enter presses that disclosure, and the card lands the focus in the
-        // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column draws that compact card: from a row, and
-        // from a disclosure already open, the key goes straight to the box.
-        const box = inAnswerHand("[data-ask-answer]");
-        if (box === null && paneShown) {
-          inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
-          return;
-        }
-        box?.focus();
-      },
+      // The answer box stands in place in every ask body (`ask-body/AskBody.tsx`), the compact
+      // one a decision block hosts among them, so Enter puts the caret in it.
+      run: () => inAnswerHand("[data-ask-answer]")?.focus(),
       // Enter is the list's key: it carries the reader from the row they are on into the
       // column's answer box. Everywhere else the key belongs to the control that holds the
       // focus - the card's own `Ask back instead` or an option inside the column, a row's owner
@@ -1216,8 +1200,7 @@ export function Inbox({
       when: () =>
         paneShown
           ? (focusedRow() !== null || document.activeElement === document.body) &&
-            (inAnswerHand("[data-ask-answer]") !== null ||
-              inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
+            inAnswerHand("[data-ask-answer]") !== null
           : inAnswerHand("[data-ask-answer]") !== null,
     },
     {

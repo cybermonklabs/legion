@@ -208,77 +208,80 @@ function AnsweredAsk({
       data-testid={`ask-${ask.id}`}
       ref={markRef}
     >
-      <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="success" />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
-      {frame === "block" ? null : (
-        <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
-          {renderText({
-            markdown: ask.question,
-            source: textSourceOf("ask", ask.id),
-            tree: ask.question_tree,
-          })}
-        </div>
-      )}
-      <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
-        <AskAgent actor={ask.author} agentNames={agentNames} inline />
-      </p>
-      {ask.kind === "approval" && documentLink ? (
-        <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
-          <AskApprovalLink ask={ask} />
-        </p>
-      ) : null}
-      <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
-      <AskOptionList
-        options={ask.options ?? []}
-        renderText={renderText}
-        selected={answer?.selected ?? []}
-      />
-      {otherText !== null && otherText !== "" ? (
-        <div className="mt-2">
-          <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
-            {ASK_RECORD_WORDS.other}
-          </p>
-          <div className="mt-1">
+      {/* The ask body's root (`AskBody`), inside the record its test id names. */}
+      <div data-ask-body="">
+        <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="success" />
+        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
+        {frame === "block" ? null : (
+          <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
             {renderText({
-              markdown: otherText,
+              markdown: ask.question,
               source: textSourceOf("ask", ask.id),
-              tree: answer?.text_tree,
+              tree: ask.question_tree,
             })}
           </div>
-        </div>
-      ) : answer === null || answer.text === null || answer.text === "" ? null : (
-        <div className="mt-1">
-          {renderText({
-            markdown: answer.text,
-            source: textSourceOf("ask", ask.id),
-            tree: answer.text_tree,
-          })}
-        </div>
-      )}
-      {answer === null ? (
-        <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          {`${ASK_RECORD_WORDS.asked} `}
-          <Timestamp at={ask.created_at} />
+        )}
+        <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
+          <AskAgent actor={ask.author} agentNames={agentNames} inline />
         </p>
-      ) : (
-        <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          {`${ASK_RECORD_WORDS.asked} `}
-          <Timestamp at={ask.created_at} />
-          {` · ${ASK_RECORD_WORDS.answered_by}`}{" "}
-          <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
-          <Timestamp at={answer.at} />
-        </p>
-      )}
-      <AskAnswerHistory answers={answers} renderText={renderText} />
-      {onChangeAnswer === undefined ? null : (
-        <button
-          className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
-          onClick={onChangeAnswer}
-          type="button"
-        >
-          {ASK_RECORD_WORDS.change_answer}
-        </button>
-      )}
+        {ask.kind === "approval" && documentLink ? (
+          <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
+            <AskApprovalLink ask={ask} />
+          </p>
+        ) : null}
+        <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
+        <AskOptionList
+          options={ask.options ?? []}
+          renderText={renderText}
+          selected={answer?.selected ?? []}
+        />
+        {otherText !== null && otherText !== "" ? (
+          <div className="mt-2">
+            <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
+              {ASK_RECORD_WORDS.other}
+            </p>
+            <div className="mt-1">
+              {renderText({
+                markdown: otherText,
+                source: textSourceOf("ask", ask.id),
+                tree: answer?.text_tree,
+              })}
+            </div>
+          </div>
+        ) : answer === null || answer.text === null || answer.text === "" ? null : (
+          <div className="mt-1">
+            {renderText({
+              markdown: answer.text,
+              source: textSourceOf("ask", ask.id),
+              tree: answer.text_tree,
+            })}
+          </div>
+        )}
+        {answer === null ? (
+          <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
+            {`${ASK_RECORD_WORDS.asked} `}
+            <Timestamp at={ask.created_at} />
+          </p>
+        ) : (
+          <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
+            {`${ASK_RECORD_WORDS.asked} `}
+            <Timestamp at={ask.created_at} />
+            {` · ${ASK_RECORD_WORDS.answered_by}`}{" "}
+            <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
+            <Timestamp at={answer.at} />
+          </p>
+        )}
+        <AskAnswerHistory answers={answers} renderText={renderText} />
+        {onChangeAnswer === undefined ? null : (
+          <button
+            className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
+            onClick={onChangeAnswer}
+            type="button"
+          >
+            {ASK_RECORD_WORDS.change_answer}
+          </button>
+        )}
+      </div>
     </article>
   );
 }
@@ -305,50 +308,53 @@ function ResolvedAsk({
       className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
       data-testid={`ask-${ask.id}`}
     >
-      <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
-      {frame === "block" ? null : (
-        <div className={`font-medium ${textPrimaryOnSurface}`}>
-          {renderText({
-            markdown: ask.question,
-            source: textSourceOf("ask", ask.id),
-            tree: ask.question_tree,
-          })}
-        </div>
-      )}
-      <span
-        className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
-        data-testid="ask-resolution-badge"
-      >
-        {askResolutionBadge(resolution)}
-      </span>
-      <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
-        <AskAgent actor={ask.author} agentNames={agentNames} inline />
-      </p>
-      {ask.kind === "approval" && documentLink ? (
-        <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
-          <AskApprovalLink ask={ask} />
-        </p>
-      ) : null}
-      <AskOptionList options={ask.options ?? []} renderText={renderText} selected={[]} />
-      <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
-      <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
-        {`${ASK_RECORD_WORDS.asked} `}
-        <Timestamp at={ask.created_at} />
-        {" · "}
-        <AskResolutionActor agentNames={agentNames} resolution={resolution} />
-        {reason === undefined ? null : (
-          <>
-            {" "}
-            -{" "}
+      {/* The ask body's root (`AskBody`), inside the record its test id names. */}
+      <div data-ask-body="">
+        <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
+        {frame === "block" ? null : (
+          <div className={`font-medium ${textPrimaryOnSurface}`}>
             {renderText({
-              markdown: reason,
+              markdown: ask.question,
               source: textSourceOf("ask", ask.id),
-              tree: ask.resolution.reason_tree,
-              variant: "inline",
+              tree: ask.question_tree,
             })}
-          </>
+          </div>
         )}
-      </p>
+        <span
+          className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+          data-testid="ask-resolution-badge"
+        >
+          {askResolutionBadge(resolution)}
+        </span>
+        <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
+          <AskAgent actor={ask.author} agentNames={agentNames} inline />
+        </p>
+        {ask.kind === "approval" && documentLink ? (
+          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+            <AskApprovalLink ask={ask} />
+          </p>
+        ) : null}
+        <AskOptionList options={ask.options ?? []} renderText={renderText} selected={[]} />
+        <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
+        <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
+          {`${ASK_RECORD_WORDS.asked} `}
+          <Timestamp at={ask.created_at} />
+          {" · "}
+          <AskResolutionActor agentNames={agentNames} resolution={resolution} />
+          {reason === undefined ? null : (
+            <>
+              {" "}
+              -{" "}
+              {renderText({
+                markdown: reason,
+                source: textSourceOf("ask", ask.id),
+                tree: ask.resolution.reason_tree,
+                variant: "inline",
+              })}
+            </>
+          )}
+        </p>
+      </div>
     </article>
   );
 }

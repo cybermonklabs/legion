@@ -20,9 +20,9 @@
  * | The card drawn for another ask, then back          | cell   | cell   | cell             |
  * | The card ended, then drawn again (off)             | cell   | cell   | cell             |
  * | Write a reply closed, then opened (off)            | -      | -      | cell             |
- * | The note folded, then opened (off)                 | no (3) | -      | -                |
+ * | The card drawn in another frame                    | no (3) | -      | -                |
  * | The fields' ends of the card ordered the other way | no (1) | no (1) | no (1)           |
- * | The card drawn in another form                     | no (2) | no (2) | no (2)           |
+ * | The card drawn with another thread                 | -      | no (2) | no (2)           |
  * | The question settled, or its answer changed        | no (4) | no (7) | no (7)           |
  * | The ask opened again                               | -      | no (5) | no (5)           |
  * | The ask's thread read fails, then lands            | -      | no (6) | no (6)           |

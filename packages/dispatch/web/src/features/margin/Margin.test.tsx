@@ -522,10 +522,11 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
     const needsYou = await marginAskCard(unanchoredAsk.id, "needs-you");
     expect(await within(needsYou).findByText(unanchoredAsk.question)).toBeTruthy();
     expect(within(needsYou).getAllByRole("time")).toHaveLength(1);
-    expect(within(needsYou).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    // The answer box stands in place: no disclosure folds it.
+    expect(within(needsYou).getByLabelText("Your answer")).toBeInTheDocument();
     expect(
-      within(needsYou).getByText("Add a note or answer in your own words", { exact: true })
-    ).toBeTruthy();
+      within(needsYou).queryByText("Add a note or answer in your own words", { exact: true })
+    ).not.toBeInTheDocument();
     const shipOption = await within(needsYou).findByRole("radio", { name: "Ship" });
     await user.click(shipOption);
     expect((shipOption as HTMLInputElement).checked).toBe(true);

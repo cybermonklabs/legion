@@ -372,7 +372,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | - | form | if (paneShown && focusInPane())", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (paneSelection.id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (box === null && paneShown) return …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (paneShown && focusInPane()) return …", {
     reason: REASONS[13],
   }),

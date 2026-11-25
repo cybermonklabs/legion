@@ -27,6 +27,7 @@ import {
   pageStateText,
   surfaceBg,
   textMutedHoverToSecondary,
+  textMutedOnSurface,
 } from "../../theme/classes";
 import { AskBody, askUploadOwner } from "../ask-body/AskBody";
 import { AskEditHistory, type AskFrame } from "../ask-body/AskCompletionCard";
@@ -63,18 +64,16 @@ export interface AskCardProps {
    *  it), so the card can still name the ask's `dispatch://` reference. */
   owner?: { project: string; slug: string };
   thread?: "inline" | "collapsed";
-  /** `compact` (the margin and the review sheet) renders the same option rows as `full`, but
-   *  folds the free-text field and its Answer / Ask back actions behind an **Add a note or answer
-   *  in your own words** disclosure, showing a lone Answer button once an option is picked; the
-   *  disclosure opens itself when the pick needs words (Other, or an option requiring a reason).
-   *  The article also takes tighter padding (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing
-   *  else depends on the variant. */
+  /** `compact` (the margin, a decision block and the Conversation) takes tighter padding
+   *  (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing else depends on the variant: the
+   *  answer box stands in place in both. */
   variant?: "compact" | "full";
   /** `card` (the default) draws the card: frame, urgency accent and notch, the question, and the
    *  link to a block ask's document. `block` is the card hosted inside its own decision block
    *  (`features/doc/AskBlockCard.tsx`): the block shell already draws the frame and accent, the
-   *  editor shows the question, and the block is the link's target, so the card renders only
-   *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
+   *  editor shows the question, the block names its kind, and the block is the link's target,
+   *  so the card renders only what the block lacks — who asked and when, the exchange, and the
+   *  composer or the record. */
   frame?: AskFrame;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
   declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
@@ -122,9 +121,10 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 
 /**
  * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
- * role `main`'s colour has: the card is the page's paper inside its hairline rule, and the
- * asker's control, which opens the copy handles, is the quiet grey a reader acts on. What the
- * card's children draw - the ask body, the recipients, the thread - is theirs.
+ * role `main`'s colour has: the card is the page's paper inside its hairline rule, the line of
+ * its copy handles is the quiet grey, and the asker's control, which opens the copy handles, is
+ * the quiet grey a reader acts on. What the card's children draw - the ask body, the recipients,
+ * the thread - is theirs.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -134,6 +134,7 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  */
 const ON_PAGE = {
   frame: `${pageHairBorder} ${pagePaperBg}`,
+  line: pageQuietText,
   notch: pagePaperBg,
   quietAct: `${pageQuietText} hover:text-page-muted`,
 } as const;
@@ -160,8 +161,10 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  * One ask on every surface: the ask body (`ask-body/AskBody.tsx`), which draws the ask's
  * question, options and answer parts and its settled record, inside the card's own frame. The
  * card holds what its surfaces alone draw - the urgency notch, the recipients, the copy handles,
- * the edit history, the references and the ask's thread - and the form that holds the ask's
- * state (`useAskAnswerForm`), which reads the ask's thread.
+ * the edit history, the references and the ask's thread - and draws each above the body or
+ * below it, never between its parts: the thread above it where the reader's thread order puts
+ * the answer box at the foot (Oldest first), else below it. It also holds the form that holds
+ * the ask's state (`useAskAnswerForm`), which reads the ask's thread.
  */
 export function AskCard({
   artifactSlug,
@@ -288,35 +291,38 @@ export function AskCard({
       />
     );
   // The ask's own reference, and the session's handles - its ID, its title, its tmux target -
-  // folded behind the asker's control, which opens them onto their own row.
-  const handlesNode = (
-    <>
-      {reference === undefined ? null : <CopyRefButton route={reference} />}
-      {!handlesOpen ? null : (
-        <span className="flex basis-full flex-wrap items-center gap-x-1.5">
-          {sessionAuthor === undefined ? null : (
-            <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
-              {ASK_CARD_WORDS.copy_id}
-            </CopyButton>
-          )}
-          {sessionTitle === undefined || sessionTitle === "" ? null : (
-            <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
-              {ASK_CARD_WORDS.copy_title}
-            </CopyButton>
-          )}
-          {tmuxTarget === undefined ? null : (
-            <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
-              {tmuxTarget}
-            </CopyButton>
-          )}
-        </span>
-      )}
-    </>
-  );
+  // folded behind the asker's control, which opens them onto their own row: one line under the
+  // body.
+  const handlesNode =
+    reference === undefined && !handlesOpen ? null : (
+      <div
+        className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.line}`}
+      >
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
+        {!handlesOpen ? null : (
+          <span className="flex basis-full flex-wrap items-center gap-x-1.5">
+            {sessionAuthor === undefined ? null : (
+              <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
+                {ASK_CARD_WORDS.copy_id}
+              </CopyButton>
+            )}
+            {sessionTitle === undefined || sessionTitle === "" ? null : (
+              <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
+                {ASK_CARD_WORDS.copy_title}
+              </CopyButton>
+            )}
+            {tmuxTarget === undefined ? null : (
+              <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
+                {tmuxTarget}
+              </CopyButton>
+            )}
+          </span>
+        )}
+      </div>
+    );
   const body = (
     <AskBody
       agentNames="live"
-      answerFirst={answerFirst}
       artifactSlug={artifactSlug}
       ask={ask}
       askerControl={(name) => (
@@ -332,22 +338,26 @@ export function AskCard({
       )}
       decline={decline}
       documentLink={documentLink}
-      editHistory={<AskEditHistory ask={displayedAsk} edits={edits} renderText={markdownText} />}
       form={form}
       frame={frame}
-      handles={handlesNode}
       markRecord={answerIsNewest ? markNewest : undefined}
       onAnswered={onAnswered}
       owner={owner}
-      references={referencedByNode}
       renderText={markdownText}
-      thread={threadNode}
       urgencyWord={false}
-      variant={variant}
     />
   );
 
-  if (completed !== null) return body;
+  // A settled ask's record, then its references and its thread under it.
+  if (completed !== null) {
+    return (
+      <>
+        {body}
+        {referencedByNode}
+        {threadNode}
+      </>
+    );
+  }
 
   return (
     <article
@@ -373,7 +383,12 @@ export function AskCard({
           {ASK_SHARED_WORDS.urgency[urgency].toUpperCase()}
         </span>
       ) : null}
+      {answerFirst ? null : threadNode}
       {body}
+      {handlesNode}
+      <AskEditHistory ask={displayedAsk} edits={edits} renderText={markdownText} />
+      {referencedByNode}
+      {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
         claimant={threadQuery.data?.claimant ?? null}

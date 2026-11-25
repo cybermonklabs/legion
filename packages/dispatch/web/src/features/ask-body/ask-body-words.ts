@@ -32,10 +32,21 @@ export const ASK_CARD_WORDS = Object.freeze({
   urgency: "Urgency:",
 } as const);
 
-/** The line under the question: whose turn it is, and who asked. */
+/** The body's first line and the line under it: the kind of every ask, the urgency word a
+ *  caller that sets `urgencyWord` has drawn beside it, who asked, and whose turn it is. */
 export const ASK_LINE_WORDS = Object.freeze({
   /** The asker of a block ask the server indexed with no author. */
   asked: "asked",
+  /** The kind of every ask, at the right end of the first line: the new issue page's one word
+   *  for an ask (`NODE_TYPE_NAMES.ask` in `issue-page/page-words.ts`). */
+  kind: "question",
+  /** The urgency words the first line draws beside the kind (R17), only for an ask so urgent it
+   *  carries one: the card's notch's words for those urgencies (`URGENCY_LABELS`). An ask of
+   *  urgency `low` or `med` draws none. */
+  urgency: Object.freeze({
+    blocking: URGENCY_LABELS.blocking,
+    high: URGENCY_LABELS.high,
+  } as const),
   waiting_on: "Waiting on",
   /** Whom the ask waits on, where that is the reader. */
   you: "you",
@@ -43,7 +54,7 @@ export const ASK_LINE_WORDS = Object.freeze({
 
 /** An approval request's words: its mark, its document's link, and the approval it follows. */
 export const ASK_APPROVAL_WORDS = Object.freeze({
-  /** "Approved at version N on <date> by <who>." */
+  /** "Approved at version N on <date> by <who>", with no full stop at its end. */
   approved: Object.freeze({ at_version: "Approved at version", by: "by", on: "on" } as const),
   diff_failed: "Could not load versions to compare.",
   diff_loading: "Loading versions to compare…",
@@ -57,7 +68,7 @@ export const ASK_APPROVAL_WORDS = Object.freeze({
 /** The links to where an ask stands: its block, and the text an anchored ask quotes. */
 export const ASK_LINK_WORDS = Object.freeze({
   open_in_document: "Open in document",
-  text_changed: "Text changed.",
+  text_changed: "Text changed",
   view_original: "View original text",
 } as const);
 
@@ -74,7 +85,6 @@ export const ASK_FORM_WORDS = Object.freeze({
   clarification_failed: "Could not send your clarification.",
   options: "Answer options",
   other: "Other",
-  own_words: "Add a note or answer in your own words",
   placeholder: Object.freeze({
     add_note: "Add a note (optional)",
     note: "Note (optional)",
@@ -84,7 +94,7 @@ export const ASK_FORM_WORDS = Object.freeze({
   /** Under Answer while the option picked needs a reason: "Add a reason to send Request
    *  changes". */
   reason_hint: "Add a reason to send",
-  question_shaped: "Question-shaped answer",
+  question_shaped: "Your answer reads as a question",
   reason: "Reason",
   reason_required: "Reason (required)",
   save_answer: "Save answer",
@@ -124,8 +134,7 @@ export const ASK_DECLINE_WORDS = Object.freeze({
   characters: "characters",
   decline: "Decline to answer",
   declining: "Declining…",
-  explained:
-    "The question closes with no answer. Dispatch tells the agent that asked to decide without one.",
+  explained: "The question closes with no answer, and the agent that asked decides without one",
   failed: "Could not decline this question. Try again.",
   left: "left",
   note: "Note (optional)",
