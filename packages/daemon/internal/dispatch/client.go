@@ -391,23 +391,20 @@ const eventPageLimit = 200
 // that does not decode is named in fixed text, and its created_at is Dispatch's words held with
 // the request's record, read as an RFC 3339 time: one that is not a time is refused naming the
 // event's place in the page and the member, never the value. An absent, null or empty created_at
-// is the zero time. Each event's payload is the answer's data (Answer.StreamTo), which the event's
-// reader decodes by the event's type. An event that does not decode, or whose created_at is not a
-// time, is an *EventLogError naming its place in the log read (undecodedEvent).
+// is the zero time. Each event's payload is the answer's data (oauth2call.Unmarshal), which the
+// event's reader decodes by the event's type. An event that does not decode, or whose created_at
+// is not a time, is an *EventLogError naming its place in the log read (undecodedEvent).
 func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values, read int) ([]Event, error) {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/events?" + query.Encode()
 	answer, err := c.answer(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	var body bytes.Buffer
-	if _, err := answer.StreamTo(&body); err != nil {
-		return nil, fmt.Errorf("read Dispatch GET %s response: %w", path, err)
-	}
 	var page []answeredEvent
 	if err := answer.Decode(&page); err != nil {
 		err = fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
-		if place := undecodedEvent(body.Bytes()); place > 0 {
+		var place int
+		if oauth2call.Holds(answer, func(body []byte) bool { place = undecodedEvent(body); return place > 0 }) {
 			return nil, &EventLogError{Event: read + place, Err: err}
 		}
 		return nil, err
@@ -415,8 +412,8 @@ func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values
 	var payloads []struct {
 		Payload json.RawMessage `json:"payload"`
 	}
-	if err := json.Unmarshal(body.Bytes(), &payloads); err != nil {
-		return nil, fmt.Errorf("decode Dispatch GET %s response's payloads: %w", path, oauth2call.DecodeError(err, body.Bytes(), &payloads))
+	if err := oauth2call.Unmarshal(answer, &payloads); err != nil {
+		return nil, fmt.Errorf("decode Dispatch GET %s response's payloads: %w", path, err)
 	}
 	events := make([]Event, len(page))
 	for i, answered := range page {
@@ -455,7 +452,7 @@ func undecodedEvent(page []byte) int {
 // most the first part of a long body (contracts.DispatchEventBodyMax) and say so with
 // body_truncated; the whole of such a body is read from GET /api/v1/issues/{key}/messages/{id},
 // since the outbox's marker closes a body and the cut would drop it. A message.created payload
-// that does not decode is named in fixed text (oauth2call.DecodeError), never json's error. A
+// that does not decode is named in fixed text (oauth2call.UnmarshalData), never json's error. A
 // message its author deleted keeps its message.created event, whose every read carries deleted_at
 // and no body: it is no notice the outbox posted, so the read passes over it, and any other event
 // with no body is still refused.
@@ -491,8 +488,8 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				BodyTruncated bool            `json:"body_truncated"`
 				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
-			if err := json.Unmarshal(event.Payload, &message); err != nil {
-				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, oauth2call.DecodeError(err, event.Payload, &message))
+			if err := oauth2call.UnmarshalData(event.Payload, &message); err != nil {
+				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
 			}
 			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
 				continue
