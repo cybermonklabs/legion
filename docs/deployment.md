@@ -545,9 +545,11 @@ A job entry of the broker is how such a token names its writer's own account and
 project key, or `public` and at most 16 private project keys) and, where it fixes one, a session.
 The token the exchange mints for that identity names it as its service and no person, so Dispatch
 records a daemon's or a workflow's write under its session and its own account, and under no
-person. Dispatch judges a token whose entry names one project as it judges a person's named token
-for that project: it writes that project, and its write to another project is
-`403 PROJECT_SCOPE` until dispatch://INFRA-4799 changes that for both. A token whose entry names
+person. The token holds no OAuth scope, so a route that needs one refuses it with
+`403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A token whose entry names one
+project writes that project, and the project check judges its write to another project as it
+judges a person's `named` token's for the same project: `403 PROJECT_SCOPE` until
+dispatch://INFRA-4799 changes that answer for both. A token whose entry names
 `public` writes wherever a token that names no project may, and its list limits no write at
 this release. A GitHub Actions job trades its run's token with
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`

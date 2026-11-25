@@ -5,9 +5,11 @@
  *  BROKER_EXCHANGE_JOB_WORKFLOWS) names an identity, its projects and a fixed session, and no
  *  person; the broker's exchange answers that identity's own token with a token whose service is
  *  the identity, and Dispatch records each write of it under the session with that service and no
- *  owner. Dispatch answers a job's token of one project, where it writes another project, as it
- *  answers a person's named token for that project: `PROJECT_SCOPE` until dispatch://INFRA-4799
- *  changes that for both. The example entry's token, which names a person and EXAMPLE, is the
+ *  owner. A route that needs an OAuth scope refuses a job's token, which holds none, with
+ *  `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. That check judges a job's
+ *  token of one project, where it writes another project, as it judges a person's named token
+ *  for the same project: `403 PROJECT_SCOPE` until dispatch://INFRA-4799 changes that answer
+ *  for both. The example entry's token, which names a person and EXAMPLE, is the
  *  control: whoami names that person as its owner, so the read tells a person's token from a
  *  job's, and its answer to the job pod's creation in OPS is the one the job pod's must equal.
  *

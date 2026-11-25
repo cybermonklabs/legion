@@ -78,7 +78,7 @@ func actionsToken(repo, path, gitRef string) map[string]any {
 }
 
 // TestParseJobProjectsReadsOneKeyOrPublicAndItsList pins the reading of a job entry's projects:
-// one project key, for which Dispatch judges its token as a person's named token for that
+// one project key, whose token Dispatch's project check judges as a person's named token for that
 // project, or public followed by ,<key> for each private project, at most oauthwire.MaxProjects
 // of them, answered sorted; public is no project key and does not count toward them. Every other
 // spelling is refused naming the rule it breaks, so a list that is not one is never read as some

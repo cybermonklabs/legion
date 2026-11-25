@@ -901,8 +901,9 @@ type Config struct {
 	// projects are one project key, or public followed by ,<key> for each of at most 16 private
 	// projects, the keys in any order, public counting toward none (exchange.ParseJobProjects).
 	// The token minted for a pod of the account names the account as its service and no person,
-	// holds no OAuth scope, and carries the entry's projects whatever the exchange request names: the
-	// project scope named and its one project, for which Dispatch judges the token as it judges a
+	// holds no OAuth scope, so a route that needs one refuses it before Dispatch's project check
+	// runs, and carries the entry's projects whatever the exchange request names: the
+	// project scope named and its one project, for which that check judges the token as it judges a
 	// person's named token for that project, or the project scope public and the private projects,
 	// beside which it reaches every public project. At this release Dispatch does not read a public
 	// token's list, so such a token writes wherever a token that names no project may. A request

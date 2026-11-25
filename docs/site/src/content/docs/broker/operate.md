@@ -817,19 +817,20 @@ BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/sweep.y
 `<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private
 projects. The token the exchange mints for a job entry names the entry's identity as its service
 (the account, or `<repository>/<workflow path>@<ref>` for a workflow) and no person, holds no OAuth
-scope, and carries the entry's projects whatever the request names: under the project scope
-`named` its one project, for which Dispatch judges the token as it judges a person's named token
-for that project (a write to another project is `403 PROJECT_SCOPE` for both until
-dispatch://INFRA-4799 changes that), or under the project scope `public` its private
+scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` before
+Dispatch's project check runs, and carries the entry's projects whatever the request names: under
+the project scope `named` its one project, for which that check judges the token as it judges a
+person's `named` token for that project (a write to another project is `403 PROJECT_SCOPE` for
+both until dispatch://INFRA-4799 changes that), or under the project scope `public` its private
 projects, beside which it reaches every public project. A request may name no project or only
 projects of the entry, and the broker refuses one that names any other, a public project's key
 under `public` included, since it cannot tell a public project's key from a key no project holds.
 The broker asks Dispatch nothing for such a token: the entry chose its projects. Dispatch records
-each write of the token under its session, for its service and under no person, and a route that
-needs the OAuth scope `person` or `approve` refuses it. At this release Dispatch does not read a
-`public` token's list, so such a token writes wherever a token that names no project may. An entry
-that fixes no session takes the session the trade names, and the broker refuses a trade that names
-none; a daemon may register a pod of a job account whose entry fixes none (above).
+each write of the token under its session, for its service and under no person. At this release
+Dispatch does not read a `public` token's list, so such a token writes wherever a token that
+names no project may. An entry that fixes no session takes the session the trade names, and the
+broker refuses a trade that names none; a daemon may register a pod of a job account whose entry
+fixes none (above).
 
 The broker refuses to start, naming the entry, on an entry of either setting not of its form or
 with a blank field, a pod account that is not `system:serviceaccount:<namespace>:<name>` or is a
