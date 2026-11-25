@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -245,8 +246,8 @@ func (w *approvingWriter) Write(p []byte) (int, error) {
 // actor a person's sign-in presents.
 func forceMetadataMachine(t *testing.T) {
 	t.Helper()
-	t.Setenv(cipherclient.IdentityVar, cipherclient.IdentityMetadata)
-	t.Setenv(cipherclient.MachineAudienceVar, "agent-secrets-vm")
+	t.Setenv(cipherclient.IdentityVar, "metadata")
+	t.Setenv(identity.MachineAudienceVar, "agent-secrets-vm")
 	startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 }
 

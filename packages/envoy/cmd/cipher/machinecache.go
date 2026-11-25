@@ -16,8 +16,8 @@
 // read holds it shared, so no process signs with one registration's key and another's enrollment.
 //
 // The directory also keeps the first Google exchange audience the broker named for which this
-// machine found an identity to mint a token (googleAudienceFile, checkGoogleAudience,
-// keepGoogleAudience), since the broker's settings, which are unauthenticated, choose the audience
+// machine found an identity to mint a token (the detector's own KeptFile, checkAudience,
+// keepAudience), since the broker's settings, which are unauthenticated, choose the audience
 // of the identity token this machine mints and hands over.
 //
 // A client before #4143 kept that session in the launcher's key directory, marked with a
@@ -35,6 +35,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -44,12 +45,15 @@ const (
 	// machineCacheLock is the file in the machine cache whose flock pairs key.pem and enrollment
 	// (lockMachineCache).
 	machineCacheLock = "lock"
-	// googleAudienceFile is the file in the machine cache that keeps the first Google exchange
-	// audience this machine found an identity for (keepGoogleAudience).
-	googleAudienceFile = "google-exchange-audience"
 )
 
 var errLockWouldBlock = errors.New("the machine cache lock is held")
+
+// audienceFileWords names the file in the machine cache that keeps the audience one detector's
+// provider reads, as a message names it: the detector's own KeptFile, in the cache.
+func audienceFileWords(detector identity.Detector) string {
+	return detector.KeptFile + " in " + machineCacheName
+}
 
 // machineCacheDir is ${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine, beside the
 // sign-ins (cipherclient.SignIns): state a reboot keeps, unlike the key directory, which is
@@ -76,13 +80,12 @@ func machineCacheHolds(dir string) bool {
 
 // machineCacheName is how a message names the machine cache: by where it is, never by its path,
 // since it holds the machine session's key.pem. machineCacheKeyFile names that key.pem (loadKey),
-// machineCacheEnrollment the enrollment file beside it, and machineCacheAudienceFile the kept
-// Google exchange audience (googleAudienceFile).
+// machineCacheEnrollment the enrollment file beside it, and audienceFileWords the kept audience
+// of one identity detector, named by that detector's own KeptFile.
 const (
-	machineCacheName         = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
-	machineCacheKeyFile      = "key.pem in " + machineCacheName
-	machineCacheEnrollment   = "the enrollment file in " + machineCacheName
-	machineCacheAudienceFile = googleAudienceFile + " in " + machineCacheName
+	machineCacheName       = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
+	machineCacheKeyFile    = "key.pem in " + machineCacheName
+	machineCacheEnrollment = "the enrollment file in " + machineCacheName
 )
 
 // readMachineCache is the signer of the session the machine cache holds, or nil and no error
@@ -286,32 +289,32 @@ func registerMachineSession(ctx context.Context, dir string, identity cipherclie
 }
 
 // checkGoogleAudience refuses a Google exchange audience other than the one this machine kept from
-// its broker at base (googleAudienceFile, keepGoogleAudience), and passes any audience where none
+// its broker at base (the detector's KeptFile, keepAudience), and passes any audience where none
 // is kept or there is no machine cache directory. The broker's GET /v1/settings is
 // unauthenticated, and its answer chooses the audience of the identity token this machine mints
 // and hands over, so a broker that later names another audience — a wrong AGENT_SECRETS_URL, a
 // broker someone else now answers for — is refused before any token is minted for someone else's
 // service. It writes nothing: a machine with no identity of its own mints nothing, so it keeps no
 // audience, and a later audience or broker still gets the chain's no-source refusal.
-func checkGoogleAudience(base cipheraddr.Address, audience string) error {
+func checkAudience(base cipheraddr.Address, detector identity.Detector, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
 	}
-	kept, err := readTrimmed(filepath.Join(dir, googleAudienceFile))
+	kept, err := readTrimmed(filepath.Join(dir, detector.KeptFile))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	case err != nil:
-		return fmt.Errorf("read %s: %w", machineCacheAudienceFile, redact.File(err))
+		return fmt.Errorf("read %s: %w", audienceFileWords(detector), redact.File(err))
 	}
-	return sameGoogleAudience(base, audience, kept)
+	return sameAudience(base, detector, audience, kept)
 }
 
 // keepGoogleAudience keeps audience as the one this machine's identity tokens are minted for,
 // once machineSource has found an identity to mint one and before anything is minted, unless an
 // audience is kept already, and refuses it where another writer kept a different one first.
-func keepGoogleAudience(base cipheraddr.Address, audience string) error {
+func keepAudience(base cipheraddr.Address, detector identity.Detector, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -319,20 +322,20 @@ func keepGoogleAudience(base cipheraddr.Address, audience string) error {
 	if err := ensureMachineCacheDir(dir); err != nil {
 		return err
 	}
-	kept, err := keepFirst(filepath.Join(dir, googleAudienceFile), audience)
+	kept, err := keepFirst(filepath.Join(dir, detector.KeptFile), audience)
 	if err != nil {
-		return fmt.Errorf("keep the broker's Google exchange audience in %s: %w", machineCacheAudienceFile, redact.File(err))
+		return fmt.Errorf("keep the broker's %s in %s: %w", detector.Words, audienceFileWords(detector), redact.File(err))
 	}
-	return sameGoogleAudience(base, audience, kept)
+	return sameAudience(base, detector, audience, kept)
 }
 
 // sameGoogleAudience is the refusal of audience, which the broker at base names, where this
-// machine kept another one (machineCacheAudienceFile). Both audiences are text a broker's settings
+// machine kept another one (audienceFileWords). Both audiences are text a broker's settings
 // answer wrote, so it prints them as base lets that text print (cipheraddr.Address.Words).
-func sameGoogleAudience(base cipheraddr.Address, audience, kept string) error {
+func sameAudience(base cipheraddr.Address, detector identity.Detector, audience, kept string) error {
 	if kept != audience {
-		return fmt.Errorf("the broker at %s names %s as its Google exchange audience, and this machine first read %s there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
-			base, base.Words(strconv.Quote(audience)), base.Words(strconv.Quote(kept)), machineCacheAudienceFile, machineCacheAudienceFile)
+		return fmt.Errorf("the broker at %s names %s as its %s, and this machine first read %s there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
+			base, base.Words(strconv.Quote(audience)), detector.Words, base.Words(strconv.Quote(kept)), audienceFileWords(detector), audienceFileWords(detector))
 	}
 	return nil
 }

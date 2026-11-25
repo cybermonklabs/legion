@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // TestAMachineWithNowhereToKeepItsSessionTradesNothing: with neither XDG_STATE_HOME nor HOME, and
@@ -47,10 +49,12 @@ func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
 // one that was kept first, the file holds it alone in mode 0600, and nothing else is left in the
 // directory but the lock that orders them. keepFirst takes no hard link, so a home on a file system
 // without them keeps an audience too.
+const googleKeptFile = "google-exchange-audience"
+
 func TestKeepFirstKeepsTheFirstOfManyWriters(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path := filepath.Join(dir, googleAudienceFile)
+	path := filepath.Join(dir, googleKeptFile)
 	const writers = 16
 	kept := make([]string, writers)
 	errs := make([]error, writers)
@@ -85,7 +89,43 @@ func TestKeepFirstKeepsTheFirstOfManyWriters(t *testing.T) {
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	if want := googleAudienceFile + " " + googleAudienceFile + ".lock"; strings.Join(names, " ") != want {
+	if want := googleKeptFile + " " + googleKeptFile + ".lock"; strings.Join(names, " ") != want {
 		t.Fatalf("the directory holds %v; want %s and nothing else", names, want)
+	}
+}
+
+// TestAnAudienceKeptBeforeTheRegistryIsStillChecked: a machine that kept its broker's Google
+// exchange audience with a client from before the identity registry wrote it to
+// google-exchange-audience in the machine cache. The registry's detector names that same file
+// (KeptFile), so a broker that now names another audience is refused in the same words, and the
+// audience that machine kept is still the one its tokens are minted for.
+func TestAnAudienceKeptBeforeTheRegistryIsStillChecked(t *testing.T) {
+	useBareEnvironment(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := machineCacheDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What the older client wrote: the file name it used, holding the audience it kept.
+	if err := os.WriteFile(filepath.Join(dir, "google-exchange-audience"), []byte("agent-secrets-vm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detector := googleDetector(t)
+	base := cipheraddr.New("https://broker.example")
+	if err := checkAudience(base, detector, "agent-secrets-vm"); err != nil {
+		t.Fatalf("the audience this machine kept before the registry is refused now: %v", err)
+	}
+	err := checkAudience(base, detector, "another-audience")
+	if err == nil {
+		t.Fatal("a broker naming another audience was taken, so a machine could mint a token for someone else's service")
+	}
+	for _, want := range []string{
+		"names \"another-audience\" as its Google exchange audience",
+		"first read \"agent-secrets-vm\" there",
+		"kept in google-exchange-audience in " + machineCacheWords,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q, want it holding %q", err, want)
+		}
 	}
 }

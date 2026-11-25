@@ -257,7 +257,7 @@ func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	const audience = "//iam.googleapis.com/projects/1/demopass9z-not-a-secret"
 	const kept = "//iam.googleapis.com/projects/1/the-kept-one"
 	t.Run("an address carrying a credential", func(t *testing.T) {
-		err := sameGoogleAudience(cipheraddr.New("https://demouser7q:demopass9z-not-a-secret@secrets.example"), audience, kept)
+		err := sameAudience(cipheraddr.New("https://demouser7q:demopass9z-not-a-secret@secrets.example"), googleDetector(t), audience, kept)
 		if err == nil {
 			t.Fatal("a changed audience was taken")
 		}
@@ -272,7 +272,7 @@ func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		}
 	})
 	t.Run("a clean address", func(t *testing.T) {
-		err := sameGoogleAudience(cipheraddr.New("https://secrets.example"), audience, kept)
+		err := sameAudience(cipheraddr.New("https://secrets.example"), googleDetector(t), audience, kept)
 		if err == nil {
 			t.Fatal("a changed audience was taken")
 		}

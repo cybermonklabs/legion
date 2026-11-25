@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -441,16 +442,16 @@ var noLauncherCredential = map[string]string{
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
 // (requireTrustedBrokerURL), and a Google audience other than the one this machine kept is refused
-// before anything is detected or minted (checkGoogleAudience). keep keeps the audience only once
+// before anything is detected or minted (checkAudience). keep keeps the audience only once
 // detection has found an identity to mint a token for it, and before any is minted
-// (keepGoogleAudience): a machine with no identity mints nothing and keeps nothing, so a later
+// (keepAudience): a machine with no identity mints nothing and keeps nothing, so a later
 // audience or broker still gets the chain's no-source refusal. `identity --source` passes false
 // and keeps nothing.
 func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []cipherclient.Skipped, error) {
 	if kind := strings.TrimSpace(clientGetenv(cipherclient.IdentityVar)); kind != "" {
-		if what, refused := noLauncherCredential[kind]; refused {
-			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for %s, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
-				cipherclient.IdentityVar, kind, what, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
+		if source, held := providers.Source(kind); held && !source.Launcher {
+			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for a %s identity, so no session could be registered under it; set %s, or unset it to find this machine's identity from the broker's settings",
+				cipherclient.IdentityVar, kind, source.Provider, launcherSourceNames())}
 		}
 		identity, err := cipherclient.MachineIdentity(clientGetenv)
 		return identity, nil, err
@@ -471,25 +472,57 @@ func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []ciphe
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the broker's exchange audience (GET /v1/settings) to find this machine's identity: %w", err)
 	}
-	if settings.GoogleExchangeAudience == "" {
-		return nil, []cipherclient.Skipped{{Source: "broker settings", Reason: fmt.Sprintf(
-			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published one, or one that accepts no machine identity)",
-			base)}}, nil
+	// Each provider's detector reads its own field of the broker's settings answer: a field the
+	// broker names none for is a provider that accepts no machine identity, and is skipped in
+	// that provider's own words. The audience a detector does read is checked against the one
+	// this machine kept before anything is minted, and kept once an identity is found.
+	var skipped []cipherclient.Skipped
+	for _, detector := range providers.Detectors() {
+		audience := settings.Fields[detector.SettingsField]
+		if audience == "" {
+			skipped = append(skipped, cipherclient.Skipped{Source: "broker settings", Reason: fmt.Sprintf(
+				"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published one, or one that accepts no machine identity)",
+				base)})
+			continue
+		}
+		if err := checkAudience(base, detector, audience); err != nil {
+			return nil, nil, err
+		}
+		found, looked, err := cipherclient.DetectMachineIdentity(ctx, map[string]string{detector.SettingsField: audience})
+		skipped = append(skipped, looked...)
+		if err != nil {
+			return nil, skipped, err
+		}
+		if found == nil {
+			continue
+		}
+		if !keep {
+			return found, skipped, nil
+		}
+		if err := keepAudience(base, detector, audience); err != nil {
+			return nil, nil, err
+		}
+		return found, skipped, nil
 	}
-	if err := checkGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
-		return nil, nil, err
+	return nil, skipped, nil
+}
+
+// launcherSourceNames are the identities agent-secrets takes, as the refusal above lists them:
+// the registered sources the broker mints a launcher credential for ("metadata or pool").
+func launcherSourceNames() string {
+	var names []string
+	for _, source := range providers.Sources() {
+		if source.Launcher {
+			names = append(names, source.Name)
+		}
 	}
-	// The detectors read their audience out of the settings by field name, the name this answer
-	// carries it under (Settings.GoogleExchangeAudience's own JSON member). The next commit has
-	// machineSource walk every detector and read each one's own field.
-	identity, skipped, err := cipherclient.DetectMachineIdentity(ctx, map[string]string{"google_exchange_audience": settings.GoogleExchangeAudience})
-	if err != nil || identity == nil || !keep {
-		return identity, skipped, err
+	switch len(names) {
+	case 0:
+		return "none: this build holds no identity the broker mints a launcher credential for"
+	case 1:
+		return names[0]
 	}
-	if err := keepGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
-		return nil, nil, err
-	}
-	return identity, skipped, nil
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // joinSkipped is each skipped place's reason, in the order they were looked at.

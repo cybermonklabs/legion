@@ -75,8 +75,8 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 	if machine == nil {
-		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own (%s); set %s (%s or %s) to name one",
-			joinSkipped(skipped), cipherclient.IdentityVar, cipherclient.IdentityMetadata, cipherclient.IdentityPool)
+		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own (%s); set %s (%s) to name one",
+			joinSkipped(skipped), cipherclient.IdentityVar, launcherSourceNames())
 	}
 	boxKey, err := proof.NewKey()
 	if err != nil {

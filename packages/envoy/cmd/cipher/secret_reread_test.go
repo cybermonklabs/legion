@@ -495,7 +495,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 		t.Run(row, func(t *testing.T) {
 			local := awstest.NewLocal()
 			startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount,
-				AWSRegion: "us-east-1", SecretTypeTag: true, GoogleExchangeAudience: "agent-secrets-vm"}, servedBy(local))
+				AWSRegion: "us-east-1", SecretTypeTag: true, Fields: map[string]string{"google_exchange_audience": "agent-secrets-vm"}}, servedBy(local))
 			withNoBrokerIdentity(t)
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			if row == "a launcher still enrolling" {

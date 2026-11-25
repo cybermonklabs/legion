@@ -5,7 +5,7 @@
 // from the key dir, and the sign-in store. Each is named by the setting that names its directory,
 // or by where it is, never by its path, which is where a person who pasted the credential itself
 // puts it. Each test runs a form in-process (runIn), or the function that words the line where no
-// form reaches it alone (keyDirName, lockFile, keepGoogleAudience), with a made-up secret where a
+// form reaches it alone (keyDirName, lockFile, keepAudience), with a made-up secret where a
 // person could put one, and a control row that shows the clean case still works.
 package main
 
@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -522,35 +524,35 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	})
 	t.Run("the kept Google audience cannot be read", func(t *testing.T) {
 		dir := useCache(t)
-		if err := os.Mkdir(filepath.Join(dir, googleAudienceFile), 0o700); err != nil {
+		if err := os.Mkdir(filepath.Join(dir, googleDetector(t).KeptFile), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		err := checkGoogleAudience(cipheraddr.New("https://broker.example"), "agent-secrets-vm")
+		err := checkAudience(cipheraddr.New("https://broker.example"), googleDetector(t), "agent-secrets-vm")
 		if err == nil {
-			t.Fatal("checkGoogleAudience read an audience from a directory")
+			t.Fatal("checkAudience read an audience from a directory")
 		}
 		wantNamedNotPrinted(t, "the error", err.Error(), []string{"read google-exchange-audience in " + machineCacheWords + ": read: is a directory"}, []string{secret}...)
 	})
 	t.Run("the Google audience cannot be kept", func(t *testing.T) {
 		dir := useCache(t)
-		if err := os.Mkdir(filepath.Join(dir, googleAudienceFile+".lock"), 0o700); err != nil {
+		if err := os.Mkdir(filepath.Join(dir, googleDetector(t).KeptFile+".lock"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		err := keepGoogleAudience(cipheraddr.New("https://broker.example"), "agent-secrets-vm")
+		err := keepAudience(cipheraddr.New("https://broker.example"), googleDetector(t), "agent-secrets-vm")
 		if err == nil {
-			t.Fatal("keepGoogleAudience kept an audience under a lock it could not open")
+			t.Fatal("keepAudience kept an audience under a lock it could not open")
 		}
 		wantNamedNotPrinted(t, "the error", err.Error(), []string{"keep the broker's Google exchange audience in google-exchange-audience in " + machineCacheWords + ": open: is a directory"}, []string{secret}...)
 	})
 	t.Run("another Google audience than the one kept", func(t *testing.T) {
 		useCache(t)
 		base := cipheraddr.New("https://broker.example")
-		if err := keepGoogleAudience(base, "agent-secrets-vm"); err != nil {
+		if err := keepAudience(base, googleDetector(t), "agent-secrets-vm"); err != nil {
 			t.Fatal(err)
 		}
-		err := checkGoogleAudience(base, "another-audience")
+		err := checkAudience(base, googleDetector(t), "another-audience")
 		if err == nil {
-			t.Fatal("checkGoogleAudience passed an audience other than the one kept")
+			t.Fatal("checkAudience passed an audience other than the one kept")
 		}
 		wantNamedNotPrinted(t, "the error", err.Error(), []string{"(kept in google-exchange-audience in " + machineCacheWords + ")", "remove google-exchange-audience in " + machineCacheWords + " and run"}, []string{secret}...)
 	})
@@ -558,10 +560,10 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		useCache(t)
 		base := cipheraddr.New("https://broker.example")
 		for range 2 {
-			if err := keepGoogleAudience(base, "agent-secrets-vm"); err != nil {
+			if err := keepAudience(base, googleDetector(t), "agent-secrets-vm"); err != nil {
 				t.Fatal(err)
 			}
-			if err := checkGoogleAudience(base, "agent-secrets-vm"); err != nil {
+			if err := checkAudience(base, googleDetector(t), "agent-secrets-vm"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -620,4 +622,17 @@ func TestTheSignInStoreIsNamedByItsSettingNeverItsPath(t *testing.T) {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
 		}
 	})
+}
+
+// googleDetector is the Google provider's detector, whose KeptFile and Words the machine cache
+// reads: the tests below drive the cache's audience helpers with it, as the chain does.
+func googleDetector(t *testing.T) identity.Detector {
+	t.Helper()
+	for _, detector := range providers.Detectors() {
+		if detector.SettingsField == "google_exchange_audience" {
+			return detector
+		}
+	}
+	t.Fatal("this build registers no Google identity detector")
+	return identity.Detector{}
 }
