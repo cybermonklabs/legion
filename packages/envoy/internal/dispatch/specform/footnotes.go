@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
@@ -272,11 +273,17 @@ func (j *footnoteJudge) placed(via, note *Footnote, found []broken) []broken {
 }
 
 // placeWords is the place of a finding of note: the footnote, the footnote that the text refers to
-// when it holds note through it (via), and how many other texts refer to each.
+// when it holds note through it (via), and how many other texts refer to each. A footnote whose
+// label is via's up to case (pmdoc.FootnoteLabelKey) is one that a reference to via reads too
+// (readFootnotes), and its place says so.
 func (j *footnoteJudge) placeWords(via, note *Footnote) string {
 	place := fmt.Sprintf("in its footnote [^%s]%s", note.Label, others(j.referrers[note]-1, "it"))
 	if via != note {
-		place = fmt.Sprintf("in the footnote [^%s], which its footnote [^%s] refers to%s", note.Label, via.Label, others(j.referrers[via]-1, "[^"+via.Label+"]"))
+		how := fmt.Sprintf("which its footnote [^%s] refers to", via.Label)
+		if pmdoc.FootnoteLabelKey(note.Label) == pmdoc.FootnoteLabelKey(via.Label) {
+			how = fmt.Sprintf("which has the label of its footnote [^%s] up to case", via.Label)
+		}
+		place = fmt.Sprintf("in the footnote [^%s], %s%s", note.Label, how, others(j.referrers[via]-1, "[^"+via.Label+"]"))
 		if direct := j.referrers[note]; direct > 0 {
 			place += fmt.Sprintf(", and %s to [^%s]", textCount(direct), note.Label)
 		}

@@ -5886,6 +5886,9 @@ Each item below names a path with its method and identity, then its purpose.
 
     - How Dispatch reads a footnote: a footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
       Dispatch judges each footnote one time for each document.
+      A reference refers to the footnote whose label it writes, or else to the first one whose label it writes in another case, as the parser links it.
+      The browser editor links it to the first one of its label in any case, so the reference also holds each other footnote whose label differs from its own only in case, and each later footnote of its own label.
+      So no such footnote goes unread, and a finding of one names it as in `in the footnote [^A], which has the label of its footnote [^a] up to case`.
       Each finding of a footnote is in the refusal one time, under the first text that refers to the footnote and whose kind the rule reads.
       That is the first in the order that Dispatch judges the texts: each text but a term line in the order of the document, then each term line.
       Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.

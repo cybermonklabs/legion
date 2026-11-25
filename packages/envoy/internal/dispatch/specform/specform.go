@@ -51,7 +51,8 @@ type Text struct {
 // Footnote is one footnote of a document, which ExtractDocument reads once for each document: its
 // label as the markdown writes it, its words, with code in code font (Body), what they hold beside
 // them (Held), and each footnote that it refers to (Notes), once and in the order of the first
-// reference. A footnote is part of each text that refers to it, directly or through another
+// reference, and then the next footnote of its label up to case, where the document has another
+// (readFootnotes). A footnote is part of each text that refers to it, directly or through another
 // footnote: Check judges it once, gives its findings once, and counts its sentences in each
 // statement that holds it.
 type Footnote struct {
