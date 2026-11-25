@@ -109,8 +109,9 @@ export function reviewState(
  * close the block left out (`ownWords`), and its own reading is the block's content at the top
  * level (`ownTree`), where a section's blocks stood. A text or a reading that is no such block is
  * its own already. `tree` is absent where the read sent no reading. The page reads no decisions
- * read: its decisions are nodes of the tree read, whose words are their own. Part I's browser
- * rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
+ * read: its decisions are nodes of the tree read, which answers a decision node's text and
+ * reading as the same whole block, so `decision-nodes.ts` reads each node's own content here too.
+ * Part I's browser rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
  */
 export function decisionContent(
   decision: Pick<DecisionEntry, "text" | "text_tree">

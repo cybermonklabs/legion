@@ -277,14 +277,20 @@ function deciderMember(node: TreeAnswerNode, lookup: Lookup): Pick<DecisionNode,
 function blockAndWords(
   node: TreeAnswerNode
 ): Pick<DecisionNode, "block_id" | "heading" | "node" | "text" | "text_tree" | "unsure"> {
+  const own = decisionContent(node);
   return {
     block_id: blockIdOfNode(node),
     // A converted decision's old `##` heading is its first paragraph, so the
     // heading every accessible name reads ("Keep <heading>") is that paragraph's words.
     heading: decisionQuote(node) ?? "",
     node,
-    text: node.text,
-    ...(node.text_tree === undefined ? {} : { text_tree: node.text_tree }),
+    // The read answers a decision node's text as its whole stored block, the lines that open and
+    // close its `decision` directive included, and its reading as that block's: one `decision`
+    // node that carries the block's attributes. Every reader of a decision draws its own content,
+    // as the outline draws the node's (`tree-read/tree-nodes.ts`' `readingOf`), so its words and
+    // its reading are that content (`decisionContent`), and no attribute of the block is drawn.
+    text: own.text,
+    ...(own.tree === undefined ? {} : { text_tree: own.tree }),
     // The conversion writes an `Unsure:` paragraph as the attribute `uncertainty="high"`.
     unsure: node.decision?.unsure === true || node.attributes?.uncertainty === "high",
   };
