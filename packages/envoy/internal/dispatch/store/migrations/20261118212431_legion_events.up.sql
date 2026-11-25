@@ -36,16 +36,13 @@
 -- - project is the project's own key and the row's identity, and goes with the project.
 -- - state_url is the daemon the row follows: the setting's state_url when the row was written. A
 --   row naming another daemon than the setting is no starting point, so the intake reads the
---   setting's daemon whole. A write of the setting (legion.PutSettings) sets it to '', which no
---   setting names, and every column below but last_read_started_at, previous_state_id,
---   previous_state_url and released_holders to its empty value: that is what makes a PUT of the
---   same URL a fresh whole read, made once a minute has passed since the project's newest whole
---   read began. A write of the URL the setting names already while a message holds the owed read
---   (read_holder) leaves the row as it is instead, whether the row follows that URL or '': that
---   message's read, a whole read, is the read the write calls for. A delete of the setting
---   (legion.DeleteSettings) resets the row as a write of another URL does and keeps it, so a
---   write after the delete makes its starting read a minute after the project's newest whole read
---   began at the soonest.
+--   setting's daemon whole. A write of the setting (legion.PutSettings) and a delete of it
+--   (legion.DeleteSettings) either leave the row as it is or reset it, by the rule that legion's
+--   resetCursor and cursor.reset hold whole (read-rule-cases rows 6.1 to 6.5). A reset sets
+--   state_url to '', which no setting names, and every column below but last_read_started_at,
+--   previous_state_id, previous_state_url and released_holders to its empty value, and it keeps
+--   the row: that is what makes a PUT of the same URL a fresh whole read, made once a minute has
+--   passed since the project's newest whole read began.
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -78,10 +75,9 @@
 --   moved meanwhile, the later of the two kept. The next whole read of the project, for any reason
 --   and the starting read included, waits a minute after it (legion.ReadRetryAfter; R3: whole
 --   reads of one project start at least 60 seconds apart), so a read the daemon is slow to answer,
---   or never answers, adds no time to the minute. A write of the setting keeps it, and so does a
---   delete of the setting, so the starting reads of two writes within a minute start a minute
---   apart, with a delete between them or none. Null only while no whole read has begun since the
---   row was created.
+--   or never answers, adds no time to the minute. A reset of the row keeps it (state_url above),
+--   so the starting reads of two writes within a minute start a minute apart, with a delete
+--   between them or none. Null only while no whole read has begun since the row was created.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
 --   redelivery makes the read, whatever store the message is of. Null where no message holds it.
@@ -93,66 +89,61 @@
 --   it, and 0 where no message holds it. The intake acknowledges the holder once it has gone back
 --   10 times (legion's stateMaxHolds) and clears both columns. A lease take-over creates the
 --   intake's durable again, which starts the message's own delivery count again, and keeps this
---   count, and so does a write of the URL the setting names already, whether the row follows that
---   URL or '', so the holder goes back 10 times at the most in all and holds the durable's ack
---   floor for about 11 minutes at the most.
+--   count, and a write of the setting either leaves the row as it is, this count included, or
+--   ends the hold (state_url above, released_holders), so the holder goes back 10 times at the
+--   most in all and holds the durable's ack floor for about 11 minutes at the most.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
---   message carries as stateId): a successful whole read sets it, a write of the setting that sets
---   state_url to '' clears it, and nothing else writes it. The intake applies no message of another
+--   message carries as stateId): a successful whole read sets it, a reset of the row (state_url
+--   above) clears it, and nothing else writes it. The intake applies no message of another
 --   id, and none at all while it is null, which is only while a read is owed or the row follows no
 --   daemon.
 -- - schema_version is the store's schema version as the row last saw it: the daemon.schemaVersion
 --   of a successful whole read, or the schemaVersion of the newest boot event applied. A boot of
 --   another version is read whole. Null for none.
 -- - previous_state_id is the store of the daemon the setting named before a write that named
---   another daemon, or before a delete of the setting: the write or the delete sets it to the
---   row's state_id, and keeps it where state_id is null. The intake finishes each message of this
---   store unapplied while state_id is null or another store (legion's outcomeForgotten): R3
---   applies no message of the daemon the setting named before. Such a message waits on the
---   project's runner behind a whole read in flight, for one read's 60 s at the most, as every
---   message does, and is judged against the row that read leaves. It holds no read. Whatever
---   state_id holds, it calls for the owed read where that read is due and no message holds it,
---   and the intake makes the read after it acknowledges the message, at most once a minute,
---   since the setting's own daemon can be redeployed into this store; it calls for no read of
---   its own. A write of previous_state_url clears it, and so does a good whole read whose
---   state_id is this store. A write of the URL the row follows and every other whole read keep
---   it. Null for none.
--- - previous_state_url is the URL the row followed when the write set previous_state_id: the
---   write sets it to the row's state_url with previous_state_id, and keeps it with
---   previous_state_id. A write of this URL names that daemon again, so it clears both columns,
---   and so does a good whole read whose state_id is previous_state_id: the daemon is the one the
---   setting names, behind another URL. The intake then judges the daemon's messages as the
---   messages of the setting's daemon. A write of the URL the row follows and every other whole
---   read keep it. Null for none.
+--   another daemon, or before a delete of the setting, which a reset of the row sets and clears
+--   (legion's cursor.reset; read-rule-cases rows 6.3, 6.4 and 6.5). The intake finishes each
+--   message of this store unapplied while state_id is null or another store (legion's
+--   outcomeForgotten): R3 applies no message of the daemon the setting named before. Such a
+--   message waits on the project's runner behind a whole read in flight, for one read's 60 s at
+--   the most, as every message does, and is judged against the row that read leaves. It holds
+--   no read. Whatever state_id holds, it calls for the owed read where that read is due and no
+--   message holds it, and the intake makes the read after it acknowledges the message, at most
+--   once a minute, since the setting's own daemon can be redeployed into this store; it calls
+--   for no read of its own. A good whole read whose state_id is this store clears it, and every
+--   other whole read keeps it. Null for none.
+-- - previous_state_url is the URL the row followed when previous_state_id was set, and goes with
+--   it: a write of this URL names that daemon again, so its reset clears both columns (legion's
+--   cursor.reset). A good whole read whose state_id is previous_state_id clears both too: the
+--   daemon is the one the setting names, behind another URL. The intake then judges the daemon's
+--   messages as the messages of the setting's daemon. Every other whole read keeps it. Null for
+--   none.
 -- - foreign_state_ids is each store that is no daemon of the project, the newest last, 8 at the
 --   most (legion's maxForeignStores): past 8 the oldest goes. A good whole read made for a message
 --   of another store (`store`) that finds state_id unchanged adds that message's store, and so
 --   does each message whose hold of the owed read released_holders records, at its next delivery,
 --   unless its store is previous_state_id or state_id. A good read whose state_id is in it takes
---   that store out, and every write of the setting that resets the row empties it, since a store
---   in it is only no daemon that the setting named before the write. The intake treats a message
---   of a store in it as a message of previous_state_id: it finishes it unapplied while state_id is
---   null or another store, and the message holds no read and calls for no read of its own, only
---   the owed read as above. So a daemon that the setting named, whose reads all failed and which
---   still publishes after the setting named a daemon that a read verified, makes one `store` read
---   of its own at the most, and none after it, unless it
---   boots: a boot of a store in it, or of previous_state_id, while the row follows the setting's
---   URL in another store a read verified, calls for a `store` read, so a daemon that a redeploy
---   started behind that URL in such a store is found again. A read that finds the row's store
---   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
+--   that store out, and a reset of the row empties it (read-rule-cases row 6.4b). The intake
+--   treats a message of a store in it as a message of previous_state_id: it finishes it unapplied
+--   while state_id is null or another store, and the message holds no read and calls for no read
+--   of its own, only the owed read as above. So a daemon that the setting named, whose reads all
+--   failed and which still publishes after the setting named a daemon that a read verified, makes
+--   one `store` read of its own at the most, and none after it, unless it boots: a boot of a store
+--   in it, or of previous_state_id, while the row follows the setting's URL in another store a
+--   read verified, calls for a `store` read, so a daemon that a redeploy started behind that URL
+--   in such a store is found again. A read that finds the row's store unchanged leaves the mark,
+--   and never marks previous_state_id. Empty for none.
 -- - released_holders is the stream sequence of each state message whose hold of the owed read a
---   write of the setting that names another URL, or a delete of the setting, ended, whatever
---   state_url the row held, '' included, and which has not come back since: the newest last, 8 at
---   the most (legion's maxReleasedHolders). Such a write or delete adds read_holder as the newest
---   where read_holder is set, and every other write keeps the array. At such a message's next
---   delivery the intake acknowledges it unapplied, it holds no read, its store goes into
---   foreign_state_ids as above, and the intake takes its sequence out of the array, and no
---   other. So a write that names another URL ends the hold of the message before it within one
---   read's 60 s and a second, however many such writes come before that message comes back, and
---   a message of the newly named daemon may hold the read from a count of 1. Past 8 the oldest
---   entry goes: its message is judged as any message at its next delivery, which applies
---   nothing of a store other than state_id, and it can hold a read again from a count of 1.
---   Empty for none.
+--   reset of the row ended (legion's cursor.reset; read-rule-cases rows 6.3b and 6.5), and which
+--   has not come back since: the newest last, 8 at the most (legion's maxReleasedHolders). At
+--   such a message's next delivery the intake acknowledges it unapplied, it holds no read, its
+--   store goes into foreign_state_ids as above, and the intake takes its sequence out of the
+--   array, and no other. So a write that names another URL ends the hold of the message before
+--   it within one read's 60 s and a second, however many such writes come before that message
+--   comes back, and a message of the newly named daemon may hold the read from a count of 1. Past
+--   8 the oldest entry goes: its message is judged as any message at its next delivery, which
+--   applies nothing of a store other than state_id, and it can hold a read again from a count of
+--   1. Empty for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
@@ -164,16 +155,16 @@
 --   its stateSeq still owes `gap` (read_reasons). One that finds a store other than its own, which
 --   neither previous_state_id nor foreign_state_ids names as the read leaves them, still owes
 --   `store`: that message came after the read began, so the read does not answer it. Every
---   successful read empties both. A read that failed keeps them, and every write of the setting
---   that resets the row empties them. Empty for none.
+--   successful read empties both. A read that failed keeps them, and a reset of the row empties
+--   them. Empty for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
 -- every event of the transaction in one batch and deletes the parts, so no observation holds a
 -- value of a transaction it has not read whole. A part is held only where it follows the cursor or
 -- the part before it, under the same run and store. A successful whole read deletes the project's
--- parts, and so does each write of the setting that sets state_url to '', a delete of the setting
--- included; a whole read that failed keeps them:
+-- parts, and so does each reset of the cursor's row (legion_event_cursors.state_url above); a whole
+-- read that failed keeps them:
 --
 -- - project and first_seq are the part's identity: the project, and the first sequence the part
 --   carries. last_seq is its last.

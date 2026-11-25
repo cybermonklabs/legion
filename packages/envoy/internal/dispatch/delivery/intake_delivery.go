@@ -475,7 +475,7 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) bool 
 		return false
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: a stop began and NATS did not confirm its connection, so the hand-back is withheld and the message is left with the durable",
+		slog.Info("dispatch delivery: a stop began, and NATS has not taken the stop's drain on a live link or did not confirm its connection, so the hand-back is withheld and the message is left with the durable",
 			"subject", msg.Subject)
 		return false
 	}

@@ -37,22 +37,21 @@ const holdAtLeast = time.Second
 // the cursor's count, so the bound holds for the message across every take-over. Neither a
 // take-over's call for the read nor a settings change's makes a read while the message holds it,
 // a starting read's included, and neither defers a call for it (cursor.readFor,
-// Intake.startingPoint), so neither adds a read to the hold. A write of the setting that names the
-// URL the setting named already leaves the holder and its count as they are, whether the cursor
-// follows that URL or no daemon yet, and one that names another URL ends the hold: the message is
-// acknowledged unapplied at its next delivery (settingWritten, cursor.releasedHolders,
-// outcomeReleased), and a message of the newly named daemon may hold the read from a count of 1.
-// The cursor records each message so released until it comes back, maxReleasedHolders at the
-// most. A holder that has gone back stateMaxHolds times holds the read no more: that delivery is
+// Intake.startingPoint), so neither adds a read to the hold. A write of the setting, a delete
+// included, either leaves the holder and its count as they are or ends the hold, by the rule that
+// resetCursor and cursor.reset hold whole (read-rule-cases rows 6.1b, 6.3b and 6.5), so no write
+// starts the count again. A message whose hold a write ended is acknowledged unapplied at its next
+// delivery (outcomeReleased), and another message may then hold the read from a count of 1. A
+// holder that has gone back stateMaxHolds times holds the read no more: that delivery is
 // acknowledged, the cursor names no holder from then on (readAnswer.release), and the read stays
 // owed (ReadReasonRetry) for the project's next message, boot, settings change or take-over, which
 // makes it once it is due, as R3 makes every failed read. So each message holds the durable's ack
 // floor below it for about 11 minutes at the most, however many take-overs and writes of the
 // setting there are, and a take-over replays at most that long of messages (consumerConfig). One
-// case is past that bound: a write of another URL that ends a hold while maxReleasedHolders
-// messages released before it are all still out. The oldest record then goes, and that message is
-// judged as any message at its next delivery: it may hold a read again from a count of 1, for
-// about 11 minutes more.
+// case is past that bound: a write of another URL or a delete that ends a hold while
+// maxReleasedHolders messages released before it are all still out. The oldest record then goes,
+// and that message is judged as any message at its next delivery: it may hold a read again from a
+// count of 1, for about 11 minutes more.
 const stateMaxHolds = 10
 
 // owedRead is a whole read to make: the setting whose daemon it reads, the reason its legion_reads
@@ -679,14 +678,28 @@ func writeSkipped(ctx context.Context, tx pgx.Tx, project string, stateIDs []str
 
 // resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx,
 // where before is the URL the setting named before the write ("" for a new setting) and stateURL
-// is "" for a delete: it locks the cursor, then writes the cursor the write resets it to
-// (cursor.reset, writeCursor) and deletes the parts held for it. It writes nothing for a project
-// with no cursor, or for a write of the URL the setting named already (before) while a message
-// holds the owed read, whether the cursor follows that URL or no daemon yet: that cursor keeps its
-// holder, its count of hand-backs, its reasons, its skipped record and its held parts, so the
-// holder's redelivery makes the read and the hold's bound (stateMaxHolds) stands. A write of the
-// same URL that finds no holder resets the cursor too. A delete resets it as a write of another URL
-// does, since the URL a setting names is never "": it keeps the row (read-rule-cases row 6.5).
+// is "" for a delete. With cursor.reset it holds the whole rule of what a write of the setting, a
+// delete included, does to the cursor (read-rule-cases rows 6.1 to 6.5): it locks the cursor, and
+// then either leaves it as it is or writes the cursor the write resets it to (cursor.reset,
+// writeCursor) and deletes the parts held for it.
+//   - It writes nothing for a project with no cursor, which has no starting point already.
+//   - It leaves the cursor as it is for a write of the URL the setting named already (before)
+//     while a message holds the owed read, whether the cursor follows that URL or no daemon yet
+//     (rows 6.1 and 6.1b): the cursor keeps its holder, its count of hand-backs, its reasons, its
+//     skipped record and its held parts. The held read is a whole read of the same URL, so it is
+//     the read the write calls for: the holder's redelivery makes it, the write's wake joins it
+//     and defers no call (cursor.readFor, Intake.startingPoint), and the hold's bound
+//     (stateMaxHolds) stands.
+//   - It resets the cursor for every other write: a write of the same URL that finds no holder
+//     (row 6.2), a write of another URL (rows 6.3, 6.3b and 6.4) and a delete (row 6.5). The
+//     cursor it leaves follows no daemon, so it is no starting point (cursor.follows), and the
+//     intake reads the setting's daemon whole once that read is due (ReadReasonStart): at the
+//     write's wake, or at the redelivery of a message that holds the read meanwhile
+//     (Intake.startingPoint, cursor.readFor). A delete resets the cursor as a write of another URL
+//     does, since the URL a setting names is never "", and keeps its row with what cursor.reset
+//     keeps. Its wake reads nothing, since the intake reads no project that has no setting, and a
+//     write after it is a new setting (before ""), which resets the cursor as a write of another
+//     URL does.
 func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL string) error {
 	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
 	if err != nil || !current.exists || (before == stateURL && current.readHolder != nil) {
@@ -701,18 +714,31 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 
 // reset is the cursor that a write of the setting naming stateURL, "" for a delete, resets c to
 // (resetCursor): a cursor that follows no daemon, with every column at its empty value
-// (emptyCursor) but these.
-//   - lastReadStartedAt is c's.
+// (emptyCursor) but these. Among the columns it empties are the marks of stores that are no
+// daemon of the project (foreignStateIDs), since a mark says only that its store is no daemon the
+// setting named before the write (read-rule-cases row 6.4b).
+//   - lastReadStartedAt is c's. Whole reads of one project start ReadRetryAfter apart whatever
+//     their reasons (R3-g), so the starting read after a write within a minute of the project's
+//     newest whole read, with a delete between them or none, is made when that minute ends
+//     (Intake.startingPoint, rows 3.2 and 6.5).
 //   - releasedHolders is c's with c's readHolder added as the newest, where a message held the
 //     read, and c's otherwise. resetCursor resets a cursor that names a holder only for a write of
 //     another URL than the setting named, or for a delete, either of which ends that hold whatever
-//     daemon c followed, none included. Past maxReleasedHolders the oldest record goes (marked):
-//     that message is judged as any message at its next delivery.
-//   - previousStateID and previousStateURL are none where the write names the URL recorded there.
-//     They are c's store and URL where c followed a URL other than the write's and held a store,
-//     and c's own pair otherwise. A cursor holds a store only after a good read of the setting's
-//     URL, which is never "", so the URL recorded there is never "" either: a delete never clears
-//     the pair, and records c's store and URL where c held a store.
+//     daemon c followed, none included (rows 6.3b and 6.5). That message is finished unapplied at
+//     its next delivery, which takes its own record out and no other, and marks its store as no
+//     daemon of the project unless it is the store recorded below or the cursor's own
+//     (cursor.releases, endHold). While the project has no setting, its messages are dropped
+//     before the cursor is read, so such a record stays (DeleteSettings). Past maxReleasedHolders
+//     the oldest record goes (marked): that message is judged as any message at its next delivery.
+//   - previousStateID and previousStateURL are none where the write names the URL recorded there
+//     (row 6.4): the daemon recorded is the setting's again, and its messages are judged as the
+//     setting's daemon's. They are c's store and URL where c followed a URL other than the
+//     write's and held a store (rows 6.3 and 6.5), and c's own pair otherwise. The intake finishes
+//     each message of the store recorded there unapplied while the cursor holds no store or
+//     another store (cursor.forgets), and a good read that gives the cursor that store clears the
+//     pair (afterRead). A cursor holds a store only after a good read of the setting's URL, which
+//     is never "", so the URL recorded there is never "" either: a delete never clears the pair,
+//     and records c's store and URL where c held a store.
 func (c cursor) reset(stateURL string) cursor {
 	next := emptyCursor()
 	next.exists, next.lastReadStartedAt = true, c.lastReadStartedAt

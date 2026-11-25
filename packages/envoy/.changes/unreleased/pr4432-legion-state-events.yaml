@@ -8,13 +8,15 @@ body: |-
   longer holds, a message of another store than the starting point's, a message the database
   refuses for good, and a read owed since one failed. The whole reads of one project start at
   least a minute apart, whatever their reason, the starting read and the read right after a good
-  starting read included, and a `PUT` of the setting does not restart that minute. A message that
-  calls for a read sooner makes none: Dispatch records the read as owed, sends the first such
-  message back to the stream with a delay of the time left in the minute, and makes the read at
-  its redelivery; every later message that calls for the owed read is acknowledged. A read that
-  fails sends that message back until a minute after that read began, at most 10 times in all,
-  and its next delivery is then acknowledged. The project's cursor counts these hand-backs, so a
-  lease take-over does not start the count again, and a take-over or a settings change makes no
+  starting read included, and neither a `PUT` nor a `DELETE` of the setting restarts that minute.
+  A whole read records its start before it calls the daemon, so a read that a stop of the intake
+  cuts short still starts the minute, and the next holder of the durable waits for the rest of it.
+  A message that calls for a read sooner makes none: Dispatch records the read as owed, sends the
+  first such message back to the stream with a delay of the time left in the minute, and makes the
+  read at its redelivery; every later message that calls for the owed read is acknowledged. A read
+  that fails sends that message back until a minute after that read began, at most 10 times in
+  all, and its next delivery is then acknowledged. The project's cursor counts these hand-backs, so
+  a lease take-over does not start the count again, and a take-over or a settings change makes no
   read of a project whose owed read a message holds, the starting read included: it joins the read
   that the message's redelivery makes. A read waits 60 s at the
   most, so one message holds the consumer's ack floor for about 11 minutes at the most, also when
@@ -41,23 +43,28 @@ body: |-
   while a message holds the project's owed read joins that read, also before the project's
   starting read was first made, so the count of the message's hand-backs goes on, and its wake
   defers no call. A `PUT` that names another URL ends that hold instead: Dispatch acknowledges
-  the message at its next delivery and does not apply it.
-  After a `PUT` that names another daemon, Dispatch applies no message of the store that the
-  project followed before, until a `PUT` names the URL of that daemon again. Such a message holds
-  a read only as a message past the cap (below), and its redelivery then makes the read. It waits
-  behind a whole read of the project that is in flight, for 60 s at the most, as every message of
-  the project does, and Dispatch judges it against what that read leaves. It asks for the owed
-  read when that read is due and no message holds it, at most once a minute, whatever store the
-  project holds, since the setting's own daemon can be redeployed into that store; it adds no
-  reason, and a read that gives the same store clears the record. Dispatch also marks a store as
-  no daemon of the project when a good read made for a message of that store finds the project's
-  store unchanged, or when a `PUT` ended the hold of a message of that store. It applies no message
-  of a marked store, and such a message asks for no read of its own but the owed read, as above,
-  until the next `PUT` of the project's setting, with one exception: a boot of a marked
-  store, or of the store the setting named before, while the project's store is one a read
-  verified, makes a whole read, also where it arrives past the cap of 16 waiting messages below,
-  so a daemon that a redeploy started behind the setting's URL in that store is found again, and a
-  read that finds it takes the mark off. A project keeps at most
+  the message at its next delivery and does not apply it. A `DELETE` of the setting resets the
+  project's cursor as such a `PUT` does, so it ends that hold too, and it keeps the start of the
+  project's newest whole read, so a `DELETE` and a `PUT` within a minute make their two whole
+  reads at least a minute apart.
+  After a `PUT` that names another daemon, or a `DELETE`, Dispatch applies no message of the store
+  that the project followed before, until a `PUT` names the URL of that daemon again. Such a
+  message holds a read only as a message past the cap (below), and its redelivery then makes the
+  read. It waits behind a whole read of the project that is in flight, for 60 s at the most, as
+  every message of the project does, and Dispatch judges it against what that read leaves. It asks
+  for the owed read when that read is due and no message holds it, at most once a minute, whatever
+  store the project holds, since the setting's own daemon can be redeployed into that store; it
+  adds no reason, and a read that gives the same store clears the record. Dispatch also marks a
+  store as no daemon of the project when a good read made for a message of that store finds the
+  project's store unchanged, and when a message of that store whose hold a `PUT` or a `DELETE`
+  ended comes back while the project has a setting, unless the store is the project's own or the
+  one the setting named before. It applies no message of a marked store, and such a message asks
+  for no read of its own but the owed read, as above, until a later `PUT` or `DELETE` of the
+  project's setting other than a `PUT` of the same URL while a message holds the owed read, with
+  one exception: a boot of a marked store, or of the store the setting named before, while the
+  project's store is one a read verified, makes a whole read, also where it arrives past the cap
+  of 16 waiting messages below, so a daemon that a redeploy started behind the setting's URL in
+  that store is found again, and a read that finds it takes the mark off. A project keeps at most
   16 messages waiting for its turn. A message that arrives past that does not wait and makes no
   read: it owes a read, since its events may be past the snapshot of the read in flight. A message
   of a marked or old store does too while a whole read of the project is in flight, since that
@@ -76,14 +83,16 @@ body: |-
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
   follow its daemon and the whole read it owes, with the reasons for that read, the stream
   sequence of the message that holds it and how many times that message went back to the stream,
-  when the project's newest whole read began (`last_read_started_at`, which a `PUT` keeps), the
-  highest sequence of each store that Dispatch acknowledged past the cap of 16, and the store
-  and the URL of the daemon that the setting named before, the stores that are no daemon of the
-  project and the message whose hold a `PUT` ended, `legion_event_parts` holds the
-  parts of a split transaction, and `server_processes.legion_state_intake` tells a process of this
-  build from one of an earlier build (migration `20261118212431_legion_events`).
+  when the project's newest whole read began (`last_read_started_at`, which each whole read writes
+  before it calls the daemon, and which a `PUT` and a `DELETE` keep), the highest sequence of each
+  store that Dispatch acknowledged past the cap of 16, the store and the URL of the daemon that the
+  setting named before, the stores that are no daemon of the project, and each message whose hold
+  a `PUT` or a `DELETE` ended and which has not come back yet, the newest 8
+  (`released_holders`). `legion_event_parts` holds the parts of a split transaction, and
+  `server_processes.legion_state_intake` tells a process of this build from one of an earlier
+  build (migration `20261118212431_legion_events`).
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the
-  hub's instance. The lease pool holds 27 connections, not 25, and a server process opens at most
-  118 connections to Postgres, not 116.
+  hub's instance. The lease pool holds 28 connections, not 26, and a server process opens at most
+  119 connections to Postgres, not 117.
 custom:
   Issue: pr4432
