@@ -899,8 +899,8 @@ export function createLegionTool(deps: {
             // The document is named as register_gate's is: its id, or a reference looked up.
             const isId = LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success;
             const artifactId = isId ? reference : await resolveDocument(issue, reference);
-            // The fact is keyed by the issue, its generation, the document and the version, so a
-            // repeat is the registration again, answered the same.
+            // The daemon judges every give against its store: a repeat of a registration it
+            // applied is answered as taken while that version is in force, and writes nothing.
             const taken = await retryWhileDaemonRestarts(
               "register_plan",
               async () =>
