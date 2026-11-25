@@ -12060,3 +12060,149 @@ test("with the agent list refused, the project List's header filters keep each c
       .catch(() => undefined);
   expect(whileOut, whileOut.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 28 (the tester's), by the architect's ruling of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll to its nearest edge, and a landing
+// partly in sight is shown whole). Measured at 5a444912 in builds Job infra-3135-f8-h3-wwf5b and
+// at 4f1ad776 in infra-3135-f8-b3-4prbk: with two Inbox threads marked and the checkbox of the
+// row marked last cut by 30% at the bottom edge of what the reader sees (the list's box at
+// 1440x900, the window at 390x664), the bar's Dismiss lands the focus on the checkbox of the row
+// now at the place in Chromium and Firefox, shown whole by a scroll of the cut alone (5 px), and
+// 4f1ad776 shows it whole in all three engines. In WebKit at 5a444912 the box (1440) or the window (390)
+// instead moves back by the rows the Dismiss took away - 162 px in the box, 940 px in the window
+// - and the focus is left on that checkbox wholly below the reader's sight (its top at 1027 px
+// under a box that ends at 876, at 1593 px in a window 664 px high), with no scroll to show it:
+// `ViewportAnchor.showFocused` (features/shell/ViewportAnchor.tsx:679) leaves a control wholly out
+// of sight where it is, and by the time it reads the landing, the anchoring has moved it out.
+// The race is WebKit's: this row failed 4 of 6 WebKit repeats at 5a444912 (builds Jobs
+// infra-3135-infra-3135-red28-krw9f and -final28-wglpb), both widths together in a failing run,
+// and it passes in every Chromium and Firefox run there, where the landing is right; at 4f1ad776
+// WebKit's landing at 1440 was whole in 3 of 3 probe runs. So a pass at a fixed head counts only
+// over 8 or more WebKit repeats (the architect, 2026-11-25 21:20Z).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): eighty threads seeded, and two Dismiss presses read once the scroll settles.
+test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the checkbox of the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 80; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
+    await seedCommentThread(
+      issue.key,
+      `Thread ${index}: when does it run?`,
+      `At 0${index % 10}:00.`
+    );
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  /** The part of the window the reader sees the Inbox's rows in: the list's own box where it
+   *  scrolls (a desktop), else the window; and that scroller's scroll. */
+  const readerSight = () =>
+    page.evaluate(() => {
+      const box = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const scrolls =
+        box !== null &&
+        box.scrollHeight > box.clientHeight + 1 &&
+        getComputedStyle(box).overflowY !== "visible";
+      const frame = scrolls && box !== null ? box.getBoundingClientRect() : null;
+      return {
+        bottom: Math.min(window.innerHeight, frame?.bottom ?? window.innerHeight),
+        scroll: scrolls && box !== null ? box.scrollTop : window.scrollY,
+        top: Math.max(0, frame?.top ?? 0),
+      };
+    });
+  /** The rect of the checkbox of the Inbox row `id`. */
+  const checkboxRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document
+        .querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`)
+        ?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        height: own?.height ?? Number.NaN,
+        top: own?.top ?? Number.NaN,
+      };
+    }, id);
+  const landings: { ok: boolean; text: string }[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const where = `Inbox at ${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    await page.goto("/?group=none");
+    await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+    // The rows read once the poll above found the list drawn; they only name the rows marked and
+    // the one after them.
+    const ids = await page
+      .locator("[data-inbox-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+    const upper = ids[12] ?? "";
+    const lower = ids[13] ?? "";
+    const after = ids[14] ?? "";
+    // The lower row first, so the row marked last is the upper one.
+    for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+    await expect(bar).toBeVisible();
+    // The upper row's checkbox is cut by 30% of its height at the bottom of the reader's sight.
+    const view = await readerSight();
+    const own = await checkboxRect(upper);
+    const by = own.bottom - (view.bottom + own.height * 0.3);
+    await page.evaluate((by) => {
+      const box = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      if (
+        box !== null &&
+        box.scrollHeight > box.clientHeight + 1 &&
+        getComputedStyle(box).overflowY !== "visible"
+      )
+        box.scrollBy(0, by);
+      else window.scrollBy(0, by);
+    }, by);
+    await settledScrollTop(page);
+    await settledScrollTop(page.getByTestId("inbox-list"));
+    await nextFrames(page);
+    const before = await readerSight();
+    const placed = await checkboxRect(upper);
+    const cut = placed.bottom - before.bottom;
+    await bar.getByRole("button", { name: /selected threads$/u }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (id) =>
+              document.activeElement ===
+              document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+            after
+          ),
+        { message: `${where}: the focus is not on the checkbox of the row now at the place` }
+      )
+      .toBe(true);
+    await settledScrollTop(page);
+    await settledScrollTop(page.getByTestId("inbox-list"));
+    await nextFrames(page);
+    // One read is the answer: both rows have gone, the focus has landed and the scroll has held
+    // still, so nothing moves the focus or the rows after this.
+    const now = await readerSight();
+    // Read in the same settled moment as the sight above, so it is where the press left it.
+    const landed = await checkboxRect(after);
+    const scrolled = Math.round(now.scroll - before.scroll);
+    landings.push({
+      ok:
+        landed.top >= now.top - 1 &&
+        landed.bottom <= now.bottom + 1 &&
+        Math.abs(scrolled) <= cut + 1,
+      text:
+        `${where}: the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
+        `the rows scrolled ${scrolled} px, and the checkbox now at the place stands at top ` +
+        `${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
+        `${Math.round(now.top)} to ${Math.round(now.bottom)}`,
+    });
+  }
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
