@@ -61,3 +61,43 @@ curl -sS -b "$COOKIE" "http://127.0.0.1:$DISPATCH_E2E_PORT/api/v1/issues/<KEY>/l
 
 Each file is the answer as the server wrote it, formatted by `bunx biome format --write`.
 Every `read.ok` is true: no read of the sampler's own, which fails against the address nothing answers, came between a seed and its capture.
+
+## The reads of one Dashboard seed
+
+`issue.json`, `asks-open.json`, `decisions.json`, `changes.json`, `coverage.json`, `results.json` and `my-replies.json` are reads Dashboard makes (R8), of the one issue that `seedDashboard` (`e2e/dashboard-seed.ts`) seeds, as the server at this branch's head answered the person the seed signs in as, `alice`.
+`tiles.test.ts` and `waiting-items.test.ts` read them.
+The stack is the end-to-end harness's, started as for `legion-issue/` above, at 2026-11-25T22:21Z.
+
+The seed's fake GitHub helper calls Playwright's `test.skip`, so the seed runs inside a Playwright test: one spec file outside the repository whose one test calls `resetDatabase()` (`e2e/seed.ts`) and then `seedDashboard(await mainHolds())`, run with `bunx playwright test --config <its own config>` under the harness's exports, at 2026-11-25T22:24:55Z.
+The seed made the issue `ACME-1` on the path of a `main` without INFRA-1150 and INFRA-1253.
+
+The reads, at 2026-11-25T22:25:12Z, each with `Dispatch-Trees: 1`, which the web client sends on every read (`api/client.ts`), so each body carries the display trees the page reads:
+
+```sh
+COOKIE=$(mktemp)
+BASE="http://127.0.0.1:$DISPATCH_E2E_PORT"
+curl -sS -c "$COOKIE" -o /dev/null "$BASE/auth/_dev/signin?login=alice"
+get() { curl -sS -b "$COOKIE" -H 'Dispatch-Trees: 1' "$BASE$1"; }
+get /api/v1/issues/ACME-1 > issue.json
+get '/api/v1/issues/ACME-1/asks?state=open' > asks-open.json
+get /api/v1/issues/ACME-1/decisions > decisions.json
+get /api/v1/issues/ACME-1/coverage > coverage.json
+get /api/v1/issues/ACME-1/results > results.json
+get '/api/v1/me/replies?issue=ACME-1&state=unread' > my-replies.json
+```
+
+`changes.json` is the comments of the decisions document, the read Dashboard finds a Change in, after one Change.
+At 2026-11-25T22:25:12Z that read answered `[]`.
+At 2026-11-25T22:25:24Z the reader wrote a comment anchored on the second decision's words, as the decision card's Change writes one, and the read was made again:
+
+```sh
+DOC=<the decisions document's id: the seed's decisionsDocumentId>
+curl -sS -b "$COOKIE" -H "Origin: $BASE" -H 'Content-Type: application/json' \
+  --data "{\"anchor\":{\"artifact\":\"$DOC\",\"quote\":\"Chosen so the count and the list agree.\"},\"body\":\"Count the threads apart.\"}" \
+  "$BASE/api/v1/issues/ACME-1/comments"
+get "/api/v1/issues/ACME-1/comments?artifact=$DOC" > changes.json
+```
+
+Each file is the answer as the server wrote it, formatted by `bunx biome format --write`.
+Where a row of the item table needs a case the seed does not hold (an approval by another person, a request on a plan), `waiting-items.test.ts` changes one member of a captured body.
+Rows V1 and V2 give node states in the shape of dispatch://INFRA-1253's tree read (a node's `id`, `block_id` and `state`), which no server of this `main` answers.
