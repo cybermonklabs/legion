@@ -28,25 +28,27 @@ const noCredentialMsg = "no machine credential; run: agent-secrets machine login
 func TestNoCredentialReasonNamesWhyTheHelperHoldsNone(t *testing.T) {
 	t.Parallel()
 	const refusal = "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"
+	const unreached = "the broker was unreachable or busy for the last 2 polls"
 	for _, tc := range []struct {
-		name, state string
-		refused     bool
-		dropped     string
-		want        string
+		name, state, reason string
+		refused             bool
+		dropped             string
+		want                string
 	}{
-		{"never logged in since the start", "", false, "", "no machine login since the helper started, and none kept on this machine"},
-		{"a login waiting for approval", "pending", false, "", "a machine login is waiting for a human to approve it"},
-		{"a login waiting for approval beside a dropped credential", "pending", true, dropExpired, "a machine login is waiting for a human to approve it"},
-		{"a denied login", "denied", false, "", "the most recent machine login was denied"},
-		{"a login nobody approved in time", "expired", false, "", "the most recent machine login expired before anyone approved it"},
-		{"dropped at its expiry", "expired", true, dropExpired, "the launcher credential reached its expiry"},
-		{"dropped when the broker refused its refresh", "expired", true, dropRefreshRefused, dropRefreshRefused},
-		{"dropped when the broker refused it", "expired", true, dropRefused, refusal},
-		{"refused, from a helper before credential_dropped", "expired", true, "", refusal},
-		{"a state from a newer helper", "revoked", false, "", "the most recent machine login is revoked"},
+		{"never logged in since the start", "", "", false, "", "no machine login since the helper started, and none kept on this machine"},
+		{"a login waiting for approval", "pending", "", false, "", "a machine login is waiting for a human to approve it"},
+		{"a login waiting for approval beside a dropped credential", "pending", "", true, dropExpired, "a machine login is waiting for a human to approve it"},
+		{"a denied login", "denied", "", false, "", "the most recent machine login was denied"},
+		{"a login nobody approved in time", "expired", "", false, "", "the most recent machine login expired before anyone approved it"},
+		{"a login that lapsed while the broker was down", "expired", unreached, false, "", "the most recent machine login expired before anyone approved it; " + unreached},
+		{"dropped at its expiry", "expired", "", true, dropExpired, "the launcher credential reached its expiry"},
+		{"dropped when the broker refused its refresh", "expired", "", true, dropRefreshRefused, dropRefreshRefused},
+		{"dropped when the broker refused it", "expired", "", true, dropRefused, refusal},
+		{"refused, from a helper before credential_dropped", "expired", "", true, "", refusal},
+		{"a state from a newer helper", "revoked", "", false, "", "the most recent machine login is revoked"},
 	} {
-		if got := NoCredentialReason(tc.state, tc.refused, tc.dropped); got != tc.want {
-			t.Errorf("%s: NoCredentialReason(%q, %v, %q) = %q; want %q", tc.name, tc.state, tc.refused, tc.dropped, got, tc.want)
+		if got := NoCredentialReason(tc.state, tc.reason, tc.refused, tc.dropped); got != tc.want {
+			t.Errorf("%s: NoCredentialReason(%q, %q, %v, %q) = %q; want %q", tc.name, tc.state, tc.reason, tc.refused, tc.dropped, got, tc.want)
 		}
 	}
 }

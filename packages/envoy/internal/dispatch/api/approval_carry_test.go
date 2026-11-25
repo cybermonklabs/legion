@@ -778,6 +778,9 @@ func setLiveBlockAttributes(t *testing.T, handler http.Handler, documents *docs.
 		}
 		return nil
 	})
+	// The edit is sent as a keystroke is, and the room applies it on its own time: the write that
+	// follows must read it, so wait until the room holds it.
+	peer.barrier(t)
 }
 
 // settledVersion settles the document at once and waits until version number reads: the version a
