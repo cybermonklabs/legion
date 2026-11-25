@@ -290,6 +290,7 @@ func okLine(contract int) string {
 // kind left nil and a name no prompt can write, which no check of the kinds alone would catch. The
 // rig's pod would pass each one.
 func TestProbeImageRefusesRoleReferencesTheImageWouldRefuseBeforeAnyPod(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name       string
 		references promptrefs.Names
@@ -329,6 +330,7 @@ func TestProbeImageRefusesRoleReferencesTheImageWouldRefuseBeforeAnyPod(t *testi
 // that contract — which names no model: Legion's probe makes no model round trip — and it deletes
 // its Sandbox when it is done.
 func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	g.succeeds("[legion] OMP pi.agents probe failed transiently\n" + okLine(3) + "\n")
 
@@ -352,6 +354,7 @@ func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 }
 
 func TestProbeImagePassesTheRemainingAttemptBudgetToItsCommand(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	now := time.Date(2026, 10, 28, 13, 30, 0, 0, time.UTC)
 	g.r.now = func() time.Time { return now }
@@ -387,12 +390,14 @@ func TestProbeImagePassesTheRemainingAttemptBudgetToItsCommand(t *testing.T) {
 }
 
 func TestProbeCommandBudgetKeepsTheFullReserveBelowFourMinutes(t *testing.T) {
+	t.Parallel()
 	if got, want := probeCommandBudget(180*time.Second), 120*time.Second; got != want {
 		t.Fatalf("probeCommandBudget(180s) = %s, want 120s after the 60s reserve", got)
 	}
 }
 
 func TestProbeImageRefusesABudgetWithoutCommandTime(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	probe := probeOptions(t)
 	probe.Budget = probeCommandReserve
@@ -408,6 +413,7 @@ func TestProbeImageRefusesABudgetWithoutCommandTime(t *testing.T) {
 }
 
 func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil).waits("ErrImagePull")
 	phases := make(chan string, 1)
 	releaseStartup := make(chan struct{})
@@ -436,6 +442,7 @@ func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
 }
 
 func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	g.with(func() {
 		g.log = "legion probe-image: capability eval-python is missing: omp setup python --check --json: context deadline exceeded"
@@ -473,6 +480,7 @@ func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
 // A passing probe reports what its OK line said of the image: the model-fallback mark, as the
 // line carries it, on the table the pod printed before it.
 func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
+	t.Parallel()
 	for _, mark := range []string{"off", "on", bootprobe.ModelFallbackUnread} {
 		t.Run(mark, func(t *testing.T) {
 			g := newProbeRig(t, nil)
@@ -495,6 +503,7 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 // A pod that ran is judged by its log: only a Succeeded pod whose OK line confirms this daemon's
 // contract passes, and every other ending is an answer no retry changes — so the probe runs once.
 func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		setup func(*probeRig)
@@ -571,6 +580,7 @@ func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {
 // missing key never mounts — so it is refused naming the rebuild; one that named another user is
 // refused naming both public keys; each once.
 func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
+	t.Parallel()
 	const daemons, other = "UDAEMONSUSERPUBLICKEY", "UANOTHERUSERPUBLICKEY"
 	for _, testCase := range []struct {
 		name string
@@ -611,6 +621,7 @@ func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
 // A pod that never finished within the budget, or a Sandbox that never got one, says nothing
 // about the image: the probe runs again, and gives up only when its retry does.
 func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		setup func(*probeRig)
@@ -707,6 +718,7 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 // the image: the probe runs again. Only a pod whose probe container exited on its own is the
 // image's answer (TestProbeImageRefusesWhatTheProbePodAnswered).
 func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
+	t.Parallel()
 	killed := []corev1.ContainerStatus{{Name: probeContainer, State: corev1.ContainerState{
 		Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"},
 	}}}
@@ -756,6 +768,7 @@ func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
 // pod, which passes, passes the probe. The exit code and the line are written out, not read from
 // bootprobe, so the test also runs on a daemon that predates them, which refuses the first pod.
 func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
+	t.Parallel()
 	const noVerdict = "capability browser: not checked"
 	logged := &lockedLog{}
 	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
@@ -797,6 +810,7 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 // line names, with the log after them: what the operator reads of a probe that never reached a
 // verdict.
 func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
+	t.Parallel()
 	const noVerdict = "capability lsp: not checked; capability browser: not checked; " +
 		"role overlays: implementer: signal: terminated"
 	g := newProbeRig(t, nil)
@@ -827,6 +841,7 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 // attempt. The exit code decides, not the log: a no-verdict line beside the failure leaves it a
 // refusal.
 func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
+	t.Parallel()
 	const failed = "legion probe-image: capability browser is missing: chromium is not on PATH, and PUPPETEER_EXECUTABLE_PATH names no executable"
 	for _, testCase := range []struct {
 		name string
@@ -855,6 +870,7 @@ func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
 // that does not exist — refuses it again, so the probe stops naming it; anything else is the
 // cluster's moment, retried.
 func TestProbeImageClassifiesTheAPIsAnswers(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name       string
 		setup      func(*probeRig)
@@ -913,6 +929,7 @@ func TestProbeImageClassifiesTheAPIsAnswers(t *testing.T) {
 // A probe Sandbox of this project and image left by a crashed boot is replaced; one carrying
 // another project's label, or none, is not this daemon's to delete, and the probe says so.
 func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
+	t.Parallel()
 	t.Run("this project's", func(t *testing.T) {
 		labels := map[string]string{labelProject: testProject, labelProbe: "image"}
 		g := newProbeRig(t, []k8sruntime.Object{
@@ -963,6 +980,7 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 // second boot on the same image creates its own probe pod, and refuses when the operator's
 // configuration stopped resolving an agent's model in between.
 func TestEveryBootProbesTheImage(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	g.succeeds(okLine(3))
 	if err := g.probe(probeOptions(t)); err != nil {
@@ -986,6 +1004,7 @@ func TestEveryBootProbesTheImage(t *testing.T) {
 // than retried to the budget. Any other FailedMount on the volume is one the kubelet retries (its
 // Secret watch not yet synced, kubernetes/kubernetes#99475), and the attempt runs to its budget.
 func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
+	t.Parallel()
 	mount := `MountVolume.SetUp failed for volume "providers" : `
 	for _, testCase := range []struct {
 		name, message string
@@ -1039,6 +1058,7 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 // synced, the object not yet registered with its manager, the pod's volumes not all mounted yet),
 // and the attempt runs to its budget.
 func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
+	t.Parallel()
 	configMap := func(volume, name string) corev1.Volume {
 		return corev1.Volume{Name: volume, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}}
 	}
@@ -1132,6 +1152,7 @@ func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
 // read follows while the clock stands; once the event exists and the clock has moved past
 // mountRecheck, the next pass reads again and refuses, one Sandbox created, two event reads made.
 func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
+	t.Parallel()
 	volume := corev1.Volume{Name: "operator-route", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-route"}}}}
 	g := newProbeRig(t, nil, withOptions(func(o *Options) {
 		o.Pod.Volumes = []corev1.Volume{volume}
@@ -1191,6 +1212,7 @@ func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
 // message, given once rather than retried to the budget. A CreateContainerConfigError saying
 // anything else is left to the budget, whose detail quotes the waiting reason.
 func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, message string
 		refused       bool
@@ -1241,6 +1263,7 @@ func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
 // failure in a pod block naming no share at all. The messages are the kubelet's own, read from
 // gVisor pods on a kind node and from a gVisor pod on GKE Autopilot.
 func TestProbeImageRefusesAShareThePodCannotMount(t *testing.T) {
+	t.Parallel()
 	// retried is the event's count: 1 for a failure the kubelet has met once, else 2, the least
 	// the probe refuses a CSI failure at.
 	retried := func(once bool) int32 {
@@ -1356,6 +1379,7 @@ Output: mount.nfs: Connection timed out for ` + export + ` on /var/lib/kubelet/p
 // but is not bound yet (`pod has unbound immediate PersistentVolumeClaims`), which is left to the
 // budget rather than counted as waiting on capacity, since it may yet bind.
 func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
+	t.Parallel()
 	team := corev1.Volume{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}
 	unplaced := func(message string, age time.Duration) func(*corev1.Pod) {
 		return func(p *corev1.Pod) {
@@ -1413,6 +1437,7 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 // repeat in its Count or, as an events.k8s.io/v1 recorder does, in its Series alone; a CSI failure
 // met once is left to the budget.
 func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
+	t.Parallel()
 	message := `MountVolume.MountDevice failed for volume "pvc-1b2c" : rpc error: code = Internal desc = mount failed: exit status 32`
 	for _, testCase := range []struct {
 		name    string
@@ -1456,6 +1481,7 @@ func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 // issue pod runs, since every Legion pod mounts the pod block's claims: the scheduler's
 // ErrReasonReadWriteOncePodConflict is a refusal naming the claims, at once, never a capacity wait.
 func TestProbeImageRefusesAReadWriteOncePodClaimInUse(t *testing.T) {
+	t.Parallel()
 	message := "0/3 nodes are available: 3 node(s) unavailable due to PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod. preemption: not eligible"
 	g := newProbeRig(t, nil, withOptions(func(o *Options) {
 		o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
@@ -1483,6 +1509,7 @@ func TestProbeImageRefusesAReadWriteOncePodClaimInUse(t *testing.T) {
 // admitted pod carries but the pod block does not: it is that volume's, never blamed on the pod
 // block's one claim as its PersistentVolume would be.
 func TestProbeImageNeverBlamesAClaimForAnInjectedVolume(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil, withOptions(func(o *Options) {
 		o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
 		o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
@@ -1521,6 +1548,7 @@ func TestProbeImageNeverBlamesAClaimForAnInjectedVolume(t *testing.T) {
 // the refusal names every share and quotes it, and does not blame the image; without one, the same
 // failure stays the image's.
 func TestProbeImageNamesTheSharesWhenGVisorCannotReadTheMounts(t *testing.T) {
+	t.Parallel()
 	const message = "failed to start containerd task \"3c5f\": OCI runtime start failed: starting container: reading mounts file: error unmarshaling mounts: unexpected end of JSON input\nJSON bytes:\n"
 	nas := corev1.Volume{Name: "nas", VolumeSource: corev1.VolumeSource{NFS: &corev1.NFSVolumeSource{Server: "10.0.0.2", Path: "/share"}}}
 	for _, testCase := range []struct {
@@ -1578,6 +1606,7 @@ const unschedulableMessage = "0/83 nodes are available: 25 Insufficient cpu, 58 
 // wait with the scheduler's reason. A pod Unschedulable for less than the boot timeout is a pool
 // still adding a node: the attempt waits on it to its budget, as it does any Pending pod.
 func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
+	t.Parallel()
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
 		logged := &lockedLog{}
 		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
@@ -1649,6 +1678,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 // jumps the rig's clock once and nudges the pod so the attempt's wait notices without waiting on
 // the recheck interval; a budget shorter than that delay can never observe the jump.
 func TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout(t *testing.T) {
+	t.Parallel()
 	const bootTimeout = 600 * time.Millisecond
 	ageOutAfter := func(t *testing.T, g *probeRig, delay time.Duration) {
 		t.Helper()
@@ -1726,6 +1756,7 @@ func TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout(t *testing
 // directory (TestTheProvidersDirectoryIsToldWhereThePodMountsIt). It also runs a role generation's
 // namespaces over its own volume at RoleProbeDir, as an issue pod's launcher runs every role.
 func TestTheProbeRunsAsAWorkerRuns(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		keys map[string]string
@@ -1762,6 +1793,7 @@ func TestTheProbeRunsAsAWorkerRuns(t *testing.T) {
 // The daemon's probe name is scoped to the project and the image, a Prober's to its run as well, and
 // each fits a DNS label however long the project is, the run's suffix taken from the project's share.
 func TestProbeNameIsTheProjectAndTheImage(t *testing.T) {
+	t.Parallel()
 	if got := probeName(testProject, testDigestHex, ""); got != probeSandboxName {
 		t.Errorf("probeName = %q, want %q", got, probeSandboxName)
 	}
@@ -1781,6 +1813,7 @@ func TestProbeNameIsTheProjectAndTheImage(t *testing.T) {
 // The probe container is told the operator's variables as written, as a worker's container is,
 // although the kubelet expands `$(NAME)` and `$$` in a container's env values (kubeletLiteral).
 func TestTheProbeIsToldTheOperatorsVariablesAsWritten(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	literal := "/etc/legion-operator/$(HOME)/a$$b.yml"
 	opts.Pod.Env = map[string]string{"PI_CONFIG_FILES": literal}
@@ -1798,6 +1831,7 @@ func TestTheProbeIsToldTheOperatorsVariablesAsWritten(t *testing.T) {
 // with that type: the lifecycle fields the worker Sandboxes never set included. Its container
 // carries what the daemon hands it, the probe's own reservation (probeReservation).
 func TestProbeManifestGoldenAndSchema(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1835,6 +1869,7 @@ func TestProbeManifestGoldenAndSchema(t *testing.T) {
 
 // The probe pod carries Karpenter's `do-not-disrupt` annotation alone; probeManifest says why.
 func TestTheProbePodCarriesNoGKEExtendedDurationAnnotation(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1852,6 +1887,7 @@ func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, n
 // TestLastBytesKeepsTheEndOfTheTail: the probe log tail is kept from its end, not its start, so a
 // log whose OK line falls after lines longer than the keep bound still ends on that line.
 func TestLastBytesKeepsTheEndOfTheTail(t *testing.T) {
+	t.Parallel()
 	const keep = 64 << 10
 	line := strings.Repeat("x", 1000)
 	var log strings.Builder
@@ -1914,6 +1950,7 @@ func TestLastBytesKeepsTheEndOfTheTail(t *testing.T) {
 // the user name or the query's tail with no "://" or "?" before it, where the URL rule probeLog
 // gives the tail through (redact.Read) finds neither.
 func TestLastBytesKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	t.Parallel()
 	const keep = 4 << 10
 	const user, query = "legion-reader", "token=planted-query-token-9"
 	rest := " the image said more " + strings.Repeat("z", keep)
@@ -1952,6 +1989,7 @@ func TestLastBytesKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 // no "://" before it, where the URL rule a death cause is kept under (storetext.FarSideText) finds
 // no userinfo.
 func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withoutController())
 	head := strings.Repeat("w", 100) + " https://legion-"
 	log := head + "reader@h.example/p?token=planted-query-token-9 the fetch said more " + strings.Repeat("z", logTailBytes)
@@ -1979,6 +2017,7 @@ func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 // buffer never grew past the 2×keep it started with, so a log's size never decides what the daemon
 // holds (readLog's memory, which io.ReadAll let a 2000-line tail grow to its whole size).
 func TestTailBytesHoldsOnlyTheNewestBytes(t *testing.T) {
+	t.Parallel()
 	const keep = 4 << 10
 	var log strings.Builder
 	for i := 0; log.Len() < 100*keep; i++ {
@@ -2020,6 +2059,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // A probe pod's log a hundred lines of a kilobyte, the OK line last, still passes: probeLog keeps
 // its tail from the end, so the OK line is read however much came before it.
 func TestProbeImagePassesOnALongLogWithTheOKLineLast(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil)
 	line := strings.Repeat("x", 1000)
 	var log strings.Builder
@@ -2041,6 +2081,7 @@ func TestProbeImagePassesOnALongLogWithTheOKLineLast(t *testing.T) {
 // more, and leaves the kubelet's pull throttle, any other wording and a single pull's answer to the
 // retry (pkg/kubelet/images/image_manager.go, EnsureImageExists).
 func TestRegistryHasNoImage(t *testing.T) {
+	t.Parallel()
 	manifestNotFound := func(image string) string {
 		return `rpc error: code = NotFound desc = failed to pull and unpack image "` + image +
 			`": failed to resolve reference "` + image + `": ` + image + `: not found`

@@ -309,6 +309,7 @@ func reconnectingPods(t *testing.T, pods int) ([]k8sruntime.Object, []shimwire.L
 // launches in flight, two roles of one issue and one of another, wait their turn on the limiter and
 // start their roles, charged no launch failure.
 func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testing.T) {
+	t.Parallel()
 	const pods, speedup = 25, 100
 	limit := newFakeLimiter(2, speedup)
 	objects, hellos := reconnectingPods(t, pods)
@@ -374,6 +375,7 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 // launcher's hellos meanwhile are refused without a request, and the first hello after it reads the
 // Secret again and is accepted.
 func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name := roleSecretName(loc.Sandbox.Name, claim.RoleTester)
@@ -422,6 +424,7 @@ func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *test
 // each bound one, so the launcher it waits for is accepted at once, inside the hold-off its own
 // failed read set.
 func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name := roleSecretName(loc.Sandbox.Name, claim.RoleTester)
@@ -461,6 +464,7 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 // passed, and a read's credential does not undo the credential a binding write of the same Sandbox
 // holds.
 func TestALauncherSecretsHoldOffAndCredentialAreItsSandboxsAlone(t *testing.T) {
+	t.Parallel()
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	at := rigNow
@@ -502,6 +506,7 @@ func TestALauncherSecretsHoldOffAndCredentialAreItsSandboxsAlone(t *testing.T) {
 // launch bound: that read's credential does not replace it, so a hello of the successor's pod whose
 // read began before the binding finds the binding afterwards, not the unbound Secret it read.
 func TestAReadOfADeletedSandboxNeverEvictsItsSuccessorsBinding(t *testing.T) {
+	t.Parallel()
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-new", launcherCredential{podUID: "uid-pod-bound"})
@@ -518,6 +523,7 @@ func TestAReadOfADeletedSandboxNeverEvictsItsSuccessorsBinding(t *testing.T) {
 // successor reads: the successor holds nothing until its own read, which it then holds, before any
 // launch of it binds.
 func TestASuccessorHoldsItsOwnReadsWhateverALateReadOfItsPredecessorLeft(t *testing.T) {
+	t.Parallel()
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
@@ -536,6 +542,7 @@ func TestASuccessorHoldsItsOwnReadsWhateverALateReadOfItsPredecessorLeft(t *test
 // whatever rate the caller's configuration names; the requests' clients bound each request by
 // apiTimeout, and the informers' have no timeout, which would end a watch.
 func TestTheRuntimesClientsShareOneLimiterAtTheDaemonsRate(t *testing.T) {
+	t.Parallel()
 	rc := &rest.Config{Host: "https://192.0.2.1", QPS: 5, Burst: 10, Timeout: time.Minute}
 	informers, requests := clientConfigs(rc)
 	if informers.RateLimiter == nil || informers.RateLimiter != requests.RateLimiter {
@@ -574,6 +581,7 @@ func TestTheRuntimesClientsShareOneLimiterAtTheDaemonsRate(t *testing.T) {
 // requests' clients: here a launch's read and create of its Sandbox (ensureSandbox). Swapped, every
 // watch would end at the requests' timeout and no other request would have one.
 func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	informerDyn, informerKube := newDynamic(t), kubefake.NewClientset()
@@ -633,6 +641,7 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // times the cores) can still spend a second on the round trip, which is outside what the row
 // claims rather than a mode it rules out.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)

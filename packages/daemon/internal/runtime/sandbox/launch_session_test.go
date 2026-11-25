@@ -33,6 +33,7 @@ func launchSessions(r *Runtime) map[claim.Token]launchedSession {
 // (runtime.LaunchSessionNamer). It answers nothing for an Oh My Pi launch, whose agent mints its
 // own id, and nothing for any incarnation but the launch's own.
 func TestAClaudeLaunchNamesItsSessionToTheDaemon(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, exchangeKeyed())
 	loc := g.spawn(claudeWorkerSpec(t))
 	started := startEnv(lastStart(t, g, workerToken))[claudelaunch.SessionVariable]
@@ -60,6 +61,7 @@ func TestAClaudeLaunchNamesItsSessionToTheDaemon(t *testing.T) {
 // however many Claude launches it makes, and with the key the record goes when the process is let
 // go, by a suspension or by the claim's release, as the watch's record of the process goes.
 func TestTheLaunchSessionRecordFollowsTheKeyAndTheProcess(t *testing.T) {
+	t.Parallel()
 	t.Run("without the key", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(claudeWorkerSpec(t))

@@ -21,6 +21,7 @@ import (
 // have started in it. The mapping classifies it a failed init, whatever the exit code, which is
 // what keeps it out of ends() and so out of the displaced reading.
 func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
+	t.Parallel()
 	for _, waiting := range []bool{false, true} {
 		t.Run(map[bool]string{false: "terminated", true: "backoff"}[waiting], func(t *testing.T) {
 			g := newRig(t, nil)
@@ -53,6 +54,7 @@ func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 }
 
 func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	old := g.spawn(workerSpec(t))
 	if err := g.r.Suspend(g.ctx, old); err != nil {
@@ -89,6 +91,7 @@ func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 // that the kubelet ended itself, and a workspace-fetch that its grace still restarts. A Sandbox with
 // an ephemeral volume has its pod replaced and no Sandbox created, as at main.
 func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
+	t.Parallel()
 	name, claimName := SandboxName(workerToken), IssueClaimName(workerToken)
 	kept := keptVolumes(SandboxMicroVM)
 	// launched is a rig of config that logs to log, with the tester's first pod launched and its
@@ -563,6 +566,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 }
 
 func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	type launchResult struct {
@@ -599,6 +603,7 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 // Reading a restart as a death threw away a download that was still arriving and launched the
 // issue again into the same wait (INFRA-495).
 func TestAFetchsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		container  string

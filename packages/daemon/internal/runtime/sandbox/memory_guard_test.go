@@ -68,6 +68,7 @@ func resolvedGuards(t *testing.T, g *rig, issue, controller runtime.Locator) (ma
 // the issue pods' settings and the controller's launcher with the controller pod's, and neither
 // ever with the other kind's. A refused hello is answered with the zero acknowledgement.
 func TestMemoryGuardTheResolverHandsEachPodKindItsOwnSettings(t *testing.T) {
+	t.Parallel()
 	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.MemoryGuard, o.ControllerMemoryGuard = &issueSettings, &controllerSettings
@@ -97,6 +98,7 @@ func TestMemoryGuardTheResolverHandsEachPodKindItsOwnSettings(t *testing.T) {
 // launchers with no settings, which they read as "run no guard", and still answers the other
 // kind's launchers with that kind's own settings; with both off, no launcher is handed any.
 func TestMemoryGuardTheResolverLeavesOneKindOnWhenTheOtherIsOff(t *testing.T) {
+	t.Parallel()
 	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
 	for _, tc := range []struct {
 		name              string
@@ -130,6 +132,7 @@ func TestMemoryGuardTheResolverLeavesOneKindOnWhenTheOtherIsOff(t *testing.T) {
 // to the other: a daemon restarted on a changed runtime.kubernetes.memory_guard.controller_pod
 // replaces no pod, and the settings reach the running pod's launcher on its next hello instead.
 func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
+	t.Parallel()
 	built := func(guard *shimwire.LauncherMemoryGuard) (*Runtime, podTemplate) {
 		t.Helper()
 		opts := goldenOptions()
@@ -177,6 +180,7 @@ func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
 // in the project's sandbox, or the microVM case would prove nothing of a microVM controller. A
 // refused hello is told neither.
 func TestKernelKillsTheResolverTellsEveryLauncher(t *testing.T) {
+	t.Parallel()
 	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
 	for _, project := range []SandboxConfig{{Type: SandboxGVisor}, {Type: SandboxMicroVM, MicroVM: testMicroVM()}} {
 		for _, tc := range []struct {
@@ -317,6 +321,7 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 // under a bounded context, and a report the frame's own rule refuses is dropped with a warning
 // naming the launcher: the connection stays open after it, and the report after it is read.
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
+	t.Parallel()
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
 	launchers := newLaunchers(testLeakCheck, nil, killed, nil, nil, slogTo(&logs))
@@ -360,6 +365,7 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 // receiver with the session's own token and pod, under a bounded context, and the issue pods'
 // receiver is not called: the controller's pod is of no issue, so there is no issue to name.
 func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWithTheSessionsOwnTokenAndPod(t *testing.T) {
+	t.Parallel()
 	var logs lockedLog
 	issueKilled, issueCalls := recordedMemoryKills()
 	controllerKilled, controllerCalls := recordedControllerMemoryKills()
@@ -397,6 +403,7 @@ func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWith
 // as the intake fact, with its cause as the launcher sent it; a report whose cause the frame's own
 // rule does not know is dropped with a warning naming the cause, and the connection stays open.
 func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing.T) {
+	t.Parallel()
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
 	launchers := newLaunchers(testLeakCheck, nil, killed, nil, nil, slogTo(&logs))
@@ -430,6 +437,7 @@ func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing
 // the launcher's frames after it are read. The other kind's receiver, which the runtime has, is
 // not called with it.
 func TestMemoryGuardServeLauncherDropsAKillNoReceiverCanTake(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		token   claim.Token

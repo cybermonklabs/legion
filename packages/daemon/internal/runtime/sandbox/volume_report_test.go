@@ -72,6 +72,7 @@ func volumeLaunchers(seam runtime.VolumeReported) *launchers {
 // launcher_volume_report case: the report falls to the default, ServeLauncher returns, its
 // deferred close removes the session, and the state read below finds nothing connected.
 func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
+	t.Parallel()
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
 	session := launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
@@ -125,6 +126,7 @@ func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 // counts against the wrong line. The frame loop is what gives the order — each report is handed
 // over on it, as a memory guard's kill report is — so this drives three sweeps down one connection.
 func TestEverySweepsVolumeReportReachesTheSeamInOrder(t *testing.T) {
+	t.Parallel()
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
 	session := launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
@@ -152,6 +154,7 @@ func TestEverySweepsVolumeReportReachesTheSeamInOrder(t *testing.T) {
 // happen is the connection going: the trimmer sweeps on and its next report carries the same
 // volume, which is the whole reason a dropped one costs nothing.
 func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
+	t.Parallel()
 	seam := newVolumeSeam()
 	seam.err = context.DeadlineExceeded
 	launchers := volumeLaunchers(seam.reported)
@@ -176,6 +179,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 // A runtime given no seam reads the frame, logs that no receiver took it, and drops it, and the
 // connection stays open all the same.
 func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	session := launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
@@ -209,6 +213,7 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 // line's words is the warning as it stood at a3f5d0965f3f, which called each of the three a
 // report the daemon cannot count.
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
+	t.Parallel()
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()
 	launchers := newLaunchers(testLeakCheck, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))

@@ -95,6 +95,7 @@ func checkNoSessionWriter(t *testing.T, pod corev1.PodSpec) {
 // account it impersonates with it. A store that names no writer audience renders none of the
 // three: no such volume, no mount under SessionWriterDir, no flag.
 func TestAnIssuePodMountsTheSessionWriterTokenWhereNoRoleSeesIt(t *testing.T) {
+	t.Parallel()
 	pod := podOf(t, storeRuntime(t, cloudSQLWriterStore), rootSpec(t))
 	expiry := int64(3600)
 	want := corev1.Volume{Name: "session-writer-token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
@@ -155,6 +156,7 @@ func TestAnIssuePodMountsTheSessionWriterTokenWhereNoRoleSeesIt(t *testing.T) {
 // admits one volume per audience. Each is mounted read-only in the roles container at its own
 // directory of RolesDir, and the launcher is told both.
 func TestAMicroVMIssuePodCarriesTheWriterTokenBesideTheMetadataEndpointsToken(t *testing.T) {
+	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, func(o *Options) { o.SessionStore = cloudSQLWriterStore })
 	pod := podOf(t, r, rootSpec(t))
 	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume}}
@@ -185,6 +187,7 @@ func TestAMicroVMIssuePodCarriesTheWriterTokenBesideTheMetadataEndpointsToken(t 
 // built with it under a store that names none, and one built with another have moved, and one
 // built under the very store a daemon reads has not.
 func TestAKeptVolumeMicroVMIssuePodCarriesTheWriterTokenUnderRolesDir(t *testing.T) {
+	t.Parallel()
 	kept := SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}
 	r := sandboxRuntime(t, kept, func(o *Options) { o.SessionStore = cloudSQLWriterStore })
 	s := r.sandboxManifest(launchOf(t, r, rootSpec(t)))
@@ -253,6 +256,7 @@ func TestAKeptVolumeMicroVMIssuePodCarriesTheWriterTokenUnderRolesDir(t *testing
 // belongs under the home under HomeMountsDir. Nothing is mounted at the fixed paths the single-role
 // form mounts the controller's own volumes at, which role-init binds the controller's own back at.
 func TestTheControllersPodRunsTheRolesDirFormUnderAWriterAudience(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.SessionStore = cloudSQLWriterStore
 	opts.AgentSecrets = exchangeEnrolled()
@@ -338,6 +342,7 @@ func TestTheControllersPodRunsTheRolesDirFormUnderAWriterAudience(t *testing.T) 
 // shows. A gVisor controller pod in that form carries none of them, whether the project names no
 // sandbox or names gVisor beside a microvm block that names the endpoint.
 func TestTheControllersRolesDirPodIsToldItsMicroVMAndMountsTheMetadataTokenUnderRolesDir(t *testing.T) {
+	t.Parallel()
 	writer := func(o *Options) { o.SessionStore = cloudSQLWriterStore }
 	rolesDirCommand := func(t *testing.T, pod corev1.PodSpec) ([]string, string) {
 		t.Helper()
@@ -388,6 +393,7 @@ func TestTheControllersRolesDirPodIsToldItsMicroVMAndMountsTheMetadataTokenUnder
 // roles-dir form. Each is sent in fields the CRD declares. The controller goldens without the
 // writer audience are TestManifestGoldens', unchanged by it.
 func TestTheSessionWriterGoldens(t *testing.T) {
+	t.Parallel()
 	r := storeRuntime(t, cloudSQLWriterStore)
 	schema := sandboxSchema(t)
 	for name, spec := range map[string]runtime.SpawnSpec{"root-session-writer": rootSpec(t), "controller-session-writer": controllerSpec(t)} {
@@ -408,6 +414,7 @@ func TestTheSessionWriterGoldens(t *testing.T) {
 // the controller's pod alike, whatever the layout the controller's was built in; and a pod built
 // under the very store a daemon reads has not.
 func TestAWriterAudienceAddedDroppedOrChangedMovesThePodsSessionStore(t *testing.T) {
+	t.Parallel()
 	impersonating := storeRuntime(t, cloudSQLImpersonatingStore)
 	writer := storeRuntime(t, cloudSQLWriterStore)
 	another := cloudSQLWriterStore
@@ -451,6 +458,7 @@ func TestAWriterAudienceAddedDroppedOrChangedMovesThePodsSessionStore(t *testing
 // launch starts the controller in the pod it finds, enrolled and told its overlay, rather than
 // replacing a pod its own configuration built and no round covers.
 func TestADaemonKeepsTheControllersPodItsOwnConfigurationBuiltInEitherLayout(t *testing.T) {
+	t.Parallel()
 	const overlay = podHome + "/operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
@@ -509,6 +517,7 @@ func TestADaemonKeepsTheControllersPodItsOwnConfigurationBuiltInEitherLayout(t *
 // database names a writer audience: a pod of the deployment would carry two volumes of that name
 // the day it does.
 func TestCheckPodRefusesTheSessionWriterTokensName(t *testing.T) {
+	t.Parallel()
 	pod := Pod{Volumes: []corev1.Volume{{Name: "session-writer-token", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	const want = "runtime.kubernetes.pod.volumes[0].name session-writer-token is a volume Legion puts in every pod"
 	for name, store := range map[string]ompsessions.Store{
@@ -526,6 +535,7 @@ func TestCheckPodRefusesTheSessionWriterTokensName(t *testing.T) {
 // whether the start runs the agent itself or wraps it in the setup command's `/bin/sh -c …
 // legion-start`, whose first word is no agent's. A Claude Code start names none, wrapped or not.
 func TestAnOhMyPiStartNamesItsAgentsExecutable(t *testing.T) {
+	t.Parallel()
 	setup := []string{"make", "setup"}
 	for name, tc := range map[string]struct {
 		agent, setup []string
@@ -567,6 +577,7 @@ func TestAnOhMyPiStartNamesItsAgentsExecutable(t *testing.T) {
 // that names a writer audience: it is the very probe of the same store without one, whose golden
 // pins it (TestProbeManifestGoldenAndSchema).
 func TestTheImageProbeCarriesNoSessionWriterToken(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 23, 12, 5, 30, 0, time.UTC)
 	probe := ImageProbe{Contract: 3, Resources: probeReservation(), RoleReferences: testRoleReferences}
 	writer := storeRuntime(t, cloudSQLWriterStore).probeManifest(probeSandboxName, probe, at)
@@ -581,6 +592,7 @@ func TestTheImageProbeCarriesNoSessionWriterToken(t *testing.T) {
 // one: it holds a Sandbox to the one container its labels name and the claim templates its kind
 // owns, which the two layouts share.
 func TestTheBootCensusPassesTheControllersRolesDirPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.SessionStore = cloudSQLWriterStore }))
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))

@@ -53,6 +53,7 @@ func runningSandbox(t *testing.T, token claim.Token, role claim.Role) k8sruntime
 // the supervisor fences on that incarnation, so a death stamped with any other would never reach
 // the machine (B3). Once Gone or NotRecordedProcess is delivered the claim leaves the watch.
 func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
+	t.Parallel()
 	t.Run("gone", func(t *testing.T) {
 		g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 			withoutController())
@@ -106,6 +107,7 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 // its claim, stamped with the incarnation recorded before, and nothing is relaunched; a claim in
 // another issue pod that lived through it is Alive at its recorded incarnation (B3, re-adoption).
 func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
+	t.Parallel()
 	killed := podObject(SandboxName(childToken), "uid-pod-child", "uid-sandbox-implementer", claimLabels(claim.RoleImplementer), corev1.PodStatus{
 		Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(string(claim.RoleImplementer), 137, "Error")},
 	})
@@ -148,6 +150,7 @@ func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
 // the very next evaluation is Alive at that same locator, with no write in between: the stage 4a
 // live re-adopt check hit exactly this ordering (LEGION-462).
 func TestADisconnectedLauncherAtReadoptionIsUncertainThenAliveNeverRelaunched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, rootToken, claim.RoleArchitect), runningPod(rootToken, "uid-pod-root", claim.RoleArchitect)},
 		withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
 	loc := sandboxLocator(rootToken, "uid-pod-root")
@@ -192,6 +195,7 @@ func TestADisconnectedLauncherAtReadoptionIsUncertainThenAliveNeverRelaunched(t 
 // which other roles share, stays. The live suspend check in live_lifecycle_test.go applies the
 // same rule.
 func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	observations, err := g.r.Observe(g.ctx)
 	if err != nil {
@@ -242,6 +246,7 @@ func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
 // run on production hit it: Suspend's shutdown frame ended the pod, Observe began evaluating the
 // death — the log read is its slow step — and Suspend returned before the Gone was sent.
 func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 		withoutController())
 	g.reportLauncher(workerToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
@@ -284,6 +289,7 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 // Every watched claim is evaluated again each probe interval, with no change to its objects: the
 // supervisor retries a waiting delivery on an Alive, as it does at each tmux sweep.
 func TestEveryWatchedClaimIsEvaluatedEachProbeInterval(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 		withoutController(), withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
 	loc := sandboxLocator(workerToken, recorded)
@@ -311,6 +317,7 @@ func TestEveryWatchedClaimIsEvaluatedEachProbeInterval(t *testing.T) {
 // the claim, leaving the live pod unwatched, and a stale Suspend then stops the newer relaunch
 // (decision 3d).
 func TestAStaleKnownLocatorNeverDisplacesANewerIncarnation(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	stale := g.spawn(spec)
@@ -340,6 +347,7 @@ func TestAStaleKnownLocatorNeverDisplacesANewerIncarnation(t *testing.T) {
 // image. A warning alone: the drifted pod's claim is adopted as any other and nothing is written.
 // Every later sweep warns again until the pod is replaced, and not after.
 func TestTheBootReconciliationWarnsOfEachPodRunningAnotherImage(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	issue, controller := g.spawn(spec), g.spawn(controllerSpec(t))

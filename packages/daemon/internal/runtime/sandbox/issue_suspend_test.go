@@ -47,6 +47,7 @@ func authorizeClose(st *store.Store, close store.IssueClose) func(context.Contex
 }
 
 func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	g := newRig(t, nil)
 	if _, err := st.OpenTreeLifecycle(g.ctx, testProject, testTree, treelifecycle.AuthorityWorkflow); err != nil {
@@ -129,6 +130,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 // Sandbox owns; the restricted runtime sends no PVC request itself. A retried close finds the
 // Sandbox gone and finishes.
 func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		session bool
@@ -243,6 +245,7 @@ func issueSecrets(sandbox string) []string {
 // that record before it writes the first Secret. The daemon makes no request on a
 // PersistentVolumeClaim at any step: it has no PVC verb, and the claim's life is the Sandbox's.
 func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
+	t.Parallel()
 	name, claimName := SandboxName(childToken), IssueClaimName(childToken)
 	labels := map[string]string{labelProject: testProject, labelIssue: childIssue, labelVolume: volumeKept}
 	// keeps fails the test unless, after step, the issue's Sandbox is still uid and owns the one
@@ -467,6 +470,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 // deletes each kept Sandbox of the tree; and the orphan sweep (ReconcileOrphans) deletes a kept
 // Sandbox of a tree that is not live. The API then holds no Sandbox of the name.
 func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
+	t.Parallel()
 	t.Run("the issue's suspension", func(t *testing.T) {
 		name := SandboxName(childToken)
 		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
@@ -595,6 +599,7 @@ func keptCleanupRig(t *testing.T) *cleanupRig {
 // record in place of the delete: it answers absent from the moment the API answered the patch
 // that wrote the record, and a release of it after that takes nothing and answers false.
 func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	t.Run("one this runtime's release deleted, before the store lets it go", func(t *testing.T) {
 		release := make(chan struct{})
@@ -755,6 +760,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 // the Sandbox and its pod as they were. So the daemon's teardown, which notes its mark from the
 // callback, takes no pod it could not note, and its retry finds the Sandbox to release.
 func TestAReleaseWhoseWritingCallbackFailsWritesNothing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.issueLaunchers(workerToken)
 	g.spawn(workerSpec(t))
