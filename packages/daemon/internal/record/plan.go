@@ -479,14 +479,15 @@ func (p *StoredPlan) HoldsBranchBeforeItsStart(issueKey, branch string) bool {
 	})
 }
 
-// StartBranch is a branch the work of a task starts from (StoredPlan.StartsFrom), and the id of
-// each task whose work it holds, which the join names: for a part, the branch of the task it is a
-// part of (OfTask), which holds that task's joined work, named by that task's id; then one need
-// whose work did not merge, on its own branch, or each need whose work merged, on the issue's
-// default branch, in the order of the task's needs.
+// StartBranch is a branch the work of a task starts from (StoredPlan.StartsFrom), and Holds, the id
+// of each task whose work it holds, which the join names: for a part, the branch of the task it is a
+// part of, which holds that task's joined work, named by that task's id (OfTask, which only the
+// words of a missing branch read); then one need whose work did not merge, on its own branch, or
+// each need whose work merged, on the issue's default branch, in the order of the task's needs. So
+// Holds is no list of needs: a part's first branch names the task it is a part of.
 type StartBranch struct {
 	Branch string
-	Needs  []string
+	Holds  []string
 	OfTask bool
 }
 
@@ -515,7 +516,7 @@ func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) 
 		if !ok {
 			return nil, fmt.Errorf("the branches task %s of %s starts from: it is a part of task %s, which its plan holds no task of", task, issue.Key, of.PartOf)
 		}
-		starts = append(starts, StartBranch{Branch: above.BranchOf(issue.Key), Needs: []string{of.PartOf}, OfTask: true})
+		starts = append(starts, StartBranch{Branch: above.BranchOf(issue.Key), Holds: []string{of.PartOf}, OfTask: true})
 	}
 	var merged []string
 	for _, id := range of.Needs {
@@ -526,11 +527,11 @@ func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) 
 		case p.WorkMerged(id):
 			merged = append(merged, id)
 		default:
-			starts = append(starts, StartBranch{Branch: need.BranchOf(issue.Key), Needs: []string{id}})
+			starts = append(starts, StartBranch{Branch: need.BranchOf(issue.Key), Holds: []string{id}})
 		}
 	}
 	if len(merged) > 0 {
-		starts = append(starts, StartBranch{Branch: issue.DefaultBranch, Needs: merged})
+		starts = append(starts, StartBranch{Branch: issue.DefaultBranch, Holds: merged})
 	}
 	return starts, nil
 }
@@ -557,7 +558,7 @@ func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join boo
 	case slices.Contains(p.Merging(), task):
 		return issue.DefaultBranch, false, nil
 	case len(starts) == 0 || !p.Implements(task):
-		return standsOn(issue, starts), false, nil
+		return p.standsOn(issue, task), false, nil
 	case len(starts) == 1:
 		return starts[0].Branch, false, nil
 	}
@@ -565,15 +566,19 @@ func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join boo
 	return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
 }
 
-// standsOn is the branch the work of a task stands on apart from the work of its own needs, given
-// starts, the branches it starts from (StartsFrom), for issue: for a part, the branch of the task it
-// is a part of, its first start (OfTask), which its parts join into, so a part's pull request shows
-// its own work alone against it; for a task of the top level, the issue's default branch.
-func standsOn(issue Issue, starts []StartBranch) string {
-	if len(starts) > 0 && starts[0].OfTask {
-		return starts[0].Branch
+// standsOn is the branch the work of task of p, the plan of issue, stands on apart from the work of
+// its own needs: for a part (PartOf), the branch of the task it is a part of (BranchOf), which its
+// parts join into, so a part's pull request shows its own work alone against it; for a task of the
+// top level, the issue's default branch. It reads the plan, never where StartsFrom lists that
+// branch. It is read after StartsFrom, which answers an error for a task p does not hold and for a
+// part whose task p does not hold.
+func (p StoredPlan) standsOn(issue Issue, task string) string {
+	of, _ := p.TaskOf(task)
+	if of.PartOf == "" {
+		return issue.DefaultBranch
 	}
-	return issue.DefaultBranch
+	above, _ := p.TaskOf(of.PartOf)
+	return above.BranchOf(issue.Key)
 }
 
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether

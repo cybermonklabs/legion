@@ -377,9 +377,9 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 // branch: two facts, since the first step repairs each on another branch, and a repair on branch
 // of a need's conflict would show that need's work in the task's pull request, which is based on
 // onto. GitHub's 404 for a branch of starts, to the read of the first one's head or to a merge of
-// one, is a *needBranchMissing naming that branch and the needs whose work it holds, or the task
-// it is the branch of (record.StartBranch.OfTask); a 404 for from, read only where starts names
-// none, is an error the row tries again on its backoff.
+// one, is a *needBranchMissing naming that branch and the tasks whose work it holds
+// (record.StartBranch.Holds), a part's task among them (record.StartBranch.OfTask); a 404 for
+// from, read only where starts names none, is an error the row tries again on its backoff.
 func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto, from string, starts []record.StartBranch, needs []string) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
@@ -388,7 +388,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 		return nil, false, err
 	}
 	missing := func(start record.StartBranch, err error) error {
-		return &needBranchMissing{branch: start.Branch, needs: start.Needs, merged: start.Branch == issue.DefaultBranch, ofTask: start.OfTask, err: err}
+		return &needBranchMissing{branch: start.Branch, holds: start.Holds, merged: start.Branch == issue.DefaultBranch, ofTask: start.OfTask, err: err}
 	}
 	base := from
 	if len(starts) > 0 {
@@ -401,9 +401,9 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 		return nil, false, err
 	}
 	for _, start := range starts {
-		message := fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", start.Needs))
+		message := fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", start.Holds))
 		if start.Branch == issue.DefaultBranch {
-			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, idsNamed("task", start.Needs))
+			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, idsNamed("task", start.Holds))
 		}
 		joined, err := ghbranch.Merge(ctx, github, repo, onto, start.Branch, message)
 		if err != nil {
@@ -413,7 +413,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 			return nil, false, err
 		}
 		if joined == ghbranch.MergeConflict {
-			conflicts = append(conflicts, start.Needs...)
+			conflicts = append(conflicts, start.Holds...)
 		}
 	}
 	if onto == branch {
@@ -439,33 +439,33 @@ func idsNamed(noun string, ids []string) string {
 }
 
 // needBranchMissing is a join that cannot end: GitHub has no branch, branch, that holds the work of
-// needs, a need's own branch, or the default branch, which holds the work of each need that merged
-// (merged), or, for a part, the branch of the task it is a part of, needs' one id (ofTask), so the
+// holds: a need's own branch, or the default branch, which holds the work of each need that merged
+// (merged), or, for a part, the branch of the task it is a part of, holds' one id (ofTask), so the
 // row waits for that branch on its backoff (joinCannotEnd).
 type needBranchMissing struct {
 	branch string
-	needs  []string
+	holds  []string
 	merged bool
 	ofTask bool
 	err    error
 }
 
 func (e *needBranchMissing) Error() string {
-	return fmt.Sprintf("GitHub has no branch %s%s: %v", e.branch, e.holds("the"), e.err)
+	return fmt.Sprintf("GitHub has no branch %s%s: %v", e.branch, e.held("the"), e.err)
 }
 
-// holds is what the missing branch holds, as the words that name it go on: ` of <whose> need <id>`
+// held is what the missing branch holds, as the words that name it go on: ` of <whose> need <id>`
 // for a need's own branch, `, which holds the work of <whose> need <id>` for the default branch,
 // with `needs` and each id for several, and `, the branch of task <id>, whose part waits for it`
 // for a part's task's branch.
-func (e *needBranchMissing) holds(whose string) string {
+func (e *needBranchMissing) held(whose string) string {
 	switch {
 	case e.ofTask:
-		return fmt.Sprintf(", the branch of task %s, whose part waits for it", strings.Join(e.needs, ", "))
+		return fmt.Sprintf(", the branch of task %s, whose part waits for it", strings.Join(e.holds, ", "))
 	case e.merged:
-		return fmt.Sprintf(", which holds the work of %s %s", whose, idsNamed("need", e.needs))
+		return fmt.Sprintf(", which holds the work of %s %s", whose, idsNamed("need", e.holds))
 	}
-	return fmt.Sprintf(" of %s %s", whose, idsNamed("need", e.needs))
+	return fmt.Sprintf(" of %s %s", whose, idsNamed("need", e.holds))
 }
 
 func (e *needBranchMissing) Unwrap() error { return e.err }
@@ -494,7 +494,7 @@ const taskJoinToldPrefix = "the owner is told: "
 // wait for the join, and at the row's first such answer the issue's architect, the task's owner, is
 // told once, in a task-join-failed notice that names the task, the need and the branch.
 func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, missing *needBranchMissing) error {
-	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s%s", task.Task, issue.Key, missing.branch, missing.holds("its"))
+	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s%s", task.Task, issue.Key, missing.branch, missing.held("its"))
 	if !strings.HasPrefix(row.LastError, taskJoinToldPrefix) {
 		notice := record.Notice{Kind: "task-join-failed", Role: claim.RoleArchitect, Reason: words + ". Push that branch again, or stop the task with stop_task."}
 		if err := r.enqueueNotice(ctx, issue.Key, notice.Kind, notice); err != nil {

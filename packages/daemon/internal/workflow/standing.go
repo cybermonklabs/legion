@@ -157,10 +157,12 @@ func readPull(row *record.PullRequest) taskPull { return taskPull{row: row, read
 // (standingPart reads it): base, the base of the task's pull request where the plan gives one other
 // than the issue's default branch (record.StoredPlan.BaseOf), and "" where it gives that branch;
 // join, that base where it is the task's join branch, the branch the join of its needs is made on,
-// and "" for a task with no join branch; conflicts, each need whose join GitHub refused as a
-// conflict (record.PlanTask.JoinConflicts), with the branch the task starts from that holds its work
-// (record.StoredPlan.StartsFrom), in the order the row holds them: the need's own branch, or the
-// default branch where its work merged, since GitHub can have deleted its branch at that merge; and
+// and "" for a task with no join branch; conflicts, each task whose work GitHub refused to join as a
+// conflict (record.PlanTask.JoinConflicts): a need, or for a part the task it is a part of, with the
+// branch the task starts from that holds its work (record.StoredPlan.StartsFrom,
+// record.StartBranch.Holds), in the order the row holds them: the need's own branch, the default
+// branch where its work merged, since GitHub can have deleted its branch at that merge, or the
+// branch of the part's task; and
 // unmerged, whether GitHub refused as a conflict the merge of the task's join branch into its
 // branch (record.PlanTask.JoinUnmerged), false for a task with no join branch.
 type planTold struct {
@@ -170,8 +172,8 @@ type planTold struct {
 	unmerged  bool
 }
 
-// joinConflict is a need of a task whose join GitHub refused as a conflict, and the branch the task
-// starts from that holds the need's work (record.StoredPlan.StartsFrom).
+// joinConflict is a task whose work GitHub refused to join into a task as a conflict, a need or a
+// part's task, and the branch the task starts from that holds its work (record.StoredPlan.StartsFrom).
 type joinConflict struct {
 	task, branch string
 }
@@ -200,7 +202,7 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 	}
 	of, _ := stored.TaskOf(task)
 	for _, need := range of.JoinConflicts {
-		if at := slices.IndexFunc(starts, func(start record.StartBranch) bool { return slices.Contains(start.Needs, need) }); at >= 0 {
+		if at := slices.IndexFunc(starts, func(start record.StartBranch) bool { return slices.Contains(start.Holds, need) }); at >= 0 {
 			told.conflicts = append(told.conflicts, joinConflict{task: need, branch: starts[at].Branch})
 		}
 	}

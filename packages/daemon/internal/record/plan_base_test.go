@@ -137,8 +137,8 @@ func TestTheBaseOfATaskReadsAMergedNeedAsTheDefaultBranch(t *testing.T) {
 	if merging := stored.Merging(); !slices.Equal(merging, []string{"z"}) {
 		t.Fatalf("Merging = %q, want z alone: c, d and g need b", merging)
 	}
-	a := StartBranch{Branch: "legion/LEGION-208.a", Needs: []string{"a"}}
-	main := func(needs ...string) StartBranch { return StartBranch{Branch: "main", Needs: needs} }
+	a := StartBranch{Branch: "legion/LEGION-208.a", Holds: []string{"a"}}
+	main := func(needs ...string) StartBranch { return StartBranch{Branch: "main", Holds: needs} }
 	type want struct {
 		task   string
 		starts []StartBranch
@@ -230,7 +230,10 @@ func TestTheBaseOfAStartedTaskIsTheBaseItsStartFixed(t *testing.T) {
 // The fault it catches is a part that starts without its task's joined work: a part that merges
 // and needs nothing started at the default branch, and a part that needs a task outside its task
 // started at that need's branch (its control: StartsFrom that lists a part's own needs alone,
-// which fails every part's row).
+// which fails every part's row). The base of a part none of whose steps implements, f3 and f4, is
+// read from the plan's PartOf, never from where StartsFrom lists its task's branch (its control:
+// StartsFrom that lists that branch last, under which only the StartsFrom rows fail; a base read
+// from the first branch StartsFrom lists makes f3's and f4's base main there).
 func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 	issue := Issue{Key: planIssue, DefaultBranch: "main"}
 	stored := basePlan(
@@ -254,9 +257,9 @@ func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 			stored.Tasks[i].PartOf = "f"
 		}
 	}
-	ofF := StartBranch{Branch: "legion/LEGION-208.f", Needs: []string{"f"}, OfTask: true}
-	f1 := StartBranch{Branch: "legion/LEGION-208.f1", Needs: []string{"f1"}}
-	f2 := StartBranch{Branch: "legion/LEGION-208.f2", Needs: []string{"f2"}}
+	ofF := StartBranch{Branch: "legion/LEGION-208.f", Holds: []string{"f"}, OfTask: true}
+	f1 := StartBranch{Branch: "legion/LEGION-208.f1", Holds: []string{"f1"}}
+	f2 := StartBranch{Branch: "legion/LEGION-208.f2", Holds: []string{"f2"}}
 	for _, tc := range []struct {
 		task, base string
 		join       bool
@@ -269,7 +272,7 @@ func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 		{"f4", "legion/LEGION-208.f", false, []StartBranch{ofF, f1, f2}},
 		{"f5", "legion/LEGION-208.f5.join", true, []StartBranch{ofF, f1, f2}},
 		{"f6", "main", false, []StartBranch{ofF}},
-		{"f7", "legion/LEGION-208.f7.join", true, []StartBranch{ofF, {Branch: "legion/LEGION-208.g", Needs: []string{"g"}}}},
+		{"f7", "legion/LEGION-208.f7.join", true, []StartBranch{ofF, {Branch: "legion/LEGION-208.g", Holds: []string{"g"}}}},
 		{"g", "main", false, nil},
 	} {
 		planned, plannedJoin, err := stored.PlannedBase(issue, tc.task)
