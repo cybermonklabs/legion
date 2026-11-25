@@ -5,10 +5,10 @@ body: |-
   (`stop`, `retry`, `suspend`, `resume_agent`): the claim's state, and who suspended the agent or
   holds a suspension of it for its turn. `suspendedBy` and `suspensionHeldBy` take `controller`
   for the controller's own suspension. Every field of it is optional, since no plugin code reads
-  one: the `legion` tool hands the answer on whole. The daemon's table of answers
-  (`answers.json`) names it `agent-action`, and its `state`, `suspendedBy` and
-  `suspensionHeldBy` are rows of `enumerated-fields.json`. The daemon API contract moves with entry
-  20261125182642 (`agent-actions`).
+  one: the `legion` tool hands the answer on whole. The daemon records it in the fixture of its
+  contract entry (`contracts/20261125182642_agent-actions.json`): the answer's row is
+  `agent-action`, and its `state`, `suspendedBy` and `suspensionHeldBy` are the entry's enumerated
+  rows. The daemon API contract moves with entry 20261125182642 (`agent-actions`).
 time: 2026-11-20T16:00:00.000000000Z
 custom:
     Issue: pr4065

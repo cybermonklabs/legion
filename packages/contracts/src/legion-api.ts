@@ -1890,8 +1890,9 @@ const legionSuspendedBy = z.enum([
  * the agent-actions contract calls them; the state does not ("no session-facing response carries suspendedBy"
  * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
- * though the daemon always writes it. The three enumerations are the daemon's table's
- * (`enumerated-fields.json`, the `agent-action` rows), each whole at the agent-actions contract. */
+ * though the daemon always writes it. The three enumerations are the entry's enumerated rows
+ * (`enumeratedRows` of `contracts/20261125182642_agent-actions.json`), each whole at the
+ * agent-actions contract. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
