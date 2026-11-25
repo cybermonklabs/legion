@@ -83,6 +83,11 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindCloseRead reads Dispatch's states of an issue's checks, and its children, for the
+	// judge of its close (CloseRead), and OutboxKindCloseWaitPublish writes the issue's stored wait
+	// onto its document close-wait.md (CloseWaitPublish).
+	OutboxKindCloseRead        OutboxKind = "close_read"
+	OutboxKindCloseWaitPublish OutboxKind = "close_wait_publish"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -120,7 +125,11 @@ const (
 // which reads Dispatch for what changed between two versions of a gated document, on a lane of its
 // own: on the lifecycle lane that read would hold every start, stop and suspend of the tree's
 // root behind it, and on the board lane it would wait behind a notice that waits as long as its
-// architect holds no role, while the news it sends is owed to every holder of the tree.
+// architect holds no role, while the news it sends is owed to every holder of the tree. It also
+// runs the read of an issue's checks for the judge of its close (close_read), a read of Dispatch
+// that writes nothing there and must not wait behind such a notice either. The document that says
+// what the close waits for (close_wait_publish) is a write of the issue's Dispatch row, so it runs
+// on the board lane among the issue's other writes, ahead of the status write of its close.
 // The record lane runs the writes of the records of the issue's work — each step's record and the
 // rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
@@ -141,10 +150,10 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish, OutboxKindCloseWaitPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneDocuments:   {OutboxKindDesignChanges},
+	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
@@ -1336,6 +1345,20 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// StartAt marks the start of a next change's first phase: before the task reaches its role,
+	// the machine asks the role's shim to start the working copy at the branch the merge moved
+	// (runtime's StartAtBranch). Every other request carries none. A release before the field
+	// refuses a row that carries it (DisallowUnknownFields), so the way back of the done-by-checks
+	// migration deletes such rows.
+	StartAt *StartAt `json:"startAt,omitempty"`
+}
+
+// StartAt is where a next change's working copy starts (SuperviseRequest.StartAt): Bookmark, the
+// issue's branch, legion/<KEY>, and Base, the branch it merged into, both fetched before the
+// working copy moves to the bookmark.
+type StartAt struct {
+	Bookmark string `json:"bookmark"`
+	Base     string `json:"base"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1655,9 +1678,53 @@ type IssueBranch struct {
 	// Generation is the issue generation the branch is created for. A row of an earlier generation,
 	// or of a tree that lingers, finishes without acting.
 	Generation uint64 `json:"generation"`
+	// From is where a next change's branch starts: the base the issue's last pull request merged
+	// into and the head that was merged, from the issue's merge snapshot. It is nil for every
+	// generation that is no next change, whose branch is made at the default branch as before. A
+	// release before the field refuses a row that carries it (DisallowUnknownFields), so the way
+	// back of the done-by-checks migration deletes such rows.
+	From *BranchFrom `json:"from,omitempty"`
+}
+
+// BranchFrom is where a next change's branch starts (IssueBranch.From): Base, the branch the issue's
+// last pull request merged into, and MergedHead, the final head that was merged. A field the merge
+// snapshot does not know is empty.
+type BranchFrom struct {
+	Base       string `json:"base,omitempty"`
+	MergedHead string `json:"mergedHead,omitempty"`
+}
+
+// IssueBranchOf is the one constructor of an issue's branch row: the row of the issue's
+// generation, with From set from its merge snapshot where that generation is a next change
+// (Issue.NextChange is the generation) and a merge stands, and nil for any other generation.
+func IssueBranchOf(issue Issue) IssueBranch {
+	row := IssueBranch{Generation: issue.Generation}
+	if issue.NextChange != 0 && issue.NextChange == issue.Generation && issue.Merge.Merged() {
+		row.From = &BranchFrom{Base: issue.Merge.Base, MergedHead: issue.Merge.Head}
+	}
+	return row
 }
 
 func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
+
+// CloseRead reads Dispatch's states of the row's issue's checks (GET /api/v1/issues/{key}/results),
+// its children (GET /api/v1/issues/{key}) and the approval of its Verification document, and
+// carries them back as a fact the judge of the close reads. Generation is the generation the read
+// was queued for. One row stands for an issue at a time.
+type CloseRead struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (CloseRead) OutboxKind() OutboxKind { return OutboxKindCloseRead }
+
+// CloseWaitPublish writes the row's issue's stored wait (Issue.CloseWait) onto its Dispatch document
+// close-wait.md, rendered when the row runs, so one row standing stands for each change of the wait
+// before it runs. Generation is the generation whose wait was stored.
+type CloseWaitPublish struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (CloseWaitPublish) OutboxKind() OutboxKind { return OutboxKindCloseWaitPublish }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
@@ -2315,6 +2382,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindCloseRead:
+		value := CloseRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindCloseWaitPublish:
+		value := CloseWaitPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindDesignChanges:
 		value := DesignNewsReconcile{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2379,7 +2458,19 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
+	case GateSeed, LingerClose, CheckBound, ClaimRelease, DesignNewsReconcile:
+	case IssueBranch:
+		if from := value.From; from != nil && from.Base == "" && from.MergedHead == "" {
+			return fmt.Errorf("a branch row's start names the base or the merged head, or the row names no start")
+		}
+	case CloseRead:
+		if value.Generation == 0 {
+			return fmt.Errorf("a read of the checks names the generation it was queued for")
+		}
+	case CloseWaitPublish:
+		if value.Generation == 0 {
+			return fmt.Errorf("a publish of the close's wait names the generation whose wait it writes")
+		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -2549,6 +2640,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
+		}
+		if at := value.StartAt; at != nil && (value.Op != "start" || at.Bookmark == "" || at.Base == "") {
+			return fmt.Errorf("a supervise %s names where the working copy starts, and only a start names it, with the bookmark and the base", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {

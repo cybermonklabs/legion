@@ -42,15 +42,16 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
 	// The seed goes through this release's PutIssue, which writes issues.priority, a column the
-	// waiting line's issue priority (20261124060500) adds above this migration. That one is applied
-	// with the seed's schema, and Migrate, which decides each migration on its own row, then
-	// applies this one; neither reads or writes the other's column.
+	// waiting line's issue priority (20261124060500) adds above this migration, and the close
+	// wait's columns, which the done-by-checks migration (20261125004932) adds. Those two are
+	// applied with the seed's schema, and Migrate, which decides each migration on its own row,
+	// then applies this one; none of them reads or writes another's column.
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	for _, migration := range all {
-		if migration.Version != issuePriorityVersion {
+		if migration.Version != issuePriorityVersion && migration.Version != doneByChecksVersion {
 			continue
 		}
 		if _, err := store.apply(ctx, migration); err != nil {

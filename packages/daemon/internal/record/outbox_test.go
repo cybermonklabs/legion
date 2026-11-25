@@ -76,6 +76,11 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
+		IssueBranch{Generation: 4, From: &BranchFrom{Base: "main", MergedHead: strings.Repeat("a", 40)}},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 4, Phase: phase.Planning, Task: "Plan the next change.",
+			StartAt: &StartAt{Bookmark: "legion/LEGION-208", Base: "main"}},
+		CloseRead{Generation: 3},
+		CloseWaitPublish{Generation: 3},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		// A release's workspace check, and a left pod's close's, which names the roles it closes and
@@ -154,6 +159,43 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 				t.Fatalf("payload = %#v, want %#v", got, payload)
 			}
 		})
+	}
+}
+
+// Every branch row is built by IssueBranchOf. A generation that is a next change of the issue
+// (Issue.NextChange) starts its branch at the base its last pull request merged into and names the
+// head that merged, from the merge snapshot. Any other generation carries no start: the first run
+// of the issue, a generation after a next change ended, and a next change of an issue with no
+// snapshot. A start that names neither the base nor the head is refused, as is a working copy's
+// start on anything but a supervise start.
+func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
+	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "release/v7", Repo: "acme/widgets"}
+	for _, tc := range []struct {
+		name  string
+		issue Issue
+		want  IssueBranch
+	}{
+		{"a next change", Issue{Key: "ACME-1", Generation: 4, NextChange: 4, Merge: merge},
+			IssueBranch{Generation: 4, From: &BranchFrom{Base: "release/v7", MergedHead: merge.Head}}},
+		{"the first run", Issue{Key: "ACME-1", Generation: 1}, IssueBranch{Generation: 1}},
+		{"a generation after a next change", Issue{Key: "ACME-1", Generation: 5, NextChange: 4, Merge: merge}, IssueBranch{Generation: 5}},
+		{"a merged issue that runs no next change", Issue{Key: "ACME-1", Generation: 4, Merge: merge}, IssueBranch{Generation: 4}},
+		{"a next change with no snapshot", Issue{Key: "ACME-1", Generation: 4, NextChange: 4}, IssueBranch{Generation: 4}},
+	} {
+		if got := IssueBranchOf(tc.issue); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: IssueBranchOf = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+	if _, err := NewOutboxRow("ACME-1", IssueBranch{Generation: 4, From: &BranchFrom{}}, time.Now()); err == nil {
+		t.Error("a branch row whose start names neither the base nor the head was taken, want it refused")
+	}
+	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "suspend", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
+		StartAt: &StartAt{Bookmark: "legion/ACME-1", Base: "main"}}, time.Now()); err == nil {
+		t.Error("a suspend that names where the working copy starts was taken, want it refused")
+	}
+	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "start", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
+		StartAt: &StartAt{Bookmark: "legion/ACME-1"}}, time.Now()); err == nil {
+		t.Error("a start whose working copy names no base was taken, want it refused")
 	}
 }
 
@@ -294,7 +336,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindCloseRead, OutboxKindCloseWaitPublish}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -377,6 +419,11 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// The read of an issue's checks for the judge of its close reads Dispatch and starts no
+		// turn, and the document of what the close waits for is a write to Dispatch: the pause lets
+		// both run, as it lets a status write.
+		OutboxKindCloseRead:        "",
+		OutboxKindCloseWaitPublish: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
