@@ -131,8 +131,12 @@ type issueWritePlan struct {
 // issueWriteStep is the write of one issue in a plan: the issue as the plan read it under its
 // owner lock, and what the step writes.
 type issueWriteStep struct {
-	key          string
-	title        string
+	key   string
+	title string
+	// project is the issue's project, which no write changes. The check of who writes a
+	// Legion-run issue's spec reads the issue's chain only up to a parent of that project
+	// (refuseSpecWriterOfIssueWrite).
+	project      string
 	statusBefore string
 	// statusAfter is the status the step writes, or nil when the step writes no status.
 	statusAfter *string
@@ -164,6 +168,7 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 	return issueWritePlan{steps: []issueWriteStep{{
 		key:          before.Key,
 		title:        before.Title,
+		project:      before.Project,
 		statusBefore: before.Status,
 		statusAfter:  status,
 		parentBefore: before.Parent,

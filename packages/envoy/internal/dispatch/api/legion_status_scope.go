@@ -30,7 +30,7 @@ package api
 //   - Before the call and after it, the chain above the step's issue holds an issue whose marked
 //     role holders name that session as architect (owningArchitectSQL). A pair is marked when the
 //     daemon's own broker token published it (issue_role_holders.daemon_proven,
-//     putIssueRoleHolders). The chain is the one that the legion walk reads (legionChainSQL): the
+//     putIssueRoleHolders). The chain is the one that the legion walk reads (issueChainSQL): the
 //     parent and each issue above it of the step's issue's own project, up to parentDepthCap. The
 //     step's own issue's role holders do not count, so an issue that has no stored set of its own
 //     is written alike.
@@ -90,9 +90,11 @@ package api
 //     the refusal was right.
 //   - A concurrent publication dropped the session, or a concurrent move took its issue off the
 //     chain. Then the write that the exception let through comes first in a serial order, before
-//     that publication or move. A publication writes issue_role_holders alone and reads only its
-//     own issue's key. A move of an issue above the parent writes that issue alone, and R26 and
-//     R24 judge it by its own chain and its new parent. So neither reads what the write writes,
+//     that publication or move. A publication writes issue_role_holders and the project's mark
+//     (project_role_holder_marks), and it reads its own issue's key and its project's
+//     proven_sessions, none of which a status write writes. A move of an issue above the parent
+//     writes that issue alone, and R26 and R24 judge it by its own chain and its new parent. So
+//     neither reads what the write writes,
 //     and that order is a serial one.
 //
 // This holds for each judgement under its own locks: the planning check's, and each step's in
@@ -276,13 +278,13 @@ func (options statusChangeOptions) architectWrites(status string) bool {
 
 // owningArchitectSQL answers whether an issue above a step's issue, whose parent is $1 and whose
 // project is $2, has marked role holders that name the session $3 as its architect. The
-// chain is legionChainSQL's, the one the legion walk reads: it climbs only to a parent of the
+// chain is issueChainSQL's, the one the legion walk reads: it climbs only to a parent of the
 // step's issue's own project, so it ends at the first issue of another project as at a root, and
 // it stops at parentDepthCap links above the step's issue. The step's own row names no key, as
 // legionManagedStatusOfRowSQL's does, so its role holders do not count. A pair is marked when the daemon's own broker token published it
 // (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, role) finds each issue's
 // architect.
-var owningArchitectSQL = legionChainSQL(`select null::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
+var owningArchitectSQL = `with recursive ` + issueChainSQL(`select null::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
 	select exists (
 		select 1 from chain c join issue_role_holders h on h.issue_key = c.key
 		where h.role = 'architect' and h.session = $3 and h.daemon_proven

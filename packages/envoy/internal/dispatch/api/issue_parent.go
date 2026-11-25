@@ -54,11 +54,10 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // legionLabel is the label that hands an issue's status to the Legion daemon. The daemon holds
 // its own copy of the spelling (packages/daemon/internal/dispatch/types.go, LegionLabel): the two
 // are separate constants in separate Go modules that have to be changed together, not one shared
-// value. packages/envoy knows three Legion-specific rules in all, and this is one. The second is
-// the design-gate record the daemon publishes onto an issue (design_gates,
-// issue_design_gates.go), which the superseded-approval advice reads to name the gates a document
-// write made stale. The third is R26's refusal (legion_status_scope.go). Where
-// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs the person scope or the legion-status
+// value. This label also selects the issues whose spec and Verification writers are checked
+// (spec_writer.go). The daemon publishes a separate design-gate record (issue_design_gates.go)
+// for the advice that names which gates a document write made stale.
+// With DISPATCH_LEGION_STATUS_SCOPE on, a credential needs the person scope or the legion-status
 // scope to write the status of an issue that this label makes a Legion issue, to take this label
 // off an issue, or to move a Legion issue out from under every labelled issue, but for the status
 // write of the architect of an issue above.
@@ -95,17 +94,12 @@ var legionManagedStatusOfRowSQL = legionWalkSQL(`select null::text as key, $1::t
 // the caller's owner locks (legion_status_scope.go).
 var legionManagedStatusWithLabelsSQL = `select i.labels, i.project_key, (` + legionManagedStatusSQL + `) from issues i where i.key = $1`
 
-// legionChainSQL is Dispatch's one chain of the issues above an issue for a Legion rule: the
-// recursive query chain, from the row start selects (its key, parent_key, labels, project and
-// depth 0) up each parent of that same project, to parentDepthCap links above it. Each rule
-// reads it through a tail of its own: the legion-label walk (legionWalkSQL), and the owning
-// architect's walk (owningArchitectSQL, legion_status_scope.go), so the two read one set of
-// issues. Both terms of the recursive query name the collation "C" for labels. A recursive query
-// refuses a column whose collation differs between its terms, and start's labels may be a
-// parameter in the database's default collation while the column has another one.
-func legionChainSQL(start string) string {
-	return `
-	with recursive chain as (
+// issueChainSQL builds the chain used by the label, status-writer and document-writer checks.
+// start selects the key, parent, labels, project and depth of the subject row. The chain stays
+// in the subject's project and stops at parentDepthCap links. Set the same collation on both
+// recursive terms: the seed can take labels from a parameter with a different collation.
+func issueChainSQL(start string) string {
+	return `chain as (
 		select s.key, s.parent_key, s.labels collate "C" as labels, s.project_key, s.depth from (
 			` + start + `
 		) s
@@ -116,24 +110,30 @@ func legionChainSQL(start string) string {
 	)`
 }
 
-// legionWalkSQL is the legion-label walk of legionChainSQL from the row start selects: whether
-// that row or an issue above it carries the legion label.
+// legionWalkSQL answers whether the row start selects or an ancestor carries the legion label.
 func legionWalkSQL(start string) string {
-	return legionChainSQL(start) + `
-	select exists (
-		select 1 from chain c, unnest(c.labels) as label where lower(label collate "C") = '` + legionLabel + `'
-	)`
+	return `with recursive ` + issueChainSQL(start) + ` select ` + legionOnChainSQL
 }
+
+// legionLabelSQL is the match of one label, named label in the statement that splices it, with the
+// label legion, in any ASCII case: lower(label) in the "C" collation. Every answer
+// to "Legion runs" reads this one match - the walk up a chain (legionOnChainSQL) and the labelled
+// issues of a moved subtree (labelledIssuesSQL, spec_writer.go) - so no answer folds the case
+// another way.
+const legionLabelSQL = `lower(label collate "C") = '` + legionLabel + `'`
+
+// legionOnChainSQL answers whether a row of issueChainSQL's chain carries the label legion, in any
+// case it was typed in (legionManagedStatusSQL, legionLabelSQL).
+const legionOnChainSQL = `exists (
+		select 1 from chain c, unnest(c.labels) as label where ` + legionLabelSQL + `
+	)`
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
-// above the issue, are read as they stand and are not held still by any lock the caller takes.
-// Both claim routes (issue_claim.go) and a session's write advice (write_advice.go) read it. There
-// the answer is advice, so a chain that moves under the walk costs a sentence of guidance and
-// never a write. The same walk also gates a write: R26's refusal reads it, with the issue's
-// stored labels, before the call (legionManagedStatusWithLabelsSQL), and from the row that the
-// call leaves after it (legionManagedStatusOfRow). legion_status_scope.go says why that walk
-// needs no lock on an ancestor either.
+// above the issue, are read as they stand. Claim and write advice use the answer as advice.
+// The status guard checks the stored row and the proposed row (legion_status_scope.go).
+// The document-writer guard also checks whether a write takes the issue out of Legion
+// (spec_writer.go). Neither check locks the ancestors' labels.
 func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {

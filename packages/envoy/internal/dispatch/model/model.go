@@ -456,8 +456,15 @@ type Project struct {
 	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
 	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
 	// carries no member, so a client that does not know the member reads the same project.
-	DefaultRepo *string   `json:"default_repo,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	DefaultRepo *string `json:"default_repo,omitempty"`
+	// ProvenSessions is the project's setting that a session's credential must prove the
+	// session: when it is on, an architect's write of an issue's spec or Verification document
+	// passes only on a credential that proves the architect's session, and a role-holder
+	// publication only on one that proves legion-daemon:<project>
+	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
+	// present, so a reader never has to tell an absent setting from one that is off.
+	ProvenSessions bool      `json:"proven_sessions"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // The two visibilities a project has (projects.visibility). Every full member sees a public

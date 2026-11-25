@@ -442,7 +442,7 @@ func (s *server) planStatusChangeUnderLocks(
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
 	for index := range steps {
 		row := rows[steps[index].key]
-		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
+		steps[index].title, steps[index].project, steps[index].lastSeq = row.title, row.project, row.lastSeq
 		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
 	if err := refuseStepsOutsideCallerProject(callerProject, steps, rows); err != nil {
@@ -451,6 +451,16 @@ func (s *server) planStatusChangeUnderLocks(
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
 	if err != nil {
 		return statusChangePlan{}, nil, err
+	}
+	// The check of who writes an issue Legion runs (spec_writer.go), for every step of the plan
+	// under the plan's locks and before any step writes, so a call whose later step the check
+	// refuses writes no earlier step either. Each step's writeIssue checks again under its own
+	// locks.
+	specWriter := writer.specWriter()
+	for _, step := range writes.steps {
+		if err := refuseSpecWriterOfIssueWrite(ctx, tx, specWriter, step); err != nil {
+			return statusChangePlan{}, nil, err
+		}
 	}
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
 }
