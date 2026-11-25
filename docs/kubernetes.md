@@ -1526,6 +1526,11 @@ For a refusal the setting changes nothing, and the reason differs by path.
 A refusal that lands before the model has sent any text is one Oh My Pi walks the chain for itself, and it pins the fallback it walks to, which the revert leaves alone however it is set; that pin ends at the plugin's timed return, a `setModel`, which clears it and puts the session back on the role's own model.
 A refusal that lands after the text Oh My Pi leaves where it is, so the revert has no fallback of its own to move: there the plugin's own `setModel` walks the chain, and the same timed return brings the session back.
 `scripts/e2e/refusal-fallback-omp.sh` measures the difference on a ten-minute cooldown: with the setting, no request at all reaches the refused model between the fifth minute and the tenth, and the first request after the tenth goes to that model again.
+The same proof has two rate-limited panes, each with `retry-after: 60`.
+For a 429 retried by the transport, the host sees only the timeout at its ten-minute first-event budget and suppresses the strong model for its five-minute floor.
+For a 429 with `x-should-retry: false`, the host sees the 429 and suppresses the strong model for sixty seconds.
+Both returns wait for that suppression, not the plugin's refusal cooldown, and the proof bounds the transcript's model switch to one request's cadence after suppression.
+The final-429 pane requests every ten seconds, so ignoring suppression is visible before sixty seconds.
 
 Two commands replace what a provider keeps refusing, and the compaction is the first of them, because a new session loses what the old one held — what the worker learned of its issue, and what it had not pushed or written down yet:
 
