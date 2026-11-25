@@ -1617,9 +1617,7 @@ case's command word, is no such name, and nor is text that another part of the s
 too, which the rename of the part the citation means leaves standing. The release command of
 release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#release)`: that file
 holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
-of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
-its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
-since another string of that file holds the file name alone. Nothing outside .github is read.
+of its usage line would not. Nothing outside .github is read.
 The check runs in the lint job, which every pull request and merge group runs, since a rename
 can be in any file of the repository, after the job's setup-go and its bun install, which its
 scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The
