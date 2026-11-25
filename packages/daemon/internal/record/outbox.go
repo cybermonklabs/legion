@@ -1413,13 +1413,13 @@ func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 // a fact of its own rather than the gate seed's: a person's approval of the version opens the
 // step, a changes request, a newer version, the request's close with no approval or the
 // ancestor's leave ends the wait, and a request still waiting changes nothing. The row's issue is
-// the root, and RegisteredAt names which registration of the step it reads for (normalized to UTC
-// microsecond precision, matching the stored row), so a second wait registered again on the same
-// request is a fact of its own. Its read is the one that opens or ends such a wait, and it is
-// queued whenever the daemon must learn what Dispatch shows of it: when the step is registered on
-// the request, for every such step of the project at the daemon's boot, whatever phase its root
-// stands in, and on every event that is a cue for the step (workflow's pendingBasisCue), which
-// itself opens and ends nothing.
+// the root, and RegisteredAt names which registration of the step it reads for (normalized once,
+// by PendingBasisSeedOf, to UTC microsecond precision, matching the stored row), so a second wait
+// registered again on the same request is a fact of its own. Its read is the one that opens or
+// ends such a wait, and it is queued whenever the daemon must learn what Dispatch shows of it:
+// when the step is registered on the request, for every such step of the project at the daemon's
+// boot, whatever phase its root stands in, and on every event that is a cue for the step
+// (workflow's pendingBasisCue), which itself opens and ends nothing.
 type PendingBasisSeed struct {
 	// Step and ArtifactID are the root's step and its own document the step was registered on.
 	Step       DesignStep `json:"step"`
@@ -1434,8 +1434,8 @@ type PendingBasisSeed struct {
 	// generation's.
 	Generation uint64 `json:"generation"`
 	// RegisteredAt is the daemon's own time of the registration the seed reads for
-	// (GateBasis.RegisteredAt, normalized to UTC microseconds as the store keeps it), so each
-	// registration of the step on the same request is a wait of its own.
+	// (GateBasis.RegisteredAt, which PendingBasisSeedOf normalizes once to UTC microseconds as the
+	// store keeps it), so each registration of the step on the same request is a wait of its own.
 	RegisteredAt time.Time `json:"registeredAt"`
 }
 
@@ -1443,7 +1443,10 @@ func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisS
 
 // BasisRegistration normalizes a basis registration time (GateBasis.RegisteredAt) to UTC at
 // microsecond precision, the precision Postgres stores and reads back, so a pending-basis seed
-// queued from an in-memory gate names the same wait as one queued from the stored row.
+// queued from an in-memory gate names the same wait as one queued from the stored row. It runs
+// once, in PendingBasisSeedOf: the seed's executor (the daemon's seedPendingBasis) and the
+// workflow's check of its read against the stored step (workflow's pendingBasisRead) take the
+// seed's time as it is.
 func BasisRegistration(at time.Time) time.Time {
 	return at.UTC().Truncate(time.Microsecond)
 }
@@ -1451,7 +1454,7 @@ func BasisRegistration(at time.Time) time.Time {
 // PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
 // (DesignGate.PendingOnBasis), for the root generation that registered it: the one row every
 // queue of such a read writes, so each reads the same ancestor, version, request and registration
-// (RegisteredAt normalized through BasisRegistration).
+// (RegisteredAt normalized through BasisRegistration, here and nowhere else).
 func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
 		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation,

@@ -195,13 +195,7 @@ func noWorkerLaunch(t *testing.T, pool *pgxpool.Pool, key string, role claim.Rol
 // they were written.
 func stepStarts(t *testing.T, pool *pgxpool.Pool, key string) []record.StepRecord {
 	t.Helper()
-	var starts []record.StepRecord
-	for _, write := range stepWrites(t, pool, key) {
-		if write.EndedAt == nil {
-			starts = append(starts, write)
-		}
-	}
-	return starts
+	return slices.DeleteFunc(stepWrites(t, pool, key), func(w record.StepRecord) bool { return w.EndedAt != nil })
 }
 
 // dispatch://INFRA-3320 R9 at the promotion of a root handed over carrying its slot in

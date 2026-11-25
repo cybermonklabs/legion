@@ -4331,11 +4331,12 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // ancestor's leave ends the wait. The workflow applies the fact only while the step still waits on
 // that request and registration in that generation, so a read of a wait that has opened or ended
 // since changes nothing. The fact's id names the step, the request, the registration it reads for
-// (record.BasisRegistration) and what the read found (basisReadFound), so the same read again of
-// the same wait is a duplicate, while a read of a later registration on the same request or a read
-// that finds anything else, another closer included, is a fact of its own. A failed read, of any
-// of the three, is the row's error, and the row is retried on its backoff (permanentRefusal names
-// no pending-basis seed): no event waits on it.
+// (the seed's RegisteredAt, which record.PendingBasisSeedOf normalized once as it queued the seed)
+// and what the read found (basisReadFound), so the same read again of the same wait is a
+// duplicate, while a read of a later registration on the same request or a read that finds
+// anything else, another closer included, is a fact of its own. A failed read, of any of the
+// three, is the row's error, and the row is retried on its backoff (permanentRefusal names no
+// pending-basis seed): no event waits on it.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
@@ -4344,10 +4345,9 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 	if err != nil {
 		return err
 	}
-	registeredAt := record.BasisRegistration(payload.RegisteredAt)
-	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, RegisteredAt: registeredAt,
+	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, RegisteredAt: payload.RegisteredAt,
 		ArtifactID: payload.ArtifactID, BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, Read: read}
-	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%d:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, registeredAt.UnixMicro(),
+	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%d:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.RegisteredAt.UnixMicro(),
 		payload.BasisArtifactID, payload.BasisVersion, basisReadFound(read))
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)

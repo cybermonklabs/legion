@@ -155,26 +155,33 @@ func (r *basisSeedRig) gate() record.DesignGate {
 // or not: the basis tests' rigs read what the daemon told an architect through it.
 func noticesOfKind(t *testing.T, pool *store.Pool, issue string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select payload from outbox where kind = 'notice' and issue = $1
-		and payload->>'kind' = $2 order by id`, issue, string(kind))
+	return noticesIn(t, pool, "outbox", issue, kind)
+}
+
+// noticesIn is every notice of kind that table holds keyed by issue, oldest first: the outbox
+// itself (noticesOfKind) or its record of every row written (outbox_written, writtenNotices).
+func noticesIn(t *testing.T, pool *store.Pool, table, issue string, kind record.NoticeKind) []record.Notice {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload from `+table+` where kind = $1 and issue = $2
+		and payload->>'kind' = $3 order by id`, string(record.OutboxKindNotice), issue, string(kind))
 	if err != nil {
-		t.Fatalf("read the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("read the %s notices of %s in %s: %v", kind, issue, table, err)
 	}
 	defer rows.Close()
 	var notices []record.Notice
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("scan a %s notice of %s in %s: %v", kind, issue, table, err)
 		}
 		var notice record.Notice
 		if err := json.Unmarshal(payload, &notice); err != nil {
-			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
+			t.Fatalf("decode a %s notice of %s in %s: %v", kind, issue, table, err)
 		}
 		notices = append(notices, notice)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
+		t.Fatalf("iterate the %s notices of %s in %s: %v", kind, issue, table, err)
 	}
 	return notices
 }
@@ -307,10 +314,12 @@ func TestTheSameReadEndsAWaitRegisteredAgainOnTheSameRequest(t *testing.T) {
 		return seeds[before]
 	}
 	labelled := func(on bool) {
-		rig.client.issues[basisSeedAncestor] = dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}
-		if !on {
-			rig.client.issues[basisSeedAncestor] = dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}}
+		issue := dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}}
+		if on {
+			issue.Labels = []string{dispatch.LegionLabel}
+			issue.HandedOver = true
 		}
+		rig.client.issues[basisSeedAncestor] = issue
 	}
 	const unlabelled = "LEGION-100 no longer carries the legion label."
 	ends := func(after string, want int) {

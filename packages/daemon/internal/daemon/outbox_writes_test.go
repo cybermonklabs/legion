@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -50,26 +49,5 @@ func outboxWrites(t *testing.T, pool *store.Pool, issue string, kind record.Outb
 // so which notices that table still holds turns on when the outbox ran.
 func writtenNotices(t *testing.T, pool *store.Pool, issue string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select payload from outbox_written where kind = $1 and issue = $2
-		and payload->>'kind' = $3 order by id`, string(record.OutboxKindNotice), issue, string(kind))
-	if err != nil {
-		t.Fatalf("read the %s notices written for %s: %v", kind, issue, err)
-	}
-	defer rows.Close()
-	var notices []record.Notice
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a %s notice written for %s: %v", kind, issue, err)
-		}
-		var notice record.Notice
-		if err := json.Unmarshal(payload, &notice); err != nil {
-			t.Fatalf("decode a %s notice written for %s: %v", kind, issue, err)
-		}
-		notices = append(notices, notice)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the %s notices written for %s: %v", kind, issue, err)
-	}
-	return notices
+	return noticesIn(t, pool, "outbox_written", issue, kind)
 }

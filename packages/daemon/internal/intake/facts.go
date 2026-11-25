@@ -409,10 +409,11 @@ type BasisClose struct {
 // PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
 // document a root's step waits on, closed, at the version the step names: the root (Issue), its
 // step, its own document (ArtifactID), the generation that registered the step and when that wait
-// registered (RegisteredAt); the ancestor's document, the version and the approval request the step
-// waits on; and Dispatch's state of the document and of the ancestor's issue (Read), which the
-// workflow judges by its one verdict (workflow's judgeBasisRead): the one fact that opens or ends
-// such a wait on what Dispatch shows.
+// registered (RegisteredAt, the seed's own, which record.PendingBasisSeedOf normalized once to the
+// precision the store keeps); the ancestor's document, the version and the approval request the
+// step waits on; and Dispatch's state of the document and of the ancestor's issue (Read), which
+// the workflow judges by its one verdict (workflow's judgeBasisRead): the one fact that opens or
+// ends such a wait on what Dispatch shows.
 //
 // It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
 // root's own document's: applied as one of those, the ancestor's read would reach the ancestor's

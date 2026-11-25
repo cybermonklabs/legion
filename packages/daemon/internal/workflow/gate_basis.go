@@ -706,13 +706,15 @@ func BasisChangesRequest(gate record.DesignGate, changes bool, version int, acto
 // or of its issue, is a cue for gate: a step that waits, closed, on that request
 // (record.DesignGate.PendingOnBasis), for which such an event queues the step's pending-basis seed
 // (readBasisLater), whose read of Dispatch alone opens or ends the wait (pendingBasisRead,
-// judgeBasisRead). The cues are an event of the basis document at the basis version or a newer
-// one, other than the basis version's own version event; a close of the request other than a
-// person's answer, whose review is an event of the document; and an event of the ancestor's issue
-// that shows it leaving R1's first condition (basisCueEvent). It is the one place an event is
+// judgeBasisRead). Its callers pass only an event that can be a cue for some step (basisCueEvent):
+// basisArtifact passes an event of a document, which always can be, and readBasisOnCue reads no
+// step for any other event. Of those events, the cues are an event of the basis document at the
+// basis version or a newer one, other than the basis version's own version event; a close of the
+// request other than a person's answer, whose review is an event of the document; and an event of
+// the ancestor's issue that shows it leaving R1's first condition. It is the one place an event is
 // judged a cue for a particular step (readBasisOnCue, basisArtifact).
 func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
-	if !gate.PendingOnBasis() || !basisCueEvent(fact) {
+	if !gate.PendingOnBasis() {
 		return false
 	}
 	basis := *gate.Basis
@@ -813,7 +815,7 @@ func judgeBasisRead(gate record.DesignGate, read intake.BasisRead, accepted func
 	case approved && approval.By != (dispatch.Actor{}) && !approval.By.Person():
 		return ends(fmt.Sprintf("%s approved version %d of %s, and %s is no person.", approval.By.Name(), basis.Version, document, approval.By.Name()),
 			approval.By.Name()), nil
-	case !approvedByPerson && changes == basis.Version:
+	case changes == basis.Version:
 		reason := ""
 		if approval.Reason != nil {
 			reason = *approval.Reason
@@ -821,7 +823,7 @@ func judgeBasisRead(gate record.DesignGate, read intake.BasisRead, accepted func
 		return ends(changesAct(approval.By, basis.Version, document, reason), approval.By.Name()), nil
 	}
 
-	closed := !approved && RequestClosed(approval, basis.Version, basis.Pending.Ask)
+	closed := RequestClosed(approval, basis.Version, basis.Pending.Ask)
 	if closed && read.Closed == nil {
 		return basisVerdict{}, fmt.Errorf("the read of approval request %s of version %d of %s shows it closed and carries no read of its close",
 			basis.Pending.Ask, basis.Version, document)
@@ -1170,11 +1172,12 @@ func (e *Engine) eachWaitingRoot(ctx context.Context, tx pgx.Tx, gates []record.
 // (BasisChangesRequest); it ends the wait (endPendingBasis), and the end reaches the ancestor's
 // architect even where the ancestor is a root whose tree lingers (queueRestingEnded); or it logs
 // why it changes nothing. The daemon's own store is read for the ancestor's acceptance only where
-// the verdict asks it. The fact names the registration it reads for. A read of a root of another
-// generation, or of a step that no longer waits on that request at that version under that same
-// registration, changes nothing: a read applied first opened or ended it, an act of the root's
-// own document or the daemon's own move of the ancestor ended it, or a registration since
-// replaced it.
+// the verdict asks it. The fact names the registration it reads for, at the precision the store
+// keeps (record.PendingBasisSeedOf normalized it once), so it compares with the stored step's
+// registration as it is. A read of a root of another generation, or of a step that no longer
+// waits on that request at that version under that same registration, changes nothing: a read
+// applied first opened or ended it, an act of the root's own document or the daemon's own move of
+// the ancestor ended it, or a registration since replaced it.
 func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.PendingBasisRead) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil || root.Generation != fact.Generation {
@@ -1188,7 +1191,7 @@ func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.Pe
 	gate, ok := gates[step]
 	if !ok || !e.gatesStep(step) || !gate.PendingOnBasis() || gate.ArtifactID != fact.ArtifactID || gate.Basis.ArtifactID != fact.BasisArtifactID ||
 		gate.Basis.Version != fact.BasisVersion || gate.Basis.Pending.Ask != fact.Ask ||
-		!record.BasisRegistration(gate.Basis.RegisteredAt).Equal(record.BasisRegistration(fact.RegisteredAt)) {
+		!gate.Basis.RegisteredAt.Equal(fact.RegisteredAt) {
 		e.logOnCommit(ctx, "workflow: the pending-basis seed read a wait that has opened or ended since, and changes nothing", "issue", root.Key,
 			"step", step, "basis", fact.BasisArtifactID, "basis_version", fact.BasisVersion, "ask", fact.Ask)
 		return intake.Result{}, nil
