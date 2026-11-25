@@ -1,16 +1,13 @@
-// Package clock is the time the daemon's code reads and waits on.
-// packages/daemon/internal/clock and packages/envoy/internal/clock hold the same code, because Go's
-// internal rule keeps one module from importing the other's (packages/envoy/infra imports Envoy's
-// through its replace), so a change to one is made to the other.
+// Package clock is a clock the daemon's code can read and wait on, and a test can move.
 //
-// # One clock per module
+// # The clock new code takes
 //
 // Code whose timers, waits or deadlines a test asserts takes a Clock, through a field that
-// defaults to Real, and a test hands it a clocktest.Fake. There is one Clock and one fake for the
-// whole module: a package that needs only some of Clock's methods declares a narrowing of it, an
-// interface of its own whose methods have Clock's signatures, so Real and the fake fit every one
-// and no package keeps a clock or a fake of its own. The rule this serves is R4 of "The design of
-// this repository's tests" in docs/testing.md: no test passes or fails because it read a clock.
+// defaults to Real, and a test hands it a clocktest.Fake. A package that needs only some of Clock's
+// methods declares a narrowing of it, an interface of its own whose methods have Clock's
+// signatures, so Real and the fake fit it. Packages that already keep a clock of their own
+// (bootprobe, claudebridge, leakguard, memoryguard, shim, testwait and workspace among them) and
+// the test files that keep fakes of their own keep them until they move onto this one.
 //
 // # The fake tells the test when a timer is armed
 //
@@ -54,9 +51,13 @@ type Clock interface {
 type Timer interface {
 	// C is the channel a timer from NewTimer sends on; nil for one from AfterFunc.
 	C() <-chan time.Time
-	// Stop disarms the timer, and reports whether this call stopped it before it fired.
+	// Stop disarms the timer, and reports whether the call stopped it: true for a timer that was
+	// armed, and for one whose value nobody received, which Stop takes back, as time.Timer's Stop
+	// does since Go 1.23; false for one already stopped, or fired with its value received or its
+	// function run. So `if !t.Stop() { <-t.C() }` never waits for a value Stop took.
 	Stop() bool
-	// Reset arms the timer again for d from now, and reports whether it was armed.
+	// Reset arms the timer again for d from now, and reports what Stop would have: whether the
+	// timer was armed, or held a value nobody received, which Reset takes back.
 	Reset(d time.Duration) bool
 }
 
