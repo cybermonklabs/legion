@@ -193,8 +193,8 @@ func (t *bindThrottle) reportStandby(logger *slog.Logger, name, message string) 
 //     only then (finalizeHandBacks); a hold lost meanwhile severs that connection instead
 //     (severHandBacks).
 //
-// The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
-// from any goroutine.
+// The run loop owns hold, recorded, subject and resumeAt; mu guards delivering, which
+// StopDelivering reads from any goroutine.
 type heldDurable struct {
 	nats   *bus.Client
 	leases intakeLeases
@@ -229,6 +229,11 @@ type heldDurable struct {
 	recorded intakeHoldToken
 	// subject is the deliver subject this intake delivers at, and empty while it delivers nothing.
 	subject string
+	// resumeAt is the stream sequence the durable this intake bound is created again at if it is
+	// lost outside a take-over (check): the start it was created at, and then the sequence after
+	// the ack floor each check reads of it (bus.AckFloor). 0 is no start known, while this intake
+	// has bound nothing or created the durable with none.
+	resumeAt uint64
 	// boundHook, when not nil, runs once a take-over has bound the durable, before the take-over
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
@@ -637,7 +642,7 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		d.stopDeliveringWithin(intakeHoldRenew)
 		return
 	}
-	d.recorded, d.subject = bound, create.DeliverSubject
+	d.recorded, d.subject, d.resumeAt = bound, create.DeliverSubject, create.OptStartSeq
 	d.tuning.log.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
 	if d.boundHook != nil {
@@ -700,10 +705,26 @@ func (d *heldDurable) failedStep(doing string, err error, attributes []any) erro
 // deliver subject, so it stops delivering (check).
 const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
 
+// durableLost is the line of an intake whose bound durable is gone, which it creates again at the
+// sequence after the last ack floor it read (check).
+const durableLost = "dispatch delivery: the NATS consumer this intake had bound is gone; it is created again after the last ack floor this intake read"
+
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
 // hold. A lookup that fails says nothing, and changes nothing.
+//
+// A durable that still delivers here gives check its ack floor (bus.AckFloor, takeOverStart's
+// floor rule), and the sequence after it is where the durable is created again if it is lost
+// (resumeAt). A durable that has delivered and acknowledged nothing teaches nothing beyond the
+// start it was created at, which resumeAt already holds. A durable that is gone was lost outside a
+// take-over, by a delete or a stream's loss: check says so at ERROR and records resumeAt as the
+// start in the hold's token (intakeHoldToken), so the next take-over, this intake's or the next
+// holder's, creates it there (takeOver). Created at the stream's next message instead, as a
+// durable with no start recorded is, it would skip every message unacknowledged at the loss and
+// every one published before the new create, and no reconcile pass writes the head rows those
+// messages carry (intake.go's package comment). A token write that fails leaves the start in
+// this intake's own record, so its next take-over creates the durable there all the same.
 func (d *heldDurable) check(ctx context.Context) {
 	if d.subject == "" {
 		return
@@ -711,9 +732,16 @@ func (d *heldDurable) check(ctx context.Context) {
 	info, err := d.lookupDurable(ctx)
 	switch {
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
+		d.recordLoss(ctx)
+		d.stopDeliveringWithin(intakeHoldRenew)
+		d.subject = ""
+		return
 	case err != nil:
 		return
 	case info.Config.DeliverSubject == d.subject:
+		if position := consumerPosition(info); position.AckFloorStream != 0 || position.AckFloorConsumer != 0 || position.DeliveredStream != 0 {
+			d.resumeAt = bus.AckFloor(position) + 1
+		}
 		return
 	}
 	d.tuning.log.Warn(durableDeliversElsewhere, "name", d.name)
@@ -721,6 +749,20 @@ func (d *heldDurable) check(ctx context.Context) {
 	// the renewal interval is given up rather than left to write what that holder writes too.
 	d.stopDeliveringWithin(intakeHoldRenew)
 	d.subject = ""
+}
+
+// recordLoss says at ERROR that the durable this intake had bound is gone, and records resumeAt as
+// the start the next take-over creates it at (check).
+func (d *heldDurable) recordLoss(ctx context.Context) {
+	d.tuning.log.Error(durableLost, "name", d.name, "start_seq", d.resumeAt)
+	if d.resumeAt == 0 {
+		return
+	}
+	pending := intakeHoldToken{subject: d.recorded.subject, start: d.resumeAt}
+	if err := d.hold.SetToken(ctx, pending.String()); err != nil {
+		d.tuning.log.Error("dispatch delivery: record the lost NATS consumer's start", "name", d.name, "start_seq", d.resumeAt, "error", err)
+	}
+	d.recorded = pending
 }
 
 // stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the
