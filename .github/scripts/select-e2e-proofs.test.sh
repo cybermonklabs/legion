@@ -425,7 +425,7 @@ for name in $hosted_scripts; do
   check "  with every key the matrix reads" \
     "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
   case "$name" in
-    claim-compaction.sh | late-completion.sh | role-prompt-rule.sh) omp=true ;;
+    claim-compaction.sh | late-completion.sh | provider-error-retry.sh | refusal-fallback-omp.sh | role-prompt-rule.sh) omp=true ;;
     *) omp=false ;;
   esac
   check "  and has the job install Oh My Pi exactly when its panes run it" "$(is "$(proof_field 0 omp)" "$omp")"
