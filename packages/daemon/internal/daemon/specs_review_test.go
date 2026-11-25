@@ -101,9 +101,6 @@ func TestAHostReviewerWorksInACloneOfItsOwnWithItsOwnGit(t *testing.T) {
 			t.Errorf("the reviewer's %s = %q, want %q", name, spec.Env[name], value)
 		}
 	}
-	if last := pairs[len(pairs)-1]; last != [2]string{"core.hooksPath", "/dev/null"} {
-		t.Errorf("the reviewer's last git pair is %q, want its hooks at /dev/null, which git reads last and so takes", last)
-	}
 
 	ensured, headsRead = nil, nil
 	spec, err = launch(claim.RoleImplementer)

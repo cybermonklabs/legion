@@ -334,6 +334,44 @@ func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
 	}
 }
 
+// A pod reviewer's clone fetches a head the shared clone lacks from GitHub with the reviewer's own
+// credential helper (OriginWithHelper): git asks `legion git-credential`, here a stand-in first on
+// PATH that answers as the reviewer's gh bundle does, for https://github.com and the repository's
+// path, and presents the token it answers. The stand-in GitHub takes no request without that
+// token, so a fetch that does not ask the helper, or asks it for no path, cannot have the head, and
+// the provision is refused.
+func TestAPodReviewersCloneFetchesAHeadTheSharedCloneLacksWithItsOwnCredentialHelper(t *testing.T) {
+	f := newReviewFixture(t)
+	const token = "reviewer-helper-token"
+	github := newGitHubStandIn(t, false, token)
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "legion"), `#!/bin/sh
+[ "$1 $2" = "git-credential get" ] || exit 0
+request=$(cat)
+printf '%s\n' "$request" | grep -qx 'host=github.com' || exit 0
+printf '%s\n' "$request" | grep -qx 'path=acme/widgets' || exit 0
+printf 'username=x-access-token\npassword=%s\n' '`+token+`'
+`)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	// The branch moves at GitHub, and the shared clone does not fetch it.
+	second := f.commit(t, "base\nfirst\nsecond\n")
+	f.setup.Run(f.origin, f.git, "push", "--quiet", github.remote, "HEAD:refs/heads/"+Bookmark("ACME-4"))
+	if _, err := f.setup.Try(f.request.Clone, f.git, "cat-file", "-e", second+"^{commit}"); err == nil {
+		t.Fatalf("the shared clone holds %s, so this test would fetch nothing from GitHub", second)
+	}
+	f.request.Head = second
+	f.request.Origin = OriginWithHelper(GitHubURL(f.request.Repo))
+	run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+		t.Fatalf("a provision at %s, which the shared clone lacks and GitHub holds: %v", second, err)
+	}
+	if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != second {
+		t.Fatalf("the review clone stands on %s, want the head given %s", at, second)
+	}
+	github.tokensPresented(t, token)
+}
+
 // The request a pod reviewer's role-init makes fetches a head the shared clone lacks from GitHub
 // at the repository the layout names, the issue's recorded repository, with the reviewer's own
 // credential helper, and never from a URL the shared clone's configuration names.
