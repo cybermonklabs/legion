@@ -42,13 +42,16 @@ import (
 )
 
 // The environment of TestAsOfMeaningCostOnASyntheticCorpus: the database it builds the corpus in
-// and times it on, the factor of every count, and the memory and the parallel workers of the
-// build of embeddings_cosine.
+// and times it on, the factor of every count, the memory and the parallel workers of the build of
+// embeddings_cosine, and the one query and the one cut it times in place of every query and every
+// cut.
 const (
 	asOfSyntheticURLEnv     = "DISPATCH_ASOF_SYNTHETIC_URL"
 	asOfSyntheticScaleEnv   = "DISPATCH_ASOF_SYNTHETIC_SCALE"
 	asOfSyntheticMemoryEnv  = "DISPATCH_ASOF_SYNTHETIC_MAINTENANCE_WORK_MEM"
 	asOfSyntheticWorkersEnv = "DISPATCH_ASOF_SYNTHETIC_WORKERS"
+	asOfSyntheticQueryEnv   = "DISPATCH_ASOF_SYNTHETIC_QUERY"
+	asOfSyntheticCutEnv     = "DISPATCH_ASOF_SYNTHETIC_CUT"
 )
 
 // asOfSyntheticCounts are the counts of the synthetic corpus: its items, the events of its log
@@ -171,9 +174,6 @@ const (
 	asOfSyntheticSeed = 4620
 	// asOfSyntheticWords is how many made-up words the vocabulary holds.
 	asOfSyntheticWords = 2_000
-	// asOfSyntheticLetters are the letters of the vocabulary's words. Each query word starts with
-	// a letter outside them (asOfSyntheticQueries), so no lexeme of the corpus is a query's.
-	asOfSyntheticLetters = "bdfgklmnprstvzaeiou"
 	// asOfSyntheticPeople and asOfSyntheticSessions are how many people and agent sessions write
 	// the corpus.
 	asOfSyntheticPeople   = 8
@@ -196,22 +196,24 @@ const (
 	asOfSyntheticLoaders = 4
 )
 
-// asOfSyntheticQueries are the words the timed searches send. No word of the vocabulary is one of
-// them, and each starts with a letter no word of the vocabulary holds, so the keyword legs of the
-// searches match nothing and the time is the meaning arms'.
-var asOfSyntheticQueries = []string{"wibbleflorp", "wuzzlequank", "wompatrix"}
+// asOfSyntheticQueries are the queries the timed searches send: the plan's three, which
+// TestAsOfCostOnACorpusCopy sends too (asOfCostSearches), and a made-up word. The test refuses
+// a query that shares a lexeme with a text of the corpus (asOfSyntheticCheckQueries), so the
+// keyword legs of the searches match nothing and the time is the meaning arms'.
+var asOfSyntheticQueries = []string{"issue", "dispatch", "snapshot token", "wibbleflorp"}
 
 // TestAsOfMeaningCostOnASyntheticCorpus times the meaning arms of a search at a past time
 // (searchAsOfMeaningQuery) at production's counts, on a corpus it makes up from end to end. It
 // sends GET /api/v1/search/results with meaning (no keywords_only) through the server, with a
-// stand-in embedder that answers a fixed random unit vector for each query, for each of three
-// words no text of the corpus holds (asOfSyntheticQueries): at the present, at the plan's two cuts
-// (asOfCostCuts) and at the corpus's newest event, three runs each. It prints one table: the
-// first run and the median of the runs (the whole request), how many statements the last run sent
-// and the longest of them, and the status each run answered, where a meaning statement the server
-// ends at searchMeaningStatementBound (15 s) answers 500. Then it prints the sizes of events, of
-// the keyword table, of embeddings and of embeddings_cosine, and the time of each step of the
-// build.
+// stand-in embedder that answers a fixed random unit vector for each query, for each of the plan's
+// three queries and a made-up word (asOfSyntheticQueries), none of which shares a lexeme with a
+// text of the corpus, which the test checks before the build (asOfSyntheticCheckQueries): at the
+// present, at the plan's two cuts (asOfCostCuts) and at the corpus's newest event, three runs
+// each. It prints one table: the first run and the median of the runs (the whole request), how
+// many statements the last run sent and the longest of them, and the status each run answered,
+// where a meaning statement the server ends at searchMeaningStatementBound (15 s) answers 500.
+// Then it prints the sizes of events, of the keyword table, of embeddings and of
+// embeddings_cosine, and the time of each step of the build.
 //
 // Why the data is synthetic: no text of production may leave production
 // (dispatch://INFRA-5539/spec#b-rd4-copy), and production's own embeddings cannot be copied, as
@@ -240,11 +242,18 @@ var asOfSyntheticQueries = []string{"wibbleflorp", "wuzzlequank", "wompatrix"}
 // writes 1.65 million vectors of 6 KB each, which needs a machine with room for them and their
 // index. DISPATCH_ASOF_SYNTHETIC_MAINTENANCE_WORK_MEM (default 1GB) and
 // DISPATCH_ASOF_SYNTHETIC_WORKERS (default 2) are the maintenance_work_mem and the
-// max_parallel_maintenance_workers of the index's build. The test migrates the database. A
-// database that holds the corpus already (its embeddings) is timed as it stands, with no build,
-// so a second run after a restart of Postgres reads cold shared buffers; a database that holds an
-// event log and no embedding is a build that stopped, which the test refuses: make a new one. It
-// is gated on DISPATCH_ASOF_SYNTHETIC_URL, so CI never runs it, and it fails no bound.
+// max_parallel_maintenance_workers of the index's build. DISPATCH_ASOF_SYNTHETIC_QUERY, when set,
+// is the one query the test times in place of asOfSyntheticQueries, embedded and checked as they
+// are. DISPATCH_ASOF_SYNTHETIC_CUT, when set, is the one cut the test times: present times the
+// present search alone, newest the search at the corpus's newest event alone, and an RFC 3339 time
+// (asof.ParseCut) the search at that cut alone; any other value fails the test before the build.
+// With the two, a job that restarts PostgreSQL between runs times one query at one cut in each
+// process, its first run on cold shared buffers; the corpus's newest event is read only when it is
+// timed. The test migrates the database. A database that holds the corpus already (its
+// embeddings) is timed as it stands, with no build, so a second run after a restart of Postgres
+// reads cold shared buffers; a database that holds an event log and no embedding is a build that
+// stopped, which the test refuses: make a new one. It is gated on DISPATCH_ASOF_SYNTHETIC_URL, so
+// CI never runs it, and it fails no bound.
 func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 	databaseURL := os.Getenv(asOfSyntheticURLEnv)
 	if databaseURL == "" {
@@ -252,17 +261,18 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 			"(TestAsOfMeaningCostOnASyntheticCorpus's doc comment says how to run it); the test builds a synthetic corpus " +
 			"at production's counts there and times a search at a past time on it")
 	}
-	scale := asOfSyntheticSetting(t, asOfSyntheticScaleEnv, 1.0, strconv.ParseFloat)
-	workers := asOfSyntheticSetting(t, asOfSyntheticWorkersEnv, 2, func(value string, _ int) (int, error) { return strconv.Atoi(value) })
+	scale := asOfSyntheticSetting(t, asOfSyntheticScaleEnv, 1.0, func(value string) (float64, error) { return strconv.ParseFloat(value, 64) })
+	workers := asOfSyntheticSetting(t, asOfSyntheticWorkersEnv, 2, strconv.Atoi)
 	memory := cmp.Or(os.Getenv(asOfSyntheticMemoryEnv), "1GB")
 	if scale <= 0 || workers < 0 {
 		t.Fatalf("%s must be above 0 (it is %v) and %s at least 0 (it is %d)", asOfSyntheticScaleEnv, scale, asOfSyntheticWorkersEnv, workers)
 	}
-	for _, query := range asOfSyntheticQueries {
-		if strings.ContainsRune(asOfSyntheticLetters, rune(query[0])) {
-			t.Fatalf("the query %q starts with a letter of the vocabulary's words, so a word of the corpus could match it", query)
-		}
+	queries := asOfSyntheticQueries
+	// The route searches q with its surrounding space trimmed, and embeds what it searches.
+	if query := strings.TrimSpace(os.Getenv(asOfSyntheticQueryEnv)); query != "" {
+		queries = []string{query}
 	}
+	timed := asOfSyntheticSetting(t, asOfSyntheticCutEnv, asOfSyntheticEveryCut(t), asOfSyntheticOneCut)
 	ctx := t.Context()
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
@@ -270,6 +280,7 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 	}
 	t.Cleanup(database.Pool.Close)
 	database = storetest.Reopened(t, database, asOfJITOff)
+	asOfSyntheticCheckQueries(t, database, queries)
 	started := time.Now()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the synthetic corpus's database: %v", err)
@@ -305,36 +316,34 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 		steps = append(steps, buildAsOfSyntheticCorpus(t, database, counts, memory, workers)...)
 	}
 
-	var newest time.Time
-	if err := database.Pool.QueryRow(ctx, `select max(created_at) from public.events`).Scan(&newest); err != nil {
-		t.Fatalf("read the corpus's newest event: %v", err)
-	}
-	cuts := make([]asof.Cut, 0, len(asOfCostCuts)+1)
-	for _, raw := range asOfCostCuts {
-		cut, err := asof.ParseCut(raw)
-		if err != nil {
-			t.Fatalf("parse the cut %s: %v", raw, err)
+	cuts, heading := timed.fixed, ""
+	if timed.newest {
+		var newest time.Time
+		if err := database.Pool.QueryRow(ctx, `select max(created_at) from public.events`).Scan(&newest); err != nil {
+			t.Fatalf("read the corpus's newest event: %v", err)
 		}
-		cuts = append(cuts, cut)
+		cuts = append(cuts, asof.CutAt(newest))
+		heading = fmt.Sprintf("the corpus's newest event is at %s\n", cuts[len(cuts)-1])
 	}
-	cuts = append(cuts, asof.CutAt(newest))
 
 	tracer := &asOfCostTracer{}
-	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: database, tracer: tracer, embedder: asOfSyntheticEmbedder()})
+	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: database, tracer: tracer, embedder: asOfSyntheticEmbedder(queries)})
 	searches := &asOfCostRig{handler: handler, tracer: tracer, recordsRefusals: true}
 	search := func(query string) string {
 		return "/api/v1/search/results?" + url.Values{"q": {query}}.Encode()
 	}
 	rows := []asOfCostRow{}
-	for _, query := range asOfSyntheticQueries {
-		rows = append(rows, searches.time(t, "present search with meaning, q="+query, "present", search(query), 0))
+	if timed.present {
+		for _, query := range queries {
+			rows = append(rows, searches.time(t, "present search with meaning, q="+query, "present", search(query), 0))
+		}
 	}
 	for _, cut := range cuts {
-		for _, query := range asOfSyntheticQueries {
+		for _, query := range queries {
 			rows = append(rows, searches.time(t, "search at the cut with meaning, q="+query, cut.String(), withAsOf(t, search(query), cut), 0))
 		}
 	}
-	t.Logf("the corpus's newest event is at %s\n%s", cuts[len(cuts)-1], asOfCostTable(rows))
+	t.Logf("%s%s", heading, asOfCostTable(rows))
 	t.Logf("sizes:\n%s%s", asOfCorpusSizes(t, database), asOfSizes(t, database, `
 		select 'embeddings, its indexes and its TOAST (pg_total_relation_size)', pg_total_relation_size('public.embeddings'), 0
 		union all
@@ -347,25 +356,110 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 
 // asOfSyntheticSetting is the value of the environment variable name, parsed by parse, or
 // otherwise when it is unset.
-func asOfSyntheticSetting[T any](t *testing.T, name string, otherwise T, parse func(string, int) (T, error)) T {
+func asOfSyntheticSetting[T any](t *testing.T, name string, otherwise T, parse func(string) (T, error)) T {
 	t.Helper()
 	raw := os.Getenv(name)
 	if raw == "" {
 		return otherwise
 	}
-	value, err := parse(raw, 64)
+	value, err := parse(raw)
 	if err != nil {
 		t.Fatalf("read %s=%q: %v", name, raw, err)
 	}
 	return value
 }
 
+// asOfSyntheticCuts is what the test times each query at, in this order: the present when present
+// is set, each cut of fixed, and the corpus's newest event when newest is set.
+type asOfSyntheticCuts struct {
+	present, newest bool
+	fixed           []asof.Cut
+}
+
+// asOfSyntheticEveryCut is what the test times each query at when asOfSyntheticCutEnv is unset:
+// the present, the plan's two cuts (asOfCostCuts) and the corpus's newest event.
+func asOfSyntheticEveryCut(t *testing.T) asOfSyntheticCuts {
+	t.Helper()
+	return asOfSyntheticCuts{present: true, newest: true, fixed: asOfCostFixedCuts(t)}
+}
+
+// asOfSyntheticOneCut reads a value of asOfSyntheticCutEnv, the one cut the test times: present,
+// the present search alone; newest, the search at the corpus's newest event alone; an RFC 3339
+// time (asof.ParseCut), the search at that cut alone. Any other value is an error that says so.
+func asOfSyntheticOneCut(value string) (asOfSyntheticCuts, error) {
+	switch value {
+	case "present":
+		return asOfSyntheticCuts{present: true}, nil
+	case "newest":
+		return asOfSyntheticCuts{newest: true}, nil
+	}
+	cut, err := asof.ParseCut(value)
+	if err != nil {
+		return asOfSyntheticCuts{}, fmt.Errorf("it is not present, newest or an RFC 3339 time: %w", err)
+	}
+	return asOfSyntheticCuts{fixed: []asof.Cut{cut}}, nil
+}
+
+// asOfSyntheticCheckQueries fails the test when one of queries shares a lexeme with a text of the
+// corpus, as a keyword leg could then match it and the time would not be the meaning arms' alone.
+// One statement, which reads no table, asks PostgreSQL for the lexemes of each query's
+// to_tsvector('english', ...) that to_tsvector('english', ...) of the corpus's words holds: each
+// word of the vocabulary (asOfSyntheticItems, the words the corpus is drawn with) and the key of
+// every project a build at any scale can make (asOfSyntheticProjectKeys over the whole vocabulary,
+// whose first keys are a build's).
+//
+// What the keyword legs read of the corpus is an issue's key, its title and its spec, a comment's
+// or a message's body, and an ask's question, its options and its answer, in the present tables
+// and in search_text_versions alike. Every title, body, question, option and answer is words of
+// the vocabulary joined by spaces, a question ending in a question mark, and every spec is empty,
+// as no event holds a document's text. An issue's key is its project's key, a hyphen and its
+// number. A project's key is the first six letters of a word of the vocabulary upper-cased, the
+// whole word for a word of five letters: made of the vocabulary's letters, as token of the plan's
+// snapshot token is, so a plan query could share its lexeme, and the check covers the keys.
+// It does not cover an issue's number, nor its key and number together, which only a query that
+// holds a digit can share. The rest of what the corpus writes, the names of its projects and
+// documents, its people's ids, its uuids and hashes, and the text of its windows, no keyword leg
+// reads.
+func asOfSyntheticCheckQueries(t *testing.T, database *store.Store, queries []string) {
+	t.Helper()
+	_, words := asOfSyntheticItems()
+	text := strings.Join(slices.Concat(words, asOfSyntheticProjectKeys(words, len(words))), " ")
+	rows, err := database.Pool.Query(t.Context(), `
+		with corpus as (select array(select l.lexeme from unnest(to_tsvector('english', $2::text)) l) as lexemes)
+		select q.query, shared.lexemes
+		  from unnest($1::text[]) with ordinality as q (query, n)
+		 cross join corpus
+		 cross join lateral (select array(select l.lexeme from unnest(to_tsvector('english', q.query)) l
+		                                   where l.lexeme = any(corpus.lexemes) order by l.lexeme) as lexemes) shared
+		 where cardinality(shared.lexemes) > 0
+		 order by q.n`, queries, text)
+	if err != nil {
+		t.Fatalf("read the lexemes the queries share with the corpus: %v", err)
+	}
+	defer rows.Close()
+	var shared []string
+	for rows.Next() {
+		var query string
+		var lexemes []string
+		if err := rows.Scan(&query, &lexemes); err != nil {
+			t.Fatalf("scan the lexemes a query shares with the corpus: %v", err)
+		}
+		shared = append(shared, fmt.Sprintf("the query %q shares %s", query, strings.Join(lexemes, ", ")))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the lexemes the queries share with the corpus: %v", err)
+	}
+	if len(shared) > 0 {
+		t.Fatalf("a query shares a lexeme with a text of the corpus, so a keyword leg could match it: %s", strings.Join(shared, "; "))
+	}
+}
+
 // asOfSyntheticEmbedder is the stand-in embedder the timed searches embed their query with: a
-// fixed random unit vector for each query word (asOfSyntheticQueryVector). Its identity is the one
+// fixed random unit vector for each of queries (asOfSyntheticQueryVector). Its identity is the one
 // every window of the corpus carries.
-func asOfSyntheticEmbedder() *fakeEmbedder {
-	vectors := make(map[string][]float32, len(asOfSyntheticQueries))
-	for _, query := range asOfSyntheticQueries {
+func asOfSyntheticEmbedder(queries []string) *fakeEmbedder {
+	vectors := make(map[string][]float32, len(queries))
+	for _, query := range queries {
 		vectors[query] = asOfSyntheticQueryVector(query)
 	}
 	return &fakeEmbedder{vectors: vectors}
@@ -696,13 +790,8 @@ type asOfSyntheticCorpus struct {
 // Its texts are made as its events are written (copyEvents).
 func newAsOfSyntheticCorpus(t *testing.T, counts asOfSyntheticCounts) *asOfSyntheticCorpus {
 	t.Helper()
-	c := &asOfSyntheticCorpus{counts: counts, clock: newAsOfSyntheticClock(t), random: rand.New(rand.NewPCG(asOfSyntheticSeed, 1))}
-	c.words = asOfSyntheticVocabulary(c.random)
-	for _, query := range asOfSyntheticQueries {
-		if slices.Contains(c.words, query) {
-			t.Fatalf("the vocabulary holds the query %q", query)
-		}
-	}
+	c := &asOfSyntheticCorpus{counts: counts, clock: newAsOfSyntheticClock(t)}
+	c.random, c.words = asOfSyntheticItems()
 	for index := range asOfSyntheticPeople {
 		c.personIDs = append(c.personIDs, c.words[index]+"@example.invalid")
 		c.people = append(c.people, asOfSyntheticActorJSON(t, "user", c.personIDs[index]))
@@ -725,8 +814,16 @@ func newAsOfSyntheticCorpus(t *testing.T, counts asOfSyntheticCounts) *asOfSynth
 	return c
 }
 
+// asOfSyntheticItems is the random stream the corpus's items are drawn from and the vocabulary,
+// the stream's first draw: newAsOfSyntheticCorpus draws the rest of the corpus from the stream,
+// and asOfSyntheticCheckQueries reads the words alone.
+func asOfSyntheticItems() (*rand.Rand, []string) {
+	random := rand.New(rand.NewPCG(asOfSyntheticSeed, 1))
+	return random, asOfSyntheticVocabulary(random)
+}
+
 // asOfSyntheticVocabulary is asOfSyntheticWords made-up words, each two to four syllables of a
-// consonant and a vowel and a consonant to end, of asOfSyntheticLetters alone.
+// consonant and a vowel and a consonant to end, of the letters bdfgklmnprstvz and aeiou alone.
 func asOfSyntheticVocabulary(random *rand.Rand) []string {
 	const consonants, vowels = "bdfgklmnprstvz", "aeiou"
 	seen := make(map[string]bool, asOfSyntheticWords)
@@ -815,12 +912,24 @@ func (c *asOfSyntheticCorpus) postAuthor() asOfSyntheticActor {
 	return asOfSyntheticActor{index: c.random.IntN(len(c.sessions))}
 }
 
-// makeProjects makes the projects, each created a microsecond after the one before from the
-// span's start.
+// makeProjects makes the projects (asOfSyntheticProjectKeys), each created a microsecond after the
+// one before from the span's start.
 func (c *asOfSyntheticCorpus) makeProjects() {
+	for index, key := range asOfSyntheticProjectKeys(c.words, c.counts.projects) {
+		c.add(c.clock.start()+int64(index), asOfProjectCreated, index)
+		c.projects = append(c.projects, asOfSyntheticProject{key: key, name: asOfSyntheticPhrase(c.random, c.words, 2, 4)})
+	}
+	c.projectOrder = c.random.Perm(len(c.projects))
+}
+
+// asOfSyntheticProjectKeys is the key of each of projects projects, fewer if words run out: the
+// first six letters of a word of words upper-cased, the words taken in order and a key an earlier
+// word gave passed over.
+func asOfSyntheticProjectKeys(words []string, projects int) []string {
 	seen := map[string]bool{}
-	for _, word := range c.words {
-		if len(c.projects) == c.counts.projects {
+	keys := make([]string, 0, projects)
+	for _, word := range words {
+		if len(keys) == projects {
 			break
 		}
 		key := strings.ToUpper(word[:min(len(word), 6)])
@@ -828,10 +937,9 @@ func (c *asOfSyntheticCorpus) makeProjects() {
 			continue
 		}
 		seen[key] = true
-		c.add(c.clock.start()+int64(len(c.projects)), asOfProjectCreated, len(c.projects))
-		c.projects = append(c.projects, asOfSyntheticProject{key: key, name: asOfSyntheticPhrase(c.random, c.words, 2, 4)})
+		keys = append(keys, key)
 	}
-	c.projectOrder = c.random.Perm(len(c.projects))
+	return keys
 }
 
 // projectsMade is the time the last project was made.
@@ -1377,7 +1485,7 @@ func (c *asOfSyntheticCorpus) copyWindows(ctx context.Context, database *store.S
 	components := make([]float64, embed.Dimension)
 	vector := make([]byte, 4+4*embed.Dimension)
 	binary.BigEndian.PutUint16(vector, embed.Dimension)
-	identity := asOfSyntheticEmbedder().Identity()
+	identity := asOfSyntheticEmbedder(nil).Identity()
 	next := from
 	rows := pgx.CopyFromFunc(func() ([]any, error) {
 		if next == to {

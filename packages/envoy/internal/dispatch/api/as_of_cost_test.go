@@ -43,6 +43,20 @@ var asOfCorpusDerived = []string{
 // event.
 var asOfCostCuts = []string{"2026-10-26T12:00:00Z", "2026-11-10T00:00:00Z"}
 
+// asOfCostFixedCuts is asOfCostCuts parsed, with room for the newest event's cut after them.
+func asOfCostFixedCuts(t *testing.T) []asof.Cut {
+	t.Helper()
+	cuts := make([]asof.Cut, 0, len(asOfCostCuts)+1)
+	for _, raw := range asOfCostCuts {
+		cut, err := asof.ParseCut(raw)
+		if err != nil {
+			t.Fatalf("parse the cut %s: %v", raw, err)
+		}
+		cuts = append(cuts, cut)
+	}
+	return cuts
+}
+
 // asOfCostSearches are the searches the test sends: two common words and a rare pair, the queries
 // the plan measured the keyword table with.
 var asOfCostSearches = []struct{ label, query string }{
@@ -316,15 +330,7 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select max(created_at) from public.events`).Scan(&newest); err != nil {
 		t.Fatalf("read the copy's newest event: %v", err)
 	}
-	cuts := make([]asof.Cut, 0, len(asOfCostCuts)+1)
-	for _, raw := range asOfCostCuts {
-		cut, err := asof.ParseCut(raw)
-		if err != nil {
-			t.Fatalf("parse the cut %s: %v", raw, err)
-		}
-		cuts = append(cuts, cut)
-	}
-	cuts = append(cuts, asof.CutAt(newest))
+	cuts := append(asOfCostFixedCuts(t), asof.CutAt(newest))
 
 	started = time.Now()
 	fillTextVersionsPast(t, database, cuts[len(cuts)-1])
