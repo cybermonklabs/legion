@@ -15,10 +15,10 @@ jobs:
   tool-fallback:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
-    # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 = 12 min + 10 = 22 min; an install step's 2 x 326 s -> 11 min.
-    timeout-minutes: 22
+    # 1 + 2 + 1 + 1 + 2 + 1 + 4 + 1 = 13 min + 10 = 23 min; an install step's 2 x 326 s -> 11 min.
+    timeout-minutes: 23
     env:
-      JOB_TIMEOUT_MINUTES: 22 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 23 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,6 +78,13 @@ jobs:
       # why: .github/ci-notes/ci-job-tool-fallback.md#why-mises-install-directory-is-taken-away-again
       - name: Take mise's install away again, so the faulted install must read the copy
         run: rm -rf "$HOME/.local/share/mise"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-skill-cuts-omp-row-is-installed-twice
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-skill-cuts-omp
+
+      - name: Read the skill-cuts Oh My Pi the release asset served
+        run: .github/scripts/tool-fallback-skill-cuts-omp.sh
 
       # why: .github/ci-notes/ci-job-tool-fallback.md#the-stand-in-curl-what-it-shortens-and-why-it-is-installed-at-this-position
       - name: Shorten the ladder of every fetch this job arranges to fail
@@ -194,8 +201,20 @@ jobs:
           http_proxy: http://127.0.0.1:1
           https_proxy: http://127.0.0.1:1
 
+      - id: mark-nowhere-skill-cuts-omp
+        name: Mark when the install with nowhere to go for the skill-cuts Oh My Pi began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-skill-cuts-omp-control-and-why-it-does-not-expire
+      - id: nowhere-skill-cuts-omp
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-skill-cuts-omp
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+
       # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-control-step-reads-the-clock-as-well
-      - name: Check all eight installs with nowhere to go failed, and failed in their own time
+      - name: Check all nine installs with nowhere to go failed, and failed in their own time
         env:
           CRANE: ${{ steps.base-crane.outcome }}
           CHANGIE: ${{ steps.base-changie.outcome }}
@@ -205,6 +224,7 @@ jobs:
           UV: ${{ steps.base-uv.outcome }}
           PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
           PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
+          SKILL_CUTS_OMP: ${{ steps.nowhere-skill-cuts-omp.outcome }}
           CRANE_AT: ${{ steps.mark-base-crane.outputs.at }}
           CHANGIE_AT: ${{ steps.mark-base-changie.outputs.at }}
           JJ_AT: ${{ steps.mark-base-jj.outputs.at }}
@@ -213,6 +233,7 @@ jobs:
           UV_AT: ${{ steps.mark-base-uv.outputs.at }}
           PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
           PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
+          SKILL_CUTS_OMP_AT: ${{ steps.mark-nowhere-skill-cuts-omp.outputs.at }}
         run: .github/scripts/tool-fallback-nowhere-controls.sh
 
       # why: .github/ci-notes/ci-job-tool-fallback.md#the-heads-own-installs-under-the-fault
@@ -262,6 +283,16 @@ jobs:
 
       - name: Check every tool is the version its row pins
         run: .github/scripts/tool-fallback-installed-versions.sh "${{ steps.docker-plugin.outputs.tarball }}"
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-skill-cuts-omp-row-is-installed-twice
+      - name: Mark the fault's log before the faulted skill-cuts Oh My Pi install
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-skill-cuts-omp
+
+      - name: Read the skill-cuts Oh My Pi the copy served
+        run: .github/scripts/tool-fallback-skill-cuts-omp.sh --expect-refused github.com
 
       # why: .github/ci-notes/ci-job-tool-fallback.md#the-eighteen-corrupted-payloads-and-case-1-of-them
       - name: Corrupt crane for its primary case

@@ -914,9 +914,10 @@ ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
 source every tool install reads when the first source does not serve the bytes:
 the manifest that names both sources of each row, the fetch helper every install
 goes through, the filler and the gate beside it, the rig and the fault proxy it
-drives, the nine actions it installs through, and the two files a row's version is
-pinned in that the job itself reads (.bun-version for the bun rows and the
-worker image's Dockerfile for mise, jj and uv).
+drives, the ten actions it installs through, and the three files a row's version or digest is
+pinned in that the job itself reads (.bun-version for the bun rows, the worker image's
+Dockerfile for mise, jj and uv, and the skill-cuts runner's natives.ts for the addon the
+skill-cuts-omp row's archive must hold).
 packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
 `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
 and packages/envoy/loadtest/cluster/render-nats.sh, whose `HELM=` line the gate
@@ -1243,8 +1244,9 @@ median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s: an arm64 job that
 twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
 `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
 ubuntu-24.04, each a reason of its own machine and not of the job's code:
-  * a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and
-    uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback). A tool that has
+  * a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin, uv
+    and the skill-cuts runner's Oh My Pi (skill-cuts-omp), which only x86_64 jobs install
+    (envoy-smoke, daemon-go, pi-legion, tool-fallback). A tool that has
     one is installed from its `-aarch64` row there, as changie (test and tooling-checks), crane
     (ci-images), mise and jj (pi-shared) and elan (airlock-lean) are;
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
@@ -1629,7 +1631,7 @@ and checks: write are the ci-ok-report step's.
 ## The tool fallback proof: what it drives, what it only reasons about, and how to read it when it is red
 
 The live proof of the second source every tool install of this repository now has: it faults
-the host the first source is on, installs all nine tools through the source
+the host the first source is on, installs all ten tools through the source
 .github/ci-tools.yaml names for each, and then serves eighteen corrupted payloads and reads
 the refusal of every one of them.
 It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
@@ -1648,7 +1650,7 @@ binary a third party installed seeds mise's install directory from that staged p
 rather than downloading one inside the fault.
 That is what keeps ci-ok green during the very outage this job proves survivable: this job
 is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-Dockerfile, the manifest and the helper beside it, and the nine actions, so
+Dockerfile, the manifest and the helper beside it, and the ten actions, so
 a step of it that waited on a release host would turn every pull request touching one of
 those files red on exactly the day the fallback is doing its work.
 .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
@@ -1703,11 +1705,11 @@ and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the 
 it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
 assertion reads while the job's own result says nothing happened.
 So on a step with no `continue-on-error` a bound is loud: it fails the job. This job's steps
-are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-six installs
+are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-seven installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
 cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the eighteen corrupted cases by
+the nine with nowhere to go by the control step "Check all nine installs with nowhere to go failed, and failed in their own time", the eighteen corrupted cases by
 `report` itself - and why a new bound on a step some later assertion accepts the failure of
 needs the same treatment or none at all (dispatch://INFRA-2605).
 
@@ -1756,6 +1758,9 @@ release asset and once under the fault, where each must read its ghcr copy and e
 own 504 is read after a probe of its own (the called file's comments say how). Those faulted
 installs read the copies the ci-images job fills, so this job needs that job for order and
 carries `!cancelled()`, as tool-fallback does and for the reason #the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red gives.
+The rows with no `-aarch64` row (uv, the two Pulumi rows, helm and skill-cuts-omp) are not
+installed here: each serves linux-x64 bytes, the tool-fallback job proves them, and
+install-helm and install-skill-cuts-omp refuse any other machine by name.
 
 ## Why the tool-fallback-arm job needs no other scope
 

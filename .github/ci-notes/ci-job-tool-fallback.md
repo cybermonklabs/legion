@@ -50,9 +50,11 @@ ladder: the kept case's own fetch at 63 s, the probe's reserved control name, an
 honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
 which took more than a second (1), the bytes the installs and the eighteen cases move,
 over npm, PyPI, get.pulumi.com, the package and loopback, the two 107 MB Bun tarballs
-among them (3), and the readings, the `ladder-report` step, the stop-fault step and the
+among them, and the skill-cuts-omp row's two installs of its 172 MB archive, one from the
+release asset and one from the package, each unpacked and its 129 MB addon extracted (4), and
+the readings, the `ladder-report` step, the stop-fault step and the
 report (1).
-That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+That is 13, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
 limit carries ten minutes over the sum.
 This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
 steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
@@ -82,8 +84,19 @@ two Bun tarballs the bytes item already carries. Its two fetches of get.helm.sh 
 fault are shortened like every fetch of a host FAULT_HOSTS holds, so each takes about a
 second, as the other shortened fetches of that item do.
 
+THE SKILL-CUTS-OMP ROW ADDS SEVEN STEPS AND ONE MINUTE, the one in the bytes item above: its
+install before the fault and the reading after it, the mark and the install of its control,
+and the probe, the install under the fault and the reading after it. The two installs move the
+172,157,389-byte archive the row pins (measured with sha256sum on the downloaded asset on
+2026-11-25), and the archive's own `bin/omp --help` extracts the addon from each, which is
+not measured anywhere yet. The control's two fetches, the faulted
+release asset and the dead port, are shortened like every arranged refusal, and the probe's two
+requests are bounded at 15 s each. None of those seconds is measured on a runner yet: the
+estimate is about 25 s in all, 10 s for each install, 2 s for the control, 1 s for the probe
+and 1 s for each reading, and the minute is the headroom of a slow download of 344 MB.
+
 EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-six installs whose control accepts a failure are timed as well, against
+and the twenty-seven installs whose control accepts a failure are timed as well, against
 the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
 runner ends at its own bound leaves `outcome=failure` behind it, which those controls
 accept, so the wall time is the only reading that tells a hang from the refusal the case
@@ -92,7 +105,7 @@ The eleven minutes is derived from the installs as they ran before the ladders s
 sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
 part of that window counted as well as the thirty-two-install shape it carried for the
-rest; it carries thirty-five now — gave a median of
+rest; it carries thirty-eight now — gave a median of
 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
 slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
 so no step that would have finished is ended by it. Since the ladders stopped sleeping
@@ -184,6 +197,29 @@ directory is here or not, and the action reads the copy either way. What a direc
 left here would leave behind is the one-byte-changed jj this case seeded, on a runner
 whose later steps run what this job installed.
 
+## Why the skill-cuts-omp row is installed twice
+
+The skill-cuts-omp row is the Oh My Pi release whose native addon the skill-cuts runner opens
+(packages/pi-legion/scripts/skill-cuts/natives.ts), which .github/actions/install-skill-cuts-omp
+installs for the pi-legion job. Its release ships one linux-x64 archive, so this x86_64 job is
+the one that proves its row, and tool-fallback-arm installs it nowhere.
+It is installed twice, the way the arm64 job installs each of its rows: once before the fault,
+where the release asset serves the archive, and once under it, where the release asset answers
+nothing and the install must read the copy in the package. Each install is read by
+.github/scripts/tool-fallback-skill-cuts-omp.sh: the Oh My Pi it unpacked answers the row's
+version, and the addon it extracted is one of the two natives.ts opens, by its SHA-256. The
+faulted install is read the way the arm64 job reads its faulted installs: a probe marks the
+fault proxy's log before it, and the reading after it asks the proxy how many requests to
+github.com it refused since, the 504 that sent that install to the copy, which the version and
+the digests cannot say, since both sources serve one archive.
+The faulted install runs after the `Check every tool is the version its row pins` step and not
+among the head's other installs, because that step reads the refusals since the probe after the
+fault started, and a second probe before it would move the mark it reads from.
+No corrupted case is added for this row: neither of its sides is read through a seam of its own
+that the other rows' cases do not already prove, and staging its archive would add 172 MB to
+`stage` for no new reading. The install action always fetches, unpacking into a directory it
+empties first, so neither install reads what the one before it left.
+
 ## The stand-in curl, what it shortens, and why it is installed at this position
 
 The stand-in curl every step after this one runs, which shortens only a fetch this job
@@ -239,11 +275,11 @@ fault is met only by what an action fetches.
 
 ## The negative control, and why it does not expire
 
-The negative control, under the same fault: eight installs with nowhere to go — the
+The negative control, under the same fault: nine installs with nowhere to go — the
 merge base's seven, each given a dead port where its second source would be read, a ghcr
-base, an npm base, a URL base or a proxy, and the docker provider plugin, which the
-merge base has no action for, as the head's own action with its second source on a dead
-port — so every one of them must fail here.
+base, an npm base, a URL base or a proxy, and the docker provider plugin and the skill-cuts
+Oh My Pi, which the merge base has no action for, each as the head's own action with its
+second source on a dead port — so every one of them must fail here.
 What it asserts is a property of this change and not a fact about history: an install
 whose primary meets the fault and whose second source cannot be reached fails. That is
 what makes the passes of the head's own installs a reading of the second source rather than of a cache, of a
@@ -255,7 +291,7 @@ Its elan, uv and Pulumi CLI read no seam at all, each being a `curl` of its own:
 and uv's one source is the release asset this fault holds, and the CLI's is
 get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its
 own instead.
-Once this change is on main the base is this tree, and every one of the eight fails for
+Once this change is on main the base is this tree, and every one of the nine fails for
 the dead ports alone, which leave its second source nothing to reach.
 A control that leaned on the merge base having one source each would expire the day this
 change lands on main: the base would then be this tree, each primary would meet the
@@ -281,7 +317,7 @@ it.
 
 ## Why each install with nowhere to go carries a mark step
 
-When the install a mark step names started (`mark-base-crane` for `base-crane`, and so on). Each of the eight with nowhere to go carries a mark step
+When the install a mark step names started (`mark-base-crane` for `base-crane`, and so on). Each of the nine with nowhere to go carries a mark step
 of its own, and the control step after them reads every one, because a bound that fires
 on one of them is otherwise silent: each carries `continue-on-error` and the control
 accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
@@ -329,9 +365,19 @@ prefers the lower-case `https_proxy` to the upper-case one, and a step `env:` ma
 held two spellings of one name is a workflow GitHub refuses to start at all, which is
 why the rig writes the four spellings of the fault through $GITHUB_ENV.
 
+## The skill-cuts-omp control, and why it does not expire
+
+.github/actions/install-skill-cuts-omp came with the change that added its row, so on the pull
+request that adds it ./base/ holds no copy of it, and on main it is the head's own: its control
+is the head's own action with its second source on a dead port, as the docker provider plugin's
+is, and for the same reason it does not expire
+(.github/ci-notes/ci-job-tool-fallback.md#the-docker-provider-plugins-control-and-why-it-does-not-expire).
+Its primary is a release asset this fault holds, and CI_TOOLS_GHCR_BASE sends its copy to a dead
+port, so it has nowhere to go.
+
 ## Why the control step reads the clock as well
 
-A bound belongs only where firing it is loud, and on these eight it is not: each carries
+A bound belongs only where firing it is loud, and on these nine it is not: each carries
 `continue-on-error`, and this step's test, .github/scripts/tool-fallback-nowhere-controls.sh, accepts a step whose `outcome` is `failure`,
 which is what the runner leaves when it ends a step at its bound. So this step reads the
 clock as well. Without it an install that hung would satisfy its own control and leave

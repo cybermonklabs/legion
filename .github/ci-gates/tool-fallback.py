@@ -1,8 +1,8 @@
 # The tool-fallback job: the live proof that every tool install reads the second source
 # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
 # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-# the gate beside it, the rig and the fault proxy it drives, the nine actions it installs
-# through, and the two files a row's version is pinned in that a step of it reads.
+# the gate beside it, the rig and the fault proxy it drives, the ten actions it installs
+# through, and the three files a row's version or digest is pinned in that a step of it reads.
 GATE = gate("tool_fallback", "tool-fallback", reads=reads(
     (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
                               f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
@@ -31,6 +31,13 @@ GATE = gate("tool_fallback", "tool-fallback", reads=reads(
     (".github/scripts/tool-fallback-installed-versions.sh",
      f"{at('tool-fallback', TOOL_VERSIONS_STEP)} is that script, which holds every tool the "
      "faulted installs left to the version its row pins"),
+    (".github/scripts/tool-fallback-skill-cuts-omp.sh",
+     f"{at('tool-fallback', TOOL_SKILL_CUTS_STEP)} is that script, which holds the skill-cuts "
+     "Oh My Pi each of its two installs left to its row and reads the refusal that sent the "
+     "faulted one to the copy"),
+    ("packages/pi-legion/scripts/skill-cuts/natives.ts",
+     f"{at('tool-fallback', TOOL_SKILL_CUTS_STEP)}: .github/scripts/tool-fallback-skill-cuts-omp.sh "
+     "holds the addon the install extracted to its PINNED_ADDON_DIGESTS"),
     (".github/scripts/tool-fallback-final-state.sh",
      f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
      "holds after the eighteen refusals"),
@@ -44,6 +51,8 @@ GATE = gate("tool_fallback", "tool-fallback", reads=reads(
     (".github/actions/install-docker-plugin/**",
      at("tool-fallback", "./.github/actions/install-docker-plugin")),
     (".github/actions/install-helm/**", at("tool-fallback", "./.github/actions/install-helm")),
+    (".github/actions/install-skill-cuts-omp/**",
+     at("tool-fallback", "./.github/actions/install-skill-cuts-omp")),
     (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                            "to name mise's own install directory for that tool, and "
                                            ".github/actions/install-jj reads that same ARG, while the mise row "
