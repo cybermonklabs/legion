@@ -892,14 +892,16 @@ func (r streamReconciliation) log() {
 }
 
 // streamEnsure is who ensures the stream (ensureStreamWithConfig), which decides whether the
-// ensure waits for the leader of a stream it finds with none: one that another program created or
-// raised a moment ago, or that lost its leader.
+// ensure waits for the leader of a stream it finds with no leader that takes writes
+// (leaderNotServing): one that another program created or raised a moment ago, or that lost its
+// leader.
 type streamEnsure int
 
 const (
 	// atStart is a program's start in the foreground (install): a write it sends to a stream in its
-	// first election draws no answer, so it waits for the leader, as the start that created or
-	// raised the stream does.
+	// first election, or to a leader that has not applied its first entry as leader, draws no
+	// answer, so it waits for a leader that takes writes, as the start that created or raised the
+	// stream does.
 	atStart streamEnsure = iota + 1
 	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
 	// included: the hooks after it rewatch the program's state, and a stream a connection event
@@ -987,11 +989,13 @@ const (
 // ended: ...`. A create sent again while that election runs is answered before it ends, with the
 // stream still leaderless, and so is a raise of the stream's copies, at once (as a bucket's
 // raise is, awaitReplicasCurrent): so a create of more than one copy, and an update that raises
-// the copies, are followed by a wait for the stream's leader (awaitStreamLeader). Measured with
-// nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
+// the copies, are followed by a wait for a leader that takes writes (awaitStreamLeader). Measured
+// with nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
 // after its second send at 10 s, and its first publish then failed "no response from stream"; a
 // start that raised the stream from one copy to three answered at once, and its first publish,
-// with no election held, drew no answer within its 5 s.
+// with no election held, drew no answer within its 5 s. A start that ended its wait on the new
+// leader's name lost its first publish too, while that leader had not yet applied its first entry
+// as leader (leaderNotServing).
 func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
@@ -1034,8 +1038,8 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		return nil, err
 	}
 	if leaderless(info) && at == atStart {
-		// The stream another start created or raised a moment ago is still in its first election:
-		// that start's own wait does not reach this one, and a write sent now draws no answer.
+		// The stream another start created or raised a moment ago has no leader that takes writes
+		// yet: that start's own wait does not reach this one, and a write sent now draws no answer.
 		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
 			return nil, err
 		}

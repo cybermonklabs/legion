@@ -17,10 +17,10 @@ import (
 )
 
 // streamStep is the step of a start a wait on a stream follows (awaitStream). It names the step
-// in the wait's error, `create KV_legion_agents: the stream had no leader when the wait ended:
-// ...`, and says what a read answered "stream not found" means: after a create, a member that has
-// not applied it yet, which is read again (awaitsApply); after any other step, a stream that is
-// gone, which ends the wait.
+// in the wait's error, `create KV_legion_agents: the stream had no leader that takes writes when
+// the wait ended: ...`, and says what a read answered "stream not found" means: after a create, a
+// member that has not applied it yet, which is read again (awaitsApply); after any other step, a
+// stream that is gone, which ends the wait.
 type streamStep int
 
 const (
@@ -135,11 +135,15 @@ func leaderless(info *nats.StreamInfo) bool {
 // dropped with no answer (processClusteredInboundMsg, "not leader", jetstream_cluster.go:13120),
 // and nats.go sends it once, so its caller waits out its whole bound for an acknowledgement that
 // never comes and the stream holds nothing: the first publish after a raise to three copies failed
-// so (envoy-go-race job 139083337221). Every release Envoy admits (natsversion.FixedReleases) sets
-// LeaderSince at that one point and nowhere else: v2.11.12, v2.12.4, v2.14.0 and v2.15.1 alike. A
-// read that a member other than the leader answers names the leader with no LeaderSince, the
-// member's own, and reads as not serving yet, so the wait reads again. A stream of one copy has no
-// Raft node, takes a write from its member at once and reports no LeaderSince
+// so (envoy-go-race job 139083337221). The four releases read for this, v2.11.12, v2.12.4,
+// v2.14.0 and v2.15.1 (the first of each line natsversion.FixedReleases admits, and the hub's),
+// set LeaderSince at that one point and nowhere else; v2.11.8's Raft node keeps no such time. The
+// wait assumes a server that sets it: a program checks its server against that floor only after
+// its bus start has run, so on a server that never reports LeaderSince a wait on a stream of more
+// than one copy would end at the start's hang guard, where the floor would have refused the server
+// anyway. A read that a member other than the leader answers names the leader with no
+// LeaderSince, the member's own, and reads as not serving yet, so the wait reads again. A stream
+// of one copy has no Raft node, takes a write from its member at once and reports no LeaderSince
 // (jetstream_cluster.go:14013-14019), so its named member is its serving leader: a start waits on
 // such a stream when another start created a bucket at one copy (ensureKeyValue).
 func leaderNotServing(info *nats.StreamInfo) string {
@@ -165,7 +169,7 @@ func leaderNotServing(info *nats.StreamInfo) string {
 // (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp), and the
 // notification stream is read through consumers, which its leader serves.
 func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step streamStep, stream string) error {
-	return awaitStream(ctx, js, step, stream, "the stream had no leader", "envoy nats stream has no leader yet, waiting", leaderNotServing)
+	return awaitStream(ctx, js, step, stream, "the stream had no leader that takes writes", "envoy nats stream has no leader yet, waiting", leaderNotServing)
 }
 
 // awaitStream reads stream every bucketAppliedInterval until short, given what a read answered,

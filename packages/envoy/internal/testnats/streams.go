@@ -464,13 +464,20 @@ func Copies(cluster *natsgo.ClusterInfo) int {
 	return 1 + len(cluster.Replicas)
 }
 
-// settled reports whether cluster shows n settled copies: a leader that takes a write, and n-1
-// replicas, every one current with the leader and none offline. Every wait below settles on it.
-// nats-server names a group's new leader before that leader takes a write, and reports
+// leaderServes reports whether cluster names a leader that takes a write, for a group of copies
+// copies. nats-server names a group's new leader before that leader takes a write, and reports
 // LeaderSince only once it does (bus's leaderNotServing gives the server lines), so a group of
-// more than one copy settles only with LeaderSince set; one copy has no Raft node and reports none.
+// more than one copy has a serving leader only with LeaderSince set; one copy has no Raft node,
+// reports none, and its named member serves.
+func leaderServes(cluster *natsgo.ClusterInfo, copies int) bool {
+	return cluster != nil && cluster.Leader != "" && (copies <= 1 || cluster.LeaderSince != nil)
+}
+
+// settled reports whether cluster shows n settled copies: a leader that takes a write
+// (leaderServes), and n-1 replicas, every one current with the leader and none offline. Every wait
+// below settles on it.
 func settled(cluster *natsgo.ClusterInfo, n int) bool {
-	return cluster != nil && cluster.Leader != "" && (n <= 1 || cluster.LeaderSince != nil) && len(cluster.Replicas) == n-1 &&
+	return leaderServes(cluster, n) && len(cluster.Replicas) == n-1 &&
 		!slices.ContainsFunc(cluster.Replicas, func(peer *natsgo.PeerInfo) bool { return !peer.Current || peer.Offline })
 }
 
@@ -508,14 +515,13 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 
 // AwaitStreamLeader waits, until the test's deadline (awaitInfo), until stream has a leader other
 // than not, the server_name of a member the test stopped or "" for any, that takes a write
-// (settled), and returns its info.
+// (leaderServes), and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, fmt.Sprintf("stream %s had no leader other than %q that takes writes", stream, not),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool {
-			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not &&
-				(info.Config.Replicas <= 1 || info.Cluster.LeaderSince != nil)
+			return leaderServes(info.Cluster, info.Config.Replicas) && info.Cluster.Leader != not
 		},
 		describeStream)
 }
@@ -546,10 +552,11 @@ func describeCopies(configured int, cluster *natsgo.ClusterInfo) string {
 }
 
 // describeCluster names every peer the cluster reports and the state settled reads: the leader,
-// and each replica's name, whether it is current with the leader, whether it is offline, how long
-// since it was last active and how far behind it is. A wait that ran out prints this because
-// printing the info itself prints the ClusterInfo as an address, so no CI log of a failed wait
-// could name the peer that was behind.
+// when it took the lead (LeaderSince, "none" while it takes no write yet: leaderServes), and each
+// replica's name, whether it is current with the leader, whether it is offline, how long since it
+// was last active and how far behind it is. A wait that ran out prints this because printing the
+// info itself prints the ClusterInfo as an address, so no CI log of a failed wait could name the
+// peer that was behind.
 func describeCluster(cluster *natsgo.ClusterInfo) string {
 	if cluster == nil {
 		return "the server reported no cluster for it"
@@ -563,8 +570,12 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 		peers = append(peers, fmt.Sprintf("%s current=%t offline=%t active=%s lag=%d",
 			peer.Name, peer.Current, peer.Offline, peer.Active, peer.Lag))
 	}
-	return fmt.Sprintf("%d copies reported, leader %q, replicas [%s]",
-		Copies(cluster), cluster.Leader, strings.Join(peers, "; "))
+	since := "none"
+	if cluster.LeaderSince != nil {
+		since = cluster.LeaderSince.UTC().Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("%d copies reported, leader %q since %s, replicas [%s]",
+		Copies(cluster), cluster.Leader, since, strings.Join(peers, "; "))
 }
 
 // awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and

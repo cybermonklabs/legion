@@ -134,9 +134,19 @@ func TestAWaitForTheLeaderEndsOnlyOnceTheLeaderTakesWrites(t *testing.T) {
 	if !leaderless(unserved) {
 		t.Fatal("a start reads a stream whose named leader takes no write yet as led: its first write would draw no answer")
 	}
-	if behind := copiesBehind(unserved, 1); behind == "" {
-		t.Fatal("a raised bucket's wait reads a stream whose named leader takes no write yet as current")
+	// Three copies, every replica current: the named leader taking no write is the only shortfall,
+	// and the same read with LeaderSince set is current.
+	unserved.Cluster.Replicas = []*nats.PeerInfo{{Name: "n2", Current: true}, {Name: "n3", Current: true}}
+	if got, want := copiesBehind(unserved, 3), leaderNotServing(unserved); want == "" || got != want {
+		t.Fatalf("a raised bucket's wait reads three current copies under a leader that takes no write yet as %q, want %q", got, want)
 	}
+	since := time.Now()
+	served := *unserved
+	served.Cluster = &nats.ClusterInfo{Leader: "n1", LeaderSince: &since, Replicas: unserved.Cluster.Replicas}
+	if got := copiesBehind(&served, 3); got != "" {
+		t.Fatalf("the same three current copies under a leader that takes writes read as %q, want current", got)
+	}
+	unserved.Cluster.Replicas = nil
 	// A stream of one copy has no Raft node and reports no LeaderSince: its named member serves.
 	unserved.Config.Replicas = 1
 	if short := leaderNotServing(unserved); short != "" {

@@ -198,11 +198,11 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// the server leaves the read unanswered as the lookup is (nats.go's lookup answers a
 		// handle, not the stream's info), and raised when it has fewer than the deployment's
 		// count. The read is made at one copy too: a start at one copy can find a stream another
-		// program, configured with more, has just raised, whose new group has no leader yet
-		// (leaderless below). The raise is a write the server answers at once, sent again while
-		// the server leaves it unanswered and bounded by ctx: a raise in flight when ctx ends is
-		// abandoned (updateStream), and a raise that lands after that is one the keeper would have
-		// made. A start at one copy raises nothing (raiseStream).
+		// program, configured with more, has just raised, whose new group has no leader that
+		// takes writes yet (leaderless below). The raise is a write the server answers at once,
+		// sent again while the server leaves it unanswered and bounded by ctx: a raise in flight
+		// when ctx ends is abandoned (updateStream), and a raise that lands after that is one the
+		// keeper would have made. A start at one copy raises nothing (raiseStream).
 		step := "read"
 		if config.Replicas > 1 {
 			step = "raise"
@@ -229,10 +229,11 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			err = awaitReplicasCurrent(ctx, js, stream, config.Replicas)
 		case leaderless(info):
 			// Another program raised or created the bucket's stream just before this start read
-			// it, and the stream's new group has not elected its leader yet: a write sent now draws
-			// no answer. The start waits for the leader, the fact another program's own start
-			// waits for, and not for every copy current, so a bucket with a member offline still
-			// opens (awaitStreamLeader).
+			// it, and the stream's new group has no leader that takes writes yet (it has not
+			// elected one, or the one it elected has not applied its first entry as leader): a
+			// write sent now draws no answer. The start waits for that leader, the fact another
+			// program's own start waits for, and not for every copy current, so a bucket with a
+			// member offline still opens (awaitStreamLeader).
 			err = awaitStreamLeader(ctx, js, afterOpen, stream)
 		}
 	}
@@ -247,9 +248,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// (measured with nats-server v2.15.1, the election held 11 s and 30 s: the second send of
 		// a create through a 2 s wait answered, and the first write to the bucket then failed
 		// "no response from stream"). The caller writes as soon as this call answers, so the
-		// start waits for the stream's leader here (awaitStreamLeader), and for a create another
-		// start made, whose count this start does not know, at one copy too. This read follows
-		// the handle open, which has waited for the member to apply the create.
+		// start waits for the stream's leader to take writes here (awaitStreamLeader), and for a
+		// create another start made, whose count this start does not know, at one copy too. This
+		// read follows the handle open, which has waited for the member to apply the create.
 		err = awaitStreamLeader(ctx, js, afterCreate, stream)
 	}
 	if err != nil {
@@ -351,8 +352,9 @@ func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.Strea
 //
 // A raise of a one-copy stream is answered at once, by the member that held its one copy
 // (processClusterUpdateStream, "If we were a single node being promoted", v2.15.1
-// server/jetstream_cluster.go), and the stream then has no leader until the new group elects one:
-// that election is what this waits out, with the new copies' catch-up after it. The end of ctx is
+// server/jetstream_cluster.go), and the stream then has no leader that takes writes until the new
+// group elects one and that leader applies its first entry as leader (leaderNotServing): that is
+// what this waits out, with the new copies' catch-up after it. The end of ctx is
 // an error naming the bucket's stream, the copies it asked for, what each copy that was not
 // current had to say and ctx's cause, the way a refused raise names its setting, and the caller
 // fails its start on it. Carrying on instead would hand the caller a bucket whose direct gets a
