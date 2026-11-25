@@ -33,6 +33,7 @@ import (
 // and a number to read rather than a bound to hold. The read each renewal makes first costs no
 // write and so moves no stream.
 func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionCount = 20
 		heartbeats   = 5

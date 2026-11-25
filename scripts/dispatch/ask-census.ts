@@ -545,7 +545,7 @@ function printCensus(report: CensusReport): void {
 }
 
 async function run(options: RunOptions): Promise<void> {
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }
