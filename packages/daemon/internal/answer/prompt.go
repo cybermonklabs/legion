@@ -22,9 +22,10 @@ import (
 // of the model calls, and, while the project is paused as the run starts (Request.Paused), that its
 // tools run their reads and refuse every write; then the work it declines, and the reply form.
 //
-// It has the model reply as soon as it can answer, on whichever call that is, and make a tool call
-// only for what the reply needs and the conversation does not hold: never one to try a tool, to
-// wait or to pass a turn, and `--help` only before a command the message asks for. The bounds are
+// It has the model reply as soon as it can answer, on whichever call that is, having made first
+// each write the message asks for, and make a tool call only to do what the message asks for or
+// for what the reply needs and the conversation does not hold: never one to try a tool, to wait or
+// to pass a turn, and `--help` only before a command the message asks for. The bounds are
 // limits, and the last call, which offers no tool (lastCall), is the latest the reply can come on,
 // not the place it belongs. On proof run 45683361567, under a prompt saying the last call "must be
 // your reply", of the Claude answers with no fault 6 ran to the 8-call bound and 2 to 7, each
@@ -41,7 +42,8 @@ func systemPrompt(req Request) string {
 	b.WriteString(" You are not running now. Legion resumed your conversation for one message to you. Answer it as yourself.\n\n")
 	b.WriteString("Your conversation is your first source. Answer from it what it holds. " +
 		"Reply as soon as you can answer. You can reply on any model call. " +
-		"Make a tool call only to get something that your reply needs and your conversation does not hold. " +
+		"If the message asks for a write and you make it, make it before you reply. " +
+		"Make a tool call only to do what the message asks for, or to get something that your reply needs and your conversation does not hold. " +
 		"Never make a tool call to try a tool, to wait or to pass a turn. " +
 		"Use `--help` only before a command that the message asks for.\n\n")
 	b.WriteString("The daemon posts your reply where the message reached you:\n" +

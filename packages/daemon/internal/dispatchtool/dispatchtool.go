@@ -230,10 +230,11 @@ func (a *Answer) record(seq int, argv []string, started time.Time) store.AnswerT
 }
 
 // log is the call's one line: the question and seq, the session it ran as, its command and its
-// arguments as run, its exit (-1 when dispatch never ran), whether it ran, and whether it wrote
-// (write): true only for a call dispatch ran that writes (writes: one of WriteCommands, asking
-// for neither help nor a dry run), so a reader of the line need not judge the arguments itself;
-// and for a refused call its refusal. The token is in no argument and no line: the CLI reads it
+// arguments as run, its exit (-1 when dispatch never ran), whether it ran, and whether it ran a
+// write (write): true for a call dispatch ran that writes (writes: one of WriteCommands, asking
+// for neither help nor a dry run), whatever its exit, so a reader of the line need not judge the
+// arguments itself, and reads exit beside it for a write the CLI or the server then refused; and
+// for a refused call its refusal. The token is in no argument and no line: the CLI reads it
 // from the file DISPATCH_TOKEN_FILE names.
 func (a *Answer) log(seq int, argv []string, result Result) {
 	command := ""

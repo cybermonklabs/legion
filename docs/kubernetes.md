@@ -1982,7 +1982,8 @@ and `costUSD`, the model calls' tokens at `prices` plus `webSearchUSD`, so the l
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
 Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), one `answers: web_search` line per `web_search` call naming the question, the seq, the query, its searches and its `costUSD` (and its error, for a search that failed or that the tool refused), and `answers: question passed to the controller` once per question passed on.
-Each `answers: gh` and `answers: dispatch` line also carries `write`, true only for a call that ran and wrote: a read, a call asking for help or a dry run, and a call the tool refused are false, so a reader of the log need not judge a call's arguments.
+Each `answers: gh` and `answers: dispatch` line also carries `write`, true for a call that ran one of the tool's writes, whatever its exit: a read, a call asking for help or a dry run, and a call the tool refused are false, so a reader of the log need not judge a call's arguments.
+A write that ran can still have posted nothing, where the CLI or the server refused it and it exited above 0, so read `exit` beside `write`.
 Boot logs the loop's tools once, `answers: tools` ([Configuration](#configuration)).
 
 ### The `gh` tool, a security decision

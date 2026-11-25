@@ -14,7 +14,8 @@ body: |-
   it answers, and an agent's message to the session whose Envoy message it answers. A call asking
   for `--help` or `--dry-run` posts nothing and is no write. Each comment, message and agent's
   message it posts carries the loop's mark, so the loop answers none of them. Each `answers: gh`
-  and `answers: dispatch` log line says in `write` whether its call ran and wrote. Each call has a
+  and `answers: dispatch` log line says in `write` whether its call ran one of the tool's writes,
+  whatever its exit. Each call has a
   gh call's time and output bounds, and an answer makes
   at most `answers.bounds.gh_calls` dispatch calls, counted apart from its gh calls, as gh's calls
   are now counted apart from its dispatch calls. Each call is recorded in `answer_tool_calls`; a
