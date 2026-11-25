@@ -2026,12 +2026,12 @@ func run(t *testing.T, database *store.Store, publisher Publisher, broker *event
 
 // outboxOn is the outbox run runs: on database, publishing through publisher, its LISTEN
 // connection on database's pool and every role's holder held (withHeldRoles). A test that sets a
-// hook before Run starts, as restReading does, builds it here and runs it with runOutbox.
+// hook before Run starts, as restReading does, builds it here and runs it with runTheOutbox.
 func outboxOn(database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
 	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it (runOutbox). A test that needs more of
+// runDeps runs New(deps) until the returned func stops it (runTheOutbox). A test that needs more of
 // Deps than run's store, publisher and broker - a metrics counter among them - builds it itself
 // and calls this.
 func runDeps(t *testing.T, deps Deps) func() {

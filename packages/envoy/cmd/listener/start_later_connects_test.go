@@ -308,12 +308,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 // credential on the same terms (natsStart.refusedCredential).
 func TestTheStartsLastLineNamesTheCredentialOnlyAfterARefusal(t *testing.T) {
 	seed, public := testnats.User(t)
-	environment := func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return seed, true
-		}
-		return "", false
-	}
+	environment := testnats.SeedOnly(seed)
 	start := newNATSStart(listenerCredentialWait)
 	failed := errors.New("ensure stream ENVOY_NOTIFICATIONS: ENVOY_NATS_REPLICAS=3: replicas > 1 not supported in non-clustered mode")
 	line := startFailureLine(failed, start, environment)
