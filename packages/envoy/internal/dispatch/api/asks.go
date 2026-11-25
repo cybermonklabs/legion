@@ -252,6 +252,23 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on, read here in the read phase; its write is a step of the write phase, queued before
+	// the row's insert, and what it states waits for the ask.opened event below
+	// (graphstore.QueueCaused).
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -315,7 +332,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
 		return nil
 	}); err != nil {
@@ -437,9 +456,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
 	// not at the author check below: resolving a credential reads the store, and the pool
 	// refuses a second connection inside the transaction the next line opens
-	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person.
+	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person. The same
+	// read is the writer the check of who writes an issue's spec or Verification document judges.
 	var asThePerson *model.Actor
-	if s.callerHoldsScope(r, model.ScopePerson) {
+	writer := s.specWriterOf(r, actor)
+	if writer.person {
 		person, held := s.actingPerson(w, r)
 		if !held {
 			return
@@ -531,6 +552,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if ask.BlockID != nil {
 		blockArtifact, err := blockArtifactOf(ask)
 		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes an issue's spec or Verification document, on the block's
+		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
+		// server attributes, not its wording.
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
