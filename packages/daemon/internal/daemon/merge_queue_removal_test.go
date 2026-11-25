@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -438,14 +440,27 @@ type dequeueRig struct {
 }
 
 // registerWoken registers the session of the woken merger's launch of issue with the daemon, as
-// the merger's plugin does once its agent has booted (registerLaunch): a removal is published only
-// once the merger's launch has registered its session (deliverHeld), and the fake runtime boots
-// no agent of its own. The removal still waits for the listener to name a holder (holds).
+// the merger's plugin does once its agent has booted: a removal is published only once the
+// merger's launch has registered its session (deliverHeld), and the fake runtime boots no agent of
+// its own. The woken launch resumes the session the merger's claim records, so that session is the
+// one it registers; the daemon refuses any other (claim.SameAgentRefusal), and refuses a launch
+// that records no process yet (launchRecordsNoProcess), so the registration waits until the
+// launch's process is recorded. The removal still waits for the listener to name a holder (holds).
 func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
 	t.Helper()
 	r.await(t, "the runtime's resume of the woken merger", func() bool { return len(resumesOf(r.rt, issue.merger)) >= 1 })
 	resumes := resumesOf(r.rt, issue.merger)
-	registerLaunch(t, r.d, resumes[len(resumes)-1].Spec)
+	launch := resumes[len(resumes)-1].Spec
+	var held api.OperatorClaim
+	r.await(t, "the woken merger's launch to record its process", func() bool {
+		held = r.d.claim(issue.merger)
+		return held.Generation == launch.Generation && held.Locator != nil
+	})
+	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{BootToken: launch.BootToken,
+		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register the session %s of %s's woken merger = %d; body %s", held.Session, issue.key, status, body)
+	}
 }
 
 // dequeueIssue is one case's issue: its key, its pull request's number and the head the record
