@@ -53,6 +53,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -277,9 +278,9 @@ func reset(t testing.TB) *server {
 }
 
 // external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
-// client URL and its monitoring endpoint's base URL, without a trailing slash, as the reset appends
-// /connz to it. Neither set is no external server, both empty; one set without the other is an
-// error naming both.
+// client URL and its monitoring endpoint's base URL, without a trailing slash, as this package's
+// tests append /jsz to it (the reset joins /connz onto its path, connectionsAt). Neither set is no
+// external server, both empty; one set without the other is an error naming both.
 func external() (string, string, error) {
 	server, monitoring := os.Getenv(externalURLEnv), os.Getenv(externalMonitorEnv)
 	if (server == "") != (monitoring == "") {
@@ -478,16 +479,22 @@ var readConnections = clientConnections
 func clientConnections(s *server) ([]Connection, error) { return connectionsAt(s.monitor) }
 
 // connectionsAt lists the open client connections of the server whose monitoring endpoint's base
-// URL is monitor, each by id and name, by reading its /connz: a pooled server's
-// (clientConnections) or a test's own (armServerLeakCheck).
+// URL is monitor, each by id and name, by reading its /connz, joined onto monitor's path with its
+// query kept (urljoin.Join): a pooled server's (clientConnections) or a test's own
+// (armServerLeakCheck). A monitor that is no absolute URL with a host is refused in urljoin's
+// words, which quote none of it.
 func connectionsAt(monitor string) ([]Connection, error) {
-	response, err := monitorClient.Get(monitor + "/connz")
+	asked, err := urljoin.Join(monitor, "/connz")
+	if err != nil {
+		return nil, fmt.Errorf("read the NATS server's connections: its monitoring endpoint's base URL: %w", err)
+	}
+	response, err := monitorClient.Get(asked.String())
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, oauth2call.StatusLine(response.StatusCode))
+		return nil, fmt.Errorf("GET %s answered %s", asked, oauth2call.StatusLine(response.StatusCode))
 	}
 	var connz struct {
 		Connections []struct {
@@ -497,10 +504,10 @@ func connectionsAt(monitor string) ([]Connection, error) {
 	}
 	answer, err := oauth2call.ReadAnswer(response, 16<<20)
 	if err != nil {
-		return nil, fmt.Errorf("read %s/connz: %w", monitor, err)
+		return nil, fmt.Errorf("read %s: %w", asked, err)
 	}
 	if err := answer.Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
+		return nil, fmt.Errorf("decode %s: %w", asked, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
