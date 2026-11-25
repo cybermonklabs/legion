@@ -1164,9 +1164,22 @@ measure counts the names that the profile lists but the recording does not as ad
 
 A `[Skill file: …]` read in the session's own messages also keeps the pool. If only the read
 justifies keeping it, the evidence quotes `message N reads [Skill file: …]` as direct proof that
-Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case. If
-neither the listing nor a read supports installing the pool, the builder leaves it out. Its
+Oh My Pi loaded the pool. The measure does not mark its names `fromRecorded` in that case.
+
+A name the listing gives as `<namespace>/<name>` is direct proof too, where the pool holds
+`<name>`. Oh My Pi lists a copy under its namespace only when it admitted another copy of the name
+first, and it admits a pool's copy before any copy from a unit outside the pools. So the builder
+installs the pool when an installed unit outside the pools ships `<name>` under that namespace,
+and, of the copies of `<name>` that installed units outside the pools ship, the first (the lowest
+rank, then the earliest unit) is that unit's copy. The evidence names the listed name and the
+unit. The measure does not mark the pool's names `fromRecorded`, since the listing names them bare
+or not at all and the measure compares them.
+
+If neither the listing nor a read supports installing the pool, the builder leaves it out. Its
 `left out: the pool …` evidence names any shared skills and says why those names do not count.
+It also names each `<namespace>/<name>` of the pool's names that the listing gives, with the
+reason it proves nothing: no installed unit outside the pools ships the name under that
+namespace, or a unit that Oh My Pi admits earlier ships another copy of it.
 
 Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
 that the dev box pinned at the session's start. The optional `ompPin` configuration gives

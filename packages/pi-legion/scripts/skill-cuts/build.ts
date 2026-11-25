@@ -293,13 +293,20 @@
  *   not the pool is there, and the evidence names those names. The pool is left out where the
  *   listing names no such skill. A pool that a `[Skill file: …]` read of the session places is
  *   installed whatever the listing names: that read shows Oh My Pi loaded it, which is direct
- *   proof and no inference from the listing. A pool the listing names in part is installed whole:
+ *   proof and no inference from the listing. So is a pool where the listing names, as
+ *   `<namespace>/<name>`, a name it holds that an installed unit outside the pools ships under
+ *   that namespace, and that unit's copy is the first Oh My Pi admits of the copies the installed
+ *   units outside the pools ship (`unitRank`): Oh My Pi lists a copy under its namespace only
+ *   where it admitted another copy of the name first, and it admits a pool's before them all.
+ *   The evidence names that listed name and the unit, or, for a pool left out, why each such
+ *   listed name of its names proves nothing. A pool the listing names in part is installed whole:
  *   the evidence gives how many of its skills the listing names and how many it does not, and the
  *   listing measure counts those it does not as added names. The measure marks each name of a
- *   pool installed on the listing (`fromRecorded`), and no name of a pool installed on a read
- *   alone. The listing's decision is an inference: dev-box sessions that ran one Oh My Pi build
- *   list these pools in some sessions and not in others, and no file records why. A session with
- *   no listing (no recorded prompt, and no subagent the measure can use) has its pools decided by
+ *   pool installed on a named skill (`fromRecorded`), and no name of a pool installed on a read or
+ *   on a listed `<namespace>/<name>` alone. The listing's decision is an inference: dev-box
+ *   sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and
+ *   no file records why. A session with no listing (no recorded prompt, and no subagent the
+ *   measure can use) has its pools decided by
  *   the Oh My Pi build its dev box pinned at its start (POOL_VERSION_RULE): the version the
  *   configuration's `ompPin` names (a TOML file of the dev box's repository and the keys to the
  *   version in it, read at the repository's last commit at or before the session's start), set
@@ -3222,7 +3229,7 @@ const IGNORED_RULE =
 /** Which pools an extension's resources_discover gives a profile installs, where the session
  *  records a listing. */
 const POOL_LISTING_RULE =
-  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. The measure marks each name of a pool installed on the listing (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read alone";
+  "Oh My Pi 18.18.6 lists the skills of a pool an extension gives through resources_discover (a pool of the dev box's skills-sources.json) only where it loaded that extension's pools and the pool's clone was there then: a top-level session as it starts and on each reload that rebuilds its prompt, a subagent as it starts, merging what it gets into the snapshot its parent gave it (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420); dev-box sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and no file records why, nor which clones the host had then. So where the session records a listing (its own recorded prompt's, or that of the subagent its listing measure uses), that listing decides each pool, an inference from the listing: the profile installs a pool where the listing names at least one of the skills the pool holds at the session's start that no installed unit outside the pools also ships (a name such a unit ships is no evidence for the pool, since the session lists it whether or not the pool is there), and leaves it out where the listing names no such skill; a pool the listing names in part is installed whole, and the listing measure counts its unnamed skills as added names. A pool that a [Skill file: …] read of the session places is installed whatever the listing names, since that read shows Oh My Pi loaded it, which is direct proof and no inference from the listing. So is a pool the listing names no such skill of where the listing names, as <namespace>/<name>, a name the pool holds that an installed unit outside the pools ships under that namespace, and of the copies of it the installed units outside the pools ship, the one Oh My Pi admits first (a lower rank first: ~/.omp/agent/skills, then an extension package, ~/.claude/skills and a Claude Code plugin; of one rank, an earlier unit's) is the one each unit of that namespace ships: Oh My Pi lists a copy under its namespace only where it admitted another copy of the name first (NAMESPACE_RULE), and it admits a pool's before every unit's outside the pools, so the copy it admitted first was the pool's. The measure marks each name of a pool installed on a named skill no unit outside the pools ships (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against; it marks no name of a pool installed on a read or on a listed <namespace>/<name> alone, which leaves the pool's own names for the measure to compare";
 /** Which pools a profile installs where the session records no listing. */
 const POOL_VERSION_RULE =
   "where the session records no listing and no subagent's listing measures it, the Oh My Pi build its dev box ran decides the pools: the version the dev box's own repository pins (the configuration's ompPin: a TOML file of that repository and the keys to the version in it), read at its last commit at or before the session's start, set against ompPin's firstPoolVersion, the first build that loads an extension's resources_discover pools on a fresh start (an earlier build deferred an extension whose only registration is resources_discover, so a fresh session listed none of its pools); a pin before that version installs no pool but one a [Skill file: …] read of the session places, which shows Oh My Pi loaded it, and a pin at or after it installs each pool, both inferences from the pinned build. The Oh My Pi version the session's file records (the runtime.version of its first model_change line; a fork's build gives its release alone) is set beside the pin as a cross-check and decides nothing. With no ompPin, or no version the file holds at those keys, each pool is installed as the dev box's installers install it";
@@ -6033,8 +6040,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
   // pool (`poolsUndecided`). The names of a pool the listing decides are marked as taken from it.
   // A name an installed unit outside the pools also ships is no evidence for a pool (the session
-  // lists it with or without the pool): a pool needs a named skill that no such unit ships, or a
-  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it.
+  // lists it with or without the pool): a pool needs a named skill that no such unit ships, a
+  // `[Skill file: …]` read of the session that shows Oh My Pi loaded it, or a listed
+  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives.
   const fromListing = new Set<string>();
   const pools =
     input.poolsUndecided === true
@@ -6046,14 +6054,66 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const inference =
       "this is an inference from the listing, since no file records why some sessions of one Oh My Pi build list such a pool and others do not";
     const nonPoolNames = new Set<string>();
-    for (const { via } of units.values()) {
+    /** Each copy of a name that an installed unit outside the pools ships, in the order of the
+     *  units: its unit, its rank among the copies of the name (`unitRank`), the namespace Oh My Pi
+     *  lists it under where an earlier copy keeps the bare name (`unitNamespace`), and the copy. */
+    const shippedBy = new Map<
+      string,
+      { key: string; rank: number; namespace: string | undefined; copy: string }[]
+    >();
+    for (const [key, { via }] of units) {
       if (via.unit.startsWith("pool:")) continue;
-      for (const row of installedFrom(via, versions.get(via.unit))) nonPoolNames.add(row.skill);
+      for (const row of installedFrom(via, versions.get(via.unit))) {
+        nonPoolNames.add(row.skill);
+        const copies = shippedBy.get(row.skill) ?? [];
+        copies.push({
+          key,
+          rank: unitRank(via.unit) ?? Number.POSITIVE_INFINITY,
+          namespace: unitNamespace(via.unit),
+          copy: `${row.copyRepository}\0${row.copyPath ?? ""}`,
+        });
+        shippedBy.set(row.skill, copies);
+      }
     }
     for (const copy of alone.values()) {
       const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
       if (found !== undefined) nonPoolNames.add(found.name);
     }
+    /** Each name the listing lists under a namespace, as `<namespace>/<name>` (NAMESPACE_RULE). */
+    const namespacedNames = listing.names.flatMap((listed) => {
+      const at = listed.indexOf("/");
+      return at <= 0
+        ? []
+        : [{ listed, namespace: listed.slice(0, at), name: listed.slice(at + 1) }];
+    });
+    /** Whether a listed `<namespace>/<name>` proves that a pool holding `<name>` gave the copy of
+     *  it Oh My Pi admitted first (POOL_LISTING_RULE), and why: it does where the installed units
+     *  outside the pools that ship `<name>` under that namespace ship the copy Oh My Pi admits
+     *  first of every such unit's (a lower rank first, of one rank the first unit's, as the profile
+     *  orders them below), since a pool comes before them all. */
+    const namespaceProof = ({ namespace, name }: (typeof namespacedNames)[number]) => {
+      const copies = shippedBy.get(name) ?? [];
+      const own = copies.filter((each) => each.namespace === namespace);
+      if (own.length === 0) {
+        return {
+          proves: false,
+          why: `no installed unit outside the pools ships ${name} under the namespace ${namespace}`,
+        };
+      }
+      const first = copies.reduce((a, b) => (b.rank < a.rank ? b : a));
+      const later = own.find((each) => each.copy !== first.copy);
+      if (later !== undefined) {
+        return {
+          proves: false,
+          why: `${first.key}, which Oh My Pi admits before ${later.key}, ships another copy of ${name}`,
+        };
+      }
+      const by = [...new Set(own.map((each) => each.key))];
+      return {
+        proves: true,
+        why: `${by.join(" and ")} ship${by.length === 1 ? "s" : ""} ${name} under that namespace, and no installed unit outside the pools that Oh My Pi admits before ${by.length === 1 ? "it" : "them"} ships another copy of it`,
+      };
+    };
     for (const [key, { via, why }] of pools) {
       const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
@@ -6076,10 +6136,25 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
       const read = shownBy.get(key);
       if (read === undefined) {
+        const tried = namespacedNames
+          .filter(({ name }) => skills.includes(name))
+          .map((each) => ({ listed: each.listed, ...namespaceProof(each) }));
+        const proofs = tried.filter((each) => each.proves);
+        if (proofs.length > 0) {
+          units.set(key, {
+            via,
+            why: `${why}; ${counted} (${split})${sharedNote}; ${listing.from} names ${proofs.map((each) => each.listed).join(", ")} (${proofs.map((each) => `${each.listed}: ${each.why}`).join("; ")}), and Oh My Pi lists a copy as <namespace>/<name> only where it admitted another copy of the name first (NAMESPACE_RULE), so the copy it admitted first was this pool's, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
+          });
+          continue;
+        }
+        const unproved =
+          tried.length === 0
+            ? ""
+            : `; ${listing.from} names ${tried.map((each) => each.listed).join(", ")}, which prove${tried.length === 1 ? "s" : ""} nothing for this pool (${tried.map((each) => `${each.listed}: ${each.why}`).join("; ")})`;
         units.delete(key);
         evidence.push({
           item: `left out: the pool ${key}`,
-          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
+          source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}${unproved}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
         });
         continue;
       }

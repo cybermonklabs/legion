@@ -1210,6 +1210,19 @@ const SLOT_RULE =
  *  evidence says it. */
 const CHECKOUT_RULE =
   "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing; where the tree does not hold that path and the working directory is directly inside that parent, the working directory is a workspace of that repository (a jj or git worktree) and the checkout's root when a file the session read by an absolute path under the working directory is a file of the tree at its path below the working directory";
+/** The extension of a dev box's repository that feeds each pool its skills-sources.json names to
+ *  Oh My Pi through resources_discover. */
+const POOLS_EXTENSION = [
+  'import * as fs from "node:fs";',
+  "export default function (pi) {",
+  '  pi.on("resources_discover", async () => ({',
+  '    skillPaths: JSON.parse(fs.readFileSync("skills-sources.json", "utf8")).sources.map(',
+  '      (source) => source.root + "/skills"',
+  "    ),",
+  "  }));",
+  "}",
+  "",
+].join("\n");
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -1405,17 +1418,7 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] }),
     // The Oh My Pi build the dev box pins (the configuration's ompPin names this file and key).
     "mise.toml": '[tools]\n"acme:omp" = "18.13.3-acme.1"  # the dev box\'s Oh My Pi\n',
-    "omp/extensions/skill-pools.ts": [
-      'import * as fs from "node:fs";',
-      "export default function (pi) {",
-      '  pi.on("resources_discover", async () => ({',
-      '    skillPaths: JSON.parse(fs.readFileSync("skills-sources.json", "utf8")).sources.map(',
-      '      (source) => source.root + "/skills"',
-      "    ),",
-      "  }));",
-      "}",
-      "",
-    ].join("\n"),
+    "omp/extensions/skill-pools.ts": POOLS_EXTENSION,
     "installers/omp.sh": [
       "#!/usr/bin/env bash",
       'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
@@ -1427,6 +1430,54 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
   "acme/pack": {
     "skills/pack-one/SKILL.md": skillMd("pack-one"),
     "skills/pack-later/SKILL.md": skillMd("pack-later"),
+  },
+  // A second dev box's repository in acme/dots's shape, for the twin-pool subagents: its
+  // installer clones acme/twin-pack into vendor/twin-pack, a pool its skills-sources.json feeds to
+  // Oh My Pi through its extension, and its plugin list installs acme/twin-powers as twin-powers.
+  "acme/twin-dots": {
+    "omp/plugins/package.json": JSON.stringify({
+      name: "omp-plugins",
+      dependencies: { "twin-powers": "github:acme/twin-powers#v1.0.0" },
+    }),
+    "skills-sources.json": JSON.stringify({ sources: [{ root: "vendor/twin-pack" }] }),
+    "omp/extensions/skill-pools.ts": POOLS_EXTENSION,
+    "installers/omp.sh": [
+      "#!/usr/bin/env bash",
+      'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
+      'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$HOME/.omp/agent/extensions/skill-pools.ts"',
+      "ensure_vendor https://github.com/acme/twin-pack.git twin-pack v1.0.0",
+      "",
+    ].join("\n"),
+  },
+  "acme/twin-pack": {
+    "skills/pack-one/SKILL.md": skillMd("pack-one"),
+    "skills/pack-two/SKILL.md": skillMd("pack-two"),
+    "skills/twin-only/SKILL.md": skillMd("twin-only"),
+  },
+  // A package of pack-one and pack-two of other text than the pool's, and power-solo.
+  "acme/twin-powers": {
+    "package.json": JSON.stringify({ name: "twin-powers", pi: { skills: ["./skills"] } }),
+    "skills/pack-one/SKILL.md":
+      "---\nname: pack-one\ndescription: Use for the twin powers' own pack-one.\n---\n\n# pack-one of twin-powers\n",
+    "skills/pack-two/SKILL.md":
+      "---\nname: pack-two\ndescription: Use for the twin powers' own pack-two.\n---\n\n# pack-two of twin-powers\n",
+    "skills/power-solo/SKILL.md": skillMd("power-solo"),
+  },
+  // A checkout whose Claude Code settings turn on the plugin twin-tools of the marketplace
+  // acme-twins (acme/twins), which ships pack-one and pack-two of the pool's text, and a
+  // power-solo of other text than the package's.
+  "acme/twin": {
+    ".claude/settings.json": JSON.stringify({ enabledPlugins: { "twin-tools@acme-twins": true } }),
+  },
+  "acme/twins": {
+    ".claude-plugin/marketplace.json": JSON.stringify({
+      name: "acme-twins",
+      plugins: [{ name: "twin-tools", source: "./plugins/twin-tools" }],
+    }),
+    "plugins/twin-tools/skills/pack-one/SKILL.md": skillMd("pack-one"),
+    "plugins/twin-tools/skills/pack-two/SKILL.md": skillMd("pack-two"),
+    "plugins/twin-tools/skills/power-solo/SKILL.md":
+      "---\nname: power-solo\ndescription: Use for the twin tools' own power-solo.\n---\n\n# power-solo of twin-tools\n",
   },
   // Two packages: kit tags each release; gone tags none, and the registry's tarball of gone
   // 3.0.0 ships gone-one alone.
@@ -6828,6 +6879,231 @@ test("a dev-box subagent whose recorded listing names no skill of a pool its roo
   expect(measure.added).toContain("pack-two");
   expect(measure.added).not.toContain("acme-powers/pack-two");
   expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// The architect's ruling of 2026-11-25 (17:06Z): Oh My Pi lists a copy as <namespace>/<name> only
+// where it admitted another copy of the name first, and it admits a pool's before every unit's
+// outside the pools. So a recorded <namespace>/<name> whose bare name a pool the listing leaves out
+// holds is direct proof of that pool, where no installed unit outside the pools that Oh My Pi
+// admits before the unit of that namespace ships another copy of the name.
+
+/** The root of the twin-pool subagents, which the store does not hold. Each runs on the dev box
+ *  of acme/twin-dots in a checkout of acme/twin, so its profile can install the pool
+ *  vendor/twin-pack (pack-one, pack-two and twin-only), the package twin-powers (pack-one and
+ *  pack-two of other text, and power-solo) and the Claude Code plugin twin-tools that acme/twin's
+ *  settings turn on (pack-one and pack-two of the pool's text, and power-solo of other text). */
+const TWIN_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b3`;
+/** Each twin-pool subagent, and the names its recorded listing adds to SUBAGENT_PROMPT's. */
+const TWIN_LISTINGS: Record<string, readonly string[]> = {
+  "twin-proof": ["twin-powers/pack-one", "twin-powers/pack-two"],
+  "twin-later": ["twin-tools/pack-one"],
+  "twin-unheld": ["twin-powers/power-solo"],
+  "twin-named": ["twin-only", "twin-powers/pack-one"],
+};
+/** The units of the twin-pool subagents' profiles, as the evidence names them. */
+const TWIN_POOL = "pool:vendor/twin-pack (acme/twin-dots:skills-sources.json)";
+const TWIN_PACKAGE = "package:twin-powers (acme/twin-dots:omp/plugins/package.json)";
+const TWIN_PLUGIN = "plugin:twin-tools@acme-twins (acme/twins:.claude-plugin/marketplace.json)";
+
+/** The case of the twin-pool subagent `name` (TWIN_LISTINGS), all built once: the names its
+ *  profile lists from acme/twin-pack, acme/twin-powers and acme/twins, each with its repository,
+ *  its evidence by item and its listing measure. */
+async function twinPool(name: string) {
+  const pathOf = (each: string) => `${TWIN_ROOT}/${each}.jsonl`;
+  const out = path.join(scratch, "pool-twin", "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore("pool-twin", (files) => {
+      for (const [each, names] of Object.entries(TWIN_LISTINGS)) {
+        const lines = f1Lines();
+        setText(lines, 5, () => `Step 3 (case ${each}).`);
+        SESSIONS.subagent?.change?.(lines);
+        workingDirectory("/home/dev/src/twin")(lines);
+        const init = lines.find((line) => line.type === "session_init");
+        if (init !== undefined) {
+          const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
+          init.systemPrompt = [
+            (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${listed}</skills>`),
+            ...SUBAGENT_PROMPT.slice(1),
+          ];
+        }
+        (files.store_a ?? {})[pathOf(each)] = lines
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("");
+      }
+    });
+    // As copies.ts gives them: acme/twin-dots is the dev box's repository, acme/twin's settings
+    // turn twin-tools on, and the marketplace acme-twins (acme/twins) ships its skills.
+    const plugin = (
+      repo: string,
+      manifest: string,
+      kind: string,
+      action: string,
+      skill: string
+    ) => [
+      repo,
+      manifest,
+      kind,
+      action,
+      "plugin:twin-tools@acme-twins",
+      "claude-code",
+      skill,
+      "acme/twins",
+      `plugins/twin-tools/skills/${skill}`,
+      "",
+    ];
+    const shipped = ["pack-one", "pack-two", "power-solo"];
+    const copies = copiesWith("copies-pool-twin", {
+      "manifests.tsv": [
+        ["acme/twin-dots", "installers/omp.sh", "installer-script", "tree", 1, "clones", ""],
+        ["acme/twin-dots", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+      ],
+      "repositories.tsv": ["acme/twin", "acme/twins"].map((repo) => [
+        repo,
+        "main",
+        SHA,
+        "no",
+        "no",
+        "",
+        3,
+        "whole",
+        0,
+        "",
+      ]),
+      "installers.tsv": [
+        ...shipped.map((skill) =>
+          plugin("acme/twin", ".claude/settings.json", "claude-settings", "enables", skill)
+        ),
+        ...shipped.map((skill) =>
+          plugin(
+            "acme/twins",
+            ".claude-plugin/marketplace.json",
+            "claude-marketplace",
+            "ships",
+            skill
+          )
+        ),
+      ],
+      "skill-copies.tsv": shipped.map((skill) => [
+        "acme/twins",
+        `plugins/twin-tools/skills/${skill}`,
+        skill,
+        10,
+        "no",
+        "no",
+        "",
+        "",
+        "",
+      ]),
+    });
+    const file = sessionsFile(
+      "pool-twin.jsonl",
+      [],
+      [],
+      Object.keys(TWIN_LISTINGS).map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("subagent:task");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  return {
+    listed: (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo.startsWith("acme/twin"))
+      .map((skill) => `${listedName(skill)} ${skill.repo}`)
+      .sort(),
+    evidence,
+    measure: ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}")),
+  };
+}
+
+// Catches: a pool left out though the recorded listing names its skills as the namespaced copies
+// of a package, which Oh My Pi lists so only where a copy it admitted before the package's came
+// first, and no unit outside the pools gives one.
+test("a dev-box subagent whose recorded listing names a pool's skills only as an installed package's <namespace>/<name>, and no installed unit Oh My Pi admits before the package ships them, gets the pool as direct proof: its names bare, the package's namespaced, the plugin's of the same text dropped, none marked fromRecorded, and the measure misses neither namespaced name", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-proof");
+  expect(listed).toEqual([
+    "pack-one acme/twin-pack",
+    "pack-two acme/twin-pack",
+    "power-solo acme/twin-powers",
+    "twin-only acme/twin-pack",
+    "twin-powers/pack-one acme/twin-powers",
+    "twin-powers/pack-two acme/twin-powers",
+    "twin-tools/power-solo acme/twins",
+  ]);
+  const proofs = ["pack-one", "pack-two"]
+    .map(
+      (skill) =>
+        `twin-powers/${skill}: ${TWIN_PACKAGE} ships ${skill} under that namespace, and no installed unit outside the pools that Oh My Pi admits before it ships another copy of it`
+    )
+    .join("; ");
+  expect(evidence[`unit ${TWIN_POOL}`]).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (named: none; unnamed: pack-one, pack-two, twin-only); the session's recorded listing names twin-powers/pack-one, twin-powers/pack-two (${proofs}), and Oh My Pi lists a copy as <namespace>/<name> only where it admitted another copy of the name first (NAMESPACE_RULE), so the copy it admitted first was this pool's, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: `
+  );
+  expect(evidence[`left out: the pool ${TWIN_POOL}`]).toBeUndefined();
+  for (const skill of ["pack-one", "pack-two"]) {
+    expect(
+      evidence[`left out: skill ${skill} from acme/twins plugins/twin-tools/skills/${skill}`]
+    ).toContain("its SKILL.md is the same, and Oh My Pi drops such a copy");
+  }
+  expect(measure.missing.filter((each) => each.includes("pack-"))).toEqual([]);
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches: a pool installed on a recorded <namespace>/<name> that a unit outside the pools
+// explains: Oh My Pi admits that unit's copy before the namespace's unit's.
+test("a dev-box subagent whose recorded listing names a pool's skill only as a Claude Code plugin's <namespace>/<name>, which an installed package Oh My Pi admits before the plugin also ships, gets none of the pool, and the evidence says why that name proves nothing", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-later");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([]);
+  expect(evidence[`unit ${TWIN_POOL}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${TWIN_POOL}`]).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (pack-one, pack-two, twin-only); the session's recorded listing names twin-tools/pack-one, which proves nothing for this pool (twin-tools/pack-one: ${TWIN_PACKAGE}, which Oh My Pi admits before ${TWIN_PLUGIN}, ships another copy of pack-one), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  // The package's pack-one keeps the bare name, and the plugin's is the listed twin-tools/pack-one.
+  expect(listed).toContain("pack-one acme/twin-powers");
+  expect(listed).toContain("twin-tools/pack-one acme/twins");
+  expect(measure.missing).not.toContain("twin-tools/pack-one");
+}, 120_000);
+
+// Catches: a pool installed on a recorded <namespace>/<name> of a name it does not hold, here one
+// that the package ships and no unit Oh My Pi admits before the package ships another copy of.
+test("a dev-box subagent whose recorded listing names under a namespace only a skill the pool does not hold gets none of the pool, and its evidence names no namespaced name", async () => {
+  const { listed, evidence } = await twinPool("twin-unheld");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([]);
+  expect(evidence[`unit ${TWIN_POOL}`]).toBeUndefined();
+  const leftOut = evidence[`left out: the pool ${TWIN_POOL}`];
+  expect(leftOut).toContain(
+    `; the session's recorded listing names none of the 3 skills it holds at the session's start (pack-one, pack-two, twin-only), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  expect(leftOut).not.toContain("twin-powers/power-solo");
+}, 120_000);
+
+// Catches: a pool the listing installs on a named skill that no unit outside the pools ships,
+// taken instead as installed on a recorded <namespace>/<name> of it, which loses its fromRecorded
+// marks.
+test("a dev-box subagent whose recorded listing names a skill of a pool that no unit outside the pools ships, and another of its skills under a namespace, gets the pool on the named skill as before, its names marked fromRecorded", async () => {
+  const { listed, evidence, measure } = await twinPool("twin-named");
+  expect(listed.filter((each) => each.endsWith(" acme/twin-pack"))).toEqual([
+    "pack-one acme/twin-pack",
+    "pack-two acme/twin-pack",
+    "twin-only acme/twin-pack",
+  ]);
+  const unit = evidence[`unit ${TWIN_POOL}`] ?? "";
+  expect(unit).toContain(
+    `; the session's recorded listing names 1 of the 3 skills it holds at the session's start (named: twin-only; unnamed: pack-one, pack-two), so it is installed; ${POOL_INFERENCE}, and the listing measure counts its unnamed skills as added names: `
+  );
+  expect(unit).not.toContain("so the copy it admitted first was this pool's");
+  expect(measure.fromRecorded).toEqual(["pack-one", "pack-two", "twin-only"]);
 }, 120_000);
 
 /** The case of the top-level dev-box session `name` (`pool-plain`, which reads alpha alone, or
