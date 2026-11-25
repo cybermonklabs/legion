@@ -136,12 +136,10 @@ func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 
 // holdsTask is whether the claim holds a task no turn has taken: its pending delivery, while it
 // is unconfirmed. A confirmed one is the task of a turn that ran, which settle retires once the
-// claim is no longer working, so it owes the role no launch. Nor does the daemon's own delivery of
-// a relaunch's record, which is no work of the claim's (HoldsTask): the released suspension keeps
-// it, and the role's next run tells it, so a resume launches no process only to tell it.
+// claim is no longer working, so it owes the role no launch.
 func (m *Machine) holdsTask() bool {
 	p := m.claim.Pending
-	return HoldsTask(p) && p.ConfirmedAt.IsZero()
+	return p != nil && p.ConfirmedAt.IsZero()
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from

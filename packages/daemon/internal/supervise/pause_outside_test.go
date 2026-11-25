@@ -149,35 +149,3 @@ func TestAPausedRolesPodEndedFromOutsideIsNotLaunchedUntilTheResume(t *testing.T
 		stops.wantStops(t, stopped)
 	})
 }
-
-// The continue of an end from outside the pod relaunches a role that held no task with the
-// daemon's own delivery of the relaunch's record (queueRelaunch), which is no work of the claim's
-// (HoldsTask). A pause that stops the role while it holds only that record owes it no launch: the
-// resume brings back no process only to tell the record, and the released stop keeps the record
-// for the role's next run. The control is a task of the claim's held the same way, which the same
-// stop owes a launch. Read as a task, the record had every such role launched cold at the resume.
-func TestAPauseStopOwesNoLaunchForARelaunchsRecordAlone(t *testing.T) {
-	for _, tc := range []struct {
-		name, id string
-		owed     bool
-	}{
-		{name: "a relaunch's record", id: relaunchTaskID(), owed: false},
-		{name: "a task of the claim's", id: "row-9", owed: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h, flag, stops := pauseHarness(t, queuedClaim())
-			h.reach(StateIdle)
-			flag.set(7)
-			h.must(RequestDeliver{Claim: h.token, ID: tc.id, Task: "what the relaunch ended, or a task"})
-			h.wantPrompts(1) // the reach's own task alone; this one waits for the resume
-
-			h.must(pauseStop(h.token, 7))
-
-			h.wantState(StateSuspended)
-			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: tc.owed}, landed: true})
-			if p := h.claim().Pending; p == nil || p.ID != tc.id {
-				t.Fatalf("the stopped claim holds %+v, want the delivery %s kept for its next run", p, tc.id)
-			}
-		})
-	}
-}
