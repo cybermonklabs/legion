@@ -1405,7 +1405,9 @@ func (r *stepModelsLive) boot() {
 // and the API listener the fixture holds. It holds the workflow's App tokens stood in for, and
 // GitHub's stand-in. It also holds an environment that names the pinned Claude Code, the bun its
 // MCP server runs on and the claude-envoy build. The boot resolves its Claude Code launch from that
-// environment (resolveClaude). That environment is the daemon's alone, not the process's.
+// environment (resolveClaude). That environment is the daemon's alone, not the process's. The
+// panes' launcher scripts exec the legion this run built (paneLegion). The daemon's own executable
+// is this test binary, so each implementer's completion would run this package's tests as its jj.
 func (r *stepModelsLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
@@ -1416,6 +1418,7 @@ func (r *stepModelsLive) overrides() overrides {
 		listen:         heldListen,
 		workflowTokens: r.tokens,
 		githubAPI:      r.githubAPI,
+		paneLegion:     r.legion,
 		environ: append(os.Environ(),
 			toolEnv("claude")+"="+r.claude, toolEnv("bun")+"="+r.bun, claudePluginDirEnv+"="+r.pluginDir),
 	}
