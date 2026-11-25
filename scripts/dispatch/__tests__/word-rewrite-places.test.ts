@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { daemonAtLeast } from "../word-rewrite/daemons.ts";
-import type { DispatchReads } from "../word-rewrite/dispatch-api.ts";
+import type { Actor, DispatchReads, Version } from "../word-rewrite/dispatch-api.ts";
 import {
   type Context,
   type Examined,
@@ -129,6 +129,33 @@ async function fakeDocument(
   return examined.filter((one) => one.occurrences.length > 0);
 }
 
+/** A document of the main issue, SEED-3, open, with the versions its listing gives. */
+function mainIssueDocument(id: string, name: string, versions: Version[] | null): Item {
+  return {
+    kind: "issue-document",
+    project: "SEED",
+    id,
+    owner: { kind: "issue", key: "SEED-3" },
+    issue: {
+      key: "SEED-3",
+      project: "SEED",
+      title: "t",
+      status: "todo",
+      closed: false,
+      createdBy: null,
+    },
+    artifact: {
+      id,
+      issue_key: "SEED-3",
+      project: "SEED",
+      slug: name.replaceAll(".", "-"),
+      name,
+      kind: "doc",
+      versions,
+    },
+  };
+}
+
 /** One row per reason: an occurrence the tool leaves with that reason. */
 const ROWS: Record<PlaceReason, () => Promise<string | null>> = {
   "credential-scope": async () => reasonAfter(await mixedDocument({ scope: "OTHER" }), "Café"),
@@ -176,29 +203,7 @@ const ROWS: Record<PlaceReason, () => Promise<string | null>> = {
       ...fixtureReads({ [id]: { markdown, token: "sha256:2", version: 1 } }),
       version: async () => ({ markdown, number: 1, authors: null, blocks: [] }),
     };
-    const item: Item = {
-      kind: "issue-document",
-      project: "SEED",
-      id,
-      owner: { kind: "issue", key: "SEED-3" },
-      issue: {
-        key: "SEED-3",
-        project: "SEED",
-        title: "t",
-        status: "todo",
-        closed: false,
-        createdBy: null,
-      },
-      artifact: {
-        id,
-        issue_key: "SEED-3",
-        project: "SEED",
-        slug: "legacy-md",
-        name: "legacy.md",
-        kind: "doc",
-        versions: [{ number: 1, authors: null }],
-      },
-    };
+    const item = mainIssueDocument(id, "legacy.md", [{ number: 1, authors: null }]);
     return (await examine(context(reads), item)).occurrences[0]?.reason ?? null;
   },
   "code-name-not-yet": async () => {
@@ -230,6 +235,43 @@ describe("the places a program can tell", () => {
       expect(await ROWS[reason]()).toBe(reason);
     });
   }
+
+  test("unknown-author: a block a session made and a version with no author, a system author, or a person beside a session changed is left, and the block it did not change is judged", async () => {
+    // Version 1, a session's, made both paragraphs; version 2 changed only the first. The text
+    // has no blocks, so each paragraph is its line.
+    const id = "00000000-0000-4000-8000-00000000abce";
+    const kept = "The second paragraph says the plan was parked on Tuesday.";
+    const made = `The first paragraph says the notes were parked.\n\n${kept}\n`;
+    const changed = `The first paragraph says the notes were parked on Monday.\n\n${kept}\n`;
+    for (const authors of [
+      null,
+      [{ kind: "system", id: "document-settlement" }],
+      [
+        { kind: "user", id: "alice" },
+        { kind: "session", id: "s1" },
+      ],
+    ] satisfies (Actor[] | null)[]) {
+      const versions = [
+        { number: 1, authors: [{ kind: "session", id: "s1" }], markdown: made },
+        { number: 2, authors, markdown: changed },
+      ];
+      const reads: DispatchReads = {
+        ...fixtureReads({ [id]: { markdown: changed, token: "sha256:4", version: 2 } }),
+        version: async (_id, number) => {
+          const version = versions[number - 1];
+          if (version === undefined) throw new Error(`no version ${number}`);
+          return { ...version, blocks: [] };
+        },
+      };
+      const listed = versions.map((version) => ({
+        number: version.number,
+        authors: version.authors,
+      }));
+      const examined = await examine(context(reads), mainIssueDocument(id, "notes.md", listed));
+      expect(reasonAfter(examined, "The first paragraph")).toBe("unknown-author");
+      expect(reasonAfter(examined, "The second paragraph")).toBeNull();
+    }
+  });
 });
 
 describe("the occurrences the tool judges", () => {
