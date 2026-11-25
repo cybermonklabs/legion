@@ -2,11 +2,15 @@ package redact_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // TestUnmarshalReadsAnAnswerAsItsData: a caller whose destination takes the answer's text as it
@@ -53,4 +57,55 @@ func TestUnmarshalNamesABodyThatDoesNotDecodeWithoutQuotingIt(t *testing.T) {
 	if !strings.Contains(err.Error(), "answers") {
 		t.Errorf("Unmarshal = %q; want the member at fault named", err)
 	}
+}
+
+// TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem: bytes no answer holds - a message
+// a stream carries - whose time, or whose object key, quotes a credential's URL do not decode, and
+// encoding/json's own error quotes that value, which each twin checks first. UnmarshalData's error
+// is DecodeError's fixed text: it names the member, quotes none of the value and unwraps to
+// nothing. Bytes that decode fill the destination and answer nil. Captures
+// redact.unmarshal-data/<case>.
+func TestUnmarshalDataNamesBytesThatDoNotDecodeWithoutQuotingThem(t *testing.T) {
+	t.Parallel()
+	type message struct {
+		At    time.Time      `json:"at"`
+		ByKey map[string]int `json:"by_key"`
+	}
+	for _, c := range []struct{ name, data, names string }{
+		{"time", `{"at":"` + redacttest.Words + `"}`, `"at"`},
+		{"map-key", `{"by_key":{"` + redacttest.Words + `":"seven"}}`, `"by_key`},
+	} {
+		t.Run(c.name+"-twin", func(t *testing.T) {
+			t.Parallel()
+			var into message
+			if err := json.Unmarshal([]byte(c.data), &into); err == nil || !strings.Contains(err.Error(), redacttest.Token) {
+				t.Fatalf("encoding/json's error is %v, want one that quotes the token: the row no longer shows what UnmarshalData hides", err)
+			}
+		})
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var into message
+			err := redact.UnmarshalData([]byte(c.data), &into)
+			if err == nil {
+				t.Fatal("UnmarshalData read bytes that do not decode")
+			}
+			redacttest.RequireNone(t, "redact.unmarshal-data/"+c.name, fmt.Sprintf("%v | %+v | %#v", err, err, err))
+			if !strings.Contains(err.Error(), c.names) {
+				t.Errorf("UnmarshalData = %q, want it to name %s", err, c.names)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Errorf("UnmarshalData's error unwraps to %v, whose text quotes the value", errors.Unwrap(err))
+			}
+		})
+	}
+	t.Run("decodes", func(t *testing.T) {
+		t.Parallel()
+		var into message
+		if err := redact.UnmarshalData([]byte(`{"at":"2026-11-25T00:00:00Z","by_key":{"seven":7}}`), &into); err != nil {
+			t.Fatalf("UnmarshalData = %v, want the bytes read", err)
+		}
+		if into.ByKey["seven"] != 7 || !into.At.Equal(time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)) {
+			t.Errorf("UnmarshalData filled %+v, want the bytes' time and key", into)
+		}
+	})
 }
