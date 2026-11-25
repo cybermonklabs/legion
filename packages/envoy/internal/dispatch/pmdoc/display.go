@@ -491,7 +491,7 @@ func displayClosingFence(directive *typedDirective, source []byte) string {
 	for stop < len(source) && source[stop] != '\n' && source[stop] != '\r' {
 		stop++
 	}
-	colons := fenceColons(string(source[directive.closer:stop]))
+	colons := FenceColons(string(source[directive.closer:stop]))
 	if colons == 0 {
 		return ""
 	}
