@@ -422,7 +422,7 @@ func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
 // so reads as the implementer's (record.MergeForward.Asked) - stays the implementer's: a later
 // confirmed read asks nobody, and its rows, the implementer's ask and the merger's hold, are still
 // delivered. An ask of the implementer made before the review that has not landed when the issue
-// moves into merging stays the implementer's too: the move holds the merger (holdMerger) rather
+// moves into merging stays the implementer's too: the move holds the merger (holdStartedWorker) rather
 // than asking it, and once the implementer's merge lands the merger is told the new head and the
 // reviewer is asked to read it.
 func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testing.T) {
@@ -1450,8 +1450,9 @@ func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead
 // asks it again only at a head the record holds in a confirmed conflict (mergeForwardOnEntry).
 // When the head a first merge forward left conflicts in its turn and is asked of again in
 // implementing, a MERGEABLE read of that head releases the conflict, and the implementer completes
-// at it without the merge, the move into testing asks nothing: the ask of implementing stands, and
-// no hold reached the tester. So the tester's completion naming no head is refused
+// at it without the merge, the move into testing asks nothing: the ask of implementing no longer
+// stands, so the implementer is told once that it is withdrawn (withdrawUnowed), and no hold
+// reached the tester. So the tester's completion naming no head is refused
 // HANDOFF_HEAD_MERGED_FORWARD (dispatch://INFRA-4374 R1) and sent to do the phase's work at the
 // head the pull request stands at, never to wait for the landed message of an ask whose hold it
 // was not sent. It records and moves nothing.

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"testing"
 
@@ -134,24 +133,18 @@ func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
 			}
 		}
 		var fromTrigger []string
-		fromTable := map[string]bool{}
 		for _, row := range TableOf(line) {
+			pair := phase.Pair(row.From, row.To)
 			if row.Trigger == TriggerBackward {
-				fromTrigger = append(fromTrigger, phase.Pair(row.From, row.To))
+				fromTrigger = append(fromTrigger, pair)
 			}
-			if at, to := slices.Index(line, row.From), slices.Index(line, row.To); at >= 0 && to >= 0 && to < at {
-				fromTable[phase.Pair(row.From, row.To)] = true
+			if returnsWork(row.Trigger) && !slices.Contains(want, pair) {
+				t.Fatalf("line %v: the %s row %s moves the work to no phase before it on the line, want one of %v", line, row.Trigger, pair, want)
 			}
 		}
 		if !slices.Equal(fromTrigger, want) {
 			t.Fatalf("line %v: %s rows = %v, want %v", line, TriggerBackward, fromTrigger, want)
 		}
-		if !maps.Equal(fromTable, setOf(want)) {
-			t.Fatalf("line %v: table moves back = %v, its own pairs = %v", line, sortedPairs(fromTable), want)
-		}
-	}
-	if len(phase.BackwardPairs()) != len(phase.Order)*(len(phase.Order)-1)/2 {
-		t.Fatalf("phase.BackwardPairs has %d pairs, want every pair of phase.Order", len(phase.BackwardPairs()))
 	}
 }
 
@@ -168,20 +161,12 @@ func keepsTodaysOrder(line []phase.Phase) bool {
 	return true
 }
 
-func setOf(pairs []string) map[string]bool {
-	set := make(map[string]bool, len(pairs))
-	for _, pair := range pairs {
-		set[pair] = true
-	}
-	return set
-}
-
 // A line in another order than today's goes back by the line, not by phase.Order: the table of
 // `implementer reviewer tester` moves back from testing to reviewing, the review before it, and
 // holds no move back from reviewing to testing, which is its move on (review_approved). A planner
 // after the implementer moves on into retro, and goes back to implementing on a backward move.
-// The control is the table of today's backward rows (phase.BackwardPairs), which holds
-// reviewing-testing and lacks testing-reviewing.
+// The control is the table of today's line, phase.Order, whose backward rows hold
+// reviewing-testing and lack testing-reviewing.
 func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	rowsOf := func(line []phase.Phase, trigger TriggerKind) []string {
 		var pairs []string
@@ -199,8 +184,8 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	if !slices.Equal(backward, want) {
 		t.Fatalf("the backward rows of %v = %v, want %v", reviewFirst, backward, want)
 	}
-	if slices.Contains(backward, "reviewing-testing") {
-		t.Fatalf("the table of %v moves back from reviewing to testing, its move on", reviewFirst)
+	if today := rowsOf(phase.Order, TriggerBackward); !slices.Contains(today, "reviewing-testing") || slices.Contains(today, "testing-reviewing") {
+		t.Fatalf("control: the backward rows of today's line %v = %v, want reviewing-testing and no testing-reviewing", phase.Order, today)
 	}
 	if approved := rowsOf(reviewFirst, TriggerReviewApproved); !slices.Equal(approved, []string{"reviewing-testing"}) {
 		t.Fatalf("review_approved of %v = %v, want reviewing-testing", reviewFirst, approved)
@@ -212,10 +197,6 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	if !slices.Contains(rowsOf(plannerAfter, TriggerBackward), "planning-implementing") {
 		t.Fatalf("the table of %v has no backward row planning-implementing: %v", plannerAfter, rowsOf(plannerAfter, TriggerBackward))
 	}
-}
-
-func sortedPairs(pairs map[string]bool) []string {
-	return slices.Sorted(maps.Keys(pairs))
 }
 
 // validateTable says why rows is not the whole table of line, nil when it is: every phase and

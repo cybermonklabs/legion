@@ -24,11 +24,11 @@ import (
 // retro instead (transition), from retro for its children (record.HoldForChildren), until none of
 // them is open beneath it (releaseHeldParents). The hold stands in place of the retro, which keeps
 // no slot (record.KeepsSlot reads record.StandsAt), so the parent holds none of the slots its
-// children may need. An issue with no plan rows walks today's line, whose retro follows the
-// owner's sign-off, so it is never held so.
+// children may need. An issue with no plan rows walks today's line (todaysWalk), whose last step
+// is the owner's sign-off, so it is never held so.
 func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to phase.Phase) ([]string, error) {
 	steps := w.steps()
-	if !w.Stored || to != phase.Retro || len(steps) == 0 || steps[len(steps)-1] == phase.Accepting {
+	if to != phase.Retro || len(steps) == 0 || steps[len(steps)-1] == phase.Accepting {
 		return nil, nil
 	}
 	return e.openBeneath(ctx, tx, issue)

@@ -62,6 +62,7 @@ type ownerStepsLive struct {
 // gate opens, and the fifth is refused the plan `tester implementer` and then walks its owner's
 // plan `implementer reviewer tester`.
 func TestOwnerStepsLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newOwnerStepsLive, fixtureenv.Live).
 	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
 	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
 	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",

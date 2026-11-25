@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -44,6 +45,10 @@ type News struct {
 	Gates       map[record.DesignStep]record.DesignGate
 	OpeningOwed bool
 	Items       []NewsChange
+	// Back is the phases a move back of Issue reaches where Issue stands in accepting
+	// (MoveBackTargets), which its answer names (acceptingAnswer); nil elsewhere, where nothing
+	// reads it.
+	Back []phase.Phase
 	// Members is every member of the tree, the root among them, in the order the architect's
 	// summary names them. The holder's form reads none.
 	Members []NewsMember
@@ -98,13 +103,15 @@ func (c NewsChange) to() int {
 // is the key of the issue whose architect holds the member in accepting, where that is an
 // architect other than the tree root's: the member's own, or one between it and the root (the
 // owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none.
+// member has none. Back is the phases a move back of the member reaches where the root architect
+// answers it in accepting (NewsYouAnswer), as News.Back is the holder's.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
 	State     NewsState
 	Items     []NewsChange
 	Architect string
+	Back      []phase.Phase
 }
 
 // NewsState is what one member of a tree is told of an approved version, as its root architect's
@@ -269,7 +276,7 @@ func holderNews(news News) []string {
 		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, "your phase")))
 		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
 	}
-	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
+	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase, news.Back)}
 }
 
 // nothingChanged is the words that tell a holder an item's new version changed nothing its issue
@@ -287,13 +294,14 @@ func nothingChanged(item NewsChange) string {
 
 // holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
-// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
-// other phase worker moves back when its work is stale, and comments when it is current.
-func holderRule(issue string, p phase.Phase) string {
+// back to back, the phases of the steps of its task before the acceptance (acceptingAnswer). The
+// planner revises its plan in place when it is stale, since the plan is its own work wherever its
+// task places its step (prompts/go/planner.md), and comments when it is current. Every other phase
+// worker moves back when its work is stale, and comments when it is current.
+func holderRule(issue string, p phase.Phase, back []phase.Phase) string {
 	switch p {
 	case phase.Accepting:
-		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
+		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue, back) +
 			", with a reason that names the version and the change."
 	case phase.Planning:
 		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
@@ -306,11 +314,42 @@ func holderRule(issue string, p phase.Phase) string {
 }
 
 // acceptingAnswer is the answer an architect gives the news of an issue it holds in accepting,
-// named as subject: its sign-off, or a move back. It is written once for its two readers: the
-// closing rule of the holder form (holderRule) and the root architect's line for a member it
-// answers itself (memberWords).
-func acceptingAnswer(subject string) string {
-	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to planning, implementing or testing", subject)
+// named as subject: its sign-off, or a move back to back, the phases of the steps of its task
+// before the acceptance (MoveBackTargets), which the daemon's send reads from the task and refuses
+// to send without. It is written once for its two readers: the closing rule of the holder form
+// (holderRule) and the root architect's line for a member it answers itself (memberWords).
+func acceptingAnswer(subject string, back []phase.Phase) string {
+	named := make([]string, len(back))
+	for i, p := range back {
+		named[i] = string(p)
+	}
+	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to %s", subject, joinWords(named, "or"))
+}
+
+// MoveBackTargets is the phases a move back of an issue standing in accepting reaches, on line,
+// the phases its task walks (Walk.Line, LineOf): each phase before accepting, the phases of the
+// steps of the task before the acceptance, as the walk's backward rows reach them (backwardRows).
+// So the answer of the news (acceptingAnswer) names no phase a move would be refused for, where
+// the task has no step for it, and leaves out none a move reaches. A line that holds no accepting,
+// or no step before it, is an error: an issue stands in accepting only on a task with an
+// acceptance after its implementer step (plan.Supported), so such a line is a record the news
+// cannot answer.
+func MoveBackTargets(line []phase.Phase) ([]phase.Phase, error) {
+	at := slices.Index(line, phase.Accepting)
+	if at < 1 {
+		return nil, fmt.Errorf("the line %v holds no step before an acceptance", line)
+	}
+	return slices.Clone(line[:at]), nil
+}
+
+// joinWords joins words as a sentence lists them, with conjunction before the last: "a", "a or
+// b", "a, b and c".
+func joinWords(words []string, conjunction string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	last := len(words) - 1
+	return strings.Join(words[:last], ", ") + " " + conjunction + " " + words[last]
 }
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
@@ -406,7 +445,7 @@ func memberWords(member NewsMember) string {
 	case NewsAtNextStart:
 		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
 	case NewsYouAnswer:
-		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
+		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it", member.Back))
 	case NewsWorkUnchanged:
 		return "told nothing: the approved version holds the same text as the one it took, apart from decision blocks."
 	case NewsNotConcerned:
