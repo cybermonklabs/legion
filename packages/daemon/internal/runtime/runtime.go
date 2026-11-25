@@ -231,9 +231,13 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // can hold the mark's words without making the drift one that breaks the pod. The Sandbox
 // runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
 // a role must not be able to keep a pod on an account the operator replaced by leaving its
-// working copy dirty or its read failing), and a drift of the pod's exchange identity (spec v25:
-// a launch into a pod that lacks the identity waits for the pod's round, so a keep of that pod
-// could leave an issue whose only claim waits on it unable to run). A later change declares which
+// working copy dirty or its read failing), and a drift of the pod's exchange identity only where a
+// launch into the pod is refused until its round replaces it (spec v26, unchanged since: the
+// deployment sets dispatch_token_broker, names no dispatch_token_transition_file, and the pod
+// carries no identity the exchange trades, the condition the Sandbox runtime's awaitsPodRound reads
+// for the refusal and the mark alike), since a keep of that pod could leave an issue whose only
+// claim waits on it unable to run. Any other drift of the exchange identity, a token of another
+// lifetime among them, is one the roles keep working under. A later change declares which
 // other kinds of drift break a pod, and a pod below a declared contract floor breaks too, and it
 // opens an update round over such a pod at once, whatever its spec names as the cause. A round
 // records its reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons),
