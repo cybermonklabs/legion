@@ -15,6 +15,7 @@ import { standsFailed } from "../refs/reference-target";
 import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
 import { type StepRow, stepTasks } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
+import { groupsDrawn, useListPages } from "./details-leaves";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -161,7 +162,9 @@ function Run({ row }: { row: StepRow }): ReactNode {
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`), under the history in Details,
  * where today's page has a Steps tab: headed by how many runs it lists, then one group per task
  * in the order of each task's first step (`stepTasks`), each run of the task in the order the
- * server read them, with its step, role, type, agent, model, attempt, start, end and result.
+ * server read them, with its step, role, type, agent, model, attempt, start, end and result. The
+ * runs are one list across their tasks, drawn 20 at a time with Show more under them
+ * (`useListPages`), and the heading counts every run.
  *
  * It reads through the Steps tab's own catch-up (`useCatchUp` in `features/steps/StepsTab.tsx`)
  * while Details is open (`open`), and through its Retry, and in no other way, so a load that
@@ -183,6 +186,8 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
+  const section = useRef<HTMLElement>(null);
+  const pages = useListPages();
   const retry = useRetryHandOff(() => heading.current);
   // The failure line stands under the heading, in place of the loading line, while the read
   // stands failed (`standsFailed`).
@@ -194,6 +199,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
       aria-label={CONTROL_LABELS.steps}
       className="flex min-w-0 flex-col gap-1.5"
       data-testid="issue-steps"
+      ref={section}
     >
       <h2
         className={`text-sm font-semibold outline-none ${pageInkText}`}
@@ -231,23 +237,34 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           <None />
         </p>
       ) : (
-        tasks.map(({ rows, task }) => (
-          <section
-            aria-label={`${CONTROL_LABELS.steps_task} ${task}`}
-            className="flex min-w-0 flex-col gap-1.5"
-            data-step-task={task}
-            key={task}
-          >
-            <h3 className={`text-xs leading-[18px] font-semibold ${pageMutedText}`} {...pageChrome}>
-              {CONTROL_LABELS.steps_task} <span {...authorText}>{task}</span>
-            </h3>
-            <ol className="flex min-w-0 flex-col gap-1.5">
-              {rows.map((row) => (
-                <Run key={row.id} row={row} />
-              ))}
-            </ol>
-          </section>
-        ))
+        <>
+          {groupsDrawn(tasks, ({ rows }) => rows, pages.drawn).map(
+            ({ entries, group: { task } }) => (
+              <section
+                aria-label={`${CONTROL_LABELS.steps_task} ${task}`}
+                className="flex min-w-0 flex-col gap-1.5"
+                data-step-task={task}
+                key={task}
+              >
+                <h3
+                  className={`text-xs leading-[18px] font-semibold ${pageMutedText}`}
+                  {...pageChrome}
+                >
+                  {CONTROL_LABELS.steps_task} <span {...authorText}>{task}</span>
+                </h3>
+                <ol className="flex min-w-0 flex-col gap-1.5">
+                  {entries.map((row) => (
+                    <Run key={row.id} row={row} />
+                  ))}
+                </ol>
+              </section>
+            )
+          )}
+          {pages.more(
+            runs ?? 0,
+            (index) => section.current?.querySelectorAll("[data-step-run]")[index]
+          )}
+        </>
       )}
     </section>
   );

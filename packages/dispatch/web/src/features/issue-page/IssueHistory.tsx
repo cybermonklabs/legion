@@ -410,15 +410,16 @@ export function IssueHistory({
     );
   };
   // The control under the last entry drawn, Show more, draws the next entries and moves the
-  // focus to the first entry it added, as `ShowAll` does for a list of Details
-  // (`details-leaves.tsx`), whether the control stays or goes: a control of that entry the
-  // reader can see; else one the press added that they can see, one under the entries drawn
-  // before the press before one above them, as the next entries are drawn where the control
-  // stood; else that entry's control out of view; else any the press added; else the control
-  // again, where entries or pages are left; else the last control drawn before the press, which
-  // stood just above it, for a page that adds no entry (its events are all events the outline
-  // draws); and only then the heading, above the whole list. A press that reads the log's next
-  // page moves it once that page has landed and its first entries are drawn. A control of the
+  // focus to the first entry it added, as Show more under every other list of Details does
+  // (`details-leaves.tsx`'s `useListPages`), whether the control stays or goes: a control of
+  // that entry the reader can see; else one the press added that they can see, one under the
+  // entries drawn before the press before one above them, as the next entries are drawn where
+  // the control stood; else that entry's control out of view; else any the press added; else the
+  // control again, where entries or pages are left; else the last control drawn before the press,
+  // which stood just above it, for a page that adds no entry (its events are all events the
+  // outline draws); and only then the heading, above the whole list. A press that reads the
+  // log's next page moves it once that page has landed and its first entries are drawn. A
+  // control of the
   // history that goes away under the reader's focus so leaves the focus in the history, never on
   // the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed next page, which
   // stands where the control stood, hands it on the same way; the Retry of a failed read of the

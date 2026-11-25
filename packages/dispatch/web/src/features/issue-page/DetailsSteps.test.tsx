@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -8,7 +9,7 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
-import type { IssueDetails, IssueSteps } from "../../api/types";
+import type { IssueDetails, IssueSteps, StepRecord } from "../../api/types";
 import { stepRecord } from "../steps/step-record-fixture";
 import { stepTasks } from "../steps/steps-model";
 import { DetailsSteps } from "./DetailsSteps";
@@ -285,6 +286,64 @@ test("an issue with no runs reads None under its heading", async () => {
     const section = screen.getByRole("region", { name: CONTROL_LABELS.steps });
     expect(within(section).getByText(CONTROL_LABELS.none, { exact: true })).toBeDefined();
     expect(section.querySelectorAll("[data-step-run]")).toHaveLength(0);
+  } finally {
+    steps.restore();
+  }
+});
+
+/** `count` passed runs of the task `task`, each its own record, `<task>-1` and on. */
+function runsOf(task: string, count: number): StepRecord[] {
+  return Array.from({ length: count }, (_, index) =>
+    stepRecord({ id: `${task}-${index + 1}`, task })
+  );
+}
+
+// The runs are one list across their tasks, drawn 20 at a time with Show more under them, which
+// says how many runs are left, and the heading counts every run, drawn or not: a task whose runs
+// are all past the cut is not drawn until a press draws them. A keyboard press draws the rest and
+// moves the focus to the first run it drew, which holds no control of its own, and the control
+// goes.
+test("the runs are drawn 20 at a time across their tasks, the heading counts them all, and Show more moves the focus to the first run it drew", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      { steps: runsOf("docs", 15), task: "docs" },
+      { steps: runsOf("default", 10), task: "default" },
+      { steps: runsOf("release", 5), task: "release" },
+    ],
+  }));
+  const section = () => screen.getByRole("region", { name: CONTROL_LABELS.steps });
+  const drawnRuns = () =>
+    [...document.querySelectorAll("[data-step-run]")].map((drawn) =>
+      drawn.getAttribute("data-step-run")
+    );
+  try {
+    await headedWith(30);
+    expect(drawnRuns(), "the runs drawn are not the first 20 of every task's").toEqual(
+      [...runsOf("docs", 15), ...runsOf("default", 5)].map((record) => record.id)
+    );
+    expect(
+      within(section())
+        .getAllByRole("heading", { level: 3 })
+        .map((group) => group.textContent),
+      "a task none of whose runs is drawn is drawn"
+    ).toEqual([`${CONTROL_LABELS.steps_task} docs`, `${CONTROL_LABELS.steps_task} default`]);
+    const more = within(section()).getByRole("button", {
+      name: new RegExp(`^${CONTROL_LABELS.show_more}`),
+    });
+    expect(more.textContent).toBe(
+      `${CONTROL_LABELS.show_more} (10 ${CONTROL_LABELS.show_more_left})`
+    );
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnRuns()).toHaveLength(30);
+    await headedWith(30);
+    expect(more.isConnected, "Show more stayed once every run was drawn").toBe(false);
+    expect(
+      document.activeElement,
+      "Show more did not move the focus to the first run it drew"
+    ).toBe(run("default-6"));
   } finally {
     steps.restore();
   }

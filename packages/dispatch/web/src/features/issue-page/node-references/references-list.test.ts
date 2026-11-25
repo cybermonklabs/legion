@@ -111,7 +111,7 @@ test("a node that cites the row twice is one row", () => {
     }),
   ]);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.line).toBe("It names it here.");
+  expect(rows[0]?.line).toBe("It names it here. And again here.");
 });
 
 test("a tuple of the model names the row over a mention, and keeps the mention's place", () => {
@@ -210,20 +210,25 @@ test("a citing item of this issue is named by the words of its tree, never its s
   expect(line).not.toContain("dispatch://");
 });
 
-test("a line is cut where every one line of a node is cut", () => {
-  const words = commentWords({
-    "c-1": reading("It opens on one sentence. The rest of the block follows it and is not drawn."),
-  });
+// A row of what references a node is no place the page shortens: a citing item is named by all
+// of its words, past its first sentence and past the length of one line of a node, with no cut
+// and no ellipsis.
+test("a citing item is named by all of its words, with no cut", () => {
+  const paragraphs = [
+    "It opens on one sentence.",
+    "The rest of the block follows it, and runs on past the hundred characters one line of a node holds.",
+  ];
+  const words = commentWords({ "c-1": reading(...paragraphs) });
   const rows = referenceRows(words, [
     edge({
-      excerpt: "It opens on one sentence. The rest of the block follows it and is not drawn.",
+      excerpt: paragraphs.join("\n\n"),
       id: "c-1",
       kind: "mentions",
       nodeKind: "comment",
       ref: "dispatch://LAY-2/comment/c-1",
     }),
   ]);
-  expect(rows[0]?.line).toBe("It opens on one sentence.");
+  expect(rows[0]?.line).toBe(paragraphs.join(" "));
 });
 
 test("a node the read carries no words and no address of is still one row", () => {
@@ -292,7 +297,12 @@ test("a block of a comment, a message or a question that mentions the row is tha
     }),
   ]);
   expect(rows.map((row) => [row.key, row.nodeKind, row.ref, row.line])).toEqual([
-    ["comment:c-1", "comment", "dispatch://LAY-2/comment/c-1", "It names the row here."],
+    [
+      "comment:c-1",
+      "comment",
+      "dispatch://LAY-2/comment/c-1",
+      "It names the row here. And here again.",
+    ],
     ["ask:a-1", "ask", "dispatch://LAY-2/ask/a-1", "Which statement is this about?"],
     ["message:m-2", "message", "dispatch://LAY-2/message/m-2", "Its reply names the row."],
   ]);

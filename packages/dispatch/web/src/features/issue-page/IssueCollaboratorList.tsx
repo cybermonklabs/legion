@@ -1,6 +1,6 @@
 import type { LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode, RefObject } from "react";
+import { type ReactNode, type RefObject, useRef } from "react";
 
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type { IssueCollaboratorPerson } from "../../api/types";
@@ -16,6 +16,7 @@ import { AgentName } from "../refs/AgentName";
 import { standsFailed } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
+import { groupsDrawn, useListPages } from "./details-leaves";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
 
@@ -81,8 +82,10 @@ function Worked({
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
  * section's own disclosure (`details-more.tsx`), where the nine-tab
- * page gave it a tab of its own. What a read answered stays drawn when a later read fails, and no
- * failure is said over it; the failure and its Retry are drawn only while no read has answered.
+ * page gave it a tab of its own. Each of its three lists is drawn 20 at a time with Show more
+ * under it (`useListPages`), Legion's agents as one list across their roles. What a read answered
+ * stays drawn when a later read fails, and no failure is said over it; the failure and its Retry
+ * are drawn only while no read has answered.
  */
 export function IssueCollaboratorList({
   issueKey,
@@ -93,6 +96,14 @@ export function IssueCollaboratorList({
   owner: RefObject<HTMLElement | null>;
 }): ReactNode {
   const query = useQuery(issueCollaboratorsQuery(issueKey));
+  // Each list's pages, and the box its entries are drawn in, where a press of its Show more
+  // finds the first entry it drew.
+  const legionPages = useListPages();
+  const legionList = useRef<HTMLElement>(null);
+  const otherPages = useListPages();
+  const otherList = useRef<HTMLUListElement>(null);
+  const peoplePages = useListPages();
+  const peopleList = useRef<HTMLUListElement>(null);
   // The Retry the reader pressed goes with its line once the read lands, and the focus with it:
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
   // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
@@ -141,53 +152,63 @@ export function IssueCollaboratorList({
         </p>
       ) : null}
       {sections.legion.length === 0 ? null : (
-        <section aria-label={CONTROL_LABELS.collaborators_legion} className="space-y-3">
+        <section
+          aria-label={CONTROL_LABELS.collaborators_legion}
+          className="space-y-3"
+          ref={legionList}
+        >
           <SectionHeading>{CONTROL_LABELS.collaborators_legion}</SectionHeading>
-          {sections.legion.map(({ agents, role }) => (
-            <section aria-label={ROLE_WORDS[role]} className="space-y-2" key={role}>
-              <h3 className={`text-xs font-semibold uppercase ${pageQuietText}`} {...pageChrome}>
-                {ROLE_WORDS[role]}
-              </h3>
-              <ul className="space-y-2">
-                {agents.map((agent) => (
-                  <Row
-                    detail={
-                      <>
-                        <span>
-                          <span {...pageChrome}>{CONTROL_LABELS.collaborator_started}</span>{" "}
-                          <Timestamp at={agent.legion.started_at} />
-                        </span>
-                        {agent.legion.replaced_by === null ? null : (
-                          <span data-replaced-by={agent.legion.replaced_by}>
-                            <span {...pageChrome}>{CONTROL_LABELS.collaborator_replaced_by}</span>{" "}
-                            <AgentName
-                              inline
-                              sessionId={agent.legion.replaced_by}
-                              storedTitle={titles.get(agent.legion.replaced_by)}
-                            />
+          {groupsDrawn(sections.legion, ({ agents }) => agents, legionPages.drawn).map(
+            ({ entries, group: { role } }) => (
+              <section aria-label={ROLE_WORDS[role]} className="space-y-2" key={role}>
+                <h3 className={`text-xs font-semibold uppercase ${pageQuietText}`} {...pageChrome}>
+                  {ROLE_WORDS[role]}
+                </h3>
+                <ul className="space-y-2">
+                  {entries.map((agent) => (
+                    <Row
+                      detail={
+                        <>
+                          <span>
+                            <span {...pageChrome}>{CONTROL_LABELS.collaborator_started}</span>{" "}
+                            <Timestamp at={agent.legion.started_at} />
                           </span>
-                        )}
-                      </>
-                    }
-                    key={agent.session_id}
-                    name={
-                      <AgentName
-                        sessionId={agent.session_id}
-                        storedTitle={agent.title ?? undefined}
-                      />
-                    }
-                  />
-                ))}
-              </ul>
-            </section>
-          ))}
+                          {agent.legion.replaced_by === null ? null : (
+                            <span data-replaced-by={agent.legion.replaced_by}>
+                              <span {...pageChrome}>{CONTROL_LABELS.collaborator_replaced_by}</span>{" "}
+                              <AgentName
+                                inline
+                                sessionId={agent.legion.replaced_by}
+                                storedTitle={titles.get(agent.legion.replaced_by)}
+                              />
+                            </span>
+                          )}
+                        </>
+                      }
+                      key={agent.session_id}
+                      name={
+                        <AgentName
+                          sessionId={agent.session_id}
+                          storedTitle={agent.title ?? undefined}
+                        />
+                      }
+                    />
+                  ))}
+                </ul>
+              </section>
+            )
+          )}
+          {legionPages.more(
+            sections.legion.reduce((count, { agents }) => count + agents.length, 0),
+            (index) => legionList.current?.querySelectorAll("li")[index]
+          )}
         </section>
       )}
       {sections.others.length === 0 ? null : (
         <section aria-label={CONTROL_LABELS.collaborators_others} className="space-y-2">
           <SectionHeading>{CONTROL_LABELS.collaborators_others}</SectionHeading>
-          <ul className="space-y-2">
-            {sections.others.map((agent) => (
+          <ul className="space-y-2" ref={otherList}>
+            {sections.others.slice(0, otherPages.drawn).map((agent) => (
               <Row
                 detail={<Worked lastAt={agent.last_at} reasons={agent.reasons} />}
                 key={agent.session_id}
@@ -197,13 +218,14 @@ export function IssueCollaboratorList({
               />
             ))}
           </ul>
+          {otherPages.more(sections.others.length, (index) => otherList.current?.children[index])}
         </section>
       )}
       {sections.people.length === 0 ? null : (
         <section aria-label={CONTROL_LABELS.collaborators_people} className="space-y-2">
           <SectionHeading>{CONTROL_LABELS.collaborators_people}</SectionHeading>
-          <ul className="space-y-2">
-            {sections.people.map((person) => (
+          <ul className="space-y-2" ref={peopleList}>
+            {sections.people.slice(0, peoplePages.drawn).map((person) => (
               <Row
                 detail={<Worked lastAt={person.last_at} reasons={person.reasons} />}
                 key={person.login}
@@ -211,6 +233,7 @@ export function IssueCollaboratorList({
               />
             ))}
           </ul>
+          {peoplePages.more(sections.people.length, (index) => peopleList.current?.children[index])}
         </section>
       )}
     </section>

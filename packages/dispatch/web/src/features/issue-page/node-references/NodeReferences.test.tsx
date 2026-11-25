@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -102,6 +102,10 @@ const COMMENTS: readonly CommentWithTrees[] = [
   },
 ];
 
+/** The words of the comment `COMMENTS` holds, as the list names it: every one of them, both of its
+ *  paragraphs, with none of the marks its author typed. */
+const MENTION = "Thread 1 opens here. Its second paragraph is a block of its own.";
+
 // A reference's day is drawn without its year when it is the reader's year (`node-time.ts`), so
 // "14 Nov" reads the clock. Each case runs at one fixed midday of the fixtures' year, so none
 // reads the wall clock and the days the cases read hold after that year ends. `setSystemTime`
@@ -182,8 +186,7 @@ function failRefreshThenFirstRead({
     held: "the list",
     queryKey: key,
     refresh: () => client.invalidateQueries({ queryKey: key }),
-    stillDrawn: () =>
-      expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull(),
+    stillDrawn: () => expect(screen.queryByRole("link", { name: MENTION })).not.toBeNull(),
   });
 }
 
@@ -204,12 +207,10 @@ test("the reader opening the list reads it once, and every node that references 
   expect(getReferences.mock.calls).toEqual([[STATEMENT]]);
   expect(control.getAttribute("aria-expanded")).toBe("true");
 
-  // The mention, which the outline draws nowhere, by the first line of the comment's words as
-  // the outline's read of it holds them, and the check of the Verification document by the
-  // word of its tie.
-  const mention = await screen.findByRole("link", {
-    name: "Thread 1 opens here.",
-  });
+  // The mention, which the outline draws nowhere, by the comment's words as the outline's read of
+  // it holds them, all of them, and the check of the Verification document by the word of its
+  // tie.
+  const mention = await screen.findByRole("link", { name: MENTION });
   expect(mention.getAttribute("href")).toBe(
     "/issues/LAY-2/comments/11111111-1111-4111-8111-111111111111"
   );
@@ -302,7 +303,7 @@ test("a refresh that fails over the references held draws no line, and their Ret
     await userEvent.click(
       await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
     );
-    await screen.findByRole("link", { name: "Thread 1 opens here." });
+    await screen.findByRole("link", { name: MENTION });
     await failRefreshThenFirstRead({ client, getReferences });
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
@@ -339,7 +340,7 @@ test("two presses of the references' Retry before a render send one read", async
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
-  await screen.findByRole("link", { name: "Thread 1 opens here." });
+  await screen.findByRole("link", { name: MENTION });
   await failRefreshThenFirstRead({ client, getReferences });
   const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
   // Every read sent from here is held out until the case lets it land.
@@ -447,7 +448,7 @@ test("a first read of the references that failed keeps its line and its Retry, w
     expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
 
     await userEvent.keyboard("{Enter}");
-    await screen.findByRole("link", { name: "Thread 1 opens here." });
+    await screen.findByRole("link", { name: MENTION });
     expect(screen.queryByRole("alert")).toBeNull();
     expect(
       document.activeElement,
@@ -478,7 +479,7 @@ test("an edge of a kind or to a node this page does not know is left out", async
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
-  await screen.findByRole("link", { name: "Thread 1 opens here." });
+  await screen.findByRole("link", { name: MENTION });
   expect(screen.getAllByRole("listitem")).toHaveLength(1);
 });
 
@@ -605,4 +606,89 @@ test("a node the read gives no words for is drawn by its word alone, with no add
   // The word is drawn once, as the link, and not beside it as well.
   expect(text.startsWith(NODE_REFERENCES_WORDS.edges.serves)).toBe(true);
   expect(text.split(NODE_REFERENCES_WORDS.edges.serves)).toHaveLength(2);
+});
+
+// A comment of this issue that cites the row is named by every one of its words, however many:
+// a row of what references a node is no place the page shortens, so the row draws them whole,
+// wrapping inside it, with no cut to a first line, no clamp and no Show more.
+test("a citing comment's words are drawn whole, with no cut, no clamp and no Show more", async () => {
+  const [comment] = COMMENTS;
+  if (comment === undefined) throw new Error("the fixture lost its comment");
+  const paragraphs = [
+    "The rail follows the statement it serves at every width the page is drawn at.",
+    "A reader who opens the rail on a phone still reads the statement whole, and the rail with it.",
+    "What is left is the review, which the reviewer does next.",
+  ];
+  const { client } = draw(true);
+  act(() => {
+    client.setQueryData(
+      ["comments", "LAY-2"],
+      [
+        {
+          ...comment,
+          body: paragraphs.join("\n\n"),
+          body_tree: {
+            content: paragraphs.map((text) => ({
+              content: [{ text, type: "text" }],
+              type: "paragraph",
+            })),
+            type: "doc",
+          },
+        },
+      ]
+    );
+  });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+
+  const link = await screen.findByRole("link", { name: paragraphs.join(" ") });
+  for (const cut of ["truncate", "line-clamp-1", "line-clamp-2", "line-clamp-3"]) {
+    expect(link, `the citing comment's words are drawn under ${cut}`).not.toHaveClass(cut);
+  }
+  expect(
+    screen.queryByRole("button", { name: /^Show more/u }),
+    "the row offers more of the citing comment's words"
+  ).toBeNull();
+});
+
+// The list draws its first 20 rows and, under them, Show more, which says how many rows are left.
+// A keyboard press draws the rest and moves the focus to the first row it drew, and the control
+// goes, as every list of Details pages.
+test("the references draw 20 rows at a time, and Show more draws the rest, moves the focus to the first it drew and goes", async () => {
+  const [, check] = ANSWER.edges ?? [];
+  if (check === undefined) throw new Error("the answer lost its check");
+  // Twenty-five checks of the Verification document, each a node of its own.
+  const checks = Array.from(
+    { length: 25 },
+    (_, index): GraphEdge => ({
+      ...check,
+      node: graphNode({
+        block_id: `c${index + 1}`,
+        document: "dispatch://LAY-2/artifact/verification-md",
+        id: `verification-md#c${index + 1}`,
+        issue_key: "LAY-2",
+        kind: "block",
+        ref: `dispatch://LAY-2/artifact/verification-md#b-c${index + 1}`,
+      }),
+    })
+  );
+  draw(true, STATEMENT_ROW, { ...ANSWER, edges: checks });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  const rows = () => screen.getAllByRole("listitem");
+  await waitFor(() => expect(rows(), "the list does not draw its first 20 rows").toHaveLength(20));
+  const more = screen.getByRole("button", { name: /^Show more/u });
+  expect(more.textContent).toBe(`${CONTROL_LABELS.show_more} (5 ${CONTROL_LABELS.show_more_left})`);
+
+  act(() => more.focus());
+  await userEvent.keyboard("{Enter}");
+  expect(rows()).toHaveLength(25);
+  expect(more.isConnected, "Show more stayed once every row was drawn").toBe(false);
+  const firstDrawn = rows()[20];
+  if (firstDrawn === undefined) throw new Error("the list drew no 21st row");
+  expect(document.activeElement, "Show more did not move the focus to the first row it drew").toBe(
+    within(firstDrawn).getByRole("link")
+  );
 });

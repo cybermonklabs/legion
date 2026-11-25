@@ -125,7 +125,8 @@ export default {
       /** Draws the next entries of the history under the last one drawn, which reads the next
        *  page of the issue's log first where every entry read is drawn; and the word after the
        *  count of the entries read and not drawn that it says in brackets, "Show more (25 left)"
-       *  (`IssueHistory.tsx`). */
+       *  (`IssueHistory.tsx`). Every other list of Details draws its next 20 entries by the same
+       *  words, with the count of its entries not drawn (`details-leaves.tsx`'s `useListPages`). */
       show_more: "Show more",
       show_more_left: "left",
       /** What the list of keys says of `t v` and `t o`, which open Details at the history and at

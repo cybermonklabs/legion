@@ -786,9 +786,9 @@ test("a newer upload that joins a run drawn keeps the run's Pin and the focus on
 
 // The history draws its first 20 entries, and under the last one drawn a control that draws the
 // next 20 and says how many entries are left. A keyboard press moves the focus to the first
-// entry it added, as `ShowAll` does for a list of Details, whether the control stays or goes;
-// once every entry is drawn the control goes. The entries are all read on the log's first page,
-// so no press reads the log again.
+// entry it added, as Show more under every other list of Details does, whether the control
+// stays or goes; once every entry is drawn the control goes. The entries are all read on the
+// log's first page, so no press reads the log again.
 test("the history draws 20 entries at a time, and Show more says how many are left, moves the focus to the first entry it drew, and goes at the end", async () => {
   const restoreReads = stubHistoryReads(
     Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))

@@ -684,6 +684,64 @@ test("an Unsubscribe that goes with its agent hands the focus on only where the 
   }
 });
 
+/** `count` agents subscribed to the issue, numbered from `from` + 1. */
+function subscribedAgents(count: number, from = 0): Subscriber[] {
+  return Array.from({ length: count }, (_, index) => ({
+    ...SUBSCRIBER,
+    session_id: `agent-${from + index + 1}`,
+    title: `Agent ${from + index + 1}`,
+  }));
+}
+
+// The subscribed agents are a list of unbounded length, so the list draws its first 20 and, under
+// them, Show more, which says how many are left. A keyboard press draws the next 20 and moves the
+// focus to the first agent it drew. An agent that subscribes after them joins the list's pages and
+// its count, and the control goes once every agent is drawn.
+test("the subscribed agents draw 20 at a time under Show more, and an agent read after them joins its pages and its count", async () => {
+  let subscribed = subscribedAgents(45);
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    async () => subscribed
+  );
+  const view = renderPeople();
+  const agents = () =>
+    within(screen.getByRole("region", { name: "Subscribed agents" })).getAllByRole("listitem");
+  const left = (count: number) =>
+    `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:45`));
+    await userEvent.click(subscribers);
+    expect(agents(), "the list does not draw its first 20 agents").toHaveLength(20);
+    const more = screen.getByRole("button", { name: new RegExp(`^${CONTROL_LABELS.show_more}`) });
+    expect(more.textContent).toBe(left(25));
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(agents(), "Show more did not draw the next 20 agents").toHaveLength(40);
+    expect(more.textContent).toBe(left(5));
+    expect(
+      agents()[20]?.contains(document.activeElement),
+      "Show more did not move the focus to the first agent it drew"
+    ).toBe(true);
+
+    subscribed = [...subscribed, ...subscribedAgents(1, subscribed.length)];
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:46`));
+    expect(more.textContent, "an agent read after the list's own is not in its count").toBe(
+      left(6)
+    );
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(agents(), "Show more did not draw the agent read after the list's own").toHaveLength(46);
+    expect(more.isConnected, "Show more stayed once every agent was drawn").toBe(false);
+    expect(agents()[40]?.contains(document.activeElement)).toBe(true);
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
 // The subscribers' Retry goes with its line once a read of them answers. Where the reader pressed
 // it, the focus goes to the Subscribers control; where a read that answers on its own - a window
 // focus, an invalidation after a write - takes the line away, no press of the reader's took it,

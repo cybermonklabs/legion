@@ -21,6 +21,7 @@ import { claimBox, overlaps, ownScrollMark, rewatch, watchedIn } from "../shell/
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsSteps } from "./DetailsSteps";
 import { DetailsErrorLine, useRetryHandOff, useSaidFailure } from "./details-error";
+import { useListPages } from "./details-leaves";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
@@ -61,7 +62,7 @@ const HISTORY_IN_DETAILS = `aside[${DETAILS_ATTRIBUTE}] ${HISTORY}`;
 
 /**
  * The people of the issue, under Opened by in Details' People section: the sessions subscribed
- * to it, counted, each with Unsubscribe; and everyone who
+ * to it, counted, each with Unsubscribe, 20 at a time with Show more under them; and everyone who
  * worked it, running or not, which the nine-tab page gave a tab of its own. The collaborators
  * are read only once a reader opens their list, or once `/issues/<key>/collaborators` opens it,
  * so the People section costs the page one request on any other address: the subscribers' count.
@@ -88,8 +89,10 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const subscribersRow = useRef<HTMLDivElement>(null);
   const subscribersControl = useRef<HTMLButtonElement>(null);
   const collaboratorsControl = useRef<HTMLButtonElement>(null);
+  const subscriberPages = useListPages();
   // Each agent's Unsubscribe as the page draws it now, in the list's order: `SubscribedAgents`
-  // draws one row per agent, in `rows`' order, its Unsubscribe its button.
+  // draws one row per agent, the first of `rows` the list's pages draw, its Unsubscribe its
+  // button.
   const drawnUnsubscribes = () => [
     ...(subscribersRow.current?.querySelectorAll<HTMLButtonElement>("li > button") ?? []),
   ];
@@ -170,14 +173,20 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
           {subscribers.counted ? <span {...authorText}>{subscribers.rows.length}</span> : null}
         </button>
         {subscribersOpen ? (
-          <SubscribedAgents
-            onUnsubscribe={(sessionId) => {
-              unsubscribing.current = sessionId;
-              subscribers.unsubscribe.mutate(sessionId);
-            }}
-            ownerLabel={issue.key}
-            subscribers={subscribers.rows}
-          />
+          <>
+            <SubscribedAgents
+              onUnsubscribe={(sessionId) => {
+                unsubscribing.current = sessionId;
+                subscribers.unsubscribe.mutate(sessionId);
+              }}
+              ownerLabel={issue.key}
+              subscribers={subscribers.rows.slice(0, subscriberPages.drawn)}
+            />
+            {subscriberPages.more(
+              subscribers.rows.length,
+              (index) => subscribersRow.current?.querySelectorAll("li")[index]
+            )}
+          </>
         ) : null}
         {/* Neither Retry is disabled while what it sent is out, since Chromium drops the focus of
             a focused button that turns disabled to the page: its line stays, the read's Retry

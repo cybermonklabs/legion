@@ -8,6 +8,7 @@ import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery, standsFailed } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
+import { useListPages } from "../details-leaves";
 import type { FocusedNode } from "../focused-node";
 import { useMarginDrawer } from "../margin-slot";
 import { shortDay } from "../node-time";
@@ -74,11 +75,12 @@ function useIssueItemWords(
  * mentions it, so this is where a reader reads that.
  *
  * Each row names the citing node by words the page already holds for it: a comment, a message
- * or a question of this issue by the first line of its words, beside its word, each reference in
- * that line named from the page's one batched read of what references point at
- * (`useKnownReferenceNames`), as the outline's row names it; and any other node by the word of its
- * tie or of its kind alone, with its issue and its time. The read's excerpt is the node's stored
- * text, the markdown its author typed with every address it cites, and is drawn nowhere.
+ * or a question of this issue by all of its words, drawn whole with no cut and no clamp, beside
+ * its word, each reference in them named from the page's one batched read of what references
+ * point at (`useKnownReferenceNames`), as the outline's row names it; and any other node by the
+ * word of its tie or of its kind alone, with its issue and its time. The read's excerpt is the
+ * node's stored text, the markdown its author typed with every address it cites, and is drawn
+ * nowhere. The rows are drawn 20 at a time, with Show more under them (`ReferenceList`).
  *
  * It costs no request on the first load and none per node. Two gates hold that: the
  * reader opens the list, and Details is open around it, which on the issue page it is not when
@@ -186,65 +188,89 @@ export function NodeReferences({
               {CONTROL_LABELS.none}
             </p>
           ) : null}
-          {rows.length === 0 ? null : (
-            <ul className="mt-1 flex min-w-0 flex-col gap-0.5">
-              {rows.map((row) => {
-                const route = row.ref === undefined ? undefined : parseNodeReference(row.ref);
-                // The edge's own word where the model gives the tuple one, and the kind of
-                // node where it does not, which is every mention: the old panel's own rule.
-                const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
-                // A comment, a message or a question of this issue is named by its first line;
-                // every other node, and an item whose read has not answered, by its word alone,
-                // which is then the link: its stored text is markup, and an address, a slug or
-                // an id is no name.
-                const named = row.line !== "";
-                const elsewhere = row.source !== undefined && row.source !== issueKey;
-                const text = named ? row.line : (word ?? "");
-                return (
-                  <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
-                    {word === undefined || !named ? null : (
-                      <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
-                        {word}
-                      </span>
-                    )}
-                    {text === "" ? null : route === undefined ? (
-                      <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
-                        {text}
-                      </span>
-                    ) : (
-                      <Link
-                        className={`dispatch-inline-link min-w-0 flex-1 truncate ${ROW_LINK} ${pageInkText}`}
-                        to={buildReferencePath(route)}
-                        {...(named ? authorText : pageChrome)}
-                      >
-                        {text}
-                      </Link>
-                    )}
-                    {/* Where the citing node is of another issue or of a project, which one;
-                        and when the reference was made. */}
-                    <span
-                      className={`shrink-0 text-xs whitespace-nowrap ${pageQuietText}`}
-                      data-reference-facts=""
-                    >
-                      {elsewhere ? (
-                        <>
-                          <span data-reference-source="" {...authorText}>
-                            {row.source}
-                          </span>
-                          <span {...pageChrome}> · </span>
-                        </>
-                      ) : null}
-                      <span data-reference-time="" {...authorText}>
-                        {shortDay(row.at)}
-                      </span>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          {rows.length === 0 ? null : <ReferenceList issueKey={issueKey} rows={rows} />}
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The rows of an open list of what references the row the reader is on, 20 at a time with Show
+ * more under them (`useListPages`). It is drawn only while the list is open and holds a row, so a
+ * list opened again, on this row or on another, starts at its first 20 again. `issueKey` is the
+ * issue of the row the reader is on, whose own citing nodes name no issue.
+ */
+function ReferenceList({
+  issueKey,
+  rows,
+}: {
+  issueKey: string | undefined;
+  rows: readonly ReferenceRow[];
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  const pages = useListPages();
+  return (
+    <>
+      <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
+        {rows.slice(0, pages.drawn).map((row) => {
+          const route = row.ref === undefined ? undefined : parseNodeReference(row.ref);
+          // The edge's own word where the model gives the tuple one, and the kind of node where
+          // it does not, which is every mention: the old panel's own rule.
+          const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
+          // A comment, a message or a question of this issue is named by its words, whole, which
+          // wrap within the row; every other node, and an item whose read has not answered, by
+          // its word alone, which is then the link: its stored text is markup, and an address, a
+          // slug or an id is no name.
+          const named = row.line !== "";
+          const elsewhere = row.source !== undefined && row.source !== issueKey;
+          const text = named ? row.line : (word ?? "");
+          return (
+            <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
+              {word === undefined || !named ? null : (
+                <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
+                  {word}
+                </span>
+              )}
+              {text === "" ? null : route === undefined ? (
+                <span
+                  className="min-w-0 [overflow-wrap:anywhere]"
+                  {...(named ? authorText : pageChrome)}
+                >
+                  {text}
+                </span>
+              ) : (
+                <Link
+                  className={`dispatch-inline-link min-w-0 flex-1 [overflow-wrap:anywhere] ${ROW_LINK} ${pageInkText}`}
+                  to={buildReferencePath(route)}
+                  {...(named ? authorText : pageChrome)}
+                >
+                  {text}
+                </Link>
+              )}
+              {/* Where the citing node is of another issue or of a project, which one; and when
+                  the reference was made. */}
+              <span
+                className={`shrink-0 text-xs whitespace-nowrap ${pageQuietText}`}
+                data-reference-facts=""
+              >
+                {elsewhere ? (
+                  <>
+                    <span data-reference-source="" {...authorText}>
+                      {row.source}
+                    </span>
+                    <span {...pageChrome}> · </span>
+                  </>
+                ) : null}
+                <span data-reference-time="" {...authorText}>
+                  {shortDay(row.at)}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {pages.more(rows.length, (index) => list.current?.children[index], "mt-1")}
+    </>
   );
 }

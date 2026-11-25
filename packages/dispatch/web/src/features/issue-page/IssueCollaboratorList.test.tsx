@@ -496,6 +496,65 @@ test("a collaborator's reasons are the page's words, never their tokens", async 
   }
 });
 
+// Each of the three lists draws its first 20 collaborators and, under them, Show more, which says
+// how many are left. Legion's agents are one list across their roles, so the roles after its first
+// 20 agents are drawn only once a press draws them. A keyboard press draws the rest, moves the
+// focus to the first collaborator it drew, a person's row itself where it holds no link, and the
+// control goes.
+test("each list of collaborators draws 20 at a time, Legion's agents as one list across their roles, and Show more moves the focus to the first it drew", async () => {
+  const numbered = (stem: string, count: number) =>
+    Array.from({ length: count }, (_, index) => `${stem}-${index + 1}`);
+  const implementers = numbered("implementer", 15);
+  const reviewers = numbered("reviewer", 10);
+  const list = renderCollaborators({
+    agents: [
+      ...implementers.map((id) => legionAgent(id, "implementer", "2026-10-26T00:00:00Z")),
+      ...reviewers.map((id) => legionAgent(id, "reviewer", "2026-10-26T01:00:00Z")),
+      ...numbered("other", 25).map((id) => otherAgent(id, null)),
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: numbered("person", 25).map((login) => ({
+      kind: "user" as const,
+      last_at: null,
+      login,
+      reasons: ["posted" as const],
+    })),
+  });
+  try {
+    const legion = await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_legion });
+    expect(
+      sessionsIn(legion),
+      "Legion's agents are not one list across their roles, cut after its first 20"
+    ).toEqual([...implementers, ...reviewers.slice(0, 5)]);
+    for (const name of [
+      CONTROL_LABELS.collaborators_legion,
+      CONTROL_LABELS.collaborators_others,
+      CONTROL_LABELS.collaborators_people,
+    ]) {
+      const group = screen.getByRole("region", { name });
+      const rows = () => within(group).getAllByRole("listitem");
+      expect(rows(), `${name} does not draw its first 20`).toHaveLength(20);
+      const more = within(group).getByRole("button", {
+        name: new RegExp(`^${CONTROL_LABELS.show_more}`),
+      });
+      expect(more.textContent).toBe(
+        `${CONTROL_LABELS.show_more} (5 ${CONTROL_LABELS.show_more_left})`
+      );
+      act(() => more.focus());
+      await userEvent.keyboard("{Enter}");
+      expect(rows(), `${name}: Show more did not draw the rest`).toHaveLength(25);
+      expect(more.isConnected, `${name}: Show more stayed once every one was drawn`).toBe(false);
+      expect(
+        rows()[20]?.contains(document.activeElement),
+        `${name}: Show more did not move the focus to the first it drew`
+      ).toBe(true);
+    }
+  } finally {
+    list.restore();
+  }
+});
+
 // The grouping itself, without a DOM: each section holds the server's list in the order it sent
 // it, and a role nobody worked has no section at all.
 test("collaboratorSections groups the server's list into the three sections the panel draws", () => {

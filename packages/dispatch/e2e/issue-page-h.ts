@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
-import { FOLD_AFTER } from "../web/src/features/issue-page/details-leaves";
+import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { setLiveSessions } from "./agents";
@@ -112,9 +112,10 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
-export { FOLD_AFTER };
+/** How many entries Details draws of a list before the Show more under them. */
+export const FOLD_AFTER = LIST_PAGE;
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
- *  before it folds a list behind Show all. */
+ *  before the Show more under a list. */
 export const ONE_PAST_FOLD = FOLD_AFTER + 1;
 
 export interface DetailsSeed {
@@ -207,7 +208,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     route: "role:architect",
   });
   await claimIssue(one.key, asPlanner);
-  // The spec and ten documents more: eleven.
+  // The spec and `FOLD_AFTER` documents more: `ONE_PAST_FOLD`.
   for (let index = 1; index < ONE_PAST_FOLD; index += 1) {
     await createIssueArtifact(one.key, {
       content: `Notes ${index} of ONE.\n`,
