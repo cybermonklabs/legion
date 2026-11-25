@@ -567,6 +567,17 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+In any package whose tests run beside each other, a test writes a file it or its program then
+executes (a stand-in git, gh, jj or curl, a wrapper on a PATH) with the daemon module's
+`internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an
+`os.OpenFile` of its own. A child another test forks while the file is open for writing holds the
+write descriptor until its own exec, and the kernel refuses to exec a file open for writing:
+`fork/exec …: text file busy` (ETXTBSY, Go issue 22315), which a serial run never meets.
+`execfile` holds `syscall.ForkLock` for reading from the open to the close, so no fork lands in
+between. Code a test runs that writes such a file holds the lock the same way
+(`internal/runtime/workerbin`'s `writeTemporary`, `internal/leakguard`'s `writeCopyFile`). A file
+no program executes (a token, a configuration, a record) needs neither.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),

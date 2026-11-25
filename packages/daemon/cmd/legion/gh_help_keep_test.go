@@ -505,7 +505,7 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 // answers ELOOP. Here both opens follow every link, so only ghOpenPrivate's own check of each path
 // can refuse one; a directory and a copy that are no link are still opened.
 func TestGhOpenPrivateRefusesALinkItsOpenFollowed(t *testing.T) {
-	// Not parallel: it sets the package variable ghOpenDir.
+	// Not parallel: it sets the package variables ghOpenAt and ghOpenDir.
 	openDir, openAt := ghOpenDir, ghOpenAt
 	ghOpenDir = func(dir string) (*os.File, error) { return os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY, 0) }
 	ghOpenAt = func(parent int, name string) (int, error) {

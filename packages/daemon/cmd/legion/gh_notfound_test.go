@@ -183,7 +183,7 @@ func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
 // 2, with the setup error. The real gh ran the guard's REST read and nothing else, and git never
 // ran: no ls-remote reads a repository GitHub answered 404 for.
 func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (pushVisibilityReadEnv); it changes the whole process's working directory (pushVisibilityReadEnv); it sets the package variable leakCheckStdin (leakCheck).
+	// Not parallel: it sets environment variables of the whole process (pushVisibilityReadEnv); it changes the whole process's working directory (pushVisibilityReadEnv); it sets the package variables forkReadBound (pushVisibilityReadEnv), leakCheckStdin (leakCheck) and leakguardCurl (pushVisibilityReadEnv).
 	root, defaultDir := gitCredentialBundle(t)
 	for _, read := range visibilityReadCases("the push to origin") {
 		t.Run(read.name, func(t *testing.T) {

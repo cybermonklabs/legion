@@ -44,12 +44,14 @@ const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
 // cmdTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test calls t.Parallel but those that change something the whole process
-// shares (each says what in a `Not parallel:` comment), which run first, one at a time. The tests
-// wait far more than they compute — on the git, jj and gh they start, on this binary run again as
-// `legion`, and on the wall-clock bounds some of them prove — so one at a time the package kept
-// about half of one of CI's four CPUs busy, and go test's default of GOMAXPROCS would leave most
-// of that idle. go test parses its flags inside m.Run, so a -parallel on the command line still
-// wins.
+// shares, hold code to a wall-clock bound that tests beside them could use up, or rewrite a
+// fixture parallel tests read (each says which in a `Not parallel:` comment); those run first, one
+// at a time. The tests wait far more than they compute — on the git, jj and gh they start, on this
+// binary run again as `legion`, and on the wall-clock bounds some of them prove — so one at a time
+// the package kept about half of one of CI's four CPUs busy, and go test's default of GOMAXPROCS
+// would leave most of that idle. A -parallel on the command line still wins only because TestMain
+// sets this default before testBinaryDeadline parses the command line (flag.Parse): the set must
+// stay above that call, or this default would replace a -parallel the command line names.
 const cmdTestParallelism = 8
 
 func TestMain(m *testing.M) {
@@ -88,6 +90,8 @@ func TestMain(m *testing.M) {
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
+	// The package's default -parallel (cmdTestParallelism), set before testBinaryDeadline below
+	// parses the command line, so a -parallel there still replaces it.
 	if err := flag.Set("test.parallel", strconv.Itoa(cmdTestParallelism)); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
 		os.Exit(1)
@@ -605,7 +609,7 @@ func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
 // line, and one of the two linked alone counts as neither, so a half-linked build is never read as
 // a release that shipped a pair.
 func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
-	// Not parallel: it sets the package variable piLegionVersion.
+	// Not parallel: it sets the package variables piEnvoyVersion and piLegionVersion.
 	linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
 	t.Cleanup(func() { piLegionVersion, piEnvoyVersion = linkedLegion, linkedEnvoy })
 
@@ -1512,7 +1516,7 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
 // whose plugin is the worker image's and never an install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variable piLegionVersion.
+	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."

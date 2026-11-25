@@ -3,7 +3,6 @@ package main
 //ci:reads packages/contracts/fixtures/daemon-api/state.json TestStateReadsADaemonSlowerThanTheOldBudget reads the daemon's state golden as the slow daemon's answer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,13 +48,10 @@ func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
 
 	// A process of its own, which the daemon's address reaches through its own environment, so
 	// the six-second wait runs beside the package's other tests.
-	cmd := legionCommand(t, t.TempDir(), map[string]string{"LEGION_DAEMON_URL": daemon.URL}, "state")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("legion state: %v, want exit 0; stderr %s", err, strings.TrimSpace(stderr.String()))
+	code, printed, stderr := legionIn(t, t.TempDir(), map[string]string{"LEGION_DAEMON_URL": daemon.URL}, "", "state")
+	if code != 0 {
+		t.Fatalf("legion state = %d, want 0; stderr %s", code, strings.TrimSpace(stderr))
 	}
-	printed := stdout.String()
 	for _, want := range []string{"admission: ", "waiting line: "} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("legion state printed %q, want a line holding %q", printed, want)

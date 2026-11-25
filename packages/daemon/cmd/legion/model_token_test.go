@@ -5,12 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -95,26 +93,17 @@ func modelTokenFlags(t *testing.T, endpoint string) [][2]string {
 	}
 }
 
-// modelToken runs `legion model-token` with flags as a process of its own (legionCommand) and
-// answers its exit status and what it printed. The command clears SSL_CERT_FILE and SSL_CERT_DIR
-// from its own process's environment before it signs in (modeltoken's httpClient), which in this
-// process would be every test's environment; in a process of its own the run is its test's alone.
+// modelToken runs `legion model-token` with flags as a process of its own (legionIn) and answers
+// its exit status and what it printed. The command clears SSL_CERT_FILE and SSL_CERT_DIR from its
+// own process's environment before it signs in (modeltoken's httpClient), which in this process
+// would be every test's environment; in a process of its own the run is its test's alone.
 func modelToken(t *testing.T, flags [][2]string) (code int, stdout, stderr string) {
 	t.Helper()
 	args := []string{"model-token"}
 	for _, flag := range flags {
 		args = append(args, "--"+flag[0], flag[1])
 	}
-	cmd := legionCommand(t, t.TempDir(), nil, args...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	var exit *exec.ExitError
-	if err := cmd.Run(); errors.As(err, &exit) {
-		code = exit.ExitCode()
-	} else if err != nil {
-		t.Fatalf("legion model-token: %v", err)
-	}
-	return code, out.String(), errb.String()
+	return legionIn(t, t.TempDir(), nil, "", args...)
 }
 
 // `legion model-token` is what Oh My Pi runs as the model apiKey: it prints the access token alone

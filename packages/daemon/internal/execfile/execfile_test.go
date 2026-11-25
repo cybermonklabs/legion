@@ -47,11 +47,8 @@ func TestAScriptWrittenBesideForksAlwaysRuns(t *testing.T) {
 		close(stop)
 		forking.Wait()
 	}()
-	var before int64
+	before := forks.Load()
 	for i := range scripts {
-		if i == 0 {
-			before = forks.Load()
-		}
 		path := filepath.Join(dir, fmt.Sprintf("script-%d", i))
 		if err := Write(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
 			t.Fatal(err)

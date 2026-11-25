@@ -73,7 +73,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 // records it and exits 0 at once; the row gives WaitDelay a value of its own (procgroup.
 // WaitDelayBound), since it reads that delay's end, and the child holds the output past any delay.
 func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process.
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable procgroup.WaitDelayBound.
 	previous := procgroup.WaitDelayBound
 	procgroup.WaitDelayBound = 100 * time.Millisecond
 	t.Cleanup(func() { procgroup.WaitDelayBound = previous })

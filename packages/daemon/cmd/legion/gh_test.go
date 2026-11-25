@@ -1358,7 +1358,17 @@ func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...st
 // under the environment legionGhCommand builds, and answers what it exited with and printed.
 func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	cmd := legionGhCommand(t, dir, env, args...)
+	return legionIn(t, dir, env, stdin, append([]string{"gh"}, args...)...)
+}
+
+// legionIn runs this test binary as `legion args…` in a process of its own (legionCommand), in the
+// working directory dir with stdin and env, and answers what it exited with and printed. A command
+// that changes its own process's state (`legion model-token` clears SSL_CERT_FILE) or reads what
+// a test would otherwise have to set on this one (`legion state`'s LEGION_DAEMON_URL) runs so
+// beside the package's other tests.
+func legionIn(t *testing.T, dir string, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	cmd := legionCommand(t, dir, env, args...)
 	var out, errb bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &out, &errb
 	err := cmd.Run()
@@ -1366,7 +1376,7 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 		return exit.ExitCode(), out.String(), errb.String()
 	}
 	if err != nil {
-		t.Fatalf("legion gh %v: %v", args, err)
+		t.Fatalf("legion %v: %v", args, err)
 	}
 	return 0, out.String(), errb.String()
 }
