@@ -7,8 +7,9 @@ import { type DispatchToolResult, type SessionContext, stringArg } from "./conte
  * to read. The contract's rule (`dispatch_api` in `@legion/contracts`) refused a path that could
  * leave `/api/v1` before this runs. A refusal is Dispatch's own error, thrown as the client throws
  * it, which the command prints and exits 1 on. It names no owner, so it runs on the session's
- * context alone, and it writes nothing: each write but a comment `dispatch proxy` sends goes
- * through the command named for it.
+ * context alone, and it only reads. A write goes through the dispatch command that sends it, where
+ * one exists, and `dispatch proxy` also sends an issue comment POST that carries an
+ * `Idempotency-Key`.
  */
 export async function apiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const path = stringArg(context.args, "path");

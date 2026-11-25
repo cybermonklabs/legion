@@ -447,7 +447,7 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
     if (named === undefined) {
       return `${SENDS} ${method} ${quoted} is another write, and no dispatch command sends it, so this refusal names no command to use instead.`;
     }
-    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, so AskGate reviews it wherever AskGate gates that command: dispatch ${named}.`;
+    return `${SENDS} ${method} ${quoted} is another write. Send it with dispatch ${named}. AskGate reviews that call if it gates the command.`;
   }
   return `${SENDS} ${method} is no method it sends. Read the route with a GET, or with dispatch api.`;
 }

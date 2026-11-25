@@ -2853,7 +2853,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write but a comment dispatch proxy sends goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body. Send a write with the dispatch command that sends it, where one exists (dispatch --help lists them). dispatch proxy also sends an issue comment POST that carries an Idempotency-Key. When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })
