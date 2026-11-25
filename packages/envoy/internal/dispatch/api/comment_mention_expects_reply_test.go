@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 )
 
 // What a mention of a comment asks of the session it reaches. A comment that joins no ask thread
@@ -64,19 +63,13 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 		if len(created.Deliveries) != 1 || created.Deliveries[0].State != "pending" {
 			t.Fatalf("deliveries of %q = %#v, want one pending delivery", body, created.Deliveries)
 		}
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		waitUntil(t, fmt.Sprintf("the mention send of %q to reach the listener", body), func() bool {
 			guard.Lock()
+			defer guard.Unlock()
 			_, sent := sends[body]
-			guard.Unlock()
-			if sent {
-				return created.ID
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("no mention send of %q reached the listener within 10s", body)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+			return sent
+		})
+		return created.ID
 	}
 
 	const plain = "The staging deploy is green."

@@ -18,6 +18,7 @@ import (
 // was never acknowledged (and so may have stored the copy): this change keeps what each role route
 // answers. Both rows are controls of main's answer.
 func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		err  error
