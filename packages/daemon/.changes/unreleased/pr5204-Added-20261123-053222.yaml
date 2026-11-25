@@ -6,9 +6,10 @@ body: |-
   The running agent is sent nothing for the version. A version that removes a running task or
   changes any other part of it is still refused. The answer of `register_plan` names the act each
   running task stands at, with the role whose agent works it (`running`, the contract entry
-  20261125174555 running-step). The
-  owner's prompt puts a decision for an agent into the text of its task's block, in a later
-  version of `plan.md`. A phase worker takes a newer `plan.md` that changes only blocks under
+  20261125174555 running-step). The owner's prompt puts a decision for an agent into the text of
+  its task's block, in a later version of `plan.md`. Like a phase worker, the owner reads no list
+  for its work and changes none: an item on such a list is no decision. A phase worker takes a
+  newer `plan.md` that changes only blocks under
   another task for no change of its plan. It takes one that changes only its own block's text for
   the owner's decision when a task Legion sent it, or its architect's message, holds that text. It
   sends the planner nothing for either, and tells the planner of any other change. A task block
