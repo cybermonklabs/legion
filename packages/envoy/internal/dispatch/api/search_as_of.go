@@ -470,10 +470,11 @@ page as (
 // search answers no node the reader may not see today. ranksFirst is whether the search ranks each
 // post kind first (searchParameters.ranksFirstAtACut), which chooses how the post arms read their
 // posts (searchAsOfVersions): a statement built with ranksFirst true applies none of the three
-// filters to its posts, so it serves only a search that narrows by none of them.
-func searchAsOfQuery(versions store.TextVersions, ranksFirst bool) string {
+// filters to its posts, so it serves only a search that narrows by none of them. exclude is the
+// kinds the search leaves out (searchKinds.exclusion), as searchQuery's own set writes it.
+func searchAsOfQuery(versions store.TextVersions, ranksFirst bool, exclude string) string {
 	return searchQOpener(9) + searchAsOfVersions(versions, ranksFirst, searchSeenParam) +
-		searchQueryBodyReading(searchAsOfKeywordLegs(searchAsOfLiteral(versions), ranksFirst), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, searchSeenParam)
+		searchQueryBodyReading(searchAsOfKeywordLegs(searchAsOfLiteral(versions), ranksFirst), searchFusedSQL, exclude, searchAsOfTexts, searchAsOfShown, searchSeenParam)
 }
 
 // searchAsOfMeaningQuery is searchQueryMeaning at the cut of versions: the same seventeen
@@ -481,10 +482,10 @@ func searchAsOfQuery(versions store.TextVersions, ranksFirst bool) string {
 // narrows by the project and the three filters inside its candidate limit, as the joined shape
 // does (meaningOneProjectJoined), which answers for every row whether or not the fill of
 // embeddings.project_key labelled it. ranksFirst chooses its keyword legs' reading of the posts, as
-// it does searchAsOfQuery's.
-func searchAsOfMeaningQuery(versions store.TextVersions, ranksFirst bool) string {
+// it does searchAsOfQuery's, and exclude is the kinds the search leaves out, as it is there.
+func searchAsOfMeaningQuery(versions store.TextVersions, ranksFirst bool, exclude string) string {
 	return searchQOpener(12) + searchAsOfVersions(versions, ranksFirst, searchMeaningSeenParam) +
-		searchAsOfMeaningBody(searchAsOfLiteral(versions), ranksFirst, searchMeaningSeenParam)
+		searchAsOfMeaningBody(searchAsOfLiteral(versions), ranksFirst, exclude, searchMeaningSeenParam)
 }
 
 // searchAsOfMeaningBody is searchQueryMeaningBody at the cut, a timestamptz literal: each meaning
@@ -512,8 +513,9 @@ func searchAsOfMeaningQuery(versions store.TextVersions, ranksFirst bool) string
 // reads what a hit shows (searchAsOfShown). seen is the parameter the acting credential is bound
 // at: each walk's test binds its own kind's visibility predicate, as searchQueryMeaningBody's
 // candidate CTEs do before their limits, so a node the acting person may not see takes no place
-// in the cut.
-func searchAsOfMeaningBody(cut string, ranksFirst bool, seen int) string {
+// in the cut. exclude is the kinds the search leaves out (searchKinds.exclusion), applied where
+// the arms meet as searchQueryMeaningBody applies it.
+func searchAsOfMeaningBody(cut string, ranksFirst bool, exclude string, seen int) string {
 	project := meaningOneProjectJoined.candidateProject
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
@@ -600,7 +602,7 @@ meaning_ask_candidates as (
     join messages m on m.id = w.item
     join issues i on i.key = m.issue_key
 ),
-` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegs(cut, ranksFirst), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, seen)
+` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegs(cut, ranksFirst), searchFusedSQL, exclude, searchAsOfTexts, searchAsOfShown, seen)
 }
 
 // searchAsOfWindows is one meaning arm's walk at the cut, under the alias w: the windows of

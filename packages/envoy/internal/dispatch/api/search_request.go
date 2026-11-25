@@ -61,6 +61,9 @@ type searchParameters struct {
 	status        string
 	author        string
 	since         *time.Time
+	// kinds are the kinds this search leaves out of the ranking, the count and the page
+	// (searchKinds), so its zero value searches every kind the index holds.
+	kinds         searchKinds
 	limit         int
 	offset        int
 	keywordsOnly  bool

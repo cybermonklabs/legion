@@ -23,6 +23,7 @@ const roleHoldersPublishVersion = 20261116165926
 // this kind's rows alone, so another issue's publish and another kind's second row of the same issue
 // are both untouched by it.
 func TestTheOutboxTakesTheRoleHoldersPublishKindWith20261116165926(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, roleHoldersPublishVersion-1)

@@ -33,8 +33,8 @@ func settleServed(t *testing.T, served *server) {
 	safeHorizon(t, served)
 }
 
-// requireRefused fails the test unless answer is 404 with code.
-func requireRefused(t *testing.T, what string, answer asOfAnswer, code string) {
+// requireRefusedAtCut fails the test unless answer is 404 with code.
+func requireRefusedAtCut(t *testing.T, what string, answer asOfAnswer, code string) {
 	t.Helper()
 	var refusal refusalAnswer
 	_ = json.Unmarshal(answer.body, &refusal)
@@ -223,8 +223,8 @@ func TestARemovedDocumentIsAbsentAtACutBeforeItsRemoval(t *testing.T) {
 	settleServed(t, served)
 
 	for _, target := range reads {
-		requireRefused(t, "GET "+target+" now", documentRead(t, handler, target), "ARTIFACT_NOT_FOUND")
-		requireRefused(t, "GET "+target+" as of the cut", documentRead(t, handler, withAsOf(t, target, cut)), "ARTIFACT_NOT_FOUND")
+		requireRefusedAtCut(t, "GET "+target+" now", documentRead(t, handler, target), "ARTIFACT_NOT_FOUND")
+		requireRefusedAtCut(t, "GET "+target+" as of the cut", documentRead(t, handler, withAsOf(t, target, cut)), "ARTIFACT_NOT_FOUND")
 	}
 	for index, list := range lists {
 		asOf := documentRead(t, handler, withAsOf(t, list.target, cut))

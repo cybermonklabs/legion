@@ -418,7 +418,8 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // names are leased - the document compaction, the keyed writes' maintenance sweep
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
-// the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
+// the reference forms drain (docs.RefsFormsLease, beside the block index on a goroutine of its
+// own), the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
 // (cireconcile.Lease), the CI verify loop (cireconcile.VerifyLease, taken only by a pass with a
 // verify request to answer, beside a reconcile pass that holds its own for minutes), the
 // architecture import, the delivery reconcile, the edit-notice sweep, the
@@ -462,12 +463,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, the keyword fill's hold two more, the CI verify loop
-// one more and R25's boot fix one more, and that is what the five cost the instance: a serving
-// process opens at most 117 (ConnectionsPerProcess), where it opened 112 without them, and the
-// default tier's 500 connections less PostgreSQL's 3 reserved slots still admit four app pods
-// holding connections at once (468 of 497) and still refuse five (585), exactly as they did at
-// 112 (448 and 560), so none of them moves a replica boundary. A deployment on another tier reads
-// SHOW max_connections against its own roll, as sharedPoolSize's note says.
+// one more, R25's boot fix one more and the reference forms drain one more, and that is what the
+// six cost the instance: a serving process opens at most 118 (ConnectionsPerProcess), where it
+// opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
+// slots still admit four app pods holding connections at once (472 of 497) and still refuse five
+// (590), exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. A
+// deployment on another tier reads SHOW max_connections against its own roll, as sharedPoolSize's
+// note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -481,7 +483,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 26
+const LeasePoolSize = 27
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
