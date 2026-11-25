@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  Each `near_copy_checks` row records how long the create waited on the near-copy gate's read, its
+  transaction's rollback included (`read_ms`), and the step the read was in when it answered or
+  ended (`read_stage`: `connect`, taking a pool connection and opening the read transaction;
+  `terms`, picking the new text's rarest words; `keys`, reading the lexemes the project's issue keys
+  give; or `score`, scoring the project's open issues, which every answered read ends in), and
+  `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}` return both. Before it a
+  row said only that a read ran out of its 2 s bound (reason `bound`) or failed, so the creates that
+  went in unchecked (12 of INFRA's 182 gate answers on 2026-11-24) could not be placed at a step,
+  and the bound stayed an estimate. Rows written before this release hold both null.
+time: 2026-11-25T01:05:00Z
+custom:
+    Issue: near-copy-read-time

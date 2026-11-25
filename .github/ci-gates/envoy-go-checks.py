@@ -21,6 +21,10 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     (CONTRACTS_SRC, f"{at('envoy-go-checks', SCAN_TESTS_STEP)}: the envoy-client and cipher-client "
                     "sources packages/envoy/scripts/approve/session.ts loads import @legion/contracts "
                     "(contracts exports.bun -> src)"),
+    # Every script harness step queues its harness through the pool, and the wait step is the
+    # verdict on them, so a change to the pool must start this job.
+    (".github/scripts/harness-pool.sh",
+     f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}, and each harness step above it queues its harness through it"),
 ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
   # The scan tests of approve-check's session spawn `bun scripts/approve/session.ts`, which
   # imports envoy-client's broker credential and Dispatch client and cipher-client's DPoP key.
