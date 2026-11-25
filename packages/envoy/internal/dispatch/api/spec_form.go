@@ -268,7 +268,8 @@ func (r specFormResult) refusal(act specform.Act) *specFormRefusal {
 	}
 	for _, document := range r.documents {
 		if document.artifact.ID == findings[0].ArtifactID && document.artifact.IssueKey != nil {
-			refusal.more = fmt.Sprintf("dispatch spec-form --issue %s --artifact %s %s", *document.artifact.IssueKey, document.artifact.Name, lists)
+			refusal.more = fmt.Sprintf("dispatch spec-form --issue %s --artifact %s --version %d %s",
+				*document.artifact.IssueKey, document.artifact.Name, document.version, lists)
 			break
 		}
 	}

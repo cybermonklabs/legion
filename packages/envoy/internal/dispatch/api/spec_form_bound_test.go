@@ -156,7 +156,7 @@ func TestARefusalOfMoreFindingsThanItHoldsNamesWhatTheReadRouteLists(t *testing.
 	}
 	refused := decodeBody[specFormError](t, response)
 	lines := strings.Split(refused.Error, "\n")
-	more := fmt.Sprintf("And %d more: dispatch spec-form --issue %s --artifact spec.md lists the first %d of them.",
+	more := fmt.Sprintf("And %d more: dispatch spec-form --issue %s --artifact spec.md --version 1 lists the first %d of them.",
 		refused.FindingsTotal-20, issue.Key, specFormFindingsHeld)
 	if refused.FindingsTotal <= specFormFindingsHeld || len(refused.Findings) != specFormFindingsHeld || len(lines) < 22 || lines[21] != more {
 		t.Errorf("the refusal holds %d of %d findings and its 22nd line is %q, want %d of more than %d and %q",
