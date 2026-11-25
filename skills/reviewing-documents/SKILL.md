@@ -1,6 +1,6 @@
 ---
 name: reviewing-documents
-description: "Use when a task asks you to review or gate a spec, plan or design version, even one that lists its own checks, names a report file or is for an approval request: read it first. Also as a subagent told to return findings or given mode:non-interactive. Not for code diffs or approval predictions."
+description: "Use when asked to review, check or tighten a requirements doc, plan, spec or design before the work it guides starts, also as a subagent told to return findings or given mode:non-interactive. Not for a code diff, nor for predicting a person's approval verdict."
 ---
 
 # Reviewing documents
