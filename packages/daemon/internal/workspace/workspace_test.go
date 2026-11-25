@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -396,7 +397,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 
-	if err := ensureRepoClone(context.Background(), run, WallClock{}, clone, run.remote, "main", remote{}); err != nil {
+	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, "main", remote{}); err != nil {
 		t.Fatalf("ensureRepoClone: %v", err)
 	}
 	if _, err := os.Stat(config); err != nil {
@@ -641,7 +642,7 @@ func fetchRequest(t *testing.T) FetchRequest {
 	t.Helper()
 	return FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: staticToken(testInstallationToken), CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: WallClock{},
+		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: clock.Real(),
 	}
 }
 

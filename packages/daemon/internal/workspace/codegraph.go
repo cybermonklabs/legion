@@ -32,8 +32,10 @@ var codegraphTimeout = 30 * time.Minute
 // (WarmCodegraphIndex), and the shim waits on it inside the role's stop grace (internal/shim's
 // Config.StopGrace, the pod's terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s
 // by default), so this grace is well inside what is left of that once the agent's own grace is
-// spent; CodeGraph 1.5.0 leaves within about two seconds of a SIGTERM, its SQLite closed.
-const codegraphStopGrace = 2 * time.Second
+// spent; CodeGraph 1.5.0 leaves within about two seconds of a SIGTERM, its SQLite closed. It is
+// also how long Run waits, once the child has exited, for a grandchild that still holds its pipes
+// (os/exec's WaitDelay). It is a variable so that a test can lengthen it.
+var codegraphStopGrace = 2 * time.Second
 
 // codegraphEmptyLockGrace is how long an empty `.codegraph/codegraph.lock` still counts as held,
 // either side of now. CodeGraph's FileLock takes the lock with one `fs.writeFileSync(lockPath,
@@ -130,16 +132,12 @@ func WarmCodegraphIndexInBackground(dir string) {
 // logs reports the build against, beside the build's own duration, so a pod's log says how long
 // after the role's launch its index was ready.
 func WarmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
-	warmCodegraphIndex(ctx, dir, launched)
-}
-
-// warmCodegraphIndex is warmCodegraphIndexOn on the real clock.
-func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 	warmCodegraphIndexOn(ctx, clock.Real(), dir, launched)
 }
 
 // warmCodegraphIndexOn builds a workspace's codegraph index before any worker needs it, each
-// codegraph run bounded by codegraphTimeout on c (clock.Real but in a test): the tester's
+// codegraph run bounded by codegraphTimeout on c. Its one caller outside the tests is
+// WarmCodegraphIndex, which passes clock.Real; a test hands it a fake (boundRow). The tester's
 // `affected` and the reviewer's `impact`/`callers` queries need an index already built, not one
 // built on first use. Callers run it through WarmCodegraphIndexInBackground, outside any
 // provisioning serialization: indexing reads only the issue's own workspace directory. codegraph

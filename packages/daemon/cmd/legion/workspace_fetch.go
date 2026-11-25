@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
@@ -28,7 +29,7 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 
 // fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
-var fetchClock workspace.Clock = workspace.WallClock{}
+var fetchClock workspace.Clock = clock.Real()
 
 // fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the fetch
 // gets. Zero is workspace.FetchTimeout. A test makes it short, so an attempt runs out of its time.
