@@ -150,9 +150,13 @@
       "bun": "./test/skills-guard.ts"
     }
   },
+  "//": [
+    "test, its first command: --timeout 240000 is six times, rounded up, the slowest row this command runs that sets no limit of its own, read under the calibrated load: shell-command.test.ts's 'matches a real bash on every here-document and comment it accepts', 39 396 ms over 20 runs of the command at the 96 rung (Job infra-1580-r31psr2-bsxwq of the cluster's builds namespace, two CPUs and 8 GiB, 144 busy loops for the 96 rung, at 339a24dd). A row that sets its own limit keeps it: handoff-record.test.ts's two real-jj rows, at main's 60_000.",
+    "test, its second command: jj-attribution.test.ts runs alone at --timeout 540000, the pi-shared job's room for one hang: its timeout-minutes 10 less its 45 s at 06d187e7 (CI run 45437325102), 555 s. Six times its slowest row is past that room, so the room decides: the templates row, 336 481 ms over 20 runs of the command at the 240 rung (Job infra-1580-r31psj-p27px, 340 busy loops for the 240 rung, row A 36.3 s, at 339a24dd), and 442 299 ms at 06d187e7 (Job infra-1580-t27-j3-99kcl)."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
+    "test": "bun test --timeout 240000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {
