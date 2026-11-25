@@ -2034,9 +2034,11 @@ describe("renderInbound non-dispatch envelopes", () => {
 
     // An actor's `act` is the agent or the personal token that acted for its person
     // (`ActorActSchema`), and a reader takes a user with no `act` for the person acting alone
-    // (`actorActText`). So a card that cannot write its event as text keeps the act beside the
-    // actor's `kind` and `id`, and says one it cannot read is not shown; an agent acting as itself
-    // is an actor of kind `session`.
+    // (`actorActText`). A session actor's `service` is the subject of the verified service token
+    // that made the write, which only named the session, and a reader takes a session with no
+    // `service` for the session writing as itself (`actorText`). So a card that cannot write its
+    // event as text keeps the act and the service beside the actor's `kind` and `id`, and says one
+    // it cannot read is not shown; a session writing as itself is the control.
     test.each([
       [
         "a person's act an agent made shows that agent",
@@ -2055,6 +2057,16 @@ describe("renderInbound non-dispatch envelopes", () => {
         "an act its reader cannot read says it is not shown",
         { kind: "user", id: "alice", act: { session: "ses_x", origin: "broker" } },
         { kind: "user", id: "alice", act: "not shown" },
+      ],
+      [
+        "a session's write a service token made shows that service",
+        { kind: "session", id: "ses_y", service: "system:serviceaccount:legion:legion-worker" },
+        { kind: "session", id: "ses_y", service: "system:serviceaccount:legion:legion-worker" },
+      ],
+      [
+        "a service its reader cannot read says it is not shown",
+        { kind: "session", id: "ses_y", service: { namespace: "legion" } },
+        { kind: "session", id: "ses_y", service: "not shown" },
       ],
       [
         "an agent's own act shows the agent",

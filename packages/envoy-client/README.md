@@ -41,9 +41,11 @@ bound, as an array chain 1,400 levels deep does from a 3 KB frame. A Dispatch ev
 and payload or compact record the card lays out from the event `readDispatchPayload` read, with a
 body read whole in place of the part the frame carried - never as the frame's payload, so a key
 the reader drops reaches no card; an event too deep to write as JSON, or whose
-text still passes the bound, shows its owner, its type, its actor's `kind` and `id` and the
+text still passes the bound, shows its owner, its type, its actor's `kind` and `id`, the
 `act` of the agent or token that acted for its person (`act: "not shown"` for an act
-`ActorActSchema` does not read; no other key of the actor) and the reason, held to the bound
+`ActorActSchema` does not read) and a session's `service`, the verified service token that made
+the write (`service: "not shown"` when it is no string), no other key of the actor, and the
+reason, held to the bound
 too; its owner, type and reason alone, held to it, when even that passes it; and the reason
 alone when even those pass it (an owner read from the topic the host names). The bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out

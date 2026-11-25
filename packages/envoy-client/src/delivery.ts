@@ -1054,19 +1054,26 @@ type DispatchCardEvent = {
   readonly [compactRecordField: string]: unknown;
 };
 
-/** The actor a header writes: its `kind` and `id`, and the `act` an agent or a personal token
- *  made for its person (`ActorActSchema`), or `act: "not shown"` where the actor holds an act that
- *  schema does not read, so a card never shows an agent's act as the person's own (a reader takes
- *  a user with no `act` for the person acting alone, `actorActText`). The event's schema passes
- *  the actor's other keys through, and one of them may be as deep as the payload, so the header
- *  writes none of them. */
+/** The actor a header writes: its `kind` and `id`; the `act` an agent or a personal token made for
+ *  its person (`ActorActSchema`), or `act: "not shown"` where the actor holds an act that schema
+ *  does not read; and a session's `service`, the subject of the verified service token that made
+ *  the write, or `service: "not shown"` where it is no string. So a card never shows an agent's
+ *  act as the person's own, nor a service token's write as the session's own (a reader takes a
+ *  user with no `act` for the person acting alone, `actorActText`, and a session with no `service`
+ *  for the session writing as itself, `actorText`). The event's schema passes the actor's other
+ *  keys through, and one of them may be as deep as the payload, so the header writes none of them. */
 function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unknown>> {
   const { kind, id } = actor;
-  const named = id === undefined ? { kind } : { kind, id };
   const act = actor["act"];
-  if (act === undefined) return named;
-  const read = ActorActSchema.safeParse(act);
-  return { ...named, act: read.success ? read.data : "not shown" };
+  const service = actor["service"];
+  return {
+    kind,
+    ...(id === undefined ? {} : { id }),
+    ...(act === undefined ? {} : { act: ActorActSchema.safeParse(act).data ?? "not shown" }),
+    ...(kind !== "session" || service === undefined
+      ? {}
+      : { service: typeof service === "string" ? service : "not shown" }),
+  };
 }
 
 /** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`, held to `bound` at
