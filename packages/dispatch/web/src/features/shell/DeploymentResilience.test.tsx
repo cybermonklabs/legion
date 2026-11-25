@@ -40,7 +40,7 @@ function installChunkFailureRecoveryForTest(): void {
 // still out when the next row starts in a random order, and would decide that row. So each row
 // starts from a page with none out.
 beforeEach(async () => {
-  await waitFor(() => expect(chunkLoadsOut()).toBe(0), { timeout: 30_000 });
+  await waitFor(() => expect(chunkLoadsOut()).toBe(0));
 });
 
 afterEach(() => {

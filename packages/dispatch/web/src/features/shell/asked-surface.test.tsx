@@ -367,7 +367,7 @@ test("an open called off while its chunk is out leaves the download to finish as
   // an earlier row of this file started and did not wait for, or a row of an earlier run of it
   // (`--rerun-each`, which keeps the file's modules), would decide this one. A row of another file
   // cannot: `--parallel` gives every file modules of its own.
-  await waitFor(() => expect(chunkLoadsOut()).toBe(0), { timeout: 30_000 });
+  await waitFor(() => expect(chunkLoadsOut()).toBe(0));
   const { promise, reject } = Promise.withResolvers<typeof Surface>();
   const view = render(<Shell source={chunk(() => promise)} />);
   try {
