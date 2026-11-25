@@ -5,7 +5,7 @@ import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, type RefObject, useEffect, useState } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -186,7 +186,11 @@ function HandedEditor({
   children: ReactNode;
   onEditor: OnEditor | undefined;
 }): ReactNode {
-  useEffect(() => {
+  // A layout effect, as the page's editor hands itself over in the task it draws the document
+  // (`ProofDocument.tsx`'s `onEditorHandle`) and the tree waits one task for it
+  // (`useNodeEditing.ts`'s `handing`): a passive effect of a render a press's timer started can
+  // run a task later.
+  useLayoutEffect(() => {
     const view = standInView();
     onEditor?.({ view });
     return () => {
