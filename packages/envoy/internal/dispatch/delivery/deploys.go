@@ -161,9 +161,6 @@ func RecordDeploy(ctx context.Context, pool *store.Pool, broker *events.Broker, 
 	if err != nil {
 		return model.Deploy{}, false, err
 	}
-	if current.ID != 0 && current.Commit == deploy.Commit {
-		return current, false, nil
-	}
 	if current.ID != 0 && deploy.DeployedAt.Before(current.DeployedAt) {
 		return model.Deploy{}, false, &DeployNotNewest{Current: current}
 	}
