@@ -115,8 +115,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if redirects.Status(resp.StatusCode) {
 			// Refused here, before net/http's client reads the Location: it parses one before it
 			// asks its redirect policy, and its error names it, one that does not parse quoted
-			// whole and one the policy refused as the *url.Error's URL. The retry never retries
-			// a 3xx (retryable), so this is the call's last answer.
+			// whole and one the policy refused as the *url.Error's URL.
 			drain(resp)
 			return nil, redact.Masked(errRedirect, fmt.Sprintf("the %s endpoint answered %s, a redirect, which is never followed",
 				t.kind, redact.StatusLine(resp.StatusCode)))

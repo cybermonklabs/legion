@@ -62,8 +62,8 @@ func echoEndpoint(t *testing.T, kind Kind, answer echoAnswer) Endpoint {
 	return Endpoint{Kind: kind, BaseURL: base, Token: fileToken(path)}
 }
 
-// refusedRedirect is what a Detail says of a redirect the transport refused, after the endpoint's
-// kind: its status, by its code and standard phrase.
+// refusedRedirect is the transport's words for a redirect it refused, after the endpoint's kind:
+// its status, by its code and standard phrase.
 const refusedRedirect = "endpoint answered 302 Found, a redirect, which is never followed"
 
 // credentialRequest is a POST to endpoint that carries echoCredential in each header a model call
@@ -245,10 +245,9 @@ func sdkStreamError(t *testing.T, req Request) error {
 }
 
 // requireRefusalEcho is the twin of the redirect-error rows: endpoint's stand-in, asked by
-// net/http's own client under a redirect policy that fails the call, as this package's client's
-// did before its transport refused a redirect itself, answers net/http's error, which names the
-// Location the stand-in wrote: one that does not parse quoted whole, any other as the
-// *url.Error's URL.
+// net/http's own client under a redirect policy that fails the call, answers net/http's error,
+// which names the Location the stand-in wrote: one that does not parse quoted whole, any other as
+// the *url.Error's URL.
 func requireRefusalEcho(t *testing.T, endpoint Endpoint) {
 	t.Helper()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("refused") }}
