@@ -345,16 +345,22 @@ type Claim struct {
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
-	// one, each zero until that event happens. A turn's start is when the daemon first learned of
-	// it: its agent_start (beginTurn); the busy answer that said the agent is in a turn whose
-	// start the daemon never read (recordBusyTurn), which that turn's own agent_start, read later,
-	// moves to its own moment (busyTurnBegun); the agent's answer that it is streaming, which puts
-	// a ready or idle claim a restart restored in working (sendPending's askFirst branch,
+	// one, each zero until that event happens. This is the one list of who dates a turn's start,
+	// which the other places point to. A turn's start is when the daemon first learned of it: its
+	// agent_start (beginTurn); the busy answer that said the agent is in a turn whose start the
+	// daemon never read (recordBusyTurn), which that turn's own agent_start, read later, moves to
+	// its own moment (busyTurnBegun); the agent's answer that it is streaming, which puts a ready
+	// or idle claim a restart restored in working (sendPending's askFirst branch,
 	// answerAskFirstAfterDrop); or the agent_start of a turn Oh My Pi began under a compaction
 	// (turnStartedWhileBusy). Each is dated where its start line is written (startTurn,
-	// busyTurnBegun), so no path that starts a turn leaves it timed from the turn before. They are
-	// persisted, so a restart keeps them: each path that dates a turn writes the claim with it.
-	// They are what a reader has to tell a worker still making progress from one wedged in a turn
+	// busyTurnBegun), so no path that starts a turn leaves it timed from the turn before, and
+	// each writes the claim with its date. A turn's end is dated where the agent ends it
+	// (turnEnded), and where the daemon ends it: a charged death (chargeDeath), the controller
+	// keeper's end of a turn past its bound (endTurnPastBound), and a compaction's start, which
+	// closes a turn whose end was never dated (compactStart). The end is written with the claim
+	// at each, except the end of a turn that ran under a compaction, which is written with the
+	// compaction's end (compactEnded). They are persisted, so a restart keeps what was written:
+	// they are what a reader has to tell a worker still making progress from one wedged in a turn
 	// or idle since yesterday, and a claim rebuilt without them would look as if it had never
 	// worked.
 	LastTurnStart time.Time
@@ -2817,9 +2823,7 @@ func (m *Machine) logTurn(line, delivery string) {
 // own starting in that window is no task's, so its start line names no delivery while a claim
 // read at its end would name that task and a reader would count the task's turn twice.
 //
-// It dates the turn too (Claim.LastTurnStart), at the moment its line is written, which is the
-// daemon's first word of the turn on every path above: dated here, no path that starts a turn can
-// leave it timed from the turn before (dispatch://INFRA-2045 R2).
+// It dates the turn too (Claim.LastTurnStart, whose doc keeps the list of who dates a turn).
 func (m *Machine) startTurn(delivery string) {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.turnsDelivery = delivery

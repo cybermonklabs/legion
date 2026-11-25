@@ -154,10 +154,13 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // open, begun at the moment the keeper read, and still past the bound now, since a turn that ended
 // and one that began since are the controller working. What is a turn is the machine's own answer:
 // the claim reads working at a let-go (endState), which a claim working for a compaction with no
-// turn under it does not, and the turn began no earlier than the last turn's end, which a claim
-// restored working with the start of a turn that had ended did not. No wake can be waiting to
-// replace the process first: the controller's launch is never parked, since the wake gate, the
-// project pause and the pod-start gate each pass it (gatePaces, pauseHolding, the pod-start gate).
+// turn under it does not, and the turn began no earlier than the last turn's end. A claim a daemon
+// restart restored working knows no compaction, so the second test is the one that holds for it:
+// a compaction's start closes any turn the claim's times still show open (compactStart), and a
+// turn that starts under the compaction dates and writes its own start (turnStartedWhileBusy). No
+// wake can be waiting to replace the process first: the controller's launch is never parked, since
+// the wake gate, the project pause and the pod-start gate each pass it (gatePaces, pauseHolding,
+// gated).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
 // arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to
@@ -180,7 +183,6 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	// the lifecycle refused (EndNotMade) — leaves the same turn open with the process it found, and
 	// the keeper's next look posts it again, so its count is taken back: one turn is one end.
 	counted, ended := m.claim.SessionRun, m.claim.LastTurnEnd
-	counted.Endings = slices.Clone(counted.Endings)
 	reached := m.countEnd(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
 	// The session and its endings as this end leaves them, for the Error line written once the end
 	// stands: the relaunch the end makes may start a fresh session, which clears both.

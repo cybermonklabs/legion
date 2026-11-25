@@ -267,6 +267,44 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		<-compacted
 	})
 
+	t.Run("after a displacement, a compaction with no turn under it is left alone after a daemon restart", func(t *testing.T) {
+		h := controllerUp(t)
+		h.advance(time.Minute)
+		h.must(StreamTurnStart{Claim: h.token})
+		cutOff := h.claim().LastTurnStart
+		// A displacement ends the turn without dating its end, so the relaunched controller
+		// stands ready with that turn's start after its last end.
+		h.observeDisplaced(runtime.Gone)
+		h.relaunched()
+		if c := h.claim(); !c.LastTurnStart.Equal(cutOff) || !c.LastTurnStart.After(c.LastTurnEnd) {
+			t.Fatalf("the relaunched controller's turn started %s and the last ended %s, want the cut-off turn's start %s after its end",
+				c.LastTurnStart, c.LastTurnEnd, cutOff)
+		}
+		h.advance(turnBound + time.Minute)
+		release, compacted := h.compactHeld()
+		defer func() {
+			release()
+			<-compacted
+		}()
+		// The daemon restarts during the compaction, and the new machine knows no compaction: it
+		// reads the claim stored working, with the cut-off turn closed by the compaction's start.
+		// The times are checked without stopping the row, so a break reads on to what R2 then does.
+		h.restart()
+		if c := h.claim(); c.State != StateWorking || !c.LastTurnStart.Before(c.LastTurnEnd) {
+			t.Errorf("the restarted machine reads the claim %s, its turn started %s and the last ended %s; want working with the cut-off turn closed",
+				c.State, c.LastTurnStart, c.LastTurnEnd)
+		}
+		resumes, spawns := h.startsSoFar()
+		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: cutOff})
+
+		c, stored := h.claim(), h.store.load(h.token)
+		gotResumes, gotSpawns := h.startsSoFar()
+		if c.State != StateWorking || gotResumes != resumes || gotSpawns != spawns || c.SessionRun.Ends != 0 || stored.SessionRun.Ends != 0 {
+			t.Fatalf("R2 left the claim %s after %d resumes and %d spawns, with %d ends counted (%d stored); want it working, nothing started and no end counted",
+				c.State, gotResumes-resumes, gotSpawns-spawns, c.SessionRun.Ends, stored.SessionRun.Ends)
+		}
+	})
+
 	t.Run("an operator's compaction past the bound is left alone and counts nothing", func(t *testing.T) {
 		h := controllerUp(t)
 		start := h.claim().LastTurnStart

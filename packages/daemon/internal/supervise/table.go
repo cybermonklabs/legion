@@ -2043,10 +2043,12 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 
 // beginTurn is what a turn's start decides and records, in a claim the start has just put in
 // working (turnStarted) or one a busy answer already recorded working (turnStartedWhileBusy):
-// when the turn began, whether it is the pending delivery's turn — which confirms that delivery —
-// the durable write, and the turn's step. logStart writes the start's line, naming the delivery
-// the start confirms and "" for a start that confirms none.
-func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
+// whether it is the pending delivery's turn — which confirms that delivery — the durable write,
+// and the turn's step. dateStart dates the turn (Claim.LastTurnStart) and writes its start line,
+// naming the delivery the start confirms and "" for a start that confirms none: startTurn, or
+// busyTurnBegun for the agent_start of a turn a busy answer recorded. A callback that only wrote
+// a line would leave the turn timed from the turn before it.
+func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, dateStart func(delivery string)) error {
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
@@ -2057,11 +2059,11 @@ func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart
 	if own {
 		persist, task = func(ctx context.Context) error { return m.confirmCarrying(ctx, news) }, p.ID
 	}
-	// The start is logged before the write, never after it: the decision this line exists for is
-	// a turn start whose claim write failed, and a line written after the write would leave
-	// exactly that decision silent again. The delivery is named only where this start is that
-	// delivery's turn; a foreign turn is no task's and carries none.
-	logStart(task)
+	// The start is dated and logged before the write, never after it: the decision this line
+	// exists for is a turn start whose claim write failed, and a line written after the write
+	// would leave exactly that decision silent again. The delivery is named only where this start
+	// is that delivery's turn; a foreign turn is no task's and carries none.
+	dateStart(task)
 	if err := m.durableWrite(ctx, StateWorking, persist); err != nil {
 		return err
 	}
