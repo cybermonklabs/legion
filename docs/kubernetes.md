@@ -8519,7 +8519,7 @@ A grant that is not a controller's is refused 403 `CONTROLLER_REQUIRED`, whose s
 A refusal changes nothing.
 
 A set or a clear is one fact, and its admission pass runs in the fact's own transaction, so the cap is in force from that pass on.
-Every pass reads the cap again, and admits under the smaller of the cap set and the ceiling, or under the ceiling after a clear.
+Every pass reads the cap again, and admits under the smaller of the cap set and `admission_ceiling`, or under `admission_cap` after a clear or where no cap was ever set.
 A raise starts the issues that wait for the slots it adds.
 A lower cap stops nothing that runs: it starts no new issue until fewer issues hold a slot than it allows.
 

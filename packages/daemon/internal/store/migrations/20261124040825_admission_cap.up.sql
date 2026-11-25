@@ -5,10 +5,12 @@
 -- controller's set_admission_cap and clear_admission_cap through the `legion` tool, and the
 -- operator's `legion project set-admission-cap` and `clear-admission-cap`. project is the
 -- project's Dispatch key, the spelling project_pauses holds. cap is the cap the change set, at
--- least 1, and null for a clear, which returns the project to the deployment's cap. cap_before and
--- cap_after are the caps the daemon admitted under before the change and from it on, and ceiling is
--- the deployment's cap at the change (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP), so
--- each row reads on its own as from what to what. Who changed it has a pause's shape
+-- least 1, and null for a clear, which returns the project to the deployment's starting cap
+-- (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP). cap_before and cap_after are the caps
+-- the daemon admitted under before the change and from it on, and ceiling is the deployment's
+-- ceiling at the change (legion.yaml's admission_ceiling, else LEGION_ADMISSION_CEILING, else
+-- admission_cap), so each row reads on its own as from what to what. Who changed it has a pause's
+-- shape
 -- (project_pauses_by_session): the kind `controller` with the controller's session id, or the kind
 -- `operator` with no session. reason is why, which may not be white space alone and holds at most
 -- 2,048 characters (store's AdmissionCapReasonMax), since the state serves the newest 50 reasons
@@ -17,10 +19,11 @@
 --
 -- The cap in force is read off the project's newest row (store's AdmissionCapTx): its cap where it
 -- set one, and none after a clear. The daemon admits under the smaller of that cap and the
--- deployment's own, its ceiling (admit's capAt), so a cap set above a ceiling a later configuration
--- lowered admits at that ceiling, and comes back when the ceiling is raised again. The routes refuse
--- a cap above the ceiling of their own boot, so only a lowered ceiling leaves such a row. The index
--- serves that read and the state's list of the newest changes.
+-- deployment's ceiling (admit's capAt), or under the starting cap where none stands, so a cap set
+-- above a ceiling a later configuration lowered admits at that ceiling, and comes back when the
+-- ceiling is raised again. The routes refuse a cap above the ceiling of their own boot, so only a
+-- lowered ceiling leaves such a row. The index serves that read and the state's list of the newest
+-- changes.
 --
 -- No outbox kind is added, so outbox_kind_check stays as the last migration that wrote it left it.
 --

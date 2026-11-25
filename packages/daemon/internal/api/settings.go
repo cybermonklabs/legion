@@ -36,9 +36,10 @@ type Settings struct {
 	AdvertiseHost string          `json:"advertise_host,omitempty"`
 	StateDir      string          `json:"state_dir"`
 	Runtime       RuntimeSettings `json:"runtime"`
-	// AdmissionCap is the configured cap: the cap the daemon boots under and the ceiling of a cap
-	// set while it runs. `admission.cap` is the cap in force, the same value until a cap is set
-	// (dispatch://INFRA-5616), and `admission.ceiling` repeats this one.
+	// AdmissionCap is the configured starting cap (legion.yaml's admission_cap): the cap the daemon
+	// admits under while no cap set while it runs stands, and what a clear returns to. The ceiling is
+	// admission_ceiling, which the state carries as `admission.ceiling` (dispatch://INFRA-5616);
+	// `admission.cap` is the cap in force, the same value as this one until a cap is set.
 	AdmissionCap     int    `json:"admission_cap"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`

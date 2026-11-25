@@ -77,9 +77,9 @@ type AdmissionCapOverride struct {
 // newest first: the record the project's Evals tab reads (dispatch://INFRA-5616/spec#b-r7-tick-log,
 // dispatch://INFRA-979/spec#b-r39), so its names are a contract of their own. `id` is the change's
 // own, rising; `cap` the cap it set, absent for a clear; `capBefore` and `capAfter` the caps the
-// daemon admitted under before it and from it on; `ceiling` the deployment's cap then; `setBy` who
-// made it, in the actor view of a pause; `setAt` when; and `reason` why. A set of the cap that
-// stands and a clear where none stands change nothing and are no entry.
+// daemon admitted under before it and from it on; `ceiling` the deployment's admission_ceiling
+// then; `setBy` who made it, in the actor view of a pause; `setAt` when; and `reason` why. A set of
+// the cap that stands and a clear where none stands change nothing and are no entry.
 type AdmissionCapChangeView struct {
 	ID        int64          `json:"id"`
 	Cap       int            `json:"cap,omitempty"`
@@ -92,9 +92,10 @@ type AdmissionCapChangeView struct {
 }
 
 // AdmissionCapResponse answers a set or a clear of the cap: `cap`, the cap the daemon admits under
-// from the change's own pass on; `ceiling`, the deployment's cap, the most a set may name; and
-// `override`, the cap set while the daemon runs, absent after a clear. A change that changes
-// nothing is answered the same, and the state's `admission.capChanges` shows that it recorded none.
+// from the change's own pass on; `ceiling`, the deployment's admission_ceiling, the most a set may
+// name; and `override`, the cap set while the daemon runs, absent after a clear. A change that
+// changes nothing is answered the same, and the state's `admission.capChanges` shows that it
+// recorded none.
 type AdmissionCapResponse struct {
 	Cap      int                   `json:"cap"`
 	Ceiling  int                   `json:"ceiling"`

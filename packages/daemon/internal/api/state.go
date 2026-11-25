@@ -638,11 +638,12 @@ type ContractView struct {
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
 	// Cap is the cap the admission passes admit under: the smaller of Override's cap and Ceiling
-	// where a cap was set while the daemon runs, else Ceiling (AdmissionCapStateTx, the reading
-	// every pass makes).
+	// where a cap was set while the daemon runs, else the deployment's starting cap (legion.yaml's
+	// admission_cap, else LEGION_ADMISSION_CAP) (AdmissionCapStateTx, the reading every pass
+	// makes).
 	Cap int `json:"cap"`
-	// Ceiling is the deployment's cap (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP):
-	// the cap where nobody set one, and the most a set of the cap may name
+	// Ceiling is the deployment's ceiling (legion.yaml's admission_ceiling, else
+	// LEGION_ADMISSION_CEILING, else admission_cap): the most a set of the cap may name
 	// (dispatch://INFRA-5616). Every body at admissionCapContract carries it, at least 1; a body
 	// served a caller below that contract leaves it out (shaping.go's withoutAdmissionCap, which
 	// zeroes it, and `omitzero` writes no key for the zero).

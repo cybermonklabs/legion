@@ -18,14 +18,15 @@ import (
 // every role of the project but the controller and holds every launch, task and admission until
 // resume lets the held work out through the wake pacing (dispatch://INFRA-3759); set-admission-cap
 // and clear-admission-cap change the cap the daemon admits under while it runs, up to legion.yaml's
-// admission_cap (dispatch://INFRA-5616). The daemon acts on its own project, so none names one.
+// admission_ceiling, and back to its admission_cap (dispatch://INFRA-5616). The daemon acts on its
+// own project, so none names one.
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "project", Short: "pause or resume the daemon's project, or change the cap it admits under"},
 		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
 		projectCommand("resume", "end the project's pause and let the held work out through the wake pacing", projectResume, stdout, stderr),
-		projectCommand("set-admission-cap", "set the cap the daemon admits under, up to legion.yaml's admission_cap, with no restart",
+		projectCommand("set-admission-cap", "set the cap the daemon admits under, up to legion.yaml's admission_ceiling, with no restart",
 			projectSetAdmissionCap, stdout, stderr),
-		projectCommand("clear-admission-cap", "return the daemon to legion.yaml's admission_cap", projectClearAdmissionCap, stdout, stderr),
+		projectCommand("clear-admission-cap", "return the daemon to legion.yaml's admission_cap, the cap it starts under", projectClearAdmissionCap, stdout, stderr),
 	)
 }
 
@@ -117,10 +118,10 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 // projectSetAdmissionCap is `legion project set-admission-cap --cap <n> --reason <text>`: the
 // daemon records the operator's cap and why, and admits under it from that request's own pass on,
 // with no restart. A lower cap stops nothing that runs. The daemon refuses a cap below 1, and one
-// above legion.yaml's admission_cap, its ceiling, naming the ceiling: raising the ceiling is a
-// change of legion.yaml and a restart.
+// above legion.yaml's admission_ceiling, naming the ceiling: raising the ceiling is a change of
+// legion.yaml and a restart.
 func projectSetAdmissionCap(c *projectCall) action {
-	capValue := c.flags.Int("cap", 0, "how many issues the daemon may have started at once, from 1 to legion.yaml's admission_cap (required)")
+	capValue := c.flags.Int("cap", 0, "how many issues the daemon may have started at once, from 1 to legion.yaml's admission_ceiling (required)")
 	reason := c.flags.String("reason", "", "why the cap changes: the daemon records it with the change and logs it (required)")
 	return func(ctx context.Context, _ []string) int {
 		if code, ok := c.check("operator-token-file", "reason"); !ok {
