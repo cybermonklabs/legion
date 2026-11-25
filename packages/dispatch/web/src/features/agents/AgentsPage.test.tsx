@@ -55,7 +55,6 @@ import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
 import "./AgentsPage";
-import type { AgentGroup } from "./agent-groups";
 import { type AgentFilters, filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
   type BroadcastRoster,
@@ -63,6 +62,7 @@ import {
   broadcastSendState,
   composedBroadcast,
 } from "./broadcast-plan";
+import type { AgentGroup } from "./logic/agent-groups";
 
 /** What each attempt of a message to one agent, or of a broadcast, is held to, beside what it
  *  carries: its deadline and the key that names the press (`Idempotency-Key`). */

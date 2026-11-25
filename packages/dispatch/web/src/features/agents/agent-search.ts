@@ -3,7 +3,7 @@ import { useCallback, useMemo } from "react";
 import type { Agent, InboxRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
 import { AGENTS_MACHINE_PARAM } from "../refs/routes";
-import type { AgentGroup } from "./agent-groups";
+import type { AgentGroup } from "./logic/agent-groups";
 
 /**
  * What narrows the agent list: any number of groups, machines and roles, and a free-text

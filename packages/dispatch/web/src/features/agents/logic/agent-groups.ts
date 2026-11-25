@@ -1,5 +1,5 @@
-import type { Agent } from "../../api/types";
-import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import type { Agent } from "../../../api/types";
+import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 
 /** Dispatch activity this recent is a session someone is working with right now. */
 const ACTIVE_WITHIN_MS = 2 * 60_000;

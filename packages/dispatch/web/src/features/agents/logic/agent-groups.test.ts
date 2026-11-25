@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { Agent } from "../../api/types";
+import type { Agent } from "../../../api/types";
 import { agentGroup } from "./agent-groups";
 
 const NOW = 1_762_000_000_000;

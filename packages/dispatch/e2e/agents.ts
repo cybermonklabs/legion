@@ -2,7 +2,7 @@ import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contr
 import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
-import type { AgentGroup } from "../web/src/features/agents/agent-groups";
+import type { AgentGroup } from "../web/src/features/agents/logic/agent-groups";
 import {
   createAgentMessage,
   createAsk,

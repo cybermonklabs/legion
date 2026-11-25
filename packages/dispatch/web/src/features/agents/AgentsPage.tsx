@@ -84,7 +84,6 @@ import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
-import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
 import {
   type AgentFilters,
   filterOptions,
@@ -103,6 +102,12 @@ import type { BroadcastSend } from "./broadcast-queue";
 import { EndedAgentsWithReplies } from "./EndedAgentsWithReplies";
 import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
+import {
+  AGENT_GROUP_LABELS,
+  AGENT_GROUPS,
+  type AgentGroup,
+  agentGroup,
+} from "./logic/agent-groups";
 import { orderAgents } from "./logic/agent-order";
 import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";

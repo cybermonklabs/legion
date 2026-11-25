@@ -141,8 +141,8 @@ const dispatch: ShotSet<DispatchWorkspace> = {
         // Every group is open when the page loads, so the whole seed is listed: the three
         // sessions with Dispatch activity under `Active`, the one it has never heard from under
         // `Idle`, and the one unseen for twenty minutes under `Quiet`
-        // (packages/dispatch/web/src/features/agents/agent-groups.ts). The list is windowed and a
-        // closed group's rows leave the page, so what is counted here is the rows drawn.
+        // (packages/dispatch/web/src/features/agents/logic/agent-groups.ts). The list is windowed
+        // and a closed group's rows leave the page, so what is counted here is the rows drawn.
         await expect
           .poll(async () =>
             (await agents.locator("article:not([hidden]) h2").allTextContents()).sort()
