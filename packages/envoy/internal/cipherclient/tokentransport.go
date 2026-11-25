@@ -74,8 +74,10 @@ func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.signed.RoundTrip(presented)
 	if err == nil && resp.StatusCode == http.StatusUnauthorized && refusedAsNotActive(resp) {
 		t.client.Drop(token)
+		// The URL prints through the URL rule (redact.URL): a caller's URL can carry a credential
+		// in its user information or its query, which URL.Redacted keeps but for a password.
 		t.client.logf(r.Context(), "a server answered that the broker's token presented to it is not live; the next request trades again",
-			"url", presented.URL.Redacted(), "code", tokenNotActive)
+			"url", redact.URL(presented.URL.String()), "code", tokenNotActive)
 	}
 	return resp, err
 }
