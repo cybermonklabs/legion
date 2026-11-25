@@ -68,7 +68,8 @@ import type { ApiRequests } from "./traffic";
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
  * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
  *   `:::decision` block whose `shaped` names `r1`, as the planner; `rewordThirdDecision` changes
- *   its words, and `rewordSecondDecision` those of the seed's second decision.
+ *   its words, and `rewordSecondDecision` the heading of the seed's second decision
+ *   (`SECOND_DECISION`).
  * - **Row 4's decisions.** `writeFootDecisions` writes, through the spec's edit route, as the
  *   planner, `FOOT_DECISIONS` `:::decision` blocks that no `shaped` pointer ties to a statement,
  *   each with words that run past six lines at 1440 px.
@@ -487,23 +488,32 @@ export async function rewordThirdDecision(spec: string): Promise<void> {
   );
 }
 
+/** Row 2's second decision, `seedReviewList`'s `tiedOlder`: the words of its heading, and the
+ *  words the row changes them to. Its first paragraph, which its Change quotes, is "Shapes" and
+ *  the address of `r1`. */
+export const SECOND_DECISION = {
+  heading: "Tie the first statement",
+  reworded: "Tie statement one",
+} as const;
+
 /**
- * Changes the words of row 2's second decision, `seedReviewList`'s `tiedOlder` ("Shapes" and the
- * address of `r1`), in the spec `spec` of issue `key`, as the planner: its second paragraph, so
- * its first, which its Change quotes, stays as it was. Row 2's third decision says those words
- * after it, so the edit names their first match (`occurrence` 0).
+ * Changes the words of row 2's second decision (`SECOND_DECISION`) in the spec `spec`, as the
+ * planner: its heading, which a Change never quotes, since a Change quotes the decision's first
+ * paragraph, a heading passed over (`decision-nodes.ts`' `decisionQuote`). So the decision's
+ * words and its sum change while the words its Change quotes stand as they were. Row 2's third
+ * decision says the heading's words too, after it, so the edit names their first match
+ * (`occurrence` 0).
  */
-export async function rewordSecondDecision(key: string, spec: string): Promise<void> {
-  const statement = specBlockRef(key, requirementBlockId(1));
+export async function rewordSecondDecision(spec: string): Promise<void> {
   await editArtifact(
     spec,
     {
       ops: [
         {
-          find: `Shapes ${statement}.`,
+          find: SECOND_DECISION.heading,
           occurrence: 0,
           op: "replace",
-          with: `It shapes ${statement}.`,
+          with: SECOND_DECISION.reworded,
         },
       ],
     },

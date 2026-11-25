@@ -5,6 +5,7 @@ import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
@@ -15,13 +16,13 @@ import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { decisionNodesOf, decisionSum, decisionSumOf, readTree } from "./issue-layout-seed-support";
+import { requirementBlockId, requirementText, specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, issueRead, phase, presetCount } from "./issue-page";
 import {
   drawnRows,
   expectIssuePageDrawn,
   focusRow,
   nodeRow,
-  parentOfRow,
   rowOf,
   rowWords,
   unfoldEveryBranch,
@@ -66,6 +67,7 @@ import {
   reviewWordOf,
   rewordSecondDecision,
   rewordThirdDecision,
+  SECOND_DECISION,
   type SentWrite,
   type SpecColumnRow,
   specColumn,
@@ -86,7 +88,7 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * write against that node, read on the real stack. Each row turns the new page on for alice with
  * `phase` (1440 by 900), seeds the issues of `e2e/issue-layout-seed.ts`, opens them with
  * `gotoIssue` (`e2e/issue-page.ts` holds both), and reads them through `nodeRow`, `rowOf`,
- * `drawnRows`, `parentOfRow` and `unfoldEveryBranch` (`e2e/issue-page-g.ts`), `pickPreset`
+ * `drawnRows` and `unfoldEveryBranch` (`e2e/issue-page-g.ts`), `pickPreset`
  * (`e2e/issue-page-i.ts`), `waitingCount` (`e2e/issue-page-p.ts`), the readers of the Decisions
  * view (`e2e/issue-page-q.ts`), `watchApiRequests` (`e2e/traffic.ts`), the helpers of
  * `e2e/issue-page-t.ts`, the reads of the tree read the rows share with the seeds
@@ -680,6 +682,15 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
   return writes.filter((write) => write.method === "POST" && write.path === path);
 }
 
+/** The read id of the node the tree read `answer` hangs comment `commentId` under: the `parent`
+ *  of its comment node, the node whose block id is the comment's id (`blockIdOfNode`), as its row
+ *  would carry it. Undefined while no answer is held, and where it holds no such comment. */
+function commentParentOf(answer: IssueTreeRead | undefined, commentId: string): string | undefined {
+  return (answer?.nodes ?? []).find(
+    (node) => node.supertag === "comment" && (node.block_id ?? node.id) === commentId
+  )?.parent?.id;
+}
+
 // c-keep-change, owed: the row skips on the gate of the server's tree read (`treeReadGate`) and of
 // its Decisions view (`decisionsViewServedGate`), which the model's tree route serves since its
 // `2afc1550` (`issue_tree_read.go`'s `issueTreeViews`), so that gate holds the row owed only on a
@@ -766,13 +777,30 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
 
     // (2) Change on the second, `tiedOlder`, with words typed: the comment it sends is anchored
     // to the node's own document and block, at the first match of its quote there
-    // (`occurrence` 0), read from the request before anything drawn.
+    // (`occurrence` 0), read from the request before anything drawn. Its quote is the decision's
+    // first paragraph alone, "Shapes" and the address of `r1`, its heading passed over.
     const olderRow = nodeRow(page, ids.older).first();
     const change = olderRow.locator(CHANGE);
     await expect(change, "the second decision, tiedOlder, draws its Change control").toBeVisible();
     await change.click();
     const field = olderRow.getByLabel(CONTROL_LABELS.your_change);
     await expect(field, `the Change draws its "${CONTROL_LABELS.your_change}" field`).toBeVisible();
+    // Read before Send: the form draws its quote as the rows draw their words (`RowText`), with
+    // `r1` drawn by its name, the words of a chip naming it, and no text of the page reads a raw
+    // `dispatch://` address (decision 448, root R22).
+    const statement = specBlockRef(key, requirementBlockId(1));
+    const statementName = chipWords(requirementText(1));
+    const quote = olderRow.locator('[data-testid="decision-quote"]');
+    await expect
+      .poll(
+        async () => ({
+          name: await quote.locator(`a[data-row-reference="${statement}"]`).allInnerTexts(),
+          quote: (await quote.innerText()).replace(/\s+/g, " ").trim(),
+          raw: (await page.locator("body").innerText()).includes("dispatch://"),
+        }),
+        { message: "the Change form draws no raw address" }
+      )
+      .toEqual({ name: [statementName], quote: `Shapes ${statementName}.`, raw: false });
     await field.fill(CHANGE_WORDS);
     const send = olderRow.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
     await expect(
@@ -803,6 +831,15 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
       comments: 1,
       occurrence: 0,
     });
+    const quoted = fieldOf(anchor, "quote");
+    expect(
+      {
+        directive: typeof quoted === "string" && /:::|shaped=/.test(quoted),
+        heading: typeof quoted === "string" && quoted.includes(SECOND_DECISION.heading),
+        quote: quoted,
+      },
+      "the Change quotes its decision's first paragraph alone"
+    ).toEqual({ directive: false, heading: false, quote: `Shapes ${statement}.` });
     // The changed decision reads "Changed by" and alice's name, leaves the review list and stands
     // among her own decisions, in the Decisions view as the server's reads redraw it, and again
     // after a reload (below).
@@ -825,32 +862,43 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     const comment = (await listComments(key)).find((one) => one.body === CHANGE_WORDS);
     expect(comment, "the server holds no comment for the Change").toBeDefined();
     const commentId = comment?.id ?? "";
-    // In Conversation the tree read hangs the Change under its decision, whose row reads
-    // "Changed by" alice too, before a reload and after one.
+    // In Conversation the changed decision's row reads "Changed by" alice too, and the tree read
+    // answers the Change under its decision, before a reload and after one. A comment anchored on
+    // a node's text is drawn in the margin beside that node and no row of the outline (part T's
+    // `onNodeText`, root R41), so the Change's place is read from the tree read the page
+    // received: the comment node's `parent` is the decision node.
     await releaseFilter(page, "decisions");
-    const inConversation = async () => {
+    const stateInConversation = async () => {
       await unfoldEveryBranch(page);
-      return {
-        parent: await parentOfRow(page, commentId),
-        state: await stateWordOf(page, ids.older),
-      };
+      return stateWordOf(page, ids.older);
     };
-    const underItsDecision = { parent: ids.older, state: expect.stringMatching(CHANGED_BY_ALICE) };
+    const changedByAliceWord = expect.stringMatching(CHANGED_BY_ALICE);
     await expect
-      .poll(inConversation, {
-        message:
-          "the changed decision reads Changed by alice in Conversation, with the Change a row under it",
+      .poll(stateInConversation, {
+        message: "the changed decision reads Changed by alice in Conversation",
       })
-      .toEqual(underItsDecision);
+      .toEqual(changedByAliceWord);
+    await expect
+      .poll(() => commentParentOf(tree.answer(), commentId), {
+        message: "the tree read answers the Change under its decision",
+      })
+      .toBe(older.id);
+    // The reads of the tree the page sends from the reload on, so the answer read below is the
+    // reloaded page's own.
+    const reloadedTree = treeAnswerOf(page);
     await page.reload();
     await issueRead(page);
     await expectIssuePageDrawn(page);
     await expect
-      .poll(inConversation, {
-        message:
-          "the changed decision reads Changed by alice in Conversation, with the Change a row under it, after a reload",
+      .poll(stateInConversation, {
+        message: "the changed decision reads Changed by alice in Conversation, after a reload",
       })
-      .toEqual(underItsDecision);
+      .toEqual(changedByAliceWord);
+    await expect
+      .poll(() => commentParentOf(reloadedTree.answer(), commentId), {
+        message: "the tree read answers the Change under its decision, after a reload",
+      })
+      .toBe(older.id);
     await readFilter(page, traffic, "decisions");
     await expect
       .poll(changedStanding, {
@@ -940,7 +988,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     // Change asks for nothing any more, so the decision waits for alice's review again and is
     // back in the review list (root R35).
     const changedSum = await decisionSum(key, seeded.tiedOlder);
-    await rewordSecondDecision(key, spec);
+    await rewordSecondDecision(spec);
     expect(
       await decisionSum(key, seeded.tiedOlder),
       "the edit leaves the second decision's sum as it was"

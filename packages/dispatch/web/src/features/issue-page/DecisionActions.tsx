@@ -1,5 +1,5 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
 import { refreshQueries } from "../../api/query-refresh";
@@ -16,10 +16,14 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { parseNodeReference } from "../refs/routes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { chipName, RowText } from "./RowText";
+import { useKnownReferenceNames } from "./reference-names";
 import { dropViews, outlineTargets, useOutlineAnswer } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
@@ -114,6 +118,25 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
 }
 
 /**
+ * `words` as a plain line names each reference they cite (`one-line.ts`' `referenceStandIns`):
+ * an issue by its key, anything else by the name the page published for it from its one batched
+ * read (`useKnownReferenceNames`), named as the quote `RowText` draws names it (`chipName`), and
+ * else by its short form, so no accessible name reads a raw `dispatch://` address (root R22,
+ * decision 448). A decision's controls hold no outline to read `useReferenceNames` over, so the
+ * names they read are the ones the quote they label draws.
+ */
+function useNamedWords(words: string): string {
+  const names = useKnownReferenceNames();
+  return useMemo(() => {
+    const references = referenceStandIns((reference) => {
+      const name = names.get(reference);
+      return name === undefined ? undefined : chipName(parseNodeReference(reference), name);
+    });
+    return references.named(references.standIn(words));
+  }, [names, words]);
+}
+
+/**
  * What a reader does with a decision, on the decision's own node (R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
  *
@@ -202,10 +225,13 @@ function DecisionControls({
   // (`decision-nodes.ts`): a decision whose first paragraph holds no words, whose heading is
   // empty, has none to anchor a Change to.
   const quotable = decision.heading !== "";
+  // The labels name each reference the heading cites by its name, as the quote draws it; the
+  // anchor still sends the heading as the server's text holds it (`ChangeComposer`).
+  const named = useNamedWords(decision.heading);
   const keep = useKeyedWrite({
     inline: true,
     issue: issueKey,
-    label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+    label: () => `${CONTROL_LABELS.keep_decision} ${named}`,
     method: "POST",
     // The node's own block, and the sum of the text this node showed: a decision the agent
     // changed since is refused (`409 DECISION_CHANGED`), so a Keep never stands over words the
@@ -296,9 +322,10 @@ function ChangeComposer({
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const fieldId = useId();
+  const named = useNamedWords(decision.heading);
   const send = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+    label: () => `${CONTROL_LABELS.change_decision} ${named}`,
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
@@ -348,7 +375,7 @@ function ChangeComposer({
   // (`focusField`): the reader moved to the row, not into the field.
   return (
     <form
-      aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
+      aria-label={`${CONTROL_LABELS.change_decision} ${named}`}
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
@@ -367,7 +394,7 @@ function ChangeComposer({
         data-testid="decision-quote"
         {...authorText}
       >
-        {decision.heading}
+        <RowText markdown={decision.heading} />
       </blockquote>
       <label className={`text-xs ${tones.muted}`} htmlFor={fieldId} {...pageChrome}>
         {CONTROL_LABELS.your_change}

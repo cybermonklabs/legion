@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
@@ -21,6 +21,7 @@ import {
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode, viewKey } from "./tree-read/tree-read";
 
@@ -481,6 +482,73 @@ test("a decision whose first paragraph holds no words draws Keep but no Change",
     ).toBeNull();
   } finally {
     unmount();
+  }
+});
+
+/** The statement the decision below cites in its first paragraph, and the name the page's one
+ *  batched read brought for it. */
+const STATEMENT = `dispatch://${KEY}/spec#b-r1`;
+const STATEMENT_NAME = "Every property of the issue";
+
+/** The name of `STATEMENT`, published as the page publishes the names of its batched read. */
+function NamedStatement({ children }: { children: ReactNode }): ReactNode {
+  const names = useMemo(() => new Map([[STATEMENT, STATEMENT_NAME]]), []);
+  usePublishReferenceNames(names);
+  return children;
+}
+
+// Decision 448, root R22: the Change form draws its quote as the rows draw their words
+// (`RowText`), so the statement its first paragraph cites reads by the name the page has for it,
+// and so does the form's accessible name, never as a raw `dispatch://` address. The anchor still
+// quotes the words as the server's text holds them, address and all, which is what
+// `pmdoc.FindQuote` matches.
+test("the Change form draws its quote with each reference by its name", async () => {
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const citing = decisionNode("d1", `Shapes ${STATEMENT}.\n\nWhy it holds.`);
+  const client = heldReads([citing]);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <NamedStatement>
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          </NamedStatement>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    const quote = screen.getByTestId("decision-quote");
+    const form = quote.closest("form");
+    const name = form?.getAttribute("aria-label");
+    expect(
+      {
+        name,
+        quote: quote.textContent,
+        raw: `${name} ${form?.textContent}`.includes("dispatch://"),
+      },
+      "the Change form draws its quote and its name with the statement by its name, no raw address"
+    ).toEqual({
+      name: `${CONTROL_LABELS.change_decision} Shapes ${STATEMENT_NAME}.`,
+      quote: `Shapes ${STATEMENT_NAME}.`,
+      raw: false,
+    });
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor?.quote,
+      "the Change quotes the words as the server's text holds them, the address kept"
+    ).toBe(`Shapes ${STATEMENT}.`);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
   }
 });
 
