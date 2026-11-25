@@ -994,24 +994,14 @@ func (c *stepClaimant) ownTurn() {
 // token the pane does not hold (refusedHello).
 func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	c.r.t.Helper()
-	var published, stored string
+	var published string
+	var stored supervise.ClaimState
 	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
-		published, stored = c.r.d.claim(c.token).State, c.r.storedState(c.token)
-		return published == string(state) && stored == string(state)
+		published, stored = c.r.d.claim(c.token).State, storedClaimState(c.r.t, c.r.st.Pool(), c.token)
+		return published == string(state) && stored == state
 	}) {
 		c.r.t.Fatalf("%s is %s, and %s in the store, want %s in both", c.token, published, stored, state)
 	}
-}
-
-// storedState is token's claim state as the daemon's store holds it, which is what the next boot
-// restores.
-func (r *stepRecordsRig) storedState(token claim.Token) string {
-	r.t.Helper()
-	var state string
-	if err := r.st.Pool().QueryRow(context.Background(), "select state from claims where token = $1", string(token)).Scan(&state); err != nil {
-		r.t.Fatalf("read the stored claim of %s: %v", token, err)
-	}
-	return state
 }
 
 // answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
