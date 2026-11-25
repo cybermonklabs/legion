@@ -40,8 +40,10 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * gates are.
  */
 
-/** The choice the page's status question offers to move the issue's parents into work with it
- *  (`ParentStatusDialog.tsx`' `CHOICE_LABELS.include_parent`), as a person reads and presses it. */
+/** The choice the page's status question offers to move the issue's parents into work with it,
+ *  as a person reads and presses it: `ParentStatusDialog.tsx`' `CHOICE_LABELS.include_parent`,
+ *  copied, since that file keeps the words to itself and this change leaves today's issue page
+ *  as it is. */
 const MOVE_PARENTS_TOO = "Move the parents into work too";
 
 // c-fresh, with its status clause: a status write sends one or two tree reads - its event's, and

@@ -9,6 +9,7 @@ import {
   isCheck,
   isStatement,
   lineWords,
+  type NodeChip,
   nodeWords,
   type ParentLine,
   type TreeNode,
@@ -460,8 +461,15 @@ function heldFilterView(
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
+  // Each node of the two trees by its own address, the outline's first: a row drawn from the
+  // view's own tree names each other parent whose chip the names read gave no words - a statement
+  // of the outline read the view's tree holds as context - by that parent's line (`otherParents`).
+  const byReference = new Map<string, TreeNode>();
   const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
+      if (child.reference !== undefined && !byReference.has(child.reference)) {
+        byReference.set(child.reference, child);
+      }
       if (child.readId !== undefined) {
         if (!fromRead.has(child.id)) {
           fromRead.set(child.id, child);
@@ -479,6 +487,13 @@ function heldFilterView(
   index(root, true);
   const own = root.views?.trees?.[filter];
   if (own !== undefined) index(own, false);
+  // The node's other parents (`TreeNode.alsoUnder`), each chip with no words named by its
+  // parent's line, where a tree holds that parent.
+  const otherParents = (chips: readonly NodeChip[]): readonly NodeChip[] =>
+    chips.map((chip) => {
+      const parent = chip.name === "" && !chip.gone ? byReference.get(chip.ref) : undefined;
+      return parent === undefined ? chip : { ...chip, name: parentLineOf(parent) };
+    });
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
   // two nodes of one block id, blocks of two documents, are two; else, for a view node that names
   // no document, the one of its read id. And each one's parent: the nearest node before it that
@@ -646,7 +661,12 @@ function heldFilterView(
     if (placing) context.add(tree.id);
     drawnIds.add(tree.id);
     const kept = parts.flatMap((part) => part.rows);
-    return { drawn: true, rows: [{ ...tree, children: kept, held: heldBy(kept) }] };
+    return {
+      drawn: true,
+      rows: [
+        { ...tree, alsoUnder: otherParents(tree.alsoUnder), children: kept, held: heldBy(kept) },
+      ],
+    };
   };
   const drawTop = (node: TreeAnswerNode): Lifted => {
     const part = draw(node, undefined, new Set());
