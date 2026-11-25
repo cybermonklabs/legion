@@ -68,7 +68,7 @@ func TestRigLaunch(t *testing.T) {
 	// notice for the architect's role topic.
 	t.Run("an owner's launch", func(t *testing.T) {
 		t.Parallel()
-		listener := newRigListener(t)
+		listener := newLaunchListener(t)
 		req := rigOwnLaunch(t, listener.URL)
 		got := rigLaunch(t, req)
 
@@ -334,22 +334,22 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 	return answer
 }
 
-// rigListener stands in for an Envoy listener's publish route, keeping each message it is given.
-type rigListener struct {
+// launchListener stands in for an Envoy listener's publish route, keeping each message it is given.
+type launchListener struct {
 	*httptest.Server
 	mu   sync.Mutex
-	seen []rigListenerPublish
+	seen []launchListenerPublish
 }
 
-type rigListenerPublish struct {
+type launchListenerPublish struct {
 	Topic  string
 	Keep   bool
 	Bearer string
 }
 
-func newRigListener(t *testing.T) *rigListener {
+func newLaunchListener(t *testing.T) *launchListener {
 	t.Helper()
-	l := &rigListener{}
+	l := &launchListener{}
 	l.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Topic string `json:"topic"`
@@ -360,7 +360,7 @@ func newRigListener(t *testing.T) *rigListener {
 			return
 		}
 		l.mu.Lock()
-		l.seen = append(l.seen, rigListenerPublish{Topic: body.Topic, Keep: body.Keep != nil && *body.Keep, Bearer: r.Header.Get("Authorization")})
+		l.seen = append(l.seen, launchListenerPublish{Topic: body.Topic, Keep: body.Keep != nil && *body.Keep, Bearer: r.Header.Get("Authorization")})
 		l.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -368,7 +368,7 @@ func newRigListener(t *testing.T) *rigListener {
 	return l
 }
 
-func (l *rigListener) publishes() []rigListenerPublish {
+func (l *launchListener) publishes() []launchListenerPublish {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.seen)
