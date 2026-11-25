@@ -1050,11 +1050,12 @@ func tradeTransient(err error) bool {
 
 // checkDaemonCaller refuses a broker token that is not the daemon's own, as GET /api/v1/whoami
 // reads it. Dispatch refuses every write of a token whose session is not the daemon's (403
-// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor) and of
-// a machine's token that names no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an
-// outage (dispatch.PermanentRefusal), so it would wait on each such write for ever. A token whose
-// project is not the daemon's is not the daemon's own either. Each of the three is a fault of the
-// secrets broker's exchange entry for the daemon's own account, which the refusal names.
+// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor). The
+// outbox reads a 401 and a 403 as an outage (dispatch.PermanentRefusal), so it would wait on each
+// such write for ever. A token whose project is not the daemon's, and one that names no owner (an
+// exchange entry that names a project names the person it acts for), are not the daemon's own
+// either. Each of the three is a fault of the secrets broker's exchange entry for the daemon's own
+// account, which the refusal names.
 func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
@@ -1066,7 +1067,7 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s: the token's project is not the daemon's, which is a fault of the exchange entry that gave it, and %s so that it names the project %s",
 			whoamiValue(caller.Project), project, entry, project)
 	case caller.Owner == nil:
-		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a machine's token that names no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, which names the daemon's project, and an exchange entry that names a project names the person it acts for: %s so that it names the person the daemon acts for",
 			entry)
 	}
 	return nil

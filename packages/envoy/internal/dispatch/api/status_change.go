@@ -353,13 +353,11 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
 // it (409 ISSUE_CLOSED), reads the plan again, asks access.CredentialCovers about each step's issue
 // where the request's credential names one project, callerProject (refuseUncoveredProject, 403
-// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A step's issue may be of
-// another project than the issue the call names, since a parent may be one (validateIssueParent),
-// and each is asked about under the owner locks, before the first step, a dry run's plan as well.
-// A plan whose issues moved between the two reads, so that it needs a lock the transaction does
-// not hold, starts over with what the second read found, as lockPatchOwnersAndParent does, and a
-// plan that moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction
-// rolls back before the first step, and each step takes its own locks in its own transaction.
+// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
+// between the two reads, so that it needs a lock the transaction does not hold, starts over with
+// what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
+// attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
+// first step, and each step takes its own locks in its own transaction.
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(
@@ -442,29 +440,26 @@ func (s *server) planStatusChangeUnderLocks(
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), includeChildren: change.includeChildren}
 	for index := range steps {
-		row := rows[steps[index].key]
-		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
-		writes.steps = append(writes.steps, steps[index].issueWriteStep)
-	}
-	// A credential that names one project writes, in a step, an issue of every project that
-	// access.CredentialCovers covers. The one exception is a private project it does not name. The
-	// route's pre-handler check reads only the project of the issue the path names
-	// (project_scope.go), and a parent may be an issue of another project (validateIssueParent),
-	// so an ancestor that include_parent moves and a descendant that include_children moves or
-	// unlink_children unlinks can each belong to another. Each step's issue is asked about here,
-	// as its row was read under the owner locks, before the first step and for a dry run as well,
-	// so no step of a call writes an issue the credential may not write.
-	if callerProject != "" {
-		for _, step := range steps {
-			project := rows[step.key].project
-			if !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, project, false) {
-				what := "issue " + step.key
-				if step.option != "" {
-					what = step.option + "'s issue " + step.key
-				}
-				return statusChangePlan{}, nil, refuseUncoveredProject(callerProject, what, project)
+		step := &steps[index]
+		row := rows[step.key]
+		// A credential that names one project writes, in a step, an issue of every project that
+		// access.CredentialCovers covers. The one exception is a private project it does not name.
+		// The route's pre-handler check reads only the project of the issue the path names
+		// (project_scope.go), and a parent may be an issue of another project
+		// (validateIssueParent), so an ancestor that include_parent moves and a descendant that
+		// include_children moves or unlink_children unlinks can each belong to another. Each step's
+		// issue is asked about here, as its row was read under the owner locks, before the first
+		// step and for a dry run as well, so no step of a call writes an issue the credential may
+		// not write.
+		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, row.project, false) {
+			what := "issue " + step.key
+			if step.option != "" {
+				what = step.option + "'s issue " + step.key
 			}
+			return statusChangePlan{}, nil, refuseUncoveredProject(callerProject, what, row.project)
 		}
+		step.title, step.lastSeq = row.title, row.lastSeq
+		writes.steps = append(writes.steps, step.issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
 	if err != nil {

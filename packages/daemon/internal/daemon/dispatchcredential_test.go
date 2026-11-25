@@ -231,11 +231,11 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 }
 
 // TestTheBootRefusesAnEntryDispatchWouldRefuse: Dispatch refuses every write of a broker token whose
-// session is not the daemon's, and of a machine's token that names no person, and the outbox would
-// wait on each such write for ever. A token whose project is not the daemon's is a fault of the
-// exchange entry that gave it. So the boot reads Dispatch's whoami of its own token and refuses
-// each of the three, naming the field and the broker entry the deployment must fix. The right
-// answer boots.
+// session is not the daemon's, and the outbox would wait on each such write for ever. A token whose
+// project is not the daemon's, and one that names no owner (an exchange entry that names a project
+// names the person it acts for), are each a fault of the exchange entry that gave it. So the boot
+// reads Dispatch's whoami of its own token and refuses each of the three, naming the field and the
+// broker entry the deployment must fix. The right answer boots.
 func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	for name, tc := range map[string]struct {

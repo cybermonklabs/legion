@@ -760,9 +760,10 @@ setting says. A roll serves the previous release beside this one against one dat
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person. A token of an entry that names a project names that project, and
-writes wherever a token that names no project may write, except in a private project it does not
-name. A token of an entry that names no project (`<service account>==<person>`) writes wherever
-Dispatch's own rules let that person write. An
+writes each object of another project that a token naming no project may write, except in a private
+project it does not name; a write that belongs to the deployment is refused it
+(`403 PROJECT_SCOPE_DEPLOYMENT`). A token of an entry that names no project
+(`<service account>==<person>`) writes wherever Dispatch's own rules let that person write. An
 entry may name neither a person nor a project (`<service account>==`, or
 `<service account>===<session>` to fix its session): its tokens name no person and no project and
 name the account as their service, so they act as the account itself, write wherever Dispatch's own

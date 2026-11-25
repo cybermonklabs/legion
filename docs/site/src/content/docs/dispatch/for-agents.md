@@ -109,9 +109,9 @@ New epic waits for the create's answer before registering parent changes. Start 
 
 A command that a Dispatch spec defines, given several problems, is refused once with every problem
 listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or
-AskGate refused it, the command could not reach Dispatch, or Dispatch kept no answer for a call
-that writes nothing. It exits 2 on a usage error, such as flags it refused before any request, and
-on a session or configuration it cannot use. An unknown command exits 2 too.
+AskGate refused it or Dispatch failed, the command could not reach Dispatch, or Dispatch kept no
+answer for a call that writes nothing. It exits 2 on a usage error, such as flags it refused before
+any request, and on a session or configuration it cannot use. An unknown command exits 2 too.
 The commands that no spec defines exit by rules of their own,
 which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
 exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the

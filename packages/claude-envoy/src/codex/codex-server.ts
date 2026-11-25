@@ -140,7 +140,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: for a command a Dispatch spec defines, 0 written or read, 1 when Dispatch or AskGate refused it, the command could not reach Dispatch, or Dispatch kept no answer for a call that writes nothing (`ANSWER_NOT_KEPT`, which you run again), and 2 on a usage error or a session or configuration it cannot use; `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: for a command a Dispatch spec defines, 0 written or read, 1 when Dispatch or AskGate refused it or Dispatch failed, the command could not reach Dispatch, or Dispatch kept no answer for a call that writes nothing (`ANSWER_NOT_KEPT`, which you run again), and 2 on a usage error or a session or configuration it cannot use; `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
     inputSchema: {
       properties: {
         args: {

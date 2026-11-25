@@ -1352,9 +1352,9 @@ could not be read or used, each exiting 2. `DISPATCH_HOST` unset with
 `CLAUDE_CODE_CHILD_SESSION=1` is host `claude`. stdout carries what
 the model reads: the result, one `- picture: <path>` line per image (written under the session
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
-on success, 1 when Dispatch or AskGate refused the call, the command could not reach Dispatch, or
-Dispatch kept no answer for a call that writes nothing, and 2 on a usage error or on a session or
-configuration it cannot use (above). A usage error
+on success, 1 when Dispatch or AskGate refused the call or Dispatch failed, the command could not
+reach Dispatch, or Dispatch kept no answer for a call that writes nothing, and 2 on a usage error or
+on a session or configuration it cannot use (above). A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.

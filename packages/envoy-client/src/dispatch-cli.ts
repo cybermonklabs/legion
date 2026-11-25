@@ -74,13 +74,13 @@ export interface DispatchCliIo {
 }
 
 /** Exit codes: written or read, a call that did not do what it asks, and a usage error. REFUSED
- *  is a refusal by Dispatch or AskGate (a near copy, an AskGate block, a server refusal), a
- *  Dispatch the command cannot reach (DispatchUnreachableError), and Dispatch keeping no answer
- *  for a call that writes nothing (DispatchAnswerNotKeptError). USAGE is an argument this CLI
- *  refuses before any request, whether the argv named a command or not, and a session or a
- *  configuration the command cannot use: a refusal of callSession (DISPATCH_HOST or the session
- *  id unset) or of callDispatch (Dispatch turned off, an envoy.json it cannot read), and a
- *  corrupted state.json. */
+ *  is a refusal or failure of Dispatch, or a refusal of AskGate (a near copy, an AskGate block, a
+ *  server refusal, a 5xx that Dispatch answers: DispatchServiceError), a Dispatch the command
+ *  cannot reach (DispatchUnreachableError), and Dispatch keeping no answer for a call that writes
+ *  nothing (DispatchAnswerNotKeptError). USAGE is an argument this CLI refuses before any request,
+ *  whether the argv named a command or not, and a session or a configuration the command cannot
+ *  use: a refusal of callSession (DISPATCH_HOST or the session id unset) or of callDispatch
+ *  (Dispatch turned off, an envoy.json it cannot read), and a corrupted state.json. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -320,8 +320,10 @@ function callSession(
  * Dispatch's configuration for `session`, read now, with each line the read of its file says
  * beside it; or why Dispatch is off. The session is the one a broker trade writes under, so the
  * token the call presents names it rather than naming none or another of this machine's. The
- * `dispatch` command, a spec command's call and `dispatch proxy` alike, is the one caller that
- * takes the token files (`tokenFilesTarget`, dispatch-config.ts).
+ * `dispatch` command is the one caller that takes the token files (`tokenFilesTarget`,
+ * dispatch-config.ts). A spec command's call runs on them. `dispatch proxy` reads the same
+ * settings, but it never runs on the files: it starts only under `DISPATCH_TOKEN_BROKER=1`, which
+ * the files refuse beside them, so it trades its own token at the broker.
  */
 async function callDispatch(
   session: CallSession,
@@ -539,22 +541,13 @@ export async function runDispatchCli(
     // and it refuses nothing for what the configuration holds; it reads no state of this session
     // and asks Dispatch nothing, so it runs with Dispatch off too, and its standard output is the
     // JSON alone. A call whose dry run Dispatch answers goes on below, as the call itself does.
-    const settings =
-      file.path === null
-        ? null
-        : (
-            await sessionDispatchSettings(file, env, {
-              cwd: io.cwd,
-              session: sessionId,
-              tokenFiles: true,
-            })
-          ).dispatch;
+    const dispatch = await callDispatch(session, env, io.cwd);
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
       cwd: io.cwd,
       env,
-      serverUrls: settings?.enabled === true ? dispatchServerUrls(settings) : [],
+      serverUrls: "config" in dispatch ? dispatchServerUrls(dispatch.config) : [],
     });
     if (problems.length > 0) {
       return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);

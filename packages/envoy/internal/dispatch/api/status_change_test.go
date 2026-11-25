@@ -418,6 +418,7 @@ func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
 // no status moved and no event appended on either issue. The call itself answers both moves, and
 // a read of each issue answers it in progress.
 func TestAScopedStatusChangeMovesAnAncestorOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{})
 	caller := newBrokerCaller(t)
 	ctx := context.Background()
@@ -449,7 +450,7 @@ func TestAScopedStatusChangeMovesAnAncestorOfAnotherProject(t *testing.T) {
 		}
 		return held
 	}
-	seq := map[string]int{ancestor: issueLastSeq(t, rig.database, ancestor), named: issueLastSeq(t, rig.database, named)}
+	seq := issueLastSeqs(t, rig.database, ancestor, named)
 	path := "/api/v1/issues/" + named + "/status-change"
 	before := stored()
 	planned := rig.serve(caller.presenting(t, http.MethodPost, path, token, map[string]any{
@@ -490,6 +491,7 @@ func TestAScopedStatusChangeMovesAnAncestorOfAnotherProject(t *testing.T) {
 // nothing - no status or parent moved, no event appended and no comment left on either issue -
 // and each call answers the same changes, and a read of the child answers what the call wrote.
 func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{})
 	caller := newBrokerCaller(t)
 	ctx := context.Background()
@@ -551,27 +553,10 @@ func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
 			t.Fatalf("%s (dry run) moved %s to %s, want nothing written", label, before, after)
 		}
 	}
-	// requireChild fails t unless a read of child answers status under parent ("" for none).
-	requireChild := func(t *testing.T, child, status, parent string) {
-		t.Helper()
-		read := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+child, nil))
-		if read.Status != status || deref(read.Parent) != parent {
-			t.Errorf("a read of %s answers %s under %q, want %s under %q", child, read.Status, deref(read.Parent), status, parent)
-		}
-	}
-	// lastSeqs is the last_seq of each of keys now.
-	lastSeqs := func(t *testing.T, keys ...string) map[string]int {
-		t.Helper()
-		seq := map[string]int{}
-		for _, key := range keys {
-			seq[key] = issueLastSeq(t, rig.database, key)
-		}
-		return seq
-	}
 
 	t.Run("include_children out of work moves the child before the parent", func(t *testing.T) {
 		named, child := family(t, "Put back on the backlog", true)
-		seq := lastSeqs(t, named, child)
+		seq := issueLastSeqs(t, rig.database, named, child)
 		label := "a scoped include_children moving a child of another project to backlog"
 		body := map[string]any{"status": "backlog", optionIncludeChildren: true}
 		dryRun(t, label, named, child, body, map[string]any{
@@ -583,12 +568,12 @@ func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
 			wantChange{child, "backlog", named, seq[child], seq[child] + 2},
 			wantChange{named, "backlog", "", seq[named] + 1, seq[named] + 2},
 		))
-		requireChild(t, child, "backlog", named)
+		ruleRig{database: rig.database}.requireIssue(t, child, "backlog", named)
 	})
 
 	t.Run("include_children into work moves the child after the parent", func(t *testing.T) {
 		named, child := family(t, "Picked up", false)
-		seq := lastSeqs(t, named, child)
+		seq := issueLastSeqs(t, rig.database, named, child)
 		label := "a scoped include_children moving a child of another project to todo"
 		body := map[string]any{"status": "todo", optionIncludeChildren: true}
 		dryRun(t, label, named, child, body, map[string]any{
@@ -600,12 +585,12 @@ func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
 			wantChange{named, "todo", "", seq[named], seq[named] + 1},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		))
-		requireChild(t, child, "todo", named)
+		ruleRig{database: rig.database}.requireIssue(t, child, "todo", named)
 	})
 
 	t.Run("unlink_children leaves the child with no parent", func(t *testing.T) {
 		named, child := family(t, "Closed without its child", true)
-		seq := lastSeqs(t, named, child)
+		seq := issueLastSeqs(t, rig.database, named, child)
 		label := "a scoped unlink_children unlinking a child of another project"
 		body := map[string]any{"status": "done", optionUnlinkChildren: true}
 		dryRun(t, label, named, child, body, map[string]any{
@@ -617,7 +602,7 @@ func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
 			wantChange{child, "in_progress", "", seq[child], seq[child] + 2},
 			wantChange{named, "done", "", seq[named] + 1, seq[named] + 2},
 		))
-		requireChild(t, child, "in_progress", "")
+		ruleRig{database: rig.database}.requireIssue(t, child, "in_progress", "")
 	})
 }
 
@@ -2054,14 +2039,20 @@ func (rig repeatRig) requireSweptOnce(t *testing.T, issue, ask string) {
 	}
 }
 
-// seqs reads the last_seq of each of keys.
-func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
+// issueLastSeqs reads the last_seq of each of keys (issueLastSeq).
+func issueLastSeqs(t *testing.T, database *store.Store, keys ...string) map[string]int {
 	t.Helper()
 	seq := make(map[string]int, len(keys))
 	for _, key := range keys {
-		seq[key] = issueLastSeq(t, rig.database, key)
+		seq[key] = issueLastSeq(t, database, key)
 	}
 	return seq
+}
+
+// seqs reads the last_seq of each of keys.
+func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
+	t.Helper()
+	return issueLastSeqs(t, rig.database, keys...)
 }
 
 // stopAfterStep sends write under key in the background and stops its run once the step at index
