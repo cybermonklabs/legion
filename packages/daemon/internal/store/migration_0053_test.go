@@ -19,6 +19,7 @@ import (
 // handed over as a root of its own, whose phase rows are its old tree's run: no re-admission is
 // left to clear a mark written for it.
 func TestTheTakenBackMarkArrivesWith0053(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 52)

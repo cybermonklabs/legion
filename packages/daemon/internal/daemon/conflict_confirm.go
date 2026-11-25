@@ -70,11 +70,14 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 	readAt := r.now().UTC()
 	attributes = append(attributes, "attempt", attempt, "attempts", mergeStateLadderReads)
 	if failed == nil {
-		attributes = append(attributes, "mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()), "readHead", pull.Head.SHA)
-		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("conflict-confirm:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
+		applied, err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("conflict-confirm:%s:%d:%d", row.Issue, row.ID, attempt))
+		if err != nil {
 			return fmt.Errorf("apply the second read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
-		if pull.mergeability() != record.MergeabilityUnknown {
+		// What was applied decides, which is GitHub's later GraphQL answer when the REST read
+		// answered `blocked` and MERGEABLE (applyMergeability).
+		attributes = append(attributes, "mergeable", string(applied.Mergeable), "mergeState", string(applied.MergeState), "readHead", applied.HeadSHA)
+		if applied.Mergeable != record.MergeabilityUnknown {
 			r.log.Info("outbox conflict confirm: GitHub answered; the workflow decides on the answer", attributes...)
 			return nil
 		}
