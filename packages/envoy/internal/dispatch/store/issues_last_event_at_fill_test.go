@@ -106,7 +106,7 @@ func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 				if err := store.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, fillerPID).Scan(&blocked); err != nil {
 					t.Fatalf("read the fill's blocked statement: %v", err)
 				}
-				t.Fatalf("the fill waits behind the transaction that holds the row of %s: %s", held, withoutComments(blocked))
+				t.Fatalf("the fill waits behind the transaction that holds the row of %s: %s", held, statementNamed(blocked))
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("the fill did not end within %s while a second transaction holds the row of %s", newestEventFillWait, held)
@@ -176,14 +176,11 @@ func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 	}
 }
 
-// withoutComments is statement, a migration file's text, with its `--` comment lines left out and
-// its whitespace run together, as a failure names the statement a backend runs.
-func withoutComments(statement string) string {
-	var kept []string
-	for _, line := range strings.Split(statement, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
-			kept = append(kept, line)
-		}
-	}
-	return strings.Join(strings.Fields(strings.Join(kept, " ")), " ")
+// statementNamed is how a failure names the statement a backend runs: the first line of its text
+// in pg_stat_activity. For a migration that is the comment naming its file, since Postgres keeps
+// only the start of a long text there (track_activity_query_size) and the fill's text opens with
+// its comments.
+func statementNamed(statement string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(statement), "\n")
+	return strings.TrimSpace(first)
 }
