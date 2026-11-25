@@ -746,6 +746,9 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/artifacts/{id}/changes": url.Values{"from": {"1"}, "to": {"2"}}.Encode(),
+		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
+		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
+		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
 	}
 }
 

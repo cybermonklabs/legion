@@ -65,7 +65,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
 	first, firstBlocks := documentOf([]part{{"b1", "paragraph", "One."}, {"b2", "paragraph", "Two."}})
 	firstAt := writeStoredVersion(t, tx, artifact, 1, first)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, firstAt, first, firstBlocks, nil, nil, TypedFacts{}); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, firstAt, first, firstBlocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	second, _ := documentOf([]part{{"b1", "paragraph", "One, rewritten."}, {"b2", "paragraph", "Two."}})
@@ -75,7 +75,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	if !secondAt.Before(thirdAt) {
 		t.Fatalf("version 2 was written at %s and version 3 at %s, want two times of the database's clock in order", secondAt, thirdAt)
 	}
-	if _, won, _, err := IndexBlocks(ctx, tx, artifact, 3, thirdAt, third, thirdBlocks, nil, nil, TypedFacts{}); err != nil || !won {
+	if _, won, _, err := IndexBlocks(ctx, tx, artifact, 3, thirdAt, third, thirdBlocks, nil, nil, "", TypedFacts{}); err != nil || !won {
 		t.Fatalf("index version 3 in one pass over versions 2 and 3: won %t, %v", won, err)
 	}
 

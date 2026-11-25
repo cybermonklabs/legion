@@ -1,4 +1,4 @@
-import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -18,23 +18,35 @@ import type {
   DispatchEvent,
   DisplayTree,
   EventType,
+  IssueAskRow,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { PostDeletion } from "../refs/post-marks";
-import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import {
   ReferenceNamesProvider,
-  useKnownAmbiguousReferences,
   useKnownDeletedReferences,
   useKnownEditedReferences,
-  useKnownReferenceName,
-  useKnownReferenceNames,
-  usePublishReferenceNames,
-} from "./reference-names";
+  useKnownReferences,
+} from "../refs/reference-names";
+import type { TreeNode } from "./issue-tree";
+import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+
+/** The name the page published for `reference`, as a surface under the store reads it, or
+ *  `undefined` where it published none. */
+function useKnownReferenceName(reference: string): string | undefined {
+  return useKnownReferences().names.get(reference);
+}
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The names of the issue page's tree, across a change to the tree itself. The batched name read
@@ -161,9 +173,11 @@ function stubTreeReads(
     targets: ReferenceTarget[];
   }>,
   {
+    asks = [],
     comments = [],
     held,
   }: {
+    readonly asks?: readonly IssueAskRow[];
     readonly comments?: readonly Comment[];
     readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
   } = {}
@@ -191,7 +205,7 @@ function stubTreeReads(
     }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
-      return [];
+      return [...asks];
     }),
     spyOn(api, "listComments").mockImplementation(async () => {
       await answered("comments");
@@ -533,7 +547,7 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
       () => {
         useIssueTree(issue);
         return {
-          ambiguous: useKnownAmbiguousReferences(),
+          ambiguous: useKnownReferences().ambiguous,
           names: [useKnownReferenceName(ambiguous), useKnownReferenceName(gone)],
           task: useKnownReferenceName(TASK_REF),
         };
@@ -645,16 +659,6 @@ test("the page publishes a deleted post a comment cites by its deleted line, amo
     for (const stub of stubs) stub.mockRestore();
   }
 });
-
-/** What one surface publishes: the names it read, the references it read as ambiguous, the
- *  references among the names it read edited, and those it read deleted, none where absent. */
-interface Published {
-  readonly ambiguous: ReadonlySet<string>;
-  readonly deleted?: ReadonlyMap<string, PostDeletion>;
-  readonly edited?: ReadonlySet<string>;
-  readonly names: ReadonlyMap<string, string>;
-}
-
 /** What a link under the provider read on its latest render. */
 interface Seen {
   ambiguous?: ReadonlySet<string>;
@@ -663,23 +667,13 @@ interface Seen {
   names?: ReadonlyMap<string, string>;
 }
 
-/** A surface that publishes `published` for as long as it is mounted. */
-function Publisher({ published }: { readonly published: Published }): ReactNode {
-  usePublishReferenceNames(
-    published.names,
-    published.ambiguous,
-    published.edited,
-    published.deleted
-  );
-  return null;
-}
-
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
-  seen.ambiguous = useKnownAmbiguousReferences();
-  seen.deleted = useKnownDeletedReferences();
-  seen.edited = useKnownEditedReferences();
-  seen.names = useKnownReferenceNames();
+  const known = useKnownReferences();
+  seen.ambiguous = known.ambiguous;
+  seen.deleted = known.deleted;
+  seen.edited = known.edited;
+  seen.names = known.names;
   return null;
 }
 
@@ -693,25 +687,32 @@ test("one publisher leaving keeps the names and ambiguous references another pub
   const other = "dispatch://CORE-7";
   const pageAmbiguous = `dispatch://${KEY}/comment/c0b271c7`;
   const sheetAmbiguous = `dispatch://${KEY}/ask/a5`;
-  const page: Published = {
+  // What each surface read - the names, and the references it read as ambiguous - and what it
+  // publishes of that, made once, so a render in which no surface reads again publishes the
+  // same value.
+  const page = {
     ambiguous: new Set([pageAmbiguous]),
     names: new Map([
       [TASK_REF, TASK_WORDS],
       [shared, "Hold the deploy."],
     ]),
   };
-  const sheet: Published = {
+  const sheet = {
     ambiguous: new Set([sheetAmbiguous]),
     names: new Map([
       [other, "Another issue"],
       [shared, "Hold the deploy until Friday."],
     ]),
   };
+  const published = {
+    page: publishedNames(page.names, { ambiguous: page.ambiguous }),
+    sheet: publishedNames(sheet.names, { ambiguous: sheet.ambiguous }),
+  };
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
-      {mounted.page && <Publisher published={page} />}
-      {mounted.sheet && <Publisher published={sheet} />}
+      {mounted.page && <Publisher published={published.page} />}
+      {mounted.sheet && <Publisher published={published.sheet} />}
       <Reader seen={seen} />
     </ReferenceNamesProvider>
   );
@@ -753,18 +754,14 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 test("the edited mark a link reads is the one of the publisher whose name stands", () => {
   const deleted = `dispatch://${KEY}/comment/c0ffee00`;
   const edited = `dispatch://${KEY}/comment/c0ffee01`;
-  const page: Published = {
-    ambiguous: new Set(),
-    edited: new Set([deleted, edited]),
-    names: new Map([
+  const page = publishedNames(
+    new Map([
       [deleted, "Hold the deploy."],
       [edited, "Ship it."],
     ]),
-  };
-  const sheet: Published = {
-    ambiguous: new Set(),
-    names: new Map([[deleted, "Deleted by alice"]]),
-  };
+    { edited: new Set([deleted, edited]) }
+  );
+  const sheet = publishedNames(new Map([[deleted, "Deleted by alice"]]));
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
@@ -798,22 +795,20 @@ test("the delete a link reads is the one of the publisher whose name stands", ()
   const deleted = `dispatch://${KEY}/comment/c0ffee00`;
   const restored = `dispatch://${KEY}/comment/c0ffee01`;
   const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
-  const page: Published = {
-    ambiguous: new Set(),
-    deleted: new Map([[restored, deletion]]),
-    names: new Map([
+  const page = publishedNames(
+    new Map([
       [deleted, "Hold the deploy."],
       [restored, "Deleted by alice"],
     ]),
-  };
-  const sheet: Published = {
-    ambiguous: new Set(),
-    deleted: new Map([[deleted, deletion]]),
-    names: new Map([
+    { deleted: new Map([[restored, deletion]]) }
+  );
+  const sheet = publishedNames(
+    new Map([
       [deleted, "Deleted by alice"],
       [restored, "Ship it."],
     ]),
-  };
+    { deleted: new Map([[deleted, deletion]]) }
+  );
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
@@ -838,8 +833,9 @@ test("the delete a link reads is the one of the publisher whose name stands", ()
 });
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
-// link that reads the page's published names draws the name as it is, so the page publishes the
-// question's plain words, the name a chip naming the ask draws (`targetNaming`).
+// surface that reads the page's published names draws the name as it is, so the page publishes
+// the projection of the question's reading, as a link to the ask reads it (R8), from which a
+// chip naming the ask cuts its own words (`targetNaming`, `chipName`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(
@@ -1358,7 +1354,7 @@ test("A plan with no role that the issue names by its id has its blocks read and
     expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
     // A comment citing the whole plan carries a chip that names it as the plan.
     const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
-    expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    expect(chips?.map((chip) => ({ name: chip.reading?.chipWord, ref: chip.ref }))).toEqual([
       { name: PRESET_NAMES.plan, ref: cites },
     ]);
     view.unmount();
@@ -1367,11 +1363,117 @@ test("A plan with no role that the issue names by its id has its blocks read and
   }
 });
 
+// A link titles another issue's whole spec by that issue's title (`issueOrDocumentTitle`), which
+// the batched read answers only under the issue's own address. So where a comment cites such a
+// spec alone, the page asks the one read for the issue beside it, and publishes the spec by the
+// issue's title for every plain line it feeds, with the page's word for a document beside it for
+// a chip to draw (`targetNaming`).
+test("another issue's spec a comment cites alone is read with its issue and published by the issue's title", async () => {
+  const other = "dispatch://CORE-9";
+  const cited = `${other}/spec`;
+  const title = "Other issue title";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      // The spec by its file name and the issue by its title, each where it is asked for.
+      return {
+        targets: namedTargets(refs).targets.map((target): ReferenceTarget => {
+          if (target.ref === cited) return { ...target, kind: "artifact", name: "spec.md" };
+          return target.ref === other ? { ...target, kind: "issue", name: title } : target;
+        }),
+      };
+    },
+    { comments: [{ ...comment, body: `Wait for ${cited} to be approved.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        const known = useKnownReferences();
+        return { line: known.lines.get(cited), name: known.names.get(cited) };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBeDefined());
+    expect(asked, "the names were read more than once").toHaveLength(1);
+    expect(asked[0]).toContain(cited);
+    expect(asked[0], "the names read was not asked for the spec's issue").toContain(other);
+    expect(view.result.current).toEqual({ line: NODE_TYPE_NAMES.document, name: title });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A declined ask's note is drawn under its row in the Decisions view from the asks read, not from
+// a node of the tree, so the page asks the one names read for what the note cites, and no row
+// reads it itself. The ask is the row the server answers for a decline: `resolved`, with a
+// resolution of kind `declined` (the database's `asks_state_check` holds no `declined` state).
+test("what a declined ask's note cites is asked for in the one names read", async () => {
+  const cited = "dispatch://CORE-9";
+  const asked: string[][] = [];
+  const declined = {
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_id: null,
+    created_at: "2026-11-10T09:00:00Z",
+    edited_at: null,
+    id: "a-declined",
+    issue_key: KEY,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    options: null,
+    question: "On a phone, where does the box sit?",
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-11-13T09:00:00Z",
+      kind: "declined",
+      reason: `Ask about ${cited} first.`,
+    },
+    state: "resolved",
+    urgency: "normal",
+  } satisfies IssueAskRow;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return namedTargets(refs);
+    },
+    { asks: [declined] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0], "the names read was not asked for what the note cites").toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The batched read names a typed block by its stored excerpt, which opens on the block's
-// directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
-// the server's reading where the read sends one, and the page's word for the block's kind where
-// it sends none - never the directive line.
+// directive line. Every surface that reads the page's published names draws the name as it is,
+// so the page publishes the name a chip naming the block is cut from (`targetNaming`): the first
+// block of the server's reading where the read sends one, whole, and the page's word for the
+// block's kind where it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {

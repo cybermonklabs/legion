@@ -56,6 +56,16 @@ export function wordsOf(node: DisplayTree): string {
   return words;
 }
 
+/** `reading` holding the first of its top-level blocks that holds any words (`wordsOf`) and
+ *  nothing else; undefined for a reading none of whose blocks holds a word. The words only choose
+ *  the block: what it says is the projection's to read. A node's one line and the name of a
+ *  block are read from it (`issue-page/issue-tree.ts`'s `lineReading`, `tree-drafts.ts`'s
+ *  `treeContext`). */
+export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined {
+  const block = childrenOf(reading)?.find((child) => wordsOf(child).trim() !== "");
+  return block === undefined ? undefined : { ...reading, content: [block] };
+}
+
 /** What a cut of one node left: the node to keep, absent where nothing of it fits, and how many
  *  characters of the budget are still free. */
 interface CutNode {

@@ -182,7 +182,7 @@ func closureRead(t *testing.T, issue linkedIntoIssue) time.Duration {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	started := time.Now()
-	references, err := refs.Closure(ctx, tx, linkedIntoReader, issue.key)
+	references, err := refs.Closure(ctx, tx, linkedIntoReader, issue.key, "")
 	took := time.Since(started)
 	if err != nil {
 		t.Fatalf("refs.Closure's read of the references of %s: %v", issue.key, err)

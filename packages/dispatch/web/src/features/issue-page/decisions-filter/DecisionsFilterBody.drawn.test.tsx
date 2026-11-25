@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -25,11 +25,13 @@ import {
 } from "../../../theme/classes";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import type { PublishedReferences } from "../../refs/reference-names";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
-import type { TreeNode } from "../issue-tree";
+import { type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
@@ -45,9 +47,10 @@ import {
   STATE_LINES,
 } from "../page-words";
 import { presetView } from "../presets";
+import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
-import { decisionBehind } from "../tree-keys";
+import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -77,9 +80,10 @@ import type { DecisionsAsk } from "./decisions-parts";
  * What the Decisions filter's body draws, read as a reader reads it. Which entry stands in which
  * part is the model's, read in `decisions-parts.test.ts`; these rows read the drawing: the four
  * parts under their headings, the words each state reads, Keep and Change on the review list
- * alone, the person's answer character for character, and where the focus goes. How a row is
- * laid out and where a long question is cut are the browser's to say, which no DOM of a unit
- * test lays out, so the browser suite's c-row, c-decisions and c-review-list read them.
+ * alone, the person's answer paragraph by paragraph as the store holds it, and where the focus
+ * goes. How a row is laid out and where a long question is cut are the browser's to say, which
+ * no DOM of a unit test lays out, so the browser suite's c-row, c-decisions and c-review-list
+ * read them.
  */
 
 /** The page's line for an issue the view draws nothing for, which the slot hands the body. */
@@ -219,6 +223,10 @@ interface BodyProps {
    *  turned off, and true draws a new one. */
   readonly drawn?: boolean;
   readonly isClosed?: boolean;
+  /** What the page publishes of its batched names read, published to the names store and handed
+   *  to the body, as the slot hands it: what it publishes for the tree's statements
+   *  (`publishedStatements`) unless a case gives another. */
+  readonly published?: PublishedReferences;
   readonly request?: OutlineRequest;
   readonly reveal?: string;
   readonly view?: TreeNode;
@@ -258,9 +266,30 @@ function decisionsText(made: readonly Decision[]): string {
   ].join("\n\n");
 }
 
+/** What the page publishes of its one batched read for every statement `root` holds
+ *  (`useIssueTree.ts`): each named by the reading of its words the read sends for a block
+ *  (`text_tree`), as the page names it (`targetNaming`), so the names store projects the line a
+ *  decision's "informs" line names it by (`KnownReferences.lines`). The engine must have loaded
+ *  (`displayTree`). */
+function publishedStatements(root: TreeNode): PublishedReferences {
+  const statements = nodesInOrder(root).flatMap((node) => {
+    if (node.type !== "requirement") return [];
+    const tree = node.tree ?? displayTree(node.text);
+    return [tree === undefined ? node : { ...node, tree }];
+  });
+  return {
+    ...targetNaming(blockReads(issueDetails(), statements)),
+    asked: new Set(
+      statements.flatMap(({ reference }) => (reference === undefined ? [] : [reference]))
+    ),
+  };
+}
+
 /** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
  *  decisions read of `made` as the cache holds them. `made` or `asks` null leaves that read out
- *  of the cache, as before it answers. */
+ *  of the cache, as before it answers. It is drawn under the names store, with what the page
+ *  publishes for the tree's statements published to it and handed to the body
+ *  (`publishedStatements`), where a case gives nothing else, and with no names line. */
 function renderBody(
   {
     asks = [],
@@ -324,6 +353,7 @@ function renderBody(
   }
   const issue = issueDetails();
   const root = issueTree(children);
+  const rootPublished = publishedStatements(root);
   // The view the slot hands the body where no address names a node and no words are typed
   // (`slots/view-decisions.tsx`).
   const decisionsView = presetView(root, "decisions", "", new Set()).root;
@@ -331,12 +361,14 @@ function renderBody(
     children: grown,
     drawn = true,
     isClosed = false,
+    published: given,
     request,
     reveal,
     view,
     waitingPress,
   }: BodyProps) => {
     const tree = grown === undefined ? root : issueTree(grown);
+    const published = given ?? (grown === undefined ? rootPublished : publishedStatements(tree));
     const shown =
       view ??
       (grown === undefined ? decisionsView : presetView(tree, "decisions", "", new Set()).root);
@@ -347,6 +379,8 @@ function renderBody(
         holdsEscape={false}
         isClosed={isClosed}
         issue={issue}
+        namesLine={NO_FAILED_READS}
+        published={published}
         reader={READER}
         {...(request === undefined ? {} : { request })}
         {...(reveal === undefined ? {} : { reveal })}
@@ -360,6 +394,7 @@ function renderBody(
     return (
       <MemoryRouter>
         <AppProviders client={client}>
+          <Publisher published={published} />
           <IssueScope />
           <Where />
           {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
@@ -481,6 +516,12 @@ function chromeOf(scope: Element): string[] {
     })
     .filter((text) => text !== "");
 }
+
+// The rows' words, their parents' lines and the statements' names are drawn from readings, which
+// the page's engine reads and projects, so it is loaded before any row runs.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // R2, c-decisions: four parts under their own headings and in this order: the open questions,
 // the decisions waiting for review, the reader's own decisions newest first, and the folded
@@ -1413,8 +1454,9 @@ test("a focused entry that another person deletes gives the focus to its neighbo
 });
 
 // R2, R9, c-decisions: an answered ask draws its question and its options, and the person's
-// answer character for character as the store holds it, with no sentence of the page's beside
-// it restating it and no reading: the agent's write-up of the answer is no row of the filter.
+// answer word for word as the store holds it, each paragraph the paragraph stored, with no
+// sentence of the page's beside it restating it and no reading: the agent's write-up of the
+// answer is no row of the filter.
 test("an answered ask draws the person's answer as stored, and no reading", async () => {
   const view = renderBody(wholeIssue());
   const row = rowOf(view, "a-answered");
@@ -1429,8 +1471,13 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
     ["", "○Works"],
     ["chosen", "●Changes needed"],
   ]);
-  // Every character, the line breaks and the doubled spaces included.
-  expect(row.querySelector("[data-answer-text]")?.textContent).toBe(STORED);
+  // Each paragraph of what they wrote, its doubled spaces included: the answer is drawn by the
+  // row's reader (`RowText`), as a row's words are, so a paragraph is an element of the page and
+  // the blank line and the indent between two are no characters of it.
+  const stored = ["Keep the rail.", "It is 56 px wide -  no wider."];
+  expect(
+    [...row.querySelectorAll("[data-answer-text] p")].map((paragraph) => paragraph.textContent)
+  ).toEqual(stored);
   expect(words(row.querySelector("[data-answer-author]"))).toBe("alice");
   // The reader's own answer carries the ink rule their own words carry (R34): each class of the
   // page's rule, so the reading holds whatever classes the theme writes the rule with.
@@ -1441,7 +1488,9 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   // With the focus on it the same holds, and what the page writes of its own on the row is the
   // kind, the state, the word naming the answer, the link and the body's one control.
   await act(async () => row.focus());
-  expect(row.querySelector("[data-answer-text]")?.textContent).toBe(STORED);
+  expect(
+    [...row.querySelectorAll("[data-answer-text] p")].map((paragraph) => paragraph.textContent)
+  ).toEqual(stored);
   // (the two marks are the options' own: the one chosen and the one not).
   expect(chromeOf(row).sort()).toEqual(
     [
@@ -1484,6 +1533,62 @@ test("a declined ask says who declined it and draws no answer", () => {
   expect(row.querySelector("[data-answer-text]")).toBeNull();
 });
 
+// R6, R9: the note a person wrote as they declined is drawn by the renderer, as a person's answer
+// under an ask is (`RowText`), never as the characters they typed: its marks are drawn as what
+// they are, and a reference in it reads as its target's name from the page's one names read.
+test("a declined ask's note is drawn through the renderer, a reference in it read as its target", async () => {
+  await warmMarkdownRenderer();
+  const cited = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      ...wholeIssue(),
+      asks: [
+        closing("a-declined", {
+          at: "2026-11-13T09:00:00Z",
+          kind: "declined",
+          reason: `Ask about ${cited} **first**.`,
+        }),
+      ],
+    },
+    { published: publishedNames(new Map([[cited, name]])) }
+  );
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe(`Ask about ${name} first.`));
+    expect(note()?.querySelector("strong")?.textContent).toBe("first");
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// R6: where the asks read sends the server's reading of the note (`reason_tree`), the row draws
+// that tree rather than a parse of the stored text. The tree reads differently from the text
+// beside it, so a note drawn from a parse would read "the old words".
+test("a declined ask's note is drawn from the reading the asks read sends", async () => {
+  await warmMarkdownRenderer();
+  const view = renderBody({
+    ...wholeIssue(),
+    asks: [
+      closing("a-declined", {
+        at: "2026-11-13T09:00:00Z",
+        kind: "declined",
+        reason: "the **old** words",
+        reason_tree: displayTree("the **new** words, for now"),
+      }),
+    ],
+  });
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe("the new words, for now"));
+    expect(note()?.querySelector("strong")?.textContent).toBe("new");
+  } finally {
+    view.unmount();
+  }
+});
+
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three. Each entry links to the node that holds it."
 test("a decision reaches each statement it shaped, and every entry links to its node", async () => {
@@ -1500,11 +1605,12 @@ test("a decision reaches each statement it shaped, and every entry links to its 
       link.getAttribute("href"),
     ])
   ).toEqual([
-    // Each statement's own words, "The page draws sN. It draws nothing else.", cut by the
-    // chips' rule within 32 characters.
-    ["The page draws s1. It draws…", `/issues/${KEY}#b-s1`],
-    ["The page draws s2. It draws…", `/issues/${KEY}#b-s2`],
-    ["The page draws s3. It draws…", `/issues/${KEY}#b-s3`],
+    // Each statement named as a chip names a block (`chipName`): the first line of its own
+    // words, "The page draws sN. It draws nothing else.", cut by R1's first-line rule and then
+    // by the chips' rule within 32 characters.
+    ["The page draws s1.", `/issues/${KEY}#b-s1`],
+    ["The page draws s2.", `/issues/${KEY}#b-s2`],
+    ["The page draws s3.", `/issues/${KEY}#b-s3`],
   ]);
   // A decision tied to nothing names nothing.
   expect(rowOf(view, D("minor")).querySelector("[data-decision-informs]")).toBeNull();
@@ -1537,6 +1643,37 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
   expect(parent?.getAttribute("data-parent-id")).toBe("q2");
   expect(words(parent)).toBe(NODE_TYPE_NAMES.ask);
+});
+
+// R2, R8: an entry's parent line is its parent's projected first line (`useNodeLine`), as the
+// outline's parent line is, so a reference in the parent's words reads as its target's name from
+// the page's one names read, and the line is cut at the first sentence; never the parent's words
+// as written.
+test("an entry's parent line reads a reference in its parent's words by its target's name", async () => {
+  await warmMarkdownRenderer();
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      children: [
+        statement("s1"),
+        openAsk("q2", true, {
+          children: [decisionNode("under")],
+          text: `Serve ${address} first. Then the rest.`,
+        }),
+      ],
+      made: [decision("under", { links: [shaped(specRef("s1"))] })],
+    },
+    { published: publishedNames(new Map([[address, "The rows hold"]])) }
+  );
+  const line = () =>
+    rowOf(view, D("under")).querySelector("[data-node-parent-line]")?.lastElementChild?.textContent;
+  try {
+    await waitFor(() => expect(line()).toBe("Serve The rows hold first."));
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
 });
 
 // R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says
@@ -1575,7 +1712,7 @@ test("a focused row says Author unknown for a decision with no author, and gives
 });
 
 // R5 (e), R22: a statement on a decision's "informs" line is named by its own words, cut at a
-// word within 32 characters as a chip's are (`chipWords`, decision 83), and never by an address.
+// word within 32 characters as a chip's are (`chipName`, decision 83), and never by an address.
 test("each statement on the informs line is named within 32 characters", () => {
   const view = renderBody({
     children: [
@@ -1596,8 +1733,8 @@ test("each statement on the informs line is named within 32 characters", () => {
   expect(name).not.toContain("dispatch://");
   expect(name).not.toContain("#b-");
   // The other statement is named by its own words too, "The page draws s2. It draws nothing
-  // else.", cut the same way.
-  expect(names[1]).toBe("The page draws s2. It draws…");
+  // else.", cut the same way: its first line, which is its first sentence.
+  expect(names[1]).toBe("The page draws s2.");
   expect(
     [...(informs?.querySelectorAll("[data-decision-statement]") ?? [])].map((shape) =>
       shape.getAttribute("data-decision-statement")
@@ -1617,6 +1754,38 @@ test("each statement on the informs line is named within 32 characters", () => {
   expect(words(rowOf(short, D("first")).querySelector("[data-decision-statement] a"))).toBe(
     "Rows stand alone."
   );
+});
+
+// R8 over an entry's words: the body hands its rows what the page publishes of its batched names
+// read in the render that draws them (`published`), as the outline does, and the page publishes
+// to the names store only after the rows have rendered (`Publisher`): so a reference the page
+// asks for waits on the page's answer from a row's first render, drawn as its author wrote it
+// meanwhile, and is never read by the row; a row that read the store alone read it itself first,
+// one request for each row.
+test("a decision's row waits on the page's read for a reference the page asks for", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const written = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      children: [statement("s1"), decisionNode("first", { text: written })],
+      made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    },
+    { published: publishedNames(new Map(), { asked: [address] }) }
+  );
+  const rowWords = () =>
+    rowOf(view, D("first")).querySelector("[data-node-words]")?.textContent ?? "";
+  try {
+    await waitFor(() => expect(rowWords()).toContain(written));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.again({ published: publishedNames(new Map([[address, name]])) });
+    await waitFor(() => expect(rowWords()).toContain(`See ${name} first.`));
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
 });
 
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through
@@ -2156,6 +2325,33 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   }
 });
 
+// R6: what a person wrote in a Change is drawn by the renderer, as a person's answer under an
+// ask is (`RowText`), never as the characters they typed: its marks are drawn as what they are
+// and no asterisk or backtick shows.
+test("a Change's body is drawn through the renderer, its marks gone", async () => {
+  await warmMarkdownRenderer();
+  const body = "Name **the read**, and keep `x` as written.";
+  const view = renderBody(wholeIssue());
+  try {
+    await act(async () =>
+      view.client.setQueryData(
+        ["comments", KEY],
+        [changeOf("second", "2026-11-16T09:00:00Z", body)]
+      )
+    );
+    await waitFor(() =>
+      expect(rowOf(view, D("second")).querySelector("[data-change-words]")?.textContent).toBe(
+        "Name the read, and keep x as written."
+      )
+    );
+    expect(rowOf(view, D("second")).querySelector("[data-change-words] strong")?.textContent).toBe(
+      "the read"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
 // edited post: the person's words as stored, then ` · edited` in the page's own words
 // (`EditedMark`). A Change nobody edited draws its words and nothing after them.
@@ -2406,7 +2602,7 @@ test("the body draws the entries the filter's view left", async () => {
       {
         answered: true,
         gone: false,
-        name: "Question q-open?",
+        reading: { words: "Question q-open?" },
         ref: `dispatch://${KEY}/ask/q-open`,
       },
     ],
@@ -2435,7 +2631,14 @@ test("the body draws the entries the filter's view left", async () => {
   const checked = [
     statement("s1", { children: [check] }),
     decisionNode("first", {
-      chips: [{ answered: true, gone: false, name: "The page draws s1.", ref: specRef("s1") }],
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          reading: { words: "The page draws s1." },
+          ref: specRef("s1"),
+        },
+      ],
     }),
   ];
   expect(decisionBehind(issueTree(checked), check.id)?.id).toBe(D("first"));

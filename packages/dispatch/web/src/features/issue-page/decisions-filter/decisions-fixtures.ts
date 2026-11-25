@@ -1,7 +1,7 @@
 import type {
   Actor,
   Artifact,
-  AskResolution,
+  AskResolutionWithTrees,
   Decision,
   DecisionEntry,
   DecisionLink,
@@ -187,7 +187,7 @@ export function answeredAsk(
 /** How one ask was closed, as the asks read answers it beside the ask. */
 export function closing(
   id: string,
-  resolution: Partial<AskResolution> & { at: string; kind: string }
+  resolution: Partial<AskResolutionWithTrees> & { at: string; kind: string }
 ): DecisionsAsk {
   return { id, resolution: { actor: READER_ACTOR, reason: "", ...resolution } };
 }

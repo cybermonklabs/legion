@@ -1,0 +1,4 @@
+jj git push --dry-run --ignore-working-copy --color=never --deleted
+Changes to push to origin:
+  Delete bookmark gone from bacdb9e98ea0
+Dry-run requested, not pushing.
