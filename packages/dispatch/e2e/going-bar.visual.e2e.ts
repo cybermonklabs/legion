@@ -16,7 +16,7 @@
  *  ONE SEED, AND NO ROW SEEDS FOR ANOTHER LOGIN. The issues these rows read, plan on and change
  *  are the review corpus's own (`seedBarIssues`, e2e/review-seed.ts): seven issues of project
  *  OPS, bob's, with no ask among them, which no page of the shot set draws, and the dome routed
- *  to the workspace's Planner, so a message to the Planner is placed on the dome. A row reads
+ *  to the workspace's Observer, so a message to the Observer is placed on the dome. A row reads
  *  their keys from the seed file and scripts the fake models with them, and writes nothing
  *  before it opens the bar but what its own login must have done: state 1 opens the two issues
  *  its Recent lists, and state 6 writes the three comments on the shutter its plan edits and
@@ -754,7 +754,7 @@ const barRows: readonly BarRow[] = [
     // shutter itself, as its own login, before it opens the bar. The short edit's and the
     // delete's rows come right after the new issue's, so each shot shows them under the
     // question; the long edit's comes later, so the plan's end shows its folded diff. The message
-    // goes to the Planner, whom the seed routes the dome to (`seedBarIssues`), so its row names
+    // goes to the Observer, whom the seed routes the dome to (`seedBarIssues`), so its row names
     // the session, the issue it is posted on and its delivery (R7). The row discards the plan, so
     // nothing is sent, edited or deleted.
     reach: async (page, seed) => {
@@ -819,7 +819,7 @@ const barRows: readonly BarRow[] = [
                     arguments: {
                       body: "A motor for the dome is planned.",
                       delivery: "btw",
-                      session: sessionIds.planner,
+                      session: sessionIds.observer,
                     },
                     tool: "dispatch_send_to_agent",
                   },
@@ -896,7 +896,7 @@ const barRows: readonly BarRow[] = [
       // The message row names the session, the issue it is posted on by its chip, and the
       // delivery; the suggestion names the issue whose spec it changes by its chip.
       await expect(planCard(page).getByTestId("going-plan-message")).toHaveText(
-        new RegExp(`^Message to Planner on ${dome}(?!\\d).* · as a BTW$`)
+        new RegExp(`^Message to Observer on ${dome}(?!\\d).* · as a BTW$`)
       );
       await expect(planCard(page).getByTestId("going-plan-document")).toHaveText(
         new RegExp(`^Suggest a change to the spec of ${dome}(?!\\d)`)

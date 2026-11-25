@@ -707,9 +707,11 @@ async function awaitNothingOwed(boundMs: number): Promise<void> {
  *  Inbox the shot pages draw for her count her open asks, and none of these holds one. None
  *  stands in a status in flight either (`work_under_no_priority`, the rail's Priorities count and
  *  `/priorities`'s first fault list): a new issue is in triage, and the three patched below go
- *  to todo, backlog and icebox. The dome's route names the workspace's Planner, so the Planner
+ *  to todo, backlog and icebox. The dome's route names the workspace's Observer, so the Observer
  *  works on the dome, and a message to it that state 6's plan proposes is placed on the dome
- *  (R7, `goingPlaceSend`): "Message to Planner on ‹the dome's key› · as a BTW". A route draws on
+ *  (R7, `goingPlaceSend`): "Message to Observer on ‹the dome's key› · as a BTW". The Observer,
+ *  because it holds no claim (`claimHolderSessions`): a session's claim comes before its route
+ *  when the bar places a message, and the Planner claims two of `WORK`'s issues. A route draws on
  *  no page of the shot set.
  *
  *  Created one at a time, for the reason `seedWorkspace` gives: the server numbers a key as it
@@ -734,7 +736,7 @@ async function seedBarIssues(): Promise<BarSeed> {
   await patchIssue(mount, { status: "todo" }, bob);
   await patchIssue(craters, { status: "backlog" }, bob);
   await patchIssue(mirror, { status: "icebox" }, bob);
-  await patchIssue(dome, { route: `session:${sessionIds.planner}` }, bob);
+  await patchIssue(dome, { route: `session:${sessionIds.observer}` }, bob);
   return { craters, dome, eyepiece, finder, mirror, mount, project, shutter };
 }
 
