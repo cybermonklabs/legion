@@ -67,29 +67,6 @@ func TestARingOfTenThousandTasksIsRefusedInNearLinearTime(t *testing.T) {
 // reads: the most Dispatch's document limits let one plan hold.
 const costOfShapeSize = 10_000
 
-// chainBlocks is size task blocks, each needing the one before it, the first needing none: one
-// chain of needs and no cycle. With parts, block f names a sub-owner and the chain is size-1 parts
-// of f, f00000, f00001, …, siblings each needing the one before, as a part may need its siblings;
-// without, the chain is size tasks of the top level, t00000, t00001, …. No block names steps.
-func chainBlocks(size int, parts bool) []Block {
-	prefix, parent := "t", ""
-	var blocks []Block
-	if parts {
-		prefix, parent = "f", "f"
-		blocks = append(blocks, partBlock("f", "", "owner", "architect"))
-		size--
-	}
-	for i := range size {
-		id := fmt.Sprintf("%s%05d", prefix, i)
-		if i == 0 {
-			blocks = append(blocks, partBlock(id, parent))
-			continue
-		}
-		blocks = append(blocks, partBlock(id, parent, "needs", fmt.Sprintf("%s%05d", prefix, i-1)))
-	}
-	return blocks
-}
-
 // nestingBlocks is two nestings of parts under block r, which names a sub-owner, of (size-1)/2
 // blocks each: a00000 and b00000 are parts of r, and each a<i> and b<i> after them a part of the
 // one before, each naming a sub-owner. Each b<i> needs a<i>, the part of the other nesting at its

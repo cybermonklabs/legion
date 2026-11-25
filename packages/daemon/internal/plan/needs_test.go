@@ -244,3 +244,60 @@ func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
 		t.Fatalf("Validate under an ended context = %d refusals and error %v, want none and %v", len(refusals), err, context.Canceled)
 	}
 }
+
+// chainBlocks is size task blocks, each needing the one before it, the first needing none: one
+// chain of needs and no cycle. With parts, block f names a sub-owner and the chain is size-1 parts
+// of f, f00000, f00001, …, siblings each needing the one before, as a part may need its siblings;
+// without, the chain is size tasks of the top level, t00000, t00001, …. No block names steps.
+func chainBlocks(size int, parts bool) []Block {
+	prefix, parent := "t", ""
+	var blocks []Block
+	if parts {
+		prefix, parent = "f", "f"
+		blocks = append(blocks, partBlock("f", "", "owner", "architect"))
+		size--
+	}
+	for i := range size {
+		id := fmt.Sprintf("%s%05d", prefix, i)
+		if i == 0 {
+			blocks = append(blocks, partBlock(id, parent))
+			continue
+		}
+		blocks = append(blocks, partBlock(id, parent, "needs", fmt.Sprintf("%s%05d", prefix, i-1)))
+	}
+	return blocks
+}
+
+// endsAfter is a context whose Err answers nil to its first reads and context.Canceled to each
+// read after them.
+type endsAfter struct {
+	context.Context
+	reads int
+}
+
+func (c *endsAfter) Err() error {
+	if c.reads > 0 {
+		c.reads--
+		return nil
+	}
+	return context.Canceled
+}
+
+// The check of parts reads the request's context as the check of cycles does, so a request that
+// ends once the check of cycles is done stops the check of parts too: Validate answers the
+// context's error and no refusal. The plan, a chain of contextSteps/4 parts of one task, takes the
+// check of cycles fewer than contextSteps steps, which the test counts, so the context's first read
+// after Validate's own is the check of parts'. The fault is a check of parts that runs to its end
+// after its request has gone (its control: needReasons that never reads its context, under which
+// Validate answers no refusal and no error, as the release before did).
+func TestAContextThatEndsAfterTheCheckOfCyclesStopsTheCheckOfParts(t *testing.T) {
+	p := planOf(t, 1, chainBlocks(contextSteps/4, true)...)
+	steps := 0
+	if _, _, err := cycles(p.Tasks, func() error { steps++; return nil }); err != nil || steps >= contextSteps {
+		t.Fatalf("the check of cycles of %d tasks took %d steps and error %v, want fewer than %d and none", len(p.Tasks), steps, err, contextSteps)
+	}
+	refusals, err := Validate(&endsAfter{Context: t.Context(), reads: 1}, p, Deployment{Roles: BuiltinRoles()})
+	if !errors.Is(err, context.Canceled) || refusals != nil {
+		t.Fatalf("Validate under a context that ends after the check of cycles = %d refusals and error %v, want none and %v", len(refusals), err, context.Canceled)
+	}
+}
