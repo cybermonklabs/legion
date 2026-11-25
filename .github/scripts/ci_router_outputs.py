@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""What each output of ci.yaml's `changes` job evaluates to for one event, one ref, one set of
-pull request labels, one set of workflow_dispatch inputs and one set of paths-filter verdicts,
-read as GitHub Actions evaluates an expression. Its harness, ci-router-outputs.test.sh, holds the
-outputs' label terms to what they promise: `full-ci` turns on every slow suite, a `lane:<output>`
-label turns on that one output, and a label that names no output turns on nothing
-(.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request); it holds a
-dispatched run's selection and the workflow's cancel key to what they promise: a dispatch of main
-selects every job, a dispatch of a branch selects what a merge group with the same verdicts
-selects and its filters are measured against its merge base with main as a merge group's are
-against its base, and a newer dispatch of a branch cancels that branch's older one
+"""What each output of `.github/workflows/ci.yaml#changes` job evaluates to for one event, one
+ref, one set of pull request labels, one set of workflow_dispatch inputs and one set of
+paths-filter verdicts, read as GitHub Actions evaluates an expression. Its harness,
+ci-router-outputs.test.sh, holds the outputs' label terms to what they promise: `full-ci` turns on
+every slow suite, a `lane:<output>` label turns on that one output, and a label that names no
+output turns on nothing (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request);
+it holds a dispatched run's selection and the workflow's cancel key to what they promise: a
+dispatch of main selects every job, a dispatch of a branch selects what a merge group with the
+same verdicts selects and its filters are measured against its merge base with main as a merge
+group's are against its base, and a newer dispatch of a branch cancels that branch's older one
 (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job);
 and it reads, with --steps, whether each step a called workflow gates on what the changes job
 hands it runs: the harness holds each test-job step gated on the one list of matched filters to

@@ -20,7 +20,7 @@
 # dispatch of any ref but exactly refs/heads/main apart, no other job may carry one, the ci-ok
 # job's reconcile step must carry its one if:, the changes job's ref step must test the ref with
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
-# on.push.paths must equal its filter, no `if:` of ci.yaml may test for a push event or compare
+# on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
@@ -64,6 +64,11 @@ trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
 
 # Importing ci_job_reads.py walks the repository and runs go list. The cases at the end of this
 # file that read its race walk and its files_but_tests ask it fourteen questions, and as fourteen
@@ -1917,7 +1922,7 @@ check "and says what the value must be" \
 
 # A value that names the changes job nowhere carries no filter, so this rule has nothing to
 # resolve and leaves it alone; what refuses the fixture is the gate on that step, whose `if:`
-# then tests no filter. That is the shape dispatch-browser.yaml's `lane` takes in the real
+# then tests no filter. That is the shape `.github/workflows/dispatch-browser.yaml#lane` takes in the real
 # tree, where no gate is declared on such a condition and the check passes over it.
 echo "case: a called step's input the caller passes a literal for"
 root=$(fixture called-input-literal)
@@ -4909,29 +4914,30 @@ COMPILERS = (
 # cannot hold the filter to it.
 READS = (
     ("broker_client", "packages/envoy/internal/cipherclient/testdata/wire.json",
-     "packages/cipher-client/src/__tests__/wire.test.ts:25-26"),
+     "`packages/cipher-client/src/__tests__/wire.test.ts#CORPUS_PATH`"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
-     "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),
+     "`packages/contracts/src/dispatch-block-ref.test.ts#the Go encoder's table is the same table`"),
     ("contracts", "packages/daemon/internal/intake/testdata/dispatch/server-started.json",
-     "packages/contracts/src/dispatch-api.test.ts:293-300"),
+     "`packages/contracts/src/dispatch-api.test.ts#the envelope Dispatch publishes for an announcement carries a payload this schema reads`"),
     ("dispatch_ui", "packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json",
-     "packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275"),
+     "`packages/proof-editor/tests/ask-concurrent-edit.test.ts#the server's block node types and the schema's typed blocks are the live schema's block group`"),
     ("claude_envoy", "packages/envoy-client/test/stall-proxy.ts",
-     "packages/claude-envoy/tests/envoy-channel-stall.test.ts:9-11"),
+     "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#startStallProxy`"),
     ("pi_legion", "packages/dispatch/e2e/harness-processes.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
+     "`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER`, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
+     "that builder's `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS`, bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
     ("test", "packages/dispatch/web/src/fonts/inter/package.json",
-     "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
+     "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
+     "(thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
 )
 
@@ -5224,7 +5230,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nvar smaller = raceEnabled\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than dropping a test from the step" \
-  "$(contains "$out" 'RAISED: .*x_test.go:3: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}3: raceEnabled is read where no top-level test encloses it")"
 
 # The read a helper holds is the bug this refusal answers: the test before it need not be the one
 # that calls it, so the plain step would run a test that is no smaller under the detector and
@@ -5235,7 +5241,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestEarlier(t *testing.T) {}\n\nfunc helperLater() bool {\n\treturn raceEnabled\n}\n\nfunc TestLater(t *testing.T) {\n\tif helperLater() {\n\t\tt.Skip("smaller")\n\t}\n}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than naming the test before the helper" \
-  "$(contains "$out" 'RAISED: .*x_test.go:8: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}8: raceEnabled is read where no top-level test encloses it")"
 check "and names neither test" "$(is "$(contains "$out" 'TestEarlier')" false)"
 
 # A one-line body writes no closing brace in column 0, so a rule that ended a body at the next
@@ -5250,7 +5256,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestOneLine(t *testing.T) { run(t, sizes) }\n\nvar sizes = func() int {\n\tif raceEnabled {\n\t\treturn 2\n\t}\n\treturn 4\n}()\n\nfunc run(t *testing.T, n int) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than naming the one-line test above it" \
-  "$(contains "$out" 'RAISED: .*x_test.go:8: raceEnabled is read where no top-level test encloses it')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}8: raceEnabled is read where no top-level test encloses it")"
 check "and names no test" "$(is "$(contains "$out" 'TestOneLine')" false)"
 
 # A body ends at the brace that closes it, counted from the declaration's own `{`, so a
@@ -5262,7 +5268,7 @@ mkdir -p "$root/pkg"
 printf 'package pkg\n\nimport "testing"\n\nfunc TestUnclosed(t *testing.T) {\n\tif raceEnabled {\n\nfunc TestAfter(t *testing.T) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than taking the rest of the file for the body" \
-  "$(contains "$out" 'RAISED: .*x_test.go:5: the braces of this top-level declaration never balance')"
+  "$(contains "$out" "RAISED: .*x_test.go${colon}5: the braces of this top-level declaration never balance")"
 check "and names no test" "$(is "$(contains "$out" 'TestUnclosed')" false)"
 
 echo "case: a //go:build that names race in a form the walk does not read"
@@ -5271,7 +5277,7 @@ mkdir -p "$root/pkg"
 printf '//go:build !race && !windows\n\npackage pkg\n\nfunc TestKappa(t *testing.T) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than guessing what the race build compiles" \
-  "$(contains "$out" 'RAISED: .*x_test.go: `//go:build !race && !windows` names race in a form ci_job_reads.py does not read')"
+  "$(contains "$out" 'RAISED: .*x_test.go'"$colon"' `//go:build !race && !windows` names race in a form ci_job_reads.py does not read')"
 
 echo "case: the lane names a package that is not there"
 out=$(derived "$work/race-unattributable" "pkg/gone")

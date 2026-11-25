@@ -19,6 +19,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: a tree that passes — an image whose Dockerfile copies a manifest, a whole
 # package, another stage's output and a URL, a .dockerignore that drops the package's dist, and a
 # workflow whose push paths cover all of it. Echoes the fixture root.
@@ -101,21 +106,21 @@ check "passes only because **/dist drops dist/out.js" "$(is "$status" 0)"
 : > "$root/.dockerignore"
 run_check "$root"
 check "fails once the .dockerignore keeps dist" "$(is "$status" 1)"
-check "names the file" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3): packages/app/dist/out.js is built')"
+check "names the file" "$(contains "$out" "does not cover packages/app (docker/Dockerfile${colon}3): packages/app/dist/out.js is built")"
 
 echo "case: a path filter removed"
 root=$(fixture dropped-source)
 drop_path "$root" "packages/app/**"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the source, its line and an uncovered file" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3): packages/app/[a-z/.]* and 2 more are built')"
+check "names the source, its line and an uncovered file" "$(contains "$out" "does not cover packages/app (docker/Dockerfile${colon}3): packages/app/[a-z/.]* and 2 more are built")"
 
 echo "case: a new COPY source without a filter"
 root=$(fixture new-source)
 echo 'COPY packages/other /other' >> "$root/docker/Dockerfile"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the new source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7): packages/other/readme.md is built')"
+check "names the new source" "$(contains "$out" "does not cover packages/other (docker/Dockerfile${colon}7): packages/other/readme.md is built")"
 
 echo "case: a directory copied whole but filtered in part"
 root=$(fixture partial)
@@ -196,8 +201,8 @@ echo 'RUN --mount=type=bind,source=packages/other,target=/o cat /o/readme.md' >>
 echo 'RUN --mount=type=secret,id=token true' >> "$root/docker/Dockerfile"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the mounted source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
-check "a secret mount is not a source" "$(is "$(contains "$out" 'Dockerfile:8')" false)"
+check "names the mounted source" "$(contains "$out" "does not cover packages/other (docker/Dockerfile${colon}7)")"
+check "a secret mount is not a source" "$(is "$(contains "$out" "Dockerfile${colon}8")" false)"
 
 echo "case: a source the check cannot resolve fails instead of reading nothing"
 root=$(fixture variable)
@@ -649,7 +654,7 @@ check "a gate missing one input fails, though the trigger covers it" "$(is "$sta
 check "names that input" "$(contains "$out" 'does not cover .dockerignore')"
 
 echo "case: a narrowed output is read as narrowed, and admitted only where nothing is published"
-# ci.yaml's `full-ci` shape: the filter reaches the job only while the term beside it holds, so
+# `.github/workflows/ci.yaml#full-ci` shape: the filter reaches the job only while the term beside it holds, so
 # the job runs on fewer changes than the filter selects. Read as the plain shape — a search for
 # `steps.<id>.outputs.<name>` anywhere in the expression — it would credit the job with the
 # filter's whole coverage while the real gate is narrower. A job whose builds publish nothing has
@@ -2374,7 +2379,7 @@ check "  and its image inputs are checked" "$(contains "$out" 'docker/Dockerfile
 drop_path "$root" "packages/app/**"
 run_check "$root"
 check "an input that action's build reads is still owed" "$(is "$status" 1)"
-check "  and the uncovered file is named" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3)')"
+check "  and the uncovered file is named" "$(contains "$out" "does not cover packages/app (docker/Dockerfile${colon}3)")"
 
 for written in ./base base/; do
   root=$(fixture "base-checkout-path-$(echo "$written" | tr './' '--')")
@@ -2923,6 +2928,6 @@ sed -i 's|"packages/app/\*\*"|"packages/app/package.json"|' "$root/.github/workf
 printf 'packages/app/{src,dist}\n' > "$root/.dockerignore"
 run_check "$root"
 check "a .dockerignore brace drops nothing, as Docker reads it" "$(is "$status" 1)"
-check "  so the sources stay owed" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3): packages/app/[a-z/.]* and 2 more are built')"
+check "  so the sources stay owed" "$(contains "$out" "does not cover packages/app (docker/Dockerfile${colon}3): packages/app/[a-z/.]* and 2 more are built")"
 
 summary "check-image-trigger-paths.sh"

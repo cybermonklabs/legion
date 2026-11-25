@@ -20,7 +20,7 @@
 #     the file READ is this tree's `<rest>/action.yml`. A second checkout of this same
 #     repository holds this same repository's actions, and it can introduce no image builder
 #     this check does not already read at `<rest>`, because `<rest>` is where every other
-#     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's seven installs that
+#     caller uses it; `.github/workflows/ci.yaml#tool-fallback` job runs the merge base's seven installs that
 #     way. A step counts only where it checks out this same repository: one that names no
 #     `repository:`, or names this one. A checkout of another repository writes that
 #     repository's tree at `<dir>`, and the action it holds there is one this check never
@@ -34,7 +34,7 @@
 #     — which the trigger would then owe, so an unlisted key is refused. `cache-from` is
 #     listed but also read, since `type=local,src=…` is a local tree.
 #   * A file COMPUTED INTO a build's inputs is DATA (COMPUTED_BUILD_INPUTS). A `with:` value
-#     may be a step's output rather than a literal — browser-image.yaml's `labels:` is the
+#     may be a step's output rather than a literal — `.github/workflows/browser-image.yaml#labels:` is the
 #     recipe hash its row step computes — and the file that computes it decides the bytes the
 #     build pushes while no `COPY` names it and no key of the step holds its path. Such a file
 #     is listed by (workflow, job, path, the argument for it) and then read like a file of the
@@ -49,11 +49,11 @@
 #     term this check has not read decides reaches the job narrower than its filter, and
 #     crediting the job with the filter's whole coverage would assert a build the gate does not
 #     start. Two shapes are read (output_filter): the PLAIN one, where the reference is a `||`
-#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and ci.yaml's `${{
+#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and the shape of ci.yaml's outputs, `${{
 #     steps.scope.outputs.every_job && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
 #     only hand the job the string 'true' — and the NARROWED one, where the reference is the last
 #     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
-#     ci.yaml's `full-ci` outputs. A narrowed output runs the job on fewer changes than its
+#     `.github/workflows/ci.yaml#full-ci` outputs. A narrowed output runs the job on fewer changes than its
 #     filter selects, so it is admitted only for a job whose every `docker/build-push-action`
 #     step publishes nothing (step_publishes): there a change the filter selects publishes no
 #     image either way, so no pin can name the commit it skipped. Every other shape is refused.
@@ -1053,8 +1053,9 @@ def gate_outputs(
             admitted &= {match.group(2).lower() for match in named}
             continue
         # One `github.event_name != '<event>'`, alone or ||-joined with neutral terms. Alone it
-        # excludes that event. Beside a neutral term — ci.yaml's `github.event_name !=
-        # 'merge_group' || github.run_attempt == '1'` — the named event still reaches the job
+        # excludes that event. Beside a neutral term, as in
+        # `.github/workflows/ci.yaml#github.event_name != 'merge_group' || github.run_attempt == '1'`,
+        # the named event still reaches the job
         # whenever the neutral term holds, so no event is excluded and, since no term of the
         # disjunct narrows by path, nothing is. A term that is neither leaves the disjunct
         # refused, as `github.event_name == 'pull_request' || vars.RUN_IT == 'true'` is.
@@ -1186,7 +1187,8 @@ def gating_filters(
         )
         name = reference[1]
         options = step.get("with") or {}
-        # dorny/paths-filter v4.0.3 (src/filter.ts:58-66,133-149): under the default, `some`, a
+        # dorny/paths-filter v4.0.3 (its `PredicateQuantifier` and the `SOME_WITH_EXCLUDES` case of
+        # its predicate, https://github.com/dorny/paths-filter/blob/ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d/src/filter.ts): under the default, `some`, a
         # file matches a filter when any of its patterns matches it, and picomatch reads a `!`
         # pattern as the files outside it; under `some-with-excludes`, when a pattern without `!`
         # matches it and no `!` pattern does. `every` (each pattern matches) is not read.
@@ -1254,7 +1256,8 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         <term> reads (ci.yaml's reads another step's output, `steps.scope.outputs.every_job`).
         The term is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
-        `${{ <term> && steps.filter.outputs.x || 'false' }}`, ci.yaml's `full-ci` shape, whose
+        `${{ <term> && steps.filter.outputs.x || 'false' }}`, the shape of the
+        `.github/workflows/ci.yaml#full-ci` term, whose
         <term> is every conjunct beside it. The job then runs on fewer changes than its filter
         selects, which the build loop admits only for a build that publishes nothing
         (narrowed_refusals). A

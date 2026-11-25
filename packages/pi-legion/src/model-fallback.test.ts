@@ -116,7 +116,7 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
       await live.setModelHeld;
       if (!live.setModelAnswers) return false;
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
-      // (`session/model-controls.ts:322-325` at the pinned tag), never a fallback claim.
+      // (`session/model-controls.ts:327-331` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
       return true;
     },
