@@ -58,10 +58,12 @@ func CreateMissingCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.Jet
 
 // openCopiedBucket opens bucket, one a listener copies, with its configuration at replicas copies
 // (CopiedBucketConfig), as mode says: CreateCopiedBucket's and CreateMissingCopiedBucket's one body.
+// Its lines go where EnsureKeyValue's do: where the client that owns conn writes, and where
+// slog.Default() points at each line when no client owns it (loggerOwning).
 func openCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, mode bucketOpen) (KeyValue, error) {
 	config, ok := CopiedBucketConfig(bucket, replicas)
 	if !ok {
 		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
 	}
-	return openKeyValue(ctx, startHangGuard, conn, js, &config, mode)
+	return openKeyValue(ctx, loggerOwning(conn), startHangGuard, conn, js, &config, mode)
 }

@@ -16,6 +16,7 @@ import (
 // advances past it. A review that mentions the trigger, which the listener publishes on its two
 // mention topics beside its own, is one fact; another delivery with the same body is another.
 func TestARedeliveredGitHubDeliveryIsAppliedOnceByItsDedupeKey(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

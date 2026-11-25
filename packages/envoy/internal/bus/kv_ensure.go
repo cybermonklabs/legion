@@ -125,18 +125,22 @@ func namedRequest(request string, err error) error {
 // acknowledged is in no bucket after it, and its writer was told it landed. The operator creates
 // such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other bucket is created
 // when missing.
+//
+// Its lines, the WARNs of its waits and of a request it sends again, go where the client that owns
+// conn writes, and where slog.Default() points at each line when no client owns it (loggerOwning).
 func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	return ensureKeyValue(ctx, startHangGuard, conn, js, config)
+	return ensureKeyValue(ctx, loggerOwning(conn), startHangGuard, conn, js, config)
 }
 
 // ensureKeyValue is EnsureKeyValue with guard, its hang guard, named by the caller: a test of the
-// guard shortens it, and every other caller is EnsureKeyValue, which passes startHangGuard.
-func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+// guard shortens it, and every other caller is EnsureKeyValue, which passes startHangGuard. Its
+// lines go to logger.
+func ensureKeyValue(ctx context.Context, logger *slog.Logger, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	mode := openOnly
 	if _, fixture := fixtureConns.Load(weak.Make(conn)); fixture || !slices.Contains(CopiedBuckets(), config.Bucket) {
 		mode = openOrCreate
 	}
-	return openKeyValue(ctx, guard, conn, js, config, mode)
+	return openKeyValue(ctx, logger, guard, conn, js, config, mode)
 }
 
 // bucketOpen is what openKeyValue does with a bucket the server holds and with one it does not.
@@ -167,9 +171,9 @@ const (
 )
 
 // openKeyValue is EnsureKeyValue, CreateCopiedBucket and CreateMissingCopiedBucket, with guard,
-// the hang guard: mode says what it does with a bucket the server holds and with one it does not
-// (bucketOpen).
-func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, mode bucketOpen) (KeyValue, error) {
+// the hang guard, and logger, where its lines go: mode says what it does with a bucket the server
+// holds and with one it does not (bucketOpen).
+func openKeyValue(ctx context.Context, logger *slog.Logger, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, mode bucketOpen) (KeyValue, error) {
 	ctx, cancel := hangGuard(ctx, guard)
 	defer cancel()
 	// One run of reads for every read of this open, so a delay one step measured holds for the
@@ -188,7 +192,7 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := readAgain(ctx, lookup, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := readAgain(ctx, logger, lookup, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
@@ -215,7 +219,7 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// guards is a write another one can race. A request of the step the server refuses under
 		// the connection's grant ends the step at that send instead (refusedBy): it would be
 		// refused again.
-		_, err = sentAgain(ctx, create, func() (struct{}, error) { return struct{}{}, createBucketStream(conn, js, config) })
+		_, err = sentAgain(ctx, logger, create, func() (struct{}, error) { return struct{}{}, createBucketStream(conn, js, config) })
 		switch {
 		case errors.Is(err, nats.ErrStreamNameAlreadyInUse) && mode == createOnly:
 			// Another client made the bucket between this call's lookup and its create, with
@@ -240,7 +244,7 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
 			createdElsewhere = err != nil
-			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(ctx, logger, config.Bucket, bucketMissing, lookUpBucket)
 		case unanswered(err) || ctx.Err() != nil:
 			// No answer, or the wait ended: the server refused nothing, so no setting is named.
 			err = namedRequest(create, err)
@@ -265,12 +269,12 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			step = "raise"
 		}
 		var info *nats.StreamInfo
-		info, err = readAgain(ctx, lookup, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		info, err = readAgain(ctx, logger, lookup, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 		if err != nil {
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
 		}
-		before, raiseErr := raiseStream(ctx, js, info, config.Replicas)
+		before, raiseErr := raiseStream(ctx, logger, js, info, config.Replicas)
 		switch {
 		case raiseErr != nil:
 			err = raiseErr
@@ -283,14 +287,14 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			// (the webhook redelivery sweep reads its cursor and its index), and a stale miss
 			// there asks GitHub for a delivery it has already redelivered, so the start waits for
 			// the copies and fails rather than reading early.
-			err = awaitReplicasCurrent(ctx, js, stream, config.Replicas)
+			err = awaitReplicasCurrent(ctx, logger, js, stream, config.Replicas)
 		case leaderless(info):
 			// Another program raised or created the bucket's stream just before this start read
 			// it, and the stream's new group has not elected its leader yet: a write sent now draws
 			// no answer. The start waits for the leader, the fact another program's own start
 			// waits for, and not for every copy current, so a bucket with a member offline still
 			// opens (awaitStreamLeader).
-			err = awaitStreamLeader(ctx, js, afterOpen, stream)
+			err = awaitStreamLeader(ctx, logger, js, afterOpen, stream)
 		}
 	}
 	if err != nil {
@@ -307,7 +311,7 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// start waits for the stream's leader here (awaitStreamLeader), and for a create another
 		// start made, whose count this start does not know, at one copy too. This read follows
 		// the handle open, which has waited for the member to apply the create.
-		err = awaitStreamLeader(ctx, js, afterCreate, stream)
+		err = awaitStreamLeader(ctx, logger, js, afterCreate, stream)
 	}
 	if err != nil {
 		return KeyValue{}, err
@@ -320,9 +324,10 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 // lasts. It returns the first answer that is not that, and once ctx ends the last miss with ctx's
 // cause wrapped beside it, so its caller wraps one error however the wait ended: between two reads,
 // or during a read that ctx cut. Any other error, a refusal included, is returned at once: only a
-// member that has not caught up is waited out. The first miss is logged, as bindListenerDurable
-// logs its first refusal, so a start that waited says which bucket it waited for.
-func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
+// member that has not caught up is waited out. The first miss is logged to logger, as
+// bindListenerDurable logs its first refusal, so a start that waited says which bucket it waited
+// for.
+func awaitBucketApplied[T any](ctx context.Context, logger *slog.Logger, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
 	var lastMiss error
 	for attempt := 1; ; attempt++ {
 		value, err := read()
@@ -334,7 +339,7 @@ func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(
 		}
 		lastMiss = err
 		if attempt == 1 {
-			slog.Warn("envoy nats kv bucket not applied yet, waiting",
+			logger.Warn("envoy nats kv bucket not applied yet, waiting",
 				slog.String("bucket", bucket),
 				slog.String("error", err.Error()),
 				slog.String("retry_in", bucketAppliedInterval.String()))
@@ -360,10 +365,10 @@ func bucketMissing(err error) bool {
 // that answers no read within the JetStream context's wait has said nothing of the bucket, so a
 // read sent once would log a raise that failed over a question nobody answered. The keeper sends
 // it apart from the raise (raiseStream), to know which of the raise's two requests an error is the
-// answer to.
-func readBucketStream(ctx context.Context, js nats.JetStreamContext, bucket string) (*nats.StreamInfo, error) {
+// answer to. The lines of its reads sent again go to logger.
+func readBucketStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, bucket string) (*nats.StreamInfo, error) {
 	stream := "KV_" + bucket
-	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, logger, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return nil, fmt.Errorf("raise %s: %w", stream, err)
 	}
@@ -382,7 +387,7 @@ func readBucketStream(ctx context.Context, js nats.JetStreamContext, bucket stri
 // (updateStream). Its error names the stream and, for a refused raise, the setting
 // (refusedSettings): `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: ...`, so the keeper's line
 // says which bucket it could not raise.
-func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, replicas int) (int, error) {
+func raiseStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, info *nats.StreamInfo, replicas int) (int, error) {
 	if info.Config.Replicas >= replicas {
 		return 0, nil
 	}
@@ -391,7 +396,7 @@ func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.Strea
 		raised.Replicas = replicas
 		return raised, true
 	}
-	update, err := updateStream(ctx, js, info, raise, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas })
+	update, err := updateStream(ctx, logger, js, info, raise, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas })
 	if err != nil {
 		return 0, fmt.Errorf("raise %s: %w", info.Config.Name, refusedSettings(err, &update.from.Config, &update.sent))
 	}
@@ -414,8 +419,8 @@ func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.Strea
 // (server/jetstream_cluster.go:2622-2641, v2.10.29), and a start that reads one wrong answer is
 // worse than a start that does not come up: the webhook redelivery sweep reads its records the
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
-func awaitReplicasCurrent(ctx context.Context, js nats.JetStreamContext, stream string, replicas int) error {
-	return awaitStream(ctx, js, afterRaise, stream, fmt.Sprintf("%d copies were not current", replicas), "envoy nats kv raised copies not current yet, waiting", func(info *nats.StreamInfo) string {
+func awaitReplicasCurrent(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, stream string, replicas int) error {
+	return awaitStream(ctx, logger, js, afterRaise, stream, fmt.Sprintf("%d copies were not current", replicas), "envoy nats kv raised copies not current yet, waiting", func(info *nats.StreamInfo) string {
 		return copiesBehind(info, replicas)
 	})
 }
@@ -464,7 +469,8 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // while the server leaves it unanswered (sentAgain), and the read and the update end when ctx
 // ends or the start's hang guard passes (startHangGuard), the update in flight then abandoned
 // (updateStream). The session reaper also makes this call on each pass, under a context of one
-// RequestTimeout, since a pass has no start behind it and its next tick asks again.
+// RequestTimeout, since a pass has no start behind it and its next tick asks again. Its lines go
+// where EnsureKeyValue's go: to the logger of the client that owns conn (loggerOwning).
 func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
 	if maxAge <= 0 {
 		return 0, nil
@@ -473,9 +479,10 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	defer cancel()
 	ctx = withReadLimit(ctx)
 	js = readsRefusals(conn, js)
+	logger := loggerOwning(conn)
 	stream := "KV_" + bucket
 	read := stream + " STREAM.INFO"
-	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, logger, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}
@@ -487,7 +494,7 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 		aged.MaxAge = maxAge
 		return aged, true
 	}
-	if _, err := updateStream(ctx, js, info, age, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
+	if _, err := updateStream(ctx, logger, js, info, age, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, err)
 	}
 	return maxAge, nil

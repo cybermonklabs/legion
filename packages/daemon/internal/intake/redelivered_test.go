@@ -91,6 +91,7 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 // admits envoy rows in processed_events and holds its GitHub rows to exactly the redelivered
 // delivery (redeliveredGitHubEvents).
 func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	binaries := builtEnvoyBinaries(t)
 

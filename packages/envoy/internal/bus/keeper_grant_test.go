@@ -54,11 +54,11 @@ func startDeniedKeeper(t *testing.T, denied, counted string, buckets ...string) 
 	for _, bucket := range buckets {
 		cluster.CreateKeyValue(t, adminConn, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage})
 	}
-	k.logs = captureLogs(t)
+	k.logs = captureLogs()
 	k.relay = startUnansweredRelayOn(t, cluster.Servers[0].URL(), counted)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := ConnectOwningStream([]string{k.relay.url}, WithReplicas(3), WithKeptBuckets(buckets...),
-		WithKeepInterval(testKeepInterval), WithReconnectErrClock(k.clock.Now))
+		WithKeepInterval(testKeepInterval), WithReconnectErrClock(k.clock.Now), WithLogger(k.logs.logger))
 	if err != nil {
 		t.Fatalf("start the keeper's client: %v", err)
 	}
@@ -268,9 +268,9 @@ type keeperPassRow struct {
 // bucket's stream.
 func newKeeperPassRow(t *testing.T, bucket string, buckets ...string) *keeperPassRow {
 	t.Helper()
-	clock := keeperTestClock()
-	return &keeperPassRow{t: t, js: newAnsweringJetStream(), clock: clock, logs: captureLogs(t), stream: "KV_" + bucket,
-		buckets: buckets, client: &Client{name: "keeper-grant-test", stopCh: make(chan struct{}), reconnectErrClock: clock.Now},
+	clock, logs := keeperTestClock(), captureLogs()
+	return &keeperPassRow{t: t, js: newAnsweringJetStream(), clock: clock, logs: logs, stream: "KV_" + bucket,
+		buckets: buckets, client: &Client{name: "keeper-grant-test", stopCh: make(chan struct{}), reconnectErrClock: clock.Now, logger: logs.logger},
 		refused: refusedBuckets{}}
 }
 

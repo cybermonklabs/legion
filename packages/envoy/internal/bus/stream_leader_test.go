@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -107,11 +108,11 @@ func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
 // of its stream (readBucketStream), then the update that raises it (raiseStream).
 func raiseAsAnotherProgram(t *testing.T, js nats.JetStreamContext, bucket string) {
 	t.Helper()
-	info, err := readBucketStream(t.Context(), js, bucket)
+	info, err := readBucketStream(t.Context(), slog.Default(), js, bucket)
 	if err != nil {
 		t.Fatalf("another program's read of %s: %v", bucket, err)
 	}
-	if _, err := raiseStream(t.Context(), js, info, 3); err != nil {
+	if _, err := raiseStream(t.Context(), slog.Default(), js, info, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 }
@@ -307,7 +308,7 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	cluster, js := startClusterJetStream(t)
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
 	early := &earlyAnswerJetStream{JetStreamContext: js}
-	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
 	if early.sent < 2 {

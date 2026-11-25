@@ -112,7 +112,7 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused refu
 	var restored []string
 	if err == nil {
 		err = c.keeperStep(ctx, func(ctx context.Context) (err error) {
-			restored, err = keepStream(ctx, js, cfg, defaultsAnUnsetCap)
+			restored, err = keepStream(ctx, c.log(), js, cfg, defaultsAnUnsetCap)
 			return err
 		})
 	}
@@ -120,9 +120,9 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused refu
 	case err != nil && c.stopped():
 		return
 	case err != nil:
-		slog.Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
+		c.log().Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
 	case len(restored) > 0:
-		slog.Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
+		c.log().Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
 	}
 	c.keepBuckets(ctx, js, buckets, cfg.Replicas, refused)
 }
@@ -179,10 +179,10 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 		var info *nats.StreamInfo
 		var from int
 		err := c.keeperStep(ctx, func(ctx context.Context) (err error) {
-			if info, err = readBucketStream(ctx, js, bucket); err != nil {
+			if info, err = readBucketStream(ctx, c.log(), js, bucket); err != nil {
 				return err
 			}
-			from, err = raiseStream(ctx, js, info, replicas)
+			from, err = raiseStream(ctx, c.log(), js, info, replicas)
 			return err
 		})
 		if err != nil && c.stopped() {
@@ -191,21 +191,21 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 		if grantRefused(err) {
 			subject, _ := refusedPublishSubject(err)
 			if refused.refuse(bucket, subject, c.now()) {
-				slog.Warn("envoy nats keeper may not raise a bucket under its grant; it asks again after the backoff",
+				c.log().Warn("envoy nats keeper may not raise a bucket under its grant; it asks again after the backoff",
 					slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()),
 					slog.String("probe_again_in", keeperNoGrantBackoff.String()))
 			}
 			continue
 		}
 		if refused.answered(bucket, answeredRequests("KV_"+bucket, info, from, err)) {
-			slog.Info("envoy nats keeper's grant now covers a bucket the server refused it", slog.String("name", c.name), slog.String("bucket", bucket))
+			c.log().Info("envoy nats keeper's grant now covers a bucket the server refused it", slog.String("name", c.name), slog.String("bucket", bucket))
 		}
 		switch {
 		case errors.Is(err, nats.ErrStreamNotFound):
 		case err != nil:
-			slog.Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
+			c.log().Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
 		case from > 0:
-			slog.Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, replicas)))
+			c.log().Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, replicas)))
 		}
 	}
 }
@@ -338,9 +338,10 @@ func (c *Client) awaitKeeper() {
 // again is kept from the read before it, and none is sent when that read finds the stream a newer
 // build's or carrying the role lanes, the two streams a first read leaves alone; the fields it
 // returns are those of the last update against the read it was made from, so a field another
-// writer set between two sends is not reported as one this pass restored.
-func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
-	info, err := readAgain(ctx, Stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+// writer set between two sends is not reported as one this pass restored. The lines of its reads
+// sent again go to logger.
+func keepStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+	info, err := readAgain(ctx, logger, Stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +361,7 @@ func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamC
 		}
 		return keptStream(current, cfg, defaultsAnUnsetCap), true
 	}
-	update, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool {
+	update, err := updateStream(ctx, logger, js, info, keep, func(again *nats.StreamInfo) bool {
 		kept, write := keep(again)
 		return write && reflect.DeepEqual(kept, again.Config)
 	})
