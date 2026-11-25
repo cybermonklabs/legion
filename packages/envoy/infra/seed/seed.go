@@ -111,14 +111,10 @@ func refuse(format string, args ...any) error {
 	return &refusal{msg: fmt.Sprintf(format, args...)}
 }
 
-// afterWrite is an error once Put has returned. It wraps nothing, so no store error it quotes can
-// make it a refusal.
-type afterWrite struct{ msg string }
-
-func (e *afterWrite) Error() string { return e.msg }
-
+// afterWritef is the error of a step once Put has returned: its text alone (errors.New, not
+// fmt.Errorf, whose %w would wrap), so no store error it quotes can make it a refusal.
 func afterWritef(format string, args ...any) error {
-	return &afterWrite{msg: fmt.Sprintf(format, args...)}
+	return errors.New(fmt.Sprintf(format, args...))
 }
 
 // seededName refuses a secret's name that holds an nkey seed (bus.HoldsSeed), naming no part of it:

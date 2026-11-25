@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The daemon no longer prints a value that whatever answers in GitHub's place wrote under the App's
+  JWT. Key-mode discovery refuses an installation id that is not a decimal number, and prints none
+  of it. Before, an id that echoed the JWT was printed in the path of the installation read and of
+  the token exchange, which a refusal's answer carries, in `installation <id> on <owner> answers`,
+  and in the refusal of a suspended installation.
+
+  An owner the installation listing names is printed as a login GitHub allows, and `(a login GitHub
+  does not allow)` otherwise (`githubrest.ShownLogin`): in the boot's key-proof line
+  (`installedOn`), in the controller credential route's line and its answer's `installed`, in the gh
+  bundle's warning that leaves out an owner whose name is no directory's, and in its refusal of a
+  bundle with no owner the App is installed on. The owners are lowercased, so before, those printed
+  the JWT case-folded. The owner a caller asked for is still quoted, and `legion controller start`
+  addresses the same directories.
+
+  A GitHub App call's refusal names the method and the path the daemon sent, under the base URL.
+  Before, it named the request a followed same-origin redirect reached, so a 302 to `/app/<JWT>`
+  followed by a 429 printed the JWT in `GitHub answered GET <path> with 429`.
+time: 2026-11-24T14:56:00Z
+custom:
+    Issue: pr4368

@@ -7,6 +7,7 @@ package redirects
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -55,11 +56,17 @@ func SameOrigin(client *http.Client) *http.Client {
 // sameOrigin is the CheckRedirect of a client SameOrigin made: next, the redirect's request, is
 // asked only on the scheme and host of via[0], the first request, and within ten hops.
 func sameOrigin(next *http.Request, via []*http.Request) error {
-	first := via[0].URL
-	if len(via) >= 10 || next.URL.Scheme != first.Scheme || !strings.EqualFold(next.URL.Host, first.Host) {
+	if len(via) >= 10 || !SameOriginURL(next.URL, via[0].URL) {
 		return http.ErrUseLastResponse
 	}
 	return nil
+}
+
+// SameOriginURL reports whether u is on origin's origin: the same scheme, and the same host
+// with its port, the host in any case, as SameOrigin compares a redirect's request with the
+// first request.
+func SameOriginURL(u, origin *url.URL) bool {
+	return u.Scheme == origin.Scheme && strings.EqualFold(u.Host, origin.Host)
 }
 
 // Status reports whether code is a redirect's (3xx): the answer itself under a client Refused

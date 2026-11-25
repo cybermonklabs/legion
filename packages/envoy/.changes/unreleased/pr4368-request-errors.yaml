@@ -28,14 +28,17 @@ body: |-
   read answered with a redirect is refused by its status, no longer read as Dispatch's outage
   where the `Location` did not answer). The GitHub App client and the MCP bridge's SSE connect
   follow a redirect only on their server's own origin, so GitHub's redirect for a renamed
-  repository is still followed. `agentloop`'s refusal of a redirect names its status and not the
-  `Location`'s host, and a run's provider failure names the endpoint's status rather than the
-  provider's message. A failed S3, Bedrock, Secrets Manager or KMS call prints its operation, the
-  answer's status and, where it is one the closed set names, its error code, rather than the
+  repository is still followed. `agentloop`'s client follows no redirect (`redirects.Refused`) and
+  its transport refuses one by its status before net/http reads the `Location`: the refusal names
+  its status, never the `Location` or its host, a `Location` that does not parse included, and no
+  error of the call, the SDK's own included, holds it; a run's provider failure names the
+  endpoint's status rather than the provider's message. A failed S3, Bedrock, Secrets Manager or
+  KMS call prints its operation, the answer's status and, where it is one the closed set names,
+  its error code, rather than the
   service's message; a failed GCS call prints its status, a missing bucket or the missing
   permission. The redirect policy is one public package, `github.com/sjawhar/envoy/redirects`
-  (`Refused`, `SameOrigin`, `Status`, and the stand-ins in `redirects/redirectstest`), which the
-  daemon imports too; `internal/redirects` is gone.
+  (`Refused`, `SameOrigin`, `SameOriginURL`, `Status`, and the stand-ins in
+  `redirects/redirectstest`), which the daemon imports too; `internal/redirects` is gone.
 time: 2026-11-24T03:27:23Z
 custom:
     Issue: pr4368

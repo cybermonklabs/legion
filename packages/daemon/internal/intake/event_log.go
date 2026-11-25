@@ -1,7 +1,6 @@
 package intake
 
 import (
-	"encoding/json"
 	"fmt"
 	"iter"
 
@@ -29,8 +28,8 @@ type issueEvent struct {
 // itself (EventsAfter's *dispatch.EventLogError). An issue event whose payload is no JSON object
 // (missing, `null`, or not an object) or whose payload does not decode is a
 // *dispatch.EventLogError naming its place in the log and its cause in fixed text (a decode's
-// through oauth2call.DecodeError, which quotes no value), and the walk ends there: the live decoder
-// refuses such an event too. A loop that stops early leaves the later events undecoded.
+// through oauth2call.UnmarshalData, which quotes no value), and the walk ends there: the live
+// decoder refuses such an event too. A loop that stops early leaves the later events undecoded.
 func walkIssueEvents(events []dispatch.Event) iter.Seq2[issueEvent, error] {
 	return func(yield func(issueEvent, error) bool) {
 		for i, event := range events {
@@ -46,9 +45,9 @@ func walkIssueEvents(events []dispatch.Event) iter.Seq2[issueEvent, error] {
 				Status string   `json:"status"`
 				Labels []string `json:"labels"`
 			}
-			if err := json.Unmarshal(event.Payload, &issue); err != nil {
+			if err := oauth2call.UnmarshalData(event.Payload, &issue); err != nil {
 				yield(issueEvent{}, &dispatch.EventLogError{Event: i + 1, Seq: event.Seq,
-					Err: fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), oauth2call.DecodeError(err, event.Payload, &issue))})
+					Err: fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)})
 				return
 			}
 			if !yield(issueEvent{Seq: event.Seq, Type: event.Type, ActorKind: event.Actor.Kind, Status: issue.Status, Labels: issue.Labels}, nil) {

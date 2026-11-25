@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The repository cache's log of a tar stream that failed no longer names a ref of its clone. A
+  branch's name is what answered the cache's fetch in GitHub's place wrote, which can be the token
+  the fetch carried, and the fetch writes it into the clone as a ref's path. A failed stream now
+  names the entry by its place and kind (`stream entry 9 of 10, a ref file: ...`), where it named
+  the entry's path (`stream refs/heads/<name>: ...`). The snapshot's read of a ref file, its listing
+  of a directory, its stat of an entry and its open of a pack fail with the operation and the
+  system's reason alone, still unwrapping to that reason, where their error held the file's path.
+time: 2026-11-24T21:21:59Z
+custom:
+    Issue: pr4368

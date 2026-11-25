@@ -205,14 +205,14 @@ func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 }
 
 // TestLoadRefusesAURLWithoutPrintingItsCredential: a BROKER_PUBLIC_URL or BROKER_MACHINE_LOGIN_URL
-// that carries a credential and is refused names the variable and the value as
-// redact.NotPrinted, never the user name, password or query; a clean refused value is named as
-// written.
+// that carries a credential and is refused names the variable and never the user name, password
+// or query: BROKER_MACHINE_LOGIN_URL's refusal names the value as redact.NotPrinted, and
+// BROKER_PUBLIC_URL's names no value at all, not even a clean one.
 func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 	for _, row := range []struct{ name, value, want string }{
-		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw", "secrets.example/v1?token=qtok77"), redact.NotPrinted},
-		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw%zz", "secrets.example"), redact.NotPrinted},
-		{"BROKER_PUBLIC_URL", "https://secrets.example/v1", `"https://secrets.example/v1"`},
+		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw", "secrets.example/v1?token=qtok77"), publicURLRefusal},
+		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw%zz", "secrets.example"), publicURLRefusal},
+		{"BROKER_PUBLIC_URL", "https://secrets.example/v1", publicURLRefusal},
 		{"BROKER_MACHINE_LOGIN_URL", userinfoURL("ftp", "tokuser9f3", "hunter2pw", "dispatch.example/x"), redact.NotPrinted},
 	} {
 		e := validEnv()
@@ -222,9 +222,9 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 			t.Errorf("Load(%s=%q) = %v, want a refusal naming it and %s", row.name, row.value, err, row.want)
 			continue
 		}
-		for _, secret := range []string{"tokuser9f3", "hunter2pw", "qtok77"} {
-			if strings.Contains(err.Error(), secret) {
-				t.Errorf("Load(%s=%q) = %v, names %q", row.name, row.value, err, secret)
+		for _, written := range []string{"tokuser9f3", "hunter2pw", "qtok77", "secrets.example/v1"} {
+			if strings.Contains(err.Error(), written) {
+				t.Errorf("Load(%s=%q) = %v, names %q", row.name, row.value, err, written)
 			}
 		}
 	}
@@ -2561,16 +2561,19 @@ func TestLoadRefusesAPublicURLThatIsNotHTTP(t *testing.T) {
 	}
 }
 
-// TestLoadKeepsMainsPublicURLRefusal pins the refusal main gives a BROKER_PUBLIC_URL with a path,
-// or with no scheme, word for word: the http(s) rule is a check of its own, and it does not
-// reword the one a deployment already reads.
-func TestLoadKeepsMainsPublicURLRefusal(t *testing.T) {
+// publicURLRefusal is Load's refusal of a BROKER_PUBLIC_URL that is not an absolute URL with no
+// user information, path, query or fragment.
+const publicURLRefusal = "BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment"
+
+// TestLoadPinsThePublicURLRefusal pins the refusal Load gives a BROKER_PUBLIC_URL with a path, or
+// with no scheme, word for word: it names the setting and the form it must have and never the URL,
+// and the http(s) rule, a check of its own, does not reword it.
+func TestLoadPinsThePublicURLRefusal(t *testing.T) {
 	for _, bad := range []string{"https://secrets.internal.example/broker", "secrets.internal.example"} {
 		e := validEnv()
 		e["BROKER_PUBLIC_URL"] = bad
-		want := "BROKER_PUBLIC_URL must be an absolute URL with no path: " + strconv.Quote(redact.URL(bad))
-		if _, err := Load(env(e)); err == nil || err.Error() != want {
-			t.Errorf("Load(BROKER_PUBLIC_URL=%q) = %v; want main's %q", bad, err, want)
+		if _, err := Load(env(e)); err == nil || err.Error() != publicURLRefusal {
+			t.Errorf("Load(BROKER_PUBLIC_URL=%q) = %v; want %q", bad, err, publicURLRefusal)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
@@ -31,17 +32,16 @@ func newModelTransport(endpoint Endpoint) *modelTransport {
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
-// and no redirect ever followed. The transport puts the endpoint's credential on every request
-// it carries, which would include the one the client makes for a 3xx, and Go strips
-// Authorization on a cross-domain redirect before a transport runs, so following one would hand
-// the token to whatever server the Location names. A redirect fails the call instead, with an
-// error client.Do returns above this transport, so the retry never sees it and the caller is
-// told the endpoint redirected rather than left to read an empty stream.
+// and no redirect ever followed (redirects.Refused, the module's policy for a client that carries
+// a credential). The transport puts the endpoint's credential on every request it carries, which
+// would include the one the client makes for a 3xx, and Go strips Authorization on a cross-domain
+// redirect before a transport runs, so following one would hand the token to whatever server the
+// Location names. The transport refuses a redirect itself, by its status, before the client sees
+// it (RoundTrip), so the call fails and the caller is told the endpoint redirected:
+// anthropic-sdk-go and openai-go read a 3xx a client hands back as a success, and its empty body
+// as an empty stream.
 func (t *modelTransport) client() *http.Client {
-	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-		return redact.Masked(errRedirect, fmt.Sprintf("the %s endpoint answered %s, a redirect, which is never followed",
-			t.kind, redact.StatusLine(req.Response.StatusCode)))
-	}}
+	return redirects.Refused(&http.Client{Transport: t})
 }
 
 var errRedirect = errors.New("agentloop: the endpoint answered a redirect, which is never followed")
@@ -100,10 +100,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp, err := t.base.RoundTrip(r)
 		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {
 			if resp != nil {
-				// Drained as data no one reads, so the connection goes back to the pool.
-				drained := redact.StreamAnswer(resp, answerLimit)
-				_, _ = io.Copy(io.Discard, drained)
-				_ = drained.Close()
+				drain(resp)
 			}
 			select {
 			case <-time.After(wait):
@@ -115,8 +112,24 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		if redirects.Status(resp.StatusCode) {
+			// Refused here, before net/http's client reads the Location: it parses one before it
+			// asks its redirect policy, and its error names it, one that does not parse quoted
+			// whole and one the policy refused as the *url.Error's URL.
+			drain(resp)
+			return nil, redact.Masked(errRedirect, fmt.Sprintf("the %s endpoint answered %s, a redirect, which is never followed",
+				t.kind, redact.StatusLine(resp.StatusCode)))
+		}
 		return resp, nil
 	}
+}
+
+// drain reads resp's body to its end as data no one reads (redact.StreamAnswer) and closes it, so
+// the connection goes back to the pool.
+func drain(resp *http.Response) {
+	drained := redact.StreamAnswer(resp, answerLimit)
+	_, _ = io.Copy(io.Discard, drained)
+	_ = drained.Close()
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,

@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  More failures of the development tools print as the request's address allows (`redact.Cause`) or
+  by their class (`redact.Class`), rather than as net/http or gorilla wrote them: those errors quote
+  a status line or a `Location` the answering party wrote, which can hold a credential the request
+  sent, and name a foreign URL with the user name of its user information. `dev-proxy-stands
+  probe-private` prints a refusal of the environment's proxy by its class, and `probe-bound` prints
+  an `AIRLOCK_S_URL` that does not parse as `not a valid URL`, where it printed the user name and
+  the password. The load test's `fetchTo` log, its sampler's reads of `-pprof` and `-nats-mon`, its
+  read of `-token-url` and its dashboard probe's SSE request print through `redact.Cause`. A failure
+  of the dashboard probe's live socket, or of a `docstest.DialContext` dial, that got no handshake
+  answer prints by its class.
+time: 2026-11-24T16:45:45Z
+custom:
+    Issue: pr4368

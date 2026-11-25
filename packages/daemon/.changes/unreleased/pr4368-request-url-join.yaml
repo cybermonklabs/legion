@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  Every request the `legion` CLI sends to the daemon, and `legion workspace-init fetch`'s asks of
+  the repository cache (`--cache-url`, by default `LEGION_REPOSITORY_CACHE_URL`), now go to the
+  route joined onto the configured URL's path, with the URL's query kept ahead of the route's own
+  and its fragment dropped. Before, the route was appended to the URL's text, so a URL with a query
+  took the route into the query's last value and a fragment swallowed it: a `LEGION_DAEMON_URL` of
+  `http://host/daemon?sig=...` asked the daemon `/daemon`, and a cache URL of
+  `http://host/cache?sig=K` asked the cache `/cache` with the query `sig=K/healthz`. They now ask
+  `/daemon/legion/v1/...?sig=...` and `/cache/healthz?sig=K`. A URL with neither a query nor a
+  fragment asks where it did.
+
+  A daemon URL that does not parse is refused as `the daemon's URL is not an absolute URL with a
+  host (it is not printed)`, and a cache ask whose URL does not parse is refused in words of its own
+  that do not print it; before, the request's error quoted the URL whole, its user information and
+  query included. The lines that name a request's URL (the `--wait` bound, an answer a claims
+  command cannot read, `legion controller start`'s refused reads, the cache's refusals) now name the
+  URL the request asked, the daemon's through the URL rule, where they named the configured text
+  with the route appended.
+time: 2026-11-24T22:17:14Z
+custom:
+    Issue: pr4368

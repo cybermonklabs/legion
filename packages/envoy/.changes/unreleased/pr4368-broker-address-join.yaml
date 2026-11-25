@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `cipheraddr.Address.Join` builds a request URL at a broker address: the path joined onto the
+  address's path, the address's query kept ahead of the path's own, its user information, host and
+  port kept, and its fragment dropped. An address that does not parse, or has no scheme or no host,
+  is refused in fixed words that quote no part of it.
+time: 2026-11-24T20:45:37Z
+custom:
+    Issue: pr4368

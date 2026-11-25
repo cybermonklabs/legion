@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -95,8 +96,12 @@ func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
 
 			rules := w.readBaseRules(context.Background(), github, record.PullRequest{Repo: "acme/widgets", Number: 86}, pull.Base.Ref)
 
-			// Control: the read asked for the base as it came, and failed, so R0 acts at once.
-			if want := "/repos/acme/widgets/rules/branches/" + echoedWords; asked.Load() != want || rules.Unread == "" {
+			// Control: the read asked for the base as it came, and failed, so R0 acts at once. The
+			// route is joined onto the API's path (urljoin.Join), which cleans an empty path
+			// element, so the "//" of the probe's URL in echoedWords reaches GitHub as "/". No ref
+			// name holds an empty path element (git check-ref-format refuses "//"), so a real base
+			// is asked exactly as it came.
+			if want := "/repos/acme/widgets/rules/branches/" + strings.ReplaceAll(echoedWords, "//", "/"); asked.Load() != want || rules.Unread == "" {
 				t.Fatalf("the read asked for %v and came to %+v, want %q asked and the rules unread", asked.Load(), rules, want)
 			}
 			lines := loggedLines(t, logs.String(), rulesReadLine)

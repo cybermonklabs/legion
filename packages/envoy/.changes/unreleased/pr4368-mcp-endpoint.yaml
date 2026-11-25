@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The MCP bridge reads the message endpoint an MCP server names in its SSE stream as a reference
+  resolved against the SSE URL (RFC 3986 section 5.2). A relative endpoint such as
+  `/messages?session_id=...` now completes the handshake; before, the bridge posted to it with no
+  scheme, net/http refused every POST, and `Start` failed, printing the endpoint whole, its query
+  values included. An endpoint on the configured URL's own origin (its scheme, host and port),
+  relative or absolute, takes the configured user information when it names none of its own, so a
+  server that needs Basic authentication on the POST no longer refuses every message with 401. An
+  endpoint on another origin takes none. An endpoint that does not parse, or resolves to no http or
+  https URL with a host, is refused in the bridge's own words and is not printed.
+time: 2026-11-24T15:36:51Z
+custom:
+    Issue: pr4368

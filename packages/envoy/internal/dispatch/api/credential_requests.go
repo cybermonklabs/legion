@@ -57,13 +57,14 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*cipher.Client, boo
 	return s.deps.AgentSecrets, true
 }
 
-// relayBrokerResponse writes the broker's answer verbatim: its raw JSON body on success, its
-// exact status and body for a *cipher.Error (the browser must see the broker's own status
-// and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
-// AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
-// token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
-// gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
-// the log line naming the file is the operator's only pointer to it.
+// relayBrokerResponse writes the broker's answer verbatim: its JSON body on success, with no run
+// of Dispatch's account token in it (cipher.Client.do), its exact status and body for a
+// *cipher.Error (the browser must see the broker's own status and code, e.g. 409
+// RECORD_TERMINAL — Dispatch never re-wraps it), 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a
+// call that stopped at Dispatch's own ServiceAccount token, or 503 AGENT_SECRETS_UNAVAILABLE for
+// anything else (a transport failure). The token gets its own code because the broker was never
+// asked: the fix is in Dispatch's deployment, and the log line naming the file is the operator's
+// only pointer to it.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *cipher.Error

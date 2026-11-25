@@ -174,18 +174,14 @@ func RefusalCode(answer redact.Answer) redact.RemoteText {
 // key or a value as long as the answer itself is never logged whole.
 const MaxQuoted = 64
 
-// Clip is text, or its first MaxQuoted bytes when it is longer: the most of a string from
-// Dispatch's answer that an error of the broker's quotes. Quoted is how a caller names such a
-// string; this is for text that is no box already.
-func Clip(text string) string {
-	if len(text) > MaxQuoted {
-		return text[:MaxQuoted]
-	}
-	return text
-}
-
 // Quoted is what an error of the broker's quotes of a string Dispatch's answer named — a refusal's
 // code (RefusalCode), or a key or a value of a body the caller reads itself (redact.Answer.Said):
 // the rule's reading of it, cut to MaxQuoted bytes. Every caller of this package names such a
 // string through this one function, so that no site of its own decides the bound or the reading.
-func Quoted(text redact.RemoteText) string { return Clip(text.String()) }
+func Quoted(text redact.RemoteText) string {
+	shown := text.String()
+	if len(shown) > MaxQuoted {
+		return shown[:MaxQuoted]
+	}
+	return shown
+}

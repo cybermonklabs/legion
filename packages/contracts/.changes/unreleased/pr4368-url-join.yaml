@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `@legion/contracts/url-join` exports `joinUrl(base, ref)`, the TypeScript side of the Go modules'
+  join of a path onto a configured URL. `ref`'s path is joined onto `base`'s path as Go's
+  `url.URL.JoinPath` joins them (a leading slash does not replace `base`'s path, and a segment
+  `encodeURIComponent` wrote stays as written), `base`'s query is kept ahead of `ref`'s own, user
+  information, host and port are kept, and the fragment is dropped. A `base` that does not parse or
+  has no host, and a `ref` that holds a scheme, a host, a fragment, a backslash, a bad escape or a
+  control byte, throw an `Error` in fixed words that quote neither text and carry no cause.
+  `@legion/envoy-client` and `@legion/cipher-client` join their configured URLs through it.
+time: 2026-11-24T21:39:10Z
+custom:
+    Issue: pr4368

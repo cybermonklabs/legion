@@ -13,8 +13,8 @@ body: |-
   event's place in the log, and the reconcile goes on instead of failing the boot. The stream's
   decoder reads the same typed event.
   `LabelSetter`, `StatusChangeOf` and `DecodeDispatchEvent` name a payload that does not decode
-  in fixed text (`oauth2call.DecodeError`), and the live decoder names an unread ask kind, turn,
-  ask state or claim by its member alone.
+  in fixed text (`oauth2call.UnmarshalData`), and the live decoder names an unread ask kind,
+  turn, ask state or claim by its member alone.
 time: 2026-11-23T05:54:11Z
 custom:
     Issue: pr4368

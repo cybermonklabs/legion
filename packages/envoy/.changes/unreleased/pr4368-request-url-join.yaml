@@ -1,0 +1,42 @@
+kind: Fixed
+body: |-
+  A client whose configured URL has a path and a query now sends each request to its route joined
+  onto that path, with the configured query kept ahead of the route's own and the fragment dropped.
+  Before, the route was appended to the URL's text, so a URL such as `https://host/api?sig=...` took
+  the route into its query's last value (`/api?sig=.../v1/x`) and the far side was asked `/api` with
+  the query's value changed, and a URL with a fragment took the route into the fragment. A URL with
+  neither goes where it went. The clients: Dispatch's agent-secrets client
+  (`DISPATCH_AGENT_SECRETS_URL`), its Legion client's state read, its Envoy listener client, its
+  `going` actions, its Entra exchange (the token path under the authority) and its GitHub App client
+  (`DISPATCH_GITHUB_API_BASE`); the broker's own URLs under `BROKER_PUBLIC_URL` (the four endpoints
+  of its RFC 8414 metadata, the URL a proof's `htu` is checked against, the approval link a pending
+  request carries and the sign-in's redirect URI), its notice to Envoy (`BROKER_ENVOY_URL`), its
+  project access read (`BROKER_PROJECT_ACCESS_URL`), its judge's Dispatch reads
+  (`BROKER_JUDGE_DISPATCH_URL`), its group members read (`BROKER_DIRECTORY_URL`) and that read's
+  token mint, its Google service account mint, its judge's identity token mint (IAM Credentials'
+  `generateIdToken`) and its GitHub App minter under `BROKER_AIRLOCK_TEST_GITHUB_API_BASE`;
+  `agent-secrets`' `generateIdToken` call for a machine's pool identity; the MCP bridge's SSE
+  connect; `agentloop`'s System One decision; and the load test's Cloud Monitoring read (`-api`).
+
+  The broker now checks a proof's `htu` against the route joined onto `BROKER_PUBLIC_URL`, the join
+  `agent-secrets` makes when it signs a proof, so a proof whose `htu` names the public URL's text
+  with the route appended, which the broker took before, is refused. The approval link escapes a
+  record id as a path element. The metadata's issuer stays as the deployment set it. The MCP
+  bridge's SSE connect drops a configured fragment, as the other clients do.
+
+  A configured URL that does not parse, or has no scheme or no host, is refused where it is joined,
+  and the refusal prints none of it. Before, the request was built from it, and net/http's or
+  url.Parse's error quoted the URL whole, its user information and query included, or a URL with no
+  scheme or host failed only when sent (`no Host in request URL`). Dispatch's agent-secrets, Legion,
+  listener and `going` clients, the Entra exchange's request and `agent-secrets`' `generateIdToken`
+  call name such a URL `not a valid URL`; the broker's notice to Envoy, project access read and
+  GitHub App minter name the setting (`the URL joined from BROKER_ENVOY_URL does not parse`); and
+  the Entra authority, the group members read and its mint, the service account and identity token
+  mints, the judge's reads, the MCP bridge, `agentloop` and the load test's `-api` and `-token-url`
+  refuse it in their own words, without printing it. Dispatch refuses a `DISPATCH_GITHUB_API_BASE`
+  that is no absolute URL with a host when it makes its GitHub App client, at boot rather than at
+  the first call, and that client refuses a path that is no relative reference, which it sent
+  before.
+time: 2026-11-24T23:09:03Z
+custom:
+    Issue: pr4368

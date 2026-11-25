@@ -224,7 +224,7 @@ func resolveEndpoint(base, ref *url.URL) (string, error) {
 	if endpoint.Scheme != "http" && endpoint.Scheme != "https" || endpoint.Host == "" {
 		return "", fmt.Errorf("endpoint URL in SSE event is not an http or https URL with a host")
 	}
-	if endpoint.User == nil && endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host) {
+	if endpoint.User == nil && redirects.SameOriginURL(endpoint, base) {
 		endpoint.User = base.User
 	}
 	return endpoint.String(), nil

@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `LibraryError.answeredOAuthError` says whether openid-client threw oauth4webapi's
+  `ResponseBodyError`, an OAuth error answer whose status, code and description the error holds. It
+  is read from the code the library gives that class (`OAUTH_RESPONSE_BODY_ERROR`), never from the
+  error's name, which a subclass or a bundle that renames the class changes, and which any error can
+  carry.
+time: 2026-11-24T22:11:30Z
+custom:
+    Issue: pr4368

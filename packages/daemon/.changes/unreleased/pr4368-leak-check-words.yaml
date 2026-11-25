@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  The leak guard's reads of GitHub no longer print the token they carry when whatever answers in
+  GitHub's place echoes it back. A refusal of its visibility reads (gh's REST and GraphQL reads,
+  with the token in `GH_TOKEN` or `GITHUB_TOKEN`, and the curl read, which takes it on standard
+  input) quoted what gh and curl printed with no rule, and the pod's start, the claim's cause and
+  `legion claims list` print that refusal. Each quote is now one line, with every run of the read's
+  tokens redacted, read by the fail-closed rule; where the body is GitHub's JSON refusal, only
+  GitHub's message is quoted.
+
+  The daemon's pack of the shared leak check's tarball names a member only as the rule reads it,
+  with the read's credentials redacted, where it printed a refused member's name as the answer wrote
+  it. It also refuses, before it serves the body, every member the pod's unpack would fail on: a
+  path that is not clean, a member below a regular file, and a member at a path another member took.
+  The pod's unpack names a member by its place and kind, and a failed file call by its operation and
+  the system's reason.
+
+  The tarball read sends its installation token only to the scheme, host and port of its first
+  request. A redirect to another port of the API's host, to plain http on it, or to a name under it
+  gets no `Authorization`, where net/http's own policy sent it. A renamed repository's 301 on the
+  API's own origin is still read with the token, and GitHub's redirect to its download host is still
+  followed without it.
+time: 2026-11-24T23:34:45Z
+custom:
+    Issue: pr4368
