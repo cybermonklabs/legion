@@ -8,50 +8,53 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// TestAJudgedProfileKeepsItsDigestWhenItsJudgeMovesToTheSourcesTag: the merge base 7c880c1556f6
-// fingerprinted a proxy block that held "judge": 900 with that field in it, as a deployment's
-// judge probe profile does. The first broker of this release reads the same profile with the
-// field moved to its source key's judge tag of 900 (the rollout: tag the key, take the field out
-// of the file, roll).
-// Each request records the digest of the profile it was decided under
-// (request_secrets.airlock_digest), and checkRelease ends a grant whose digest moved
-// (machine_read.go, profileChanged), so a moved digest ends every live judged grant of the profile
-// at the deploy, and its next call gets 407 GRANT_NOT_LIVE "profile changed".
-//
-// The two digests below are what the merge base's Profiles.Digest answered for
-// {"name": "AIRLOCK_JUDGE_PROBE", "proxy": {"hosts": ["api.github.com"], "judge": 900}} (with or
-// without a guidance field) and for the same block with no judge. The control row, a source with
-// no judge tag, holds today; the judged row fails at 18d4a3a4, which answers the judge-less digest
-// for both.
-func TestAJudgedProfileKeepsItsDigestWhenItsJudgeMovesToTheSourcesTag(t *testing.T) {
+// TestAProfileKeepsItsDigestWhenItsProxyStringMovesToItsSourcesTag: a profile served behind the
+// kind its proxy string names (SC13) keeps its digest through the rollout that moves the kind to
+// its source's proxy tag: tag the key with the same kind, drop the string from the file, roll. Each
+// request records the digest of the profile it was decided under (request_secrets.airlock_digest),
+// and checkRelease ends a grant whose digest moved (machine_read.go, profileChanged), so a digest
+// that moved with the string would end every live grant of the profile at the deploy, as no change
+// of where its credential may go calls for. The judged rows hold it with the source's judge tag in
+// the digest too. The control row moves the kind instead, and the digest moves with it.
+func TestAProfileKeepsItsDigestWhenItsProxyStringMovesToItsSourcesTag(t *testing.T) {
+	served := func(t *testing.T, tag, judge, profile string) string {
+		t.Helper()
+		source := policytest.Secret("AIRLOCK_JUDGE_PROBE", policy.OwnerShared, policy.TierHuman, "v")
+		if tag != "" {
+			source = policytest.Proxied(source, tag)
+		}
+		if judge != "" {
+			source.Tags[policy.TagJudge] = judge
+			source.Tags[policy.TagGuidance] = "grant a reason that holds k14-grant"
+		}
+		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.KindsFile(profile)).Get()
+		secret, ok := set.Secrets["AIRLOCK_JUDGE_PROBE"]
+		if !ok {
+			t.Fatalf("AIRLOCK_JUDGE_PROBE was not served: %+v", set.Refused)
+		}
+		if secret.Proxy != "github" && tag != "slack" {
+			t.Fatalf("AIRLOCK_JUDGE_PROBE is served behind %q; want github", secret.Proxy)
+		}
+		return secret.ProfileDigest
+	}
 	const (
-		judged900AtBase = "373da3f5cd97349b105dfca21363d99fd226fca95c28c4dcfac77306eeae7965"
-		noJudgeAtBase   = "a85e3fdf65048e27829d1fc7bc74873f8722eda9b5ef06ce41107415c2657761"
+		withString = `{"name": "AIRLOCK_JUDGE_PROBE", "proxy": "github"}`
+		bare       = `{"name": "AIRLOCK_JUDGE_PROBE"}`
 	)
-	for _, row := range []struct {
-		name  string
-		judge string
-		want  string
-	}{
-		{"control: a source with no judge tag keeps the judge-less digest", "", noJudgeAtBase},
-		{"a source tagged judge 900 keeps the digest its block had with judge 900", "900", judged900AtBase},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			source := policytest.Secret("AIRLOCK_JUDGE_PROBE", policy.OwnerShared, policy.TierHuman, "v")
-			if row.judge != "" {
-				source.Tags[policy.TagJudge] = row.judge
-				source.Tags[policy.TagGuidance] = "grant a reason that holds k14-grant"
+	for _, judge := range []string{"", "900"} {
+		t.Run("judge "+judge, func(t *testing.T) {
+			before := served(t, "", judge, withString)
+			if after := served(t, "github", judge, bare); after != before {
+				t.Errorf("the profile is served with digest %s once its string is its source's tag, want %s, the digest it had behind its string", after, before)
 			}
-			set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
-				`{"name": "AIRLOCK_JUDGE_PROBE", "proxy": {"hosts": ["api.github.com"]}}`,
-			)).Get()
-			served, ok := set.Secrets["AIRLOCK_JUDGE_PROBE"]
-			if !ok {
-				t.Fatalf("AIRLOCK_JUDGE_PROBE was not served: %+v", set.Refused)
-			}
-			if served.ProfileDigest != row.want {
-				t.Errorf("AIRLOCK_JUDGE_PROBE is served with profile digest %s, want %s, the digest the merge base gave the same profile; a live grant recorded under the base's digest ends at the first release on this broker", served.ProfileDigest, row.want)
+			if both := served(t, "github", judge, withString); both != before {
+				t.Errorf("the profile is served with digest %s while its string and its source's tag name one kind, want %s", both, before)
 			}
 		})
 	}
+	t.Run("the control: a source tagged another kind moves the digest", func(t *testing.T) {
+		if moved := served(t, "slack", "", bare); moved == served(t, "", "", withString) {
+			t.Error("a profile behind slack is served with the digest it had behind github")
+		}
+	})
 }

@@ -35,14 +35,22 @@ func profileKey(name string) string { return profileKeyPrefix + name }
 //   - a secret released as GitHub installation tokens (ServesGitHubTokens: github-app or
 //     github-installations) that no profile names is refused by its own id
 //     (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile), so every GitHub token the
-//     broker hands over is a profile's.
+//     broker hands over is a profile's;
+//   - a secret tagged proxy-narrowed=true (TagProxyNarrowed) is served through exactly one
+//     profile, which has an allow: where no profile names it, as its source or by its name, it is
+//     refused by its own id, and where the one profile that names it has no allow, or more than
+//     one does, it is refused so and each of those profiles is too (ReasonProxyNarrowedProfiles),
+//     since each would put its credential on its kind's hosts with the kind's allow alone;
+//   - a source whose profile is behind no kind while only the proxy scopes its credential is
+//     refused by its own id too (ReasonProfileSourceNotProxied), as that profile is.
 //
 // Each profile is checked against set's stored secrets alone, never against another profile, so
 // a profile is never the source of another. prefix is the namespace, from which a stored secret's
-// id is formed. A set with no profiles to apply and no github-app secret to refuse is answered as
-// it is, so a deployment of neither allocates nothing here and its Version stays where it was.
+// id is formed. A set with no profiles to apply, no github-app secret to refuse and no narrowed
+// secret is answered as it is, so a deployment of none of them allocates nothing here and its
+// Version stays where it was.
 func (p Profiles) apply(set *Set, prefix string) *Set {
-	if len(p.list) == 0 && !servesAnApp(set) {
+	if len(p.list) == 0 && !servesAny(set, func(s Secret) bool { return ServesGitHubTokens(s.Type()) || s.ProxyNarrowed }) {
 		return set
 	}
 	served := maps.Clone(set.Secrets)
@@ -50,15 +58,23 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	refused := make(map[string]Refusal, len(set.Refused)+len(p.list))
 	maps.Copy(refused, set.Refused)
 	byName := map[string]Refusal{}
+	narrowedProfiles, sources := p.narrowed(set)
+	var redundant []string
 	for i := range p.list {
 		profile := &p.list[i]
 		delete(served, profile.Name)
 		delete(versions, profile.Name)
 		secret, refusal := p.serve(i, set, prefix)
+		if narrowedRefusal, held := narrowedProfiles[i]; held && refusal.Reason != ReasonProfileMinted {
+			secret, refusal = Secret{}, narrowedRefusal
+		}
 		if refusal.Reason == "" {
 			served[profile.Name] = secret
 			if version, listed := set.versions[profile.Source]; listed {
 				versions[profile.Name] = version
+			}
+			if profile.ProxyKind != "" && set.Secrets[profile.Source].Proxy == profile.ProxyKind {
+				redundant = append(redundant, profile.Name)
 			}
 			continue
 		}
@@ -72,6 +88,11 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		byName[profile.Name] = refusal
 		if stored, taken := set.Secrets[profile.Name]; taken && refusal.Reason == ReasonProfileNameTaken {
 			refused[prefix+slugOf(profile.Name)] = Refusal{Reason: ReasonProfileNameTaken, Owner: stored.Owner, Detail: "the profile " + profile.Name + " holds this name"}
+		}
+		if source := set.Secrets[profile.Source]; refusal.Reason == ReasonProfileSourceNotProxied && scopedOnlyByProxy(source.Type()) {
+			if _, held := sources[profile.Source]; !held {
+				sources[profile.Source] = Refusal{Reason: ReasonProfileSourceNotProxied, Owner: source.Owner, Detail: "its profile " + profile.Name + " is behind no kind, and only Cipher's proxy scopes its credential"}
+			}
 		}
 	}
 	for source := range p.of {
@@ -94,18 +115,88 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		refused[prefix+slugOf(name)] = refusal
 		byName[name] = refusal
 	}
-	next := setOf(served, refused, set.Pending, versions)
-	next.profiles, next.profileRefused = p, byName
+	// A source refused by its own name: by its own id, whatever profile of its name the loop above
+	// refused, whose own refusal is what a request for the name reads.
+	for name, refusal := range sources {
+		if secret, servedAsProfile := served[name]; servedAsProfile && secret.Profile != nil {
+			continue
+		}
+		delete(served, name)
+		delete(versions, name)
+		if _, held := refused[prefix+slugOf(name)]; !held {
+			refused[prefix+slugOf(name)] = refusal
+		}
+		if _, held := byName[name]; !held {
+			byName[name] = refusal
+		}
+	}
+	next := setOf(p, served, refused, set.Pending, versions)
+	next.profiles, next.profileRefused, next.redundantProxy = p, byName, redundant
 	return next
 }
 
-// servesAnApp reports whether set serves a secret released as GitHub installation tokens
-// (ServesGitHubTokens), which apply refuses unless a profile names it.
-func servesAnApp(set *Set) bool {
+// narrowed is SC17's rule over set's stored secrets tagged proxy-narrowed=true (Secret.
+// ProxyNarrowed): each is served through exactly one profile, which names it as its source or by
+// its name, and which has an allow. It answers the refusal of each profile, by its index, that
+// the rule refuses, and the refusal of each such secret it refuses by its own name: one no
+// profile names, and one whose one profile has no allow, or which more than one profile names,
+// with each of those profiles.
+func (p Profiles) narrowed(set *Set) (map[int]Refusal, map[string]Refusal) {
+	profiles, sources := map[int]Refusal{}, map[string]Refusal{}
+	for name, secret := range set.Secrets {
+		if !secret.ProxyNarrowed {
+			continue
+		}
+		var naming []int
+		for i := range p.list {
+			if p.list[i].Source == name || p.list[i].Name == name {
+				naming = append(naming, i)
+			}
+		}
+		refuse := func(detail string) Refusal {
+			return Refusal{Reason: ReasonProxyNarrowedProfiles, Owner: secret.Owner, Detail: detail}
+		}
+		switch {
+		case len(naming) == 0:
+			sources[name] = refuse("it is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and no profile names it")
+			continue
+		case len(naming) == 1 && p.list[naming[0]].Allow != nil:
+			continue
+		case len(naming) == 1:
+			sources[name] = refuse("it is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and its one profile, " + p.list[naming[0]].Name + ", has no allow")
+			profiles[naming[0]] = refuse("its source " + name + " is tagged " + TagProxyNarrowed + "=" + ProxyNarrowedTrue + ", and the profile has no allow")
+		default:
+			names := make([]string, len(naming))
+			for j, i := range naming {
+				names[j] = p.list[i].Name
+			}
+			why := fmt.Sprintf("%s is tagged %s=%s, and %d profiles name it: %s", name, TagProxyNarrowed, ProxyNarrowedTrue, len(naming), strings.Join(names, ", "))
+			sources[name] = refuse(why)
+			for _, i := range naming {
+				profiles[i] = refuse(why)
+			}
+		}
+	}
+	return profiles, sources
+}
+
+// servesAny reports whether set serves a secret match holds of.
+func servesAny(set *Set, match func(Secret) bool) bool {
 	for _, secret := range set.Secrets {
-		if ServesGitHubTokens(secret.Type()) {
+		if match(secret) {
 			return true
 		}
+	}
+	return false
+}
+
+// scopedOnlyByProxy reports whether a credential of secretType is one a profile cannot narrow at a
+// mint, so only Cipher's proxy scopes it: a stored token (no type), a google-login, an azure-login
+// or an anthropic-federation secret's.
+func scopedOnlyByProxy(secretType string) bool {
+	switch secretType {
+	case "", TypeGoogleLogin, TypeAzureLogin, TypeAnthropicFederation:
+		return true
 	}
 	return false
 }
@@ -116,14 +207,14 @@ func servesAnApp(set *Set) bool {
 // stored secret set serves; its name is another stored secret's; its github or google block does
 // not fit the source; the tag rules (TagRules) refuse its tags, the profile's own over its
 // source's, so a profile of an admin source is held to the admin rules; it is looser than its
-// source; or it has no proxy block on a source whose credential only the proxy can scope.
+// source; or it does not fit Cipher's proxy (proxied).
 func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	profile := &p.list[i]
-	if profile.Proxy != nil && profile.Proxy.Kind == proxyrules.KindDPoP {
+	if profile.Proxy != nil && profile.Proxy.Kind == proxyrules.WayDPoP {
 		// Proxy configuration for a capability the broker mints for a grant of its own and holds:
 		// no stored secret is ever its value, so a stored secret of its name is not served
 		// through it, and nothing of it can be requested or approved.
-		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + proxyrules.KindDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
+		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + proxyrules.WayDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
 	}
 	source, ok := set.Secrets[profile.Source]
 	if !ok {
@@ -144,8 +235,8 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	// the judge and the person rule — holds a profile to its source's project, and the profile's
 	// line in Version moves when the source is tagged. So are its judge and guidance tags, which
 	// say who decides a request for the source's credential, under whichever name it is asked for;
-	// its judge seconds are in its fingerprint too, where its proxy block once held them
-	// (servedDigest).
+	// behind the proxy its judge seconds are in its fingerprint too, where its proxy block once
+	// held them (proxied, servedDigest).
 	secret := Secret{
 		Name:            profile.Name,
 		Source:          source.Source,
@@ -162,7 +253,6 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 		Judge:           source.Judge,
 		Guidance:        source.Guidance,
 		SessionDefault:  source.SessionDefault,
-		ProfileDigest:   p.servedDigest(i, source.Judge),
 		Profile:         profile,
 	}
 	// Each list is sorted and each entry once (readProfiles), which is the form the tag parsers
@@ -194,13 +284,82 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	if detail := looser(profile, source); detail != "" {
 		return refuse(ReasonProfileLooser, detail)
 	}
-	if profile.Proxy == nil {
-		switch sourceType := source.Type(); sourceType {
-		case "", TypeGoogleLogin, TypeAzureLogin:
-			return refuse(ReasonProfileNeedsProxy, "a "+kindOf(sourceType)+" source's credential is scoped only by a proxy block")
-		}
+	if reason, detail := p.proxied(i, source, &secret); reason != "" {
+		return refuse(reason, detail)
 	}
 	return secret, Refusal{}
+}
+
+// proxied holds the profile at index i, served from source as secret, to Cipher's proxy, and
+// writes into secret the kind it is behind, its way, its source's proxy-narrowed tag and its
+// fingerprint (servedDigest), answering the reason and detail of the first rule it fails:
+//
+//   - its proxy string names another kind than its source's proxy tag (ReasonProxyKindConflict);
+//     the same kind is served, the tag's;
+//   - it is behind no kind, and its source's credential is one only the proxy scopes
+//     (scopedOnlyByProxy), or it has an allow, which narrows only at the proxy
+//     (ReasonProfileSourceNotProxied);
+//   - behind its kind, its source's type takes a way the kind's ways do not hold
+//     (ReasonProxyWay), or its grant cap, its own over its source's, is not within the kind's
+//     max_grant (ReasonProxyMaxGrant), which the load held a tagged source to already and holds a
+//     profile behind its own proxy string to here;
+//   - it has an allow, and its source carries no proxy-narrowed=true tag
+//     (ReasonProfileAllowNotNarrowed); a row of it names a host its kind does not bind
+//     (ReasonProfileAllowHost); or rows of it are outside its kind's allow, by the cover rule
+//     proxyrules.Covers (ReasonProfileAllowOutsideKind).
+func (p Profiles) proxied(i int, source Secret, secret *Secret) (reason, detail string) {
+	profile := &p.list[i]
+	if source.Proxy != "" && profile.ProxyKind != "" && source.Proxy != profile.ProxyKind {
+		return ReasonProxyKindConflict, fmt.Sprintf("the profile's proxy string names the kind %s, and its source %s's %s tag names %s", profile.ProxyKind, profile.Source, TagProxy, source.Proxy)
+	}
+	name := cmp.Or(source.Proxy, profile.ProxyKind)
+	kind := p.fileRules.Kind(name)
+	if kind == nil {
+		switch {
+		case scopedOnlyByProxy(source.Type()):
+			return ReasonProfileSourceNotProxied, fmt.Sprintf("a %s source's credential is scoped only by Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", kindOf(source.Type()), profile.Source, TagProxy)
+		case profile.Allow != nil:
+			return ReasonProfileSourceNotProxied, fmt.Sprintf("its allow narrows its source's credential only at Cipher's proxy, and neither its source %s's %s tag nor the profile's proxy string names a kind", profile.Source, TagProxy)
+		}
+		secret.ProfileDigest = p.servedDigest(i, servedAs{})
+		return "", ""
+	}
+	way, ok := WayOf(*kind, source.Type())
+	if !ok {
+		return ReasonProxyWay, wayRefusal(*kind, source.Type(), way)
+	}
+	if why := kindMaxGrant(*kind, secret.MaxGrant); why != "" {
+		return ReasonProxyMaxGrant, why
+	}
+	if profile.Allow != nil {
+		if !source.ProxyNarrowed {
+			return ReasonProfileAllowNotNarrowed, fmt.Sprintf("its allow narrows its source %s at the proxy, and %s carries no %s=%s tag", profile.Source, profile.Source, TagProxyNarrowed, ProxyNarrowedTrue)
+		}
+		for _, row := range profile.Allow {
+			if row.Host != "" && !proxyrules.HostBound(kind.Hosts, row.Host) {
+				return ReasonProfileAllowHost, fmt.Sprintf("allow row %s names the host %s, which the kind %s does not bind (%s)", rowWords(row), row.Host, kind.Name, strings.Join(kind.Hosts, ", "))
+			}
+		}
+		if outside := proxyrules.Outside(kind.Allow, profile.Allow); outside != nil {
+			rows := make([]string, len(outside))
+			for j, row := range outside {
+				rows[j] = rowWords(row)
+			}
+			return ReasonProfileAllowOutsideKind, fmt.Sprintf("allow rows %s are outside the kind %s's allow, and a profile narrows its kind and never widens it", strings.Join(rows, " and "), kind.Name)
+		}
+	}
+	secret.Proxy, secret.Way, secret.ProxyNarrowed = kind.Name, way, source.ProxyNarrowed
+	secret.ProfileDigest = p.servedDigest(i, servedAs{kind: kind.Name, narrowed: source.ProxyNarrowed, judge: source.Judge})
+	return "", ""
+}
+
+// rowWords is an allow row as a refusal names it: its method and path prefix, and its host where
+// it names one.
+func rowWords(row proxyrules.Allow) string {
+	if row.Host == "" {
+		return row.Method + " " + row.PathPrefix
+	}
+	return row.Method + " " + row.PathPrefix + " on " + row.Host
 }
 
 // sourceMissing is the refusal of a profile whose source set does not serve, with the source's own

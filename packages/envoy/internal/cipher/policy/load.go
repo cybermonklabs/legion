@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -34,6 +36,12 @@ const RefusedMessage = "agent secret policy refused"
 // tells a boot that refused no profile from one that read no file, or never started. The operate
 // guide documents its text, and the production check reads it.
 const ProfilesAppliedMessage = "broker: profiles applied"
+
+// ProxyKindRedundantMessage is the line Current writes, at WARN, once for each full load, for
+// each profile it serves whose proxy string (Profile.ProxyKind) names the kind its source's proxy
+// tag names too: profile, source and kind. The profile is served behind that kind; the string says
+// nothing the tag does not, so the file can drop it, and the line stands out until it does.
+const ProxyKindRedundantMessage = "profile's proxy string names its source's proxy kind; drop the string"
 
 // ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
 // refused no longer: name, reason (the reason it had) and owner as its refusal last held them,
@@ -237,10 +245,53 @@ const (
 	// every session and pod, so any list narrows it), or a maxGrant above the source's max-grant.
 	// Its detail says which.
 	ReasonProfileLooser = "profile-looser"
-	// ReasonProfileNeedsProxy: a profile with no proxy block on a stored value, a google-login or
-	// an azure-login source, whose credential a profile cannot narrow at a mint, so only the
-	// proxy's hosts, methods and paths scope it.
-	ReasonProfileNeedsProxy = "profile-needs-proxy"
+	// ReasonProfileSourceNotProxied: a profile behind no kind - its source carries no proxy tag
+	// and it names no kind as its proxy string - whose source is a stored token, a google-login,
+	// an azure-login or an anthropic-federation secret, whose credential a profile cannot narrow at
+	// a mint, so only the proxy scopes it; or whose own allow, which narrows only at the proxy,
+	// would then narrow nothing. The profile is refused, and so is its source by its own name, so
+	// a secret created again with no proxy tag is never released as its value under a profile
+	// whose allow nobody reads.
+	ReasonProfileSourceNotProxied = "profile-source-not-proxied"
+	// ReasonProxyKindUnknown: the secret's proxy tag (TagProxy) names no kind of the profiles
+	// file, so the broker knows no host its credential may go to. Its detail names the tag's
+	// value.
+	ReasonProxyKindUnknown = "proxy-kind-unknown"
+	// ReasonProxyWay: the way the secret's type takes into a call (WayOf) is not one its kind's
+	// ways hold, so its credential would go into no call. A profile behind its own proxy string's
+	// kind is held to it too. Its detail names the way and the kind's ways.
+	ReasonProxyWay = "proxy-way-not-in-kind"
+	// ReasonProxyMaxGrant: a secret of a kind with a max_grant sets no max-grant, or one above
+	// it, so a grant of it could outlast what the kind allows. A profile behind its own proxy
+	// string's kind is held to it with its own maxGrant over its source's. Its detail names both.
+	ReasonProxyMaxGrant = "proxy-max-grant-above-kind"
+	// ReasonProxyKindConflict: a profile's proxy string names another kind than its source's
+	// proxy tag, so the file and the store disagree on where its credential may go. A string that
+	// names the source's own kind is served, and Current's reload writes ProxyKindRedundantMessage
+	// for it. Its detail names both kinds.
+	ReasonProxyKindConflict = "proxy-kind-conflict"
+	// ReasonProxyNarrowedMalformed: the proxy-narrowed tag (TagProxyNarrowed) is set to anything
+	// but "true", the empty string included. A mark the broker cannot read names no narrowing it
+	// could hold the secret to, so the secret goes to nobody.
+	ReasonProxyNarrowedMalformed = "proxy-narrowed-malformed"
+	// ReasonProxyNarrowedProfiles: a secret tagged proxy-narrowed=true is served through exactly
+	// one profile, which has an allow, and here is not: no profile names it as its source or by
+	// its name, or the one that does has no allow, or more than one does. The secret is refused by
+	// its own name, and so is each profile that names it, since any of them would put its
+	// credential on its kind's hosts with the kind's allow alone.
+	ReasonProxyNarrowedProfiles = "proxy-narrowed-profiles"
+	// ReasonProfileAllowNotNarrowed: a profile has an allow of its own and its source carries no
+	// proxy-narrowed=true tag, so the narrowing would be in force in the file alone, where a
+	// reviewed change could take it away with no change of the store.
+	ReasonProfileAllowNotNarrowed = "profile-allow-not-narrowed"
+	// ReasonProfileAllowOutsideKind: a row of a profile's allow is one its kind's allow does not
+	// cover (proxyrules.Covers), so the row would read as a narrowing and allow nothing the kind
+	// does not; a profile narrows its kind and never widens it. Its detail names each such row.
+	ReasonProfileAllowOutsideKind = "profile-allow-outside-kind"
+	// ReasonProfileAllowHost: a row of a profile's allow names a host its kind does not bind
+	// (proxyrules.HostBound), so the row would allow a request the kind never carries. Its detail
+	// names the row and the kind's hosts.
+	ReasonProfileAllowHost = "profile-allow-host"
 	// ReasonProfileMinted: a profile whose proxy block is of kind dpop. It is proxy configuration
 	// for a capability the broker mints for a grant of its own and holds, never a secret the
 	// policy serves, so serve answers it whatever the store holds - with no stored secret of its
@@ -341,7 +392,8 @@ func (l Loader) clock() time.Time {
 // Load reads the namespace into a Set: each secret it serves, each it refuses with why
 // (Set.Refused, refusalOf), each waiting for its value (Set.Pending) by the loader's clock
 // (pendingAt), and the version of each served type secret's value as the listing names it, which
-// Current decodes. It reads no value, and writes no line but LegacyTypeTagMessage, once per
+// Current decodes, with the proxy rules of the profiles file's kinds over what it serves
+// (Set.ProxyRules). It reads no value, and writes no line but LegacyTypeTagMessage, once per
 // secret per process, for a secret it reads through the old kind tag (listingType): Current,
 // which keeps the set before, writes the lines a change of state calls for, and reads the values.
 // A failed store call fails the whole load.
@@ -360,7 +412,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 		if !ok {
 			continue
 		}
-		secret, reason, err := l.secret(ctx, slug, ls, now)
+		secret, reason, detail, err := l.secret(ctx, slug, ls, now)
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +422,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 			pending[ls.ID] = pendingOf(ls)
 			continue
 		default:
-			refused[ls.ID] = refusalOf(ls, reason)
+			refused[ls.ID] = refusalOf(ls, reason, detail)
 			continue
 		}
 		served[secret.Name] = secret
@@ -378,18 +430,18 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 			versions[secret.Name] = ls.Version
 		}
 	}
-	return setOf(served, refused, pending, versions), nil
+	return setOf(l.Profiles, served, refused, pending, versions), nil
 }
 
-// refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
-// it, or "" for the two reasons that tag is itself the fault, missing or malformed, and its
-// superseded-by tag as written.
-func refusalOf(ls secrets.Listing, reason string) Refusal {
+// refusalOf is the Refusal of the secret ls lists for reason, with detail: its owner tag as the
+// store holds it, or "" for the two reasons that tag is itself the fault, missing or malformed, and
+// its superseded-by tag as written.
+func refusalOf(ls secrets.Listing, reason, detail string) Refusal {
 	switch reason {
 	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
-		return Refusal{Reason: reason, SupersededBy: ls.Tags[TagSupersededBy]}
+		return Refusal{Reason: reason, Detail: detail, SupersededBy: ls.Tags[TagSupersededBy]}
 	}
-	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], SupersededBy: ls.Tags[TagSupersededBy]}
+	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], Detail: detail, SupersededBy: ls.Tags[TagSupersededBy]}
 }
 
 // pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag, when
@@ -418,6 +470,8 @@ type Lookup struct {
 	// supersededBy is, for a refusal or ReasonPendingValue, the secret's superseded-by tag, as
 	// Refusal and Pending carry it.
 	supersededBy string
+	// detail is, for a refusal, its Detail, as Refusal carries it.
+	detail string
 }
 
 // refusal is the Refusal lk answers, and the zero Refusal for a secret served, absent or pending.
@@ -425,7 +479,7 @@ func (lk Lookup) refusal() Refusal {
 	if lk.Served || lk.Reason == ReasonAbsent || lk.Reason == ReasonPendingValue {
 		return Refusal{}
 	}
-	return Refusal{Reason: lk.Reason, Owner: lk.Owner, SupersededBy: lk.supersededBy}
+	return Refusal{Reason: lk.Reason, Owner: lk.Owner, Detail: lk.detail, SupersededBy: lk.supersededBy}
 }
 
 // pending is the Set.Pending entry lk answers, and the zero Pending for a secret not pending.
@@ -469,7 +523,7 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	case err != nil:
 		return Lookup{}, err
 	}
-	secret, reason, err := l.secret(ctx, slug, ls, l.clock())
+	secret, reason, detail, err := l.secret(ctx, slug, ls, l.clock())
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -478,8 +532,8 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 		return Lookup{Reason: reason, Owner: waiting.Owner, created: waiting.Created, supersededBy: waiting.SupersededBy}, nil
 	}
 	if reason != "" {
-		refusal := refusalOf(ls, reason)
-		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner, supersededBy: refusal.SupersededBy}, nil
+		refusal := refusalOf(ls, reason, detail)
+		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner, supersededBy: refusal.SupersededBy, detail: refusal.Detail}, nil
 	}
 	lk := Lookup{Secret: secret, Served: true}
 	if secret.Type() != "" {
@@ -488,10 +542,96 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	return lk, nil
 }
 
-// secret reads one secret under the prefix at now, answering the reason it is refused when it is.
-// It asks the store whether the secret is on the agent-secrets key only after every tag check, so
-// a secret refused for its name or tags costs no key lookup; a failed lookup is an error.
-func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now time.Time) (Secret, string, error) {
+// secret reads one secret under the prefix at now, answering the reason it is refused when it is,
+// and that refusal's detail where it has one (a proxy tag's, proxyTags). It asks the store whether
+// the secret is on the agent-secrets key only after every tag check, so a secret refused for its
+// name or tags costs no key lookup; a failed lookup is an error.
+func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now time.Time) (Secret, string, string, error) {
+	s, reason, err := l.storedSecret(ctx, slug, ls)
+	if err != nil || reason != "" {
+		return Secret{}, reason, "", err
+	}
+	if reason, detail := l.proxyTags(&s, ls.Tags); reason != "" {
+		return Secret{}, reason, detail, nil
+	}
+	if !ls.HasCurrentValue {
+		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
+		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
+		// comment says when the create deletes it; past the window it is refused here
+		// no-current-value until then. Any other secret without a value, and one whose creation
+		// time the store did not name, is refused so at once.
+		if ls.Unfilled && pendingAt(ls.Created, now) {
+			return Secret{}, ReasonPendingValue, "", nil
+		}
+		return Secret{}, ReasonNoCurrentValue, "", nil
+	}
+	return s, "", "", nil
+}
+
+// proxyTags reads the secret's proxy tags into s against the profiles file's kinds
+// (Loader.Profiles), after every other tag, so the type and max-grant they weigh are read, and
+// before the value, which only a fault no tag can fix is checked after: proxy-narrowed, whose one
+// value is "true" (ReasonProxyNarrowedMalformed); and proxy, which names a kind of the file
+// (ReasonProxyKindUnknown) whose ways hold the way the secret's type takes (WayOf,
+// ReasonProxyWay) and whose max_grant the secret's max-grant is within (kindMaxGrant,
+// ReasonProxyMaxGrant). A secret behind a kind takes that kind, its way, and the fingerprint of its
+// proxy tags (proxyDigest), which ends the grants of its name when either tag changes. It answers
+// the reason and detail of the first refusal, or "" for a secret its tags serve.
+func (l Loader) proxyTags(s *Secret, tags map[string]string) (reason, detail string) {
+	if raw, tagged := tags[TagProxyNarrowed]; tagged {
+		if raw != ProxyNarrowedTrue {
+			return ReasonProxyNarrowedMalformed, fmt.Sprintf("%s is %q, and its one value is %s", TagProxyNarrowed, raw, ProxyNarrowedTrue)
+		}
+		s.ProxyNarrowed = true
+	}
+	raw, tagged := tags[TagProxy]
+	if !tagged {
+		return "", ""
+	}
+	kind := l.Profiles.fileRules.Kind(raw)
+	if kind == nil {
+		return ReasonProxyKindUnknown, fmt.Sprintf("the %s tag names %q, which is no kind of the profiles file", TagProxy, raw)
+	}
+	way, ok := WayOf(*kind, s.Type())
+	if !ok {
+		return ReasonProxyWay, wayRefusal(*kind, s.Type(), way)
+	}
+	if why := kindMaxGrant(*kind, s.MaxGrant); why != "" {
+		return ReasonProxyMaxGrant, why
+	}
+	s.Proxy, s.Way = kind.Name, way
+	s.ProfileDigest = proxyDigest(kind.Name, s.ProxyNarrowed)
+	return "", ""
+}
+
+// wayRefusal is ReasonProxyWay's detail: the way a secret of secretType takes, "" for a type that
+// takes none, and the ways kind holds.
+func wayRefusal(kind proxyrules.Kind, secretType, way string) string {
+	return fmt.Sprintf("a %s secret goes into a call by way %s, which the kind %s's ways (%s) do not hold", kindOf(secretType), cmp.Or(way, "of none"), kind.Name, strings.Join(kind.Ways, ", "))
+}
+
+// kindMaxGrant says how a grant cap of maxGrant, 0 for none, is not within kind's max_grant, and
+// is "" when it is or the kind sets none. A max_grant that is no duration, which ParseProfiles
+// refuses (proxyrules.CheckKind), keeps nothing within it.
+func kindMaxGrant(kind proxyrules.Kind, maxGrant time.Duration) string {
+	if kind.MaxGrant == "" {
+		return ""
+	}
+	limit, err := time.ParseDuration(kind.MaxGrant)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the kind %s's max_grant %q is no duration", kind.Name, kind.MaxGrant)
+	case maxGrant == 0:
+		return fmt.Sprintf("it sets no max-grant, and the kind %s caps each grant of it at %s", kind.Name, limit)
+	case maxGrant > limit:
+		return fmt.Sprintf("its max-grant %s is above the kind %s's max_grant %s", maxGrant, kind.Name, limit)
+	}
+	return ""
+}
+
+// storedSecret is secret up to its proxy tags and its value: the secret's name and every tag but
+// proxy and proxy-narrowed, answering the reason it is refused when it is.
+func (l Loader) storedSecret(ctx context.Context, slug string, ls secrets.Listing) (Secret, string, error) {
 	if !slugPattern.MatchString(slug) {
 		return Secret{}, ReasonNameMalformed, nil
 	}
@@ -620,17 +760,6 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	// Read as written: only a profile's claim on this secret's name reads it (supersededBy), and a
 	// value that is no profile's source matches none, so the name stays the stored secret's.
 	s.SupersededBy = ls.Tags[TagSupersededBy]
-	if !ls.HasCurrentValue {
-		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
-		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
-		// comment says when the create deletes it; past the window it is refused here
-		// no-current-value until then. Any other secret without a value, and one whose creation
-		// time the store did not name, is refused so at once.
-		if ls.Unfilled && pendingAt(ls.Created, now) {
-			return Secret{}, ReasonPendingValue, nil
-		}
-		return Secret{}, ReasonNoCurrentValue, nil
-	}
 	return s, "", nil
 }
 

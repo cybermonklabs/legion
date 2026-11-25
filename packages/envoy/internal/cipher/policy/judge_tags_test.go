@@ -190,8 +190,8 @@ func TestAProfileTakesItsSourcesJudgeAndGuidance(t *testing.T) {
 	source := policytest.Secret("RELEASE_PAT", owner, policy.TierHuman, "v")
 	source.Tags[policy.TagJudge] = "600"
 	source.Tags[policy.TagGuidance] = "grant for the release job"
-	set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
-		`{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"]}}`,
+	set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.KindsFile(
+		`{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": "github"}`,
 	)).Get()
 	profile, served := set.Secrets["RELEASE_READ"]
 	if !served {
@@ -202,38 +202,36 @@ func TestAProfileTakesItsSourcesJudgeAndGuidance(t *testing.T) {
 	}
 }
 
-// TestAJudgedProfileOfAnotherNameKeepsTheDigestItHadAtTheBase pins the served digest of a profile
-// made from a source of another name, with an allow list, to the one legion main 7c880c1556f6 gave
-// the same profile while its proxy block held "judge": 300 and guidance: once the judge is the
-// source's tag of 300, the profile is served with that digest, so a grant decided under the old
-// file goes on releasing at the first broker of this release (servedDigest). The control profile,
-// served from a source with no judge tag, keeps the digest the base gave it with no judge. Both
-// constants were printed by that commit's Profiles.Digest for the entries the test names, the
-// first with "judge": 300, "guidance": "grant for the release job" in its proxy block.
-func TestAJudgedProfileOfAnotherNameKeepsTheDigestItHadAtTheBase(t *testing.T) {
-	const (
-		judgedAtBase = "730e1a2b6efaa4bf291d6ec473ea3906901e989ae637cd676aa97b6ffe3faa72"
-		plainAtBase  = "8f350dd5333674d90fa6875e1e6764ab2b9798326536f6cec844eb1b866a9d0e"
-	)
-	for _, row := range []struct {
-		profile, judge, want string
-	}{
-		{"RELEASE_READ", "300", judgedAtBase},
-		{"RELEASE_PLAIN", "", plainAtBase},
-	} {
-		source := policytest.Secret("RELEASE_PAT", owner, policy.TierHuman, "v")
-		if row.judge != "" {
-			source = policytest.Judged(source, 300, "grant for the release job")
+// TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest: a profile behind the proxy is served
+// with its source key's judge seconds in its fingerprint, where its proxy block held them before
+// the judge became the key's tag, so a judge tag added, changed or taken off its source ends the
+// profile's grants (requests' profileChanged), as an edit of the block's judge did. A profile
+// served from a source with no judge tag keeps its file's own fingerprint (Profiles.Digest). The
+// merge base's digests of these entries were their proxy blocks'; behind a kind, an entry's digest
+// is its new form's, which the move to kinds changes once.
+func TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest(t *testing.T) {
+	const file = `{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": "github", "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}`
+	digest := func(judge int) string {
+		t.Helper()
+		source := policytest.Narrowed(policytest.Secret("RELEASE_PAT", owner, policy.TierHuman, "v"))
+		if judge != 0 {
+			source = policytest.Judged(source, judge, "grant for the release job")
 		}
-		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
-			`{"name": "`+row.profile+`", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}}`,
-		)).Get()
-		served, ok := set.Secrets[row.profile]
+		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.KindsFile(file)).Get()
+		served, ok := set.Secrets["RELEASE_READ"]
 		if !ok {
-			t.Fatalf("%s was not served: %+v", row.profile, set.Refused)
+			t.Fatalf("RELEASE_READ was not served: %+v", set.Refused)
 		}
-		if served.ProfileDigest != row.want {
-			t.Errorf("%s from a source tagged judge %q is served with digest %s, want %s, the digest the base gave its entry", row.profile, row.judge, served.ProfileDigest, row.want)
-		}
+		return served.ProfileDigest
+	}
+	plain, judged300, judged600 := digest(0), digest(300), digest(600)
+	if own := policytest.Profiles(t, policytest.KindsFile(file)).Digest("RELEASE_READ"); plain == own {
+		t.Errorf("RELEASE_READ, from a source tagged proxy-narrowed, is served with its file's own digest %s; want the tag in it", own)
+	}
+	if judged300 == plain || judged600 == plain || judged300 == judged600 {
+		t.Errorf("RELEASE_READ's digests under no judge, 300 and 600 = %s, %s, %s; want three", plain, judged300, judged600)
+	}
+	if again := digest(300); again != judged300 {
+		t.Errorf("RELEASE_READ under judge 300 is served with %s and then %s; want one digest", judged300, again)
 	}
 }

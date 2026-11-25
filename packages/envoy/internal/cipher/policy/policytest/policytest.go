@@ -316,6 +316,49 @@ func ProfilesFile(profiles ...string) string {
 	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
 }
 
+// Kinds is a kinds list a test's profiles file declares (KindsFile), one line of JSON: example, on
+// api.example.com, whose ways take a stored value, a minted token and an exchange alike, so a
+// secret of any type is served behind it; github, on GitHub's three hosts; gcp, on Google's APIs;
+// slack; aws, which signs a stored key pair; and anthropic as the spec's anthropic kind declares
+// it, on api.anthropic.com, with its three allow rows under /v1/organizations/ and a max_grant of
+// an hour. No kind but anthropic sets an allow or a max_grant, so a secret behind one of the
+// others is held to nothing a test has not set itself.
+const Kinds = `[` +
+	`{"name": "example", "hosts": ["api.example.com"], "ways": ["swap", "mint", "exchange"]}, ` +
+	`{"name": "github", "hosts": ["api.github.com", "github.com", "uploads.github.com"], "headers": ["Authorization"], "variables": ["GH_TOKEN", "GITHUB_TOKEN"], "ways": ["swap", "mint", "app-token"]}, ` +
+	`{"name": "gcp", "hosts": ["*.googleapis.com", "*.pkg.dev"], "headers": ["Authorization"], "ways": ["mint"]}, ` +
+	`{"name": "slack", "hosts": ["slack.com"], "headers": ["Authorization"], "variables": ["SLACK_BOT_TOKEN"], "ways": ["swap"]}, ` +
+	`{"name": "aws", "hosts": ["*.amazonaws.com"], "ways": ["sign"]}, ` +
+	`{"name": "anthropic", "hosts": ["api.anthropic.com"], "headers": ["Authorization"], "variables": ["ANTHROPIC_ADMIN_TOKEN"], "ways": ["mint"], ` +
+	`"allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"}, {"method": "POST", "pathPrefix": "/v1/organizations/"}, {"method": "DELETE", "pathPrefix": "/v1/organizations/"}], "max_grant": "1h"}` +
+	`]`
+
+// KindsFile is ProfilesFile with Kinds declared after its profiles, on the line they end on, so
+// a profile may name a kind of Kinds as its proxy string and a secret's proxy tag may name one.
+func KindsFile(profiles ...string) string {
+	return KindsFileOf(Kinds, profiles...)
+}
+
+// KindsFileOf is the profiles file holding profiles, each one entry's JSON, in order, and kinds, a
+// JSON list of kinds, after them on the line they end on.
+func KindsFileOf(kinds string, profiles ...string) string {
+	return `{"profiles": [` + strings.Join(profiles, ", ") + `], "kinds": ` + kinds + `}`
+}
+
+// Proxied is s with a proxy tag naming kind (policy.TagProxy), which puts it behind Cipher's proxy
+// under that kind of the profiles file.
+func Proxied(s secrets.LocalSecret, kind string) secrets.LocalSecret {
+	s.Tags[policy.TagProxy] = kind
+	return s
+}
+
+// Narrowed is s with the proxy-narrowed tag (policy.TagProxyNarrowed), which has the policy serve it
+// through exactly one profile, and one with an allow.
+func Narrowed(s secrets.LocalSecret) secrets.LocalSecret {
+	s.Tags[policy.TagProxyNarrowed] = policy.ProxyNarrowedTrue
+	return s
+}
+
 // MeteredCurrent is Current with the policy's two metrics on registry, as cmd/cipherd/main.go
 // registers them: broker_policy_store_reads_total counted from the first load on
 // (policy.NewStoreReads), and broker_unservable_secrets once that load answered
