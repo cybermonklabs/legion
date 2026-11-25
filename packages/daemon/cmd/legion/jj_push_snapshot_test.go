@@ -193,13 +193,12 @@ func (f *rolePushFixture) opsSince(op string) []string {
 // --config user.email, which so becomes @'s author's email, as jj alone's push would leave it.
 // With nothing to rewrite, @ by its trailer's role, every command of the step's carries
 // --ignore-working-copy, the real push carries none, as the role wrote none, and the one snapshot
-// is the real push's own. Where the push takes a snapshot of its own, the step first compares
-// git's HEAD and branches with jj's, which git left as jj's commands set them, with reads that
-// carry --ignore-working-copy, before every other command of the step's but a read of the
-// configuration (checkCompared); where it takes none, the step compares nothing. With the role's
-// own --ignore-working-copy, before the subcommand pair or after it, and a commit to rewrite,
-// every command of the step's carries --ignore-working-copy, the real push carries that flag
-// once, as the role wrote it, and the push adds no snapshot: the remote gets @ with the
+// is the real push's own. Where the push takes a snapshot of its own, the step compares git's
+// HEAD and branches with jj's, which git left as jj's commands set them, with reads that carry
+// --ignore-working-copy (checkCompared); where it takes none, the step compares nothing. With the
+// role's own --ignore-working-copy, before the subcommand pair or after it, and a commit to
+// rewrite, every command of the step's carries --ignore-working-copy, the real push carries that
+// flag once, as the role wrote it, and the push adds no snapshot: the remote gets @ with the
 // implementer's author and without the write, as jj alone, on a twin state made the same way,
 // sends @ without the write, with its author as it was, and adds no snapshot either.
 func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
@@ -294,11 +293,7 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 					row.after(f, stderr)
 				}
 				calls := f.calls()
-				compared := len(rolePushComparisonReads)
-				if ignores {
-					compared = 0
-				}
-				f.checkCompared(calls, compared)
+				f.checkCompared(calls, !ignores)
 				pushes := f.oneRealPush(calls)
 				push := calls[pushes]
 				steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)

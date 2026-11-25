@@ -88,22 +88,18 @@ var gitIntRule = regexp.MustCompile(`^[ \t\n\v\f\r]*([+-]?(?:0[xX][0-9a-fA-F]+|0
 // commitWithTrailers adds no line, so the commit's message and id are those git alone makes.
 //
 // git 2.47.3 reads GIT_CONFIG_NOSYSTEM with git_env_bool("GIT_CONFIG_NOSYSTEM", 0): unset is
-// false, and a value is what git_parse_maybe_bool makes of it. true, yes and on are true, and
-// false, no, off and the empty string false, in any case (git_parse_maybe_bool_text); any other
-// value is true when git_parse_int reads it as an int that is not 0: gitIntRule's number times its
-// unit, within the range of a C int (git_parse_signed). git dies on a value it reads neither way,
-// so such a value asks for no isolation: the lines go in as for any other commit, and git then
-// fails on its own.
+// false, and a value is what git_parse_maybe_bool makes of it. One of git's words is what
+// gitBoolWord says (git_parse_maybe_bool_text); any other value is true when git_parse_int reads
+// it as an int that is not 0: gitIntRule's number times its unit, within the range of a C int
+// (git_parse_signed). git dies on a value it reads neither way, so such a value asks for no
+// isolation: the lines go in as for any other commit, and git then fails on its own.
 func gitIsolated(env map[string]string) bool {
 	if env["GIT_CONFIG_GLOBAL"] == "/dev/null" {
 		return true
 	}
 	value := env["GIT_CONFIG_NOSYSTEM"]
-	switch strings.ToLower(value) {
-	case "true", "yes", "on":
-		return true
-	case "", "false", "no", "off":
-		return false
+	if b, ok := gitBoolWord(value); ok {
+		return b
 	}
 	number := gitIntRule.FindStringSubmatch(value)
 	if number == nil {

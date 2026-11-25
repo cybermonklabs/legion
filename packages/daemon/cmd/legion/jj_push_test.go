@@ -1399,7 +1399,7 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 			noMetaedit: true,
 			snapshots:  rolePushTakesNoSnapshot,
 		}, rolePushBookmark, code, stderr, divergent, 0)
-		f.checkCompared(f.calls(), len(rolePushComparisonReads))
+		f.checkCompared(f.calls(), true)
 		if added := f.ops() - before; added != aloneAdded {
 			t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
 		}

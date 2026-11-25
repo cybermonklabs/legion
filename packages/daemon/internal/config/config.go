@@ -1244,16 +1244,14 @@ func checkProviderKeyFiles(file fileConfig) error {
 	return nil
 }
 
-// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry named for a
-// variable runtime.PaneVariableRefusal refuses with no value (one that places the session a resume
-// reads, one a Claude Code pane or a resumed Oh My Pi pane is told after the operator's, a launch
-// secret's pointer, and LEGION_ROLE_IDENTITIES), naming the variable and that function's reason.
-// The shim exports a provider key into the agent's environment, where it acts as the pane variable
-// of that name, so the tmux runtime refuses the same name at its construction, at boot (tmux's
-// readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one every
-// pane carries); refusing it here lets `legion config check` see it. Under runtime kubernetes it
-// refuses nothing: there sandbox.CheckPod holds each provider key to the variables a pod sets
-// (podVariables).
+// checkTmuxProviderKeyNames refuses, under runtime tmux, a `provider_keys` entry with a name
+// runtime.PaneVariableRefusal refuses with no value, naming the variable and that function's
+// reason. The shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name, so the tmux runtime refuses the same name at its construction, at boot
+// (tmux's readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one
+// every pane carries); refusing it here lets `legion config check` see it. Under runtime
+// kubernetes it refuses nothing: there sandbox.CheckPod holds each provider key to the variables a
+// pod sets (podVariables).
 func checkTmuxProviderKeyNames(file fileConfig) error {
 	if file.Kubernetes != nil {
 		return nil

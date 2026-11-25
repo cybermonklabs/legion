@@ -68,7 +68,7 @@ func (c jjSent) word() string {
 // no read of the step, each with --ignore-working-copy, imports it or can read it. The dry run
 // then fails as the read did, with jj's error, which the step cannot read (dryRunFilled), so the
 // step takes no snapshot, which would import it. A commit that git made on HEAD or a branch the
-// step reads after its snapshot, which rewrite takes first where git moved them (gitMoved).
+// step reads after its snapshot, as rewrite says.
 func (s *jjStep) readRevisions() error {
 	s.revisions = make([]jjArgument, len(s.push.revisions))
 	var hidden []string
