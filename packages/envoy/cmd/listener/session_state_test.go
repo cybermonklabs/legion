@@ -100,6 +100,7 @@ func register(t *testing.T, d *listenerDeps, sessionID string, entry session.Ses
 // session was simply absent, and every caller reading that absence - a Legion controller looking
 // for a worker to replace among them - read it as dead.
 func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
 	now.advance(90 * time.Second)
@@ -142,6 +143,7 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 // that reads them can tell "stalled" from "gone". With include=unresponsive it answers the
 // session itself, which is how a caller that must still address it gets its port and its machine.
 func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
 	now.advance(90 * time.Second)
@@ -186,6 +188,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 // lookup: one lookup used to be enough to lose the role, and a pass of the reaper used to end it
 // on the session cache's word alone.
 func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const (
 		role   = "reviewer"
@@ -245,6 +248,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 // prefix a sender routes around the pane on, and names the state and the registration the
 // refusal was decided on.
 func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const sessionID = "ses_stalled_recipient"
 	registeredAt := register(t, d, sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -295,6 +299,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 // A6). A session this rig holds no record and no remembered registration for is exactly the state
 // a restart leaves.
 func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
+	t.Parallel()
 	d, _ := stalledSessionsRig(t)
 	const sessionID = "ses_reaped_before_the_restart"
 
@@ -328,6 +333,7 @@ func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
 // restart, that the raise took. Without the field, a deployment whose bucket still drops records
 // after five minutes looks exactly like one that keeps them for ninety.
 func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *testing.T) {
+	t.Parallel()
 	d, _ := stalledSessionsRig(t)
 	maxAge := func() string {
 		t.Helper()

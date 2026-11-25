@@ -112,6 +112,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 // (provisionListenerServer), as `envoy-infra buckets` provisions a deployment's, and the first
 // start's writes are read from there on, so a create of one of them fails the test.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
+	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")

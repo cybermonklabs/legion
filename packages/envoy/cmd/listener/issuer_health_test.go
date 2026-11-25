@@ -23,6 +23,7 @@ import (
 // writeMissingBuckets' (a running listener whose bucket was deleted) and writeDependencyHealth's
 // (an unhealthy one).
 func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
+	t.Parallel()
 	auth := listenerAPIAuth{verifier: oidc.NewLazyVerifier("http://127.0.0.1:1", listenerTestAudience)}
 	issuers := func() map[string]any { return issuerHealthFields(auth) }
 	var starting atomic.Pointer[listenerDeps]

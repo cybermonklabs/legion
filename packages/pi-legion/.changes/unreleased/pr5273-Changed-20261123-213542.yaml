@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    The worker, retro and architect skills describe the pull request's fast lane: the builds and checks every pull request
+    runs, the slow suites the merge queue runs and their `full-ci` and `lane:<output>` labels, and a
+    check run named `<caller> / <job>`. A `ci_check` check naming a job held back without its label
+    has no pass standing, whether its run is `absent` or `skipped`: the implementer adds the label,
+    and only another name that no run answers goes to the architect as a check with wrong words.
+time: 2026-11-23T21:35:42.93325047Z
+custom:
+    Issue: pr5273

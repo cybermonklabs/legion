@@ -50,6 +50,7 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // a lock say: that forward would carry the mark. A change to the shutdown path or to
 // bus.Client.StartRequestStoredTo is read against this test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
 
@@ -194,6 +195,7 @@ func outputAroundSignal(output string, signal int) string {
 // (a circuit-breaker rollback, a second deploy) is an ordered shutdown like any other: HTTP drains,
 // NATS drains, nothing on the path is an error, and the durable the old task holds is left alone.
 func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T) {
+	t.Parallel()
 	const machineID = "sigterm-during-bind"
 	old, holder := durableHeldElsewhere(t, testnats.URL(t), "listener-"+machineID)
 
@@ -305,6 +307,7 @@ func provisionListenerServer(t *testing.T, uri string, env []string) {
 // for it, and says that address in its listening line. Without the socket it would bind
 // 127.0.0.1:9020.
 func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	held := cmdtest.HoldPort(t)
 	uri := testnats.URL(t)
 	provisionListenerServer(t, uri, nil)
@@ -324,6 +327,7 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // PORT=0 with no inherited socket still binds a port the kernel chooses, and the listening line
 // names the port it got, so a harness that starts the listener this way reads its port there.
 func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	provisionListenerServer(t, uri, nil)
 	cmd := exec.Command(cmdtest.Build(t, "envoy-listener"))
@@ -351,6 +355,7 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 // is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with no bearer, no OIDC pair and
 // no ENVOY_API_ALLOW_UNAUTHENTICATED, the listener refuses to start and serves nothing.
 func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *testing.T) {
+	t.Parallel()
 	wildcard, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("listen on every interface: %v", err)
@@ -378,6 +383,7 @@ func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *t
 // PORT, when set beside an inherited socket, must name the socket's port, and PORT=0 names none:
 // the listener refuses to start, naming PORT and ENVOY_LISTEN_FD, and serves nothing.
 func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	for name, port := range map[string]func(held *cmdtest.HeldPort) string{
 		"another port": func(held *cmdtest.HeldPort) string { return strconv.Itoa(held.Port%65535 + 1) },
@@ -407,6 +413,7 @@ func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
 // the variable, and the listener binds nothing in its place: not PORT, which here names a port the
 // test holds, so a bind would fail on it.
 func TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port PORT names: %v", err)

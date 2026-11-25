@@ -25,6 +25,7 @@ import (
 // durable still exists, every health surface answers 200 healthy, and delivery to every session
 // stops with no signal anywhere that the listener has gone deaf.
 func TestHealthzReportsARecreatedDurableUnhealthy(t *testing.T) {
+	t.Parallel()
 	consumer := "listener-unbound-health"
 	client := setupTestNATS(t)
 	get := setupUnboundDurableFixture(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
@@ -168,6 +169,7 @@ func recreateListenerDurable(t *testing.T, client *bus.Client, consumer string) 
 // subscription stays attached to the deleted consumer's inbox and every message published after
 // the recreation is lost while the listener reports itself healthy.
 func TestTheSelfHealthMonitorRebindsARecreatedDurable(t *testing.T) {
+	t.Parallel()
 	consumer := "listener-unbound-rebind"
 	var delivered atomic.Int64
 	handler := func(msg *natsgo.Msg) {
@@ -210,6 +212,7 @@ func TestTheSelfHealthMonitorRebindsARecreatedDurable(t *testing.T) {
 // deliver subject against the live subscription's, so a mistake there would make every healthy
 // listener rebuild itself every interval and eventually terminate.
 func TestABoundDurableNeverFailsItsProbe(t *testing.T) {
+	t.Parallel()
 	consumer := "listener-unbound-control"
 	client := setupTestNATS(t)
 	get := setupUnboundDurableFixture(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
