@@ -348,6 +348,56 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 	}
 }
 
+// TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart: R3-g starts the
+// whole reads of one project at least 60 seconds apart, with no exemption. A delete of the
+// setting resets the cursor as a write of another URL does and keeps its row, with the start of
+// the project's newest whole read (read-rule-cases row 6.5, the architect's ruling of
+// 2026-11-25T06:25Z). INFRA's take-over reads its daemon A. Ten seconds later on the intake's
+// clock, INFRA's setting is deleted, and a write then names a second daemon B. B's starting read
+// is not due, so the write's wake queues the starting point once more for the end of the minute
+// (startLater). B is read once, a starting read of B's URL, when the intake's clock is a minute
+// past the start of A's read, and its read starts at least a minute after A's. At cdc5fd84 the
+// delete deleted the cursor, and the start of A's read with it, so B was read at its write's
+// wake: the second read began 10 s after the first.
+func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t *testing.T) {
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, true)
+	first := lastReadStartedAt(t, rig, "INFRA")
+	b := newFakeDaemon(t, daemonStateIn("INFRA", 20, inPhase("implementing"), bStore, bRun))
+
+	rig.clock.advance(10 * time.Second)
+	if deleted, err := DeleteSettings(t.Context(), rig.database.Pool, "INFRA"); err != nil || !deleted {
+		t.Fatalf("delete INFRA's setting: deleted %v, %v", deleted, err)
+	}
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", b.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("write INFRA's setting naming B: %v", err)
+	}
+	rig.wake <- struct{}{}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
+		t.Fatalf("the write naming B after the delete read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
+	}
+	rig.clock.advance(50 * time.Second)
+	rig.waitFor(10*time.Second, func() bool { return b.served() >= 1 && len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
+		return fmt.Sprintf("B was not read once a minute had passed since the read of A began: it served %d reads, and INFRA's whole reads are %v",
+			b.served(), wholeReadsOf(t, rig.database, "INFRA"))
+	})
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 2 || a.served() != 1 || b.served() != 1 {
+		t.Fatalf("INFRA's whole reads are %v, and A served %d and B %d, want the take-over's read of A and the write's read of B", reads, a.served(), b.served())
+	}
+	requireWholeRead(t, reads[1], ReadReasonStart, true)
+	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(first); apart < ReadRetryAfter {
+		t.Errorf("the read of B started %s after the read of A on the intake's clock, want at least %s", apart, ReadRetryAfter)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != b.URL || c.stateID == nil || *c.stateID != bStore || c.lastSeq == nil || *c.lastSeq != 20 {
+		t.Errorf("INFRA's cursor is %s, want it following B's URL %s in B's store %s at 20", c, b.URL, bStore)
+	}
+}
+
 // TestAGapFoundRightAfterAGoodStartingReadIsReadWhenItsMinuteEnds: R3 starts the whole reads of
 // one project at least 60 seconds apart, the read right after a good starting read included
 // (read-rule-cases v11, rule 2). INFRA's take-over read is good at 10. Ten seconds later on the

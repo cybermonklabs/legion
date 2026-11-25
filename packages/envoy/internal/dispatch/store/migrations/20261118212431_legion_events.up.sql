@@ -42,8 +42,10 @@
 --   same URL a fresh whole read, made once a minute has passed since the project's newest whole
 --   read began. A write of the URL the setting names already while a message holds the owed read
 --   (read_holder) leaves the row as it is instead, whether the row follows that URL or '': that
---   message's read, a whole read, is the read the write calls for. A delete of the setting deletes
---   the row (legion.DeleteSettings).
+--   message's read, a whole read, is the read the write calls for. A delete of the setting
+--   (legion.DeleteSettings) resets the row as a write of another URL does and keeps it, so a
+--   write after the delete makes its starting read a minute after the project's newest whole read
+--   began at the soonest.
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -71,8 +73,9 @@
 --   because the setting moved meanwhile. The next whole read of the project, for any reason and
 --   the starting read included, waits a minute after it (legion.ReadRetryAfter; R3: whole reads of
 --   one project start at least 60 seconds apart), so a read the daemon is slow to answer, or never
---   answers, adds no time to the minute. A write of the setting keeps it, so the starting reads of
---   two writes within a minute start a minute apart. Null only while the row has recorded no read.
+--   answers, adds no time to the minute. A write of the setting keeps it, and so does a delete of
+--   the setting, so the starting reads of two writes within a minute start a minute apart, with a
+--   delete between them or none. Null only while the row has recorded no read.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
 --   redelivery makes the read, whatever store the message is of. Null where no message holds it.
@@ -96,17 +99,18 @@
 --   of a successful whole read, or the schemaVersion of the newest boot event applied. A boot of
 --   another version is read whole. Null for none.
 -- - previous_state_id is the store of the daemon the setting named before a write that named
---   another daemon: the write sets it to the row's state_id, and keeps it where state_id is null.
---   The intake finishes each message of this store unapplied while state_id is null or another
---   store (legion's outcomeForgotten): R3 applies no message of the daemon the setting named
---   before. Such a message waits on the project's runner behind a whole read in flight, for one
---   read's 60 s at the most, as every message does, and is judged against the row that read
---   leaves. It holds no read. Whatever state_id holds, it calls for the owed read where that read
---   is due and no message holds it, and the intake makes the read after it acknowledges the
---   message, at most once a minute, since the setting's own daemon can be redeployed into this
---   store; it calls for no read of its own. A write of
---   previous_state_url clears it, and so does a good whole read whose state_id is this store. A
---   write of the URL the row follows and every other whole read keep it. Null for none.
+--   another daemon, or before a delete of the setting: the write or the delete sets it to the
+--   row's state_id, and keeps it where state_id is null. The intake finishes each message of this
+--   store unapplied while state_id is null or another store (legion's outcomeForgotten): R3
+--   applies no message of the daemon the setting named before. Such a message waits on the
+--   project's runner behind a whole read in flight, for one read's 60 s at the most, as every
+--   message does, and is judged against the row that read leaves. It holds no read. Whatever
+--   state_id holds, it calls for the owed read where that read is due and no message holds it,
+--   and the intake makes the read after it acknowledges the message, at most once a minute,
+--   since the setting's own daemon can be redeployed into this store; it calls for no read of
+--   its own. A write of previous_state_url clears it, and so does a good whole read whose
+--   state_id is this store. A write of the URL the row follows and every other whole read keep
+--   it. Null for none.
 -- - previous_state_url is the URL the row followed when the write set previous_state_id: the
 --   write sets it to the row's state_url with previous_state_id, and keeps it with
 --   previous_state_id. A write of this URL names that daemon again, so it clears both columns,
@@ -131,17 +135,18 @@
 --   started behind that URL in such a store is found again. A read that finds the row's store
 --   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
 -- - released_holders is the stream sequence of each state message whose hold of the owed read a
---   write of the setting that names another URL ended, whatever state_url the row held, ''
---   included, and which has not come back since: the newest last, 8 at the most (legion's
---   maxReleasedHolders). Such a write adds read_holder as the newest where read_holder is set,
---   and every other write keeps the array. At such a message's next delivery the intake
---   acknowledges it unapplied, it holds no read, its store goes into foreign_state_ids as above,
---   and the intake takes its sequence out of the array, and no other. So a write that names
---   another URL ends the hold of the message before it within one read's 60 s and a second,
---   however many such writes come before that message comes back, and a message of the newly
---   named daemon may hold the read from a count of 1. Past 8 the oldest entry goes: its message
---   is judged as any message at its next delivery, which applies nothing of a store other than
---   state_id, and it can hold a read again from a count of 1. Empty for none.
+--   write of the setting that names another URL, or a delete of the setting, ended, whatever
+--   state_url the row held, '' included, and which has not come back since: the newest last, 8 at
+--   the most (legion's maxReleasedHolders). Such a write or delete adds read_holder as the newest
+--   where read_holder is set, and every other write keeps the array. At such a message's next
+--   delivery the intake acknowledges it unapplied, it holds no read, its store goes into
+--   foreign_state_ids as above, and the intake takes its sequence out of the array, and no
+--   other. So a write that names another URL ends the hold of the message before it within one
+--   read's 60 s and a second, however many such writes come before that message comes back, and
+--   a message of the newly named daemon may hold the read from a count of 1. Past 8 the oldest
+--   entry goes: its message is judged as any message at its next delivery, which applies
+--   nothing of a store other than state_id, and it can hold a read again from a count of 1.
+--   Empty for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
@@ -161,8 +166,8 @@
 -- every event of the transaction in one batch and deletes the parts, so no observation holds a
 -- value of a transaction it has not read whole. A part is held only where it follows the cursor or
 -- the part before it, under the same run and store. A successful whole read deletes the project's
--- parts, and so does each write of the setting that sets state_url to '', and the cursor's delete
--- (the foreign key), which a delete of the setting makes; a whole read that failed keeps them:
+-- parts, and so does each write of the setting that sets state_url to '', a delete of the setting
+-- included; a whole read that failed keeps them:
 --
 -- - project and first_seq are the part's identity: the project, and the first sequence the part
 --   carries. last_seq is its last.

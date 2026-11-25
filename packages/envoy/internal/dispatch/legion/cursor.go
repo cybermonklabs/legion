@@ -157,10 +157,11 @@ type cursor struct {
 	// stateID is the store the cursor's sequence is counted in: nil until a good read sets it, and
 	// again once a write of the setting clears it (settingWritten). schemaVersion is the store's
 	// schema version as the cursor last saw it, nil for none. previousStateID is the store of the
-	// daemon the setting named before a write that named another daemon (settingWritten), nil for
-	// none. A write back to that daemon's URL clears it, and so does a good read that gives the
-	// cursor that store (afterRead). previousStateURL is the URL the cursor followed when the write
-	// recorded previousStateID, and goes with it: that URL is the one a write back names.
+	// daemon the setting named before a write that named another daemon, or before a delete of the
+	// setting (settingWritten), nil for none. A write back to that daemon's URL clears it, and so
+	// does a good read that gives the cursor that store (afterRead). previousStateURL is the URL
+	// the cursor followed when the write recorded previousStateID, and goes with it: that URL is
+	// the one a write back names.
 	// foreignStateIDs is each store that is no daemon of the project, the newest last,
 	// maxForeignStores at the most: the store of a message whose good store read found the cursor's
 	// store unchanged (afterRead), and the store of a message whose hold a write of the setting
@@ -173,11 +174,12 @@ type cursor struct {
 	previousStateURL *string
 	foreignStateIDs  []string
 	// releasedHolders is the stream sequence of each message whose hold of the owed read a write of
-	// the setting that named another URL ended (settingWritten), whatever daemon the cursor
-	// followed, none included, and which has not come back since: the newest last,
-	// maxReleasedHolders at the most, and empty, never nil, for none. Each is finished unapplied
-	// at its next delivery, which takes its own sequence out and no other (releases, endHold).
-	// Past maxReleasedHolders the oldest record goes (reset): its message is judged as any other.
+	// the setting that named another URL, or a delete of the setting, ended (settingWritten),
+	// whatever daemon the cursor followed, none included, and which has not come back since: the
+	// newest last, maxReleasedHolders at the most, and empty, never nil, for none. Each is finished
+	// unapplied at its next delivery, which takes its own sequence out and no other (releases,
+	// endHold). Past maxReleasedHolders the oldest record goes (reset): its message is judged as
+	// any other.
 	releasedHolders []int64
 }
 
@@ -187,9 +189,10 @@ type cursor struct {
 const maxForeignStores = 8
 
 // maxReleasedHolders is how many messages a cursor records as released (releasedHolders): each a
-// message whose hold a write of another URL ended, until it comes back. Past it the oldest record
-// goes (reset). That message is judged as any message at its next delivery, which applies nothing
-// of a store other than the cursor's, and it may hold a read again from a count of 1.
+// message whose hold a write of another URL or a delete of the setting ended, until it comes back.
+// Past it the oldest record goes (reset). That message is judged as any message at its next
+// delivery, which applies nothing of a store other than the cursor's, and it may hold a read again
+// from a count of 1.
 const maxReleasedHolders = 8
 
 // maxSkippedStores is how many stores a cursor keeps the highest sequence skipped past
@@ -596,13 +599,15 @@ func writeCursor(ctx context.Context, tx pgx.Tx, project string, c cursor) error
 }
 
 // resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx,
-// where before is the URL the setting named before the write ("" for a new setting): it locks the
-// cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor) and deletes the
-// parts held for it. It writes nothing for a project with no cursor, or for a write of the URL the
-// setting named already (before) while a message holds the owed read, whether the cursor follows
-// that URL or no daemon yet: that cursor keeps its holder, its count of hand-backs, its reasons,
-// its skipped record and its held parts, so the holder's redelivery makes the read and the hold's
-// bound (stateMaxHolds) stands. A write of the same URL that finds no holder resets the cursor too.
+// where before is the URL the setting named before the write ("" for a new setting) and stateURL
+// is "" for a delete: it locks the cursor, then writes the cursor the write resets it to
+// (cursor.reset, writeCursor) and deletes the parts held for it. It writes nothing for a project
+// with no cursor, or for a write of the URL the setting named already (before) while a message
+// holds the owed read, whether the cursor follows that URL or no daemon yet: that cursor keeps its
+// holder, its count of hand-backs, its reasons, its skipped record and its held parts, so the
+// holder's redelivery makes the read and the hold's bound (stateMaxHolds) stands. A write of the
+// same URL that finds no holder resets the cursor too. A delete resets it as a write of another URL
+// does, since the URL a setting names is never "": it keeps the row (read-rule-cases row 6.5).
 func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL string) error {
 	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
 	if err != nil || !current.exists || (before == stateURL && current.readHolder != nil) {
@@ -615,17 +620,20 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 	return err
 }
 
-// reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
-// cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
+// reset is the cursor that a write of the setting naming stateURL, "" for a delete, resets c to
+// (resetCursor): a cursor that follows no daemon, with every column at its empty value
+// (emptyCursor) but these.
 //   - lastReadStartedAt is c's.
 //   - releasedHolders is c's with c's readHolder added as the newest, where a message held the
 //     read, and c's otherwise. resetCursor resets a cursor that names a holder only for a write of
-//     another URL than the setting named, which ends that hold whatever daemon c followed, none
-//     included. Past maxReleasedHolders the oldest record goes (marked): that message is judged as
-//     any message at its next delivery.
+//     another URL than the setting named, or for a delete, either of which ends that hold whatever
+//     daemon c followed, none included. Past maxReleasedHolders the oldest record goes (marked):
+//     that message is judged as any message at its next delivery.
 //   - previousStateID and previousStateURL are none where the write names the URL recorded there.
 //     They are c's store and URL where c followed a URL other than the write's and held a store,
-//     and c's own pair otherwise.
+//     and c's own pair otherwise. A cursor holds a store only after a good read of the setting's
+//     URL, which is never "", so the URL recorded there is never "" either: a delete never clears
+//     the pair, and records c's store and URL where c held a store.
 func (c cursor) reset(stateURL string) cursor {
 	next := emptyCursor()
 	next.exists, next.lastReadStartedAt = true, c.lastReadStartedAt

@@ -597,13 +597,20 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 	}
 }
 
-// TestASettingDeletedDuringAHoldDropsTheHeldMessage: a delete of the setting deletes the project's
-// cursor (settingWritten), and R3 applies no message of a project with no setting. INFRA's daemon
-// refuses every read after its good starting read, and a gap's message holds the owed read, going
-// back to the stream after each read it makes: the intake's clock jumps ReadRetryAfter less
-// holdAtLeast at each reading, so each hand-back is holdAtLeast long. Once it has gone back, the
-// setting is deleted: the message's next delivery is dropped and acknowledged, which releases the
-// durable's ack floor, and the message goes back no more.
+// TestASettingDeletedDuringAHoldDropsTheHeldMessage: R3 applies no message of a project with no
+// setting, and a delete of the setting resets the project's cursor as a write of another URL does
+// and keeps its row (settingWritten; read-rule-cases row 6.5, the architect's ruling of
+// 2026-11-25T06:25Z). INFRA's daemon refuses every read after its good starting read, and a gap's
+// message holds the owed read, going back to the stream after each read it makes: the intake's
+// clock jumps ReadRetryAfter less holdAtLeast at each reading, so each hand-back is holdAtLeast
+// long. Once it has gone back, the setting is deleted: the message's next delivery is dropped and
+// acknowledged, which releases the durable's ack floor, and the message goes back no more. The
+// cursor stays. It follows no daemon, owes nothing, names no holder, counts no hand-back and holds
+// no part. It records the message's stream sequence as released (released_holders): the delete
+// ended the hold, and the message's delivery after it is dropped before the cursor is read, so the
+// record stays. It keeps the start of the project's newest whole read (last_read_started_at): the
+// one it had before the delete, or a later one where the holder's redelivery read in the second
+// before the delete. At cdc5fd84 the delete deleted the cursor row, and that start with it.
 func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -618,6 +625,7 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 	rig.waitFor(time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= 1 }, func() string {
 		return "the gap's message never went back to the stream holding INFRA's read"
 	})
+	started := lastReadStartedAt(t, rig, "INFRA")
 	if deleted, err := DeleteSettings(t.Context(), rig.database.Pool, "INFRA"); err != nil || !deleted {
 		t.Fatalf("delete INFRA's setting: deleted %v, %v", deleted, err)
 	}
@@ -638,12 +646,18 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 	if drops := rig.awaitLogRecords(droppedLine, 1); drops[0]["project"] != "INFRA" {
 		t.Errorf("the drops logged = %v, want one naming INFRA", drops)
 	}
-	var cursors int
-	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from legion_event_cursors where project = 'INFRA'`).Scan(&cursors); err != nil || cursors != 0 {
-		t.Errorf("INFRA has %d cursors after the delete of its setting (%v), want none", cursors, err)
-	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
 		t.Errorf("the phase's history is %v: the held message was applied", got)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != "" || c.readOwed || c.readHolder != nil || c.readHolds != 0 ||
+		!slices.Equal(c.releasedHolders, []int64{int64(holder)}) {
+		t.Errorf("INFRA's cursor after the delete of its setting is %s, want it kept and reset: following no daemon, nothing owed, no holder and no hand-back counted, with the held message's stream sequence %d recorded as released", c, holder)
+	}
+	if after := lastReadStartedAt(t, rig, "INFRA"); after.Before(started) {
+		t.Errorf("the start of INFRA's newest whole read is %s after the delete of its setting, want the %s it had before the delete, or a later one", after, started)
+	}
+	if parts := heldPartCount(t, rig.database, "INFRA"); parts != 0 {
+		t.Errorf("%d parts held after the delete of INFRA's setting, want none", parts)
 	}
 }
 

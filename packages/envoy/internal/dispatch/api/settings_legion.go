@@ -104,10 +104,12 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteLegionSetting answers DELETE /api/v1/projects/{key}/legion/daemon: stop reading that
-// project's daemon. What was already read stays; nothing re-reads it. The delete takes the
-// project's event cursor with it and notifies legion.SettingsChannel in its own transaction
-// (legion.DeleteSettings), so a setting written again starts from a whole read. A project with no
-// setting is 404 NOT_FOUND, and an unknown one 404 PROJECT_NOT_FOUND.
+// project's daemon. What was already read stays; nothing re-reads it. In its own transaction the
+// delete resets the project's event cursor as a write of another URL does, keeps its row with the
+// start of the project's newest whole read, and notifies legion.SettingsChannel
+// (legion.DeleteSettings). So a setting written again is read whole, a minute after that read
+// began at the soonest. A project with no setting is 404 NOT_FOUND, and an unknown one 404
+// PROJECT_NOT_FOUND.
 func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireActor(w, r, nil); !ok {
 		return

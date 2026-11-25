@@ -198,23 +198,35 @@ func writeSetting(ctx context.Context, tx pgx.Tx, project, stateURL string, crea
 }
 
 // DeleteSettings removes a project's setting and reports whether it had one. The project's reads
-// and observations stay: they are what was observed, and nothing re-reads them. Where it had one,
-// the delete deletes the project's cursor too (settingWritten), with how far the project's
-// observations had followed its daemon, so a setting written again starts from a whole read.
+// and observations stay: they are what was observed, and nothing re-reads them. The delete reads
+// the URL the setting named as it deletes the row, under the row's lock, and where it had one it
+// resets the project's cursor as a write of another URL does (settingWritten, read-rule-cases row
+// 6.5). The cursor keeps its row: it follows no daemon, and keeps the start of the project's newest
+// whole read (last_read_started_at) and the messages recorded as released (released_holders). It
+// records the message that held the owed read, where one held it, as released, and the store the
+// cursor held with the URL it followed as the previous daemon's (previous_state_id,
+// previous_state_url). The held parts are deleted. A setting written again is a new setting: the
+// intake reads its daemon whole, ReadRetryAfter after the project's newest whole read began at the
+// soonest, so a delete and a write within a minute make their two whole reads at least a minute
+// apart (R3). While the project has no setting, the intake drops each of its messages before it
+// reads the cursor (applyBatch). So a message whose record the delete adds and that comes back
+// meanwhile is dropped, and its record stays until eight newer records push it out
+// (maxReleasedHolders); its stream sequence does not come again.
 func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("open the transaction of the Legion setting of %s: %w", project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `delete from legion_settings where project = $1`, project)
+	var before string
+	err = tx.QueryRow(ctx, `delete from legion_settings where project = $1 returning state_url`, project).Scan(&before)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("delete the Legion setting of %s: %w", project, err)
 	}
-	if tag.RowsAffected() == 0 {
-		return false, nil
-	}
-	if err := settingWritten(ctx, tx, project, "", ""); err != nil {
+	if err := settingWritten(ctx, tx, project, before, ""); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -223,11 +235,10 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 	return true, nil
 }
 
-// settingWritten is what every write of project's setting does in its own transaction, before
-// being the URL the setting named before the write ("" for a new setting, and for a delete, which
-// reads none) and stateURL the daemon the setting names from the write on, "" for a delete. It
-// notifies SettingsChannel, which reaches the intake at the write's commit
-// (Intake.SettingsChanged), and:
+// settingWritten is what every write of project's setting, a delete included, does in its own
+// transaction, before being the URL the setting named before the write ("" for a new setting) and
+// stateURL the daemon the setting names from the write on, "" for a delete. It notifies
+// SettingsChannel, which reaches the intake at the write's commit (Intake.SettingsChanged), and:
 //   - A write of the URL the setting named already, while a message holds the cursor's owed read
 //     (read_holder), leaves the cursor as it is, whether the cursor follows that URL or no daemon
 //     yet (an empty state_url, before the starting read was first made): the holder, its count
@@ -236,42 +247,45 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     the message's redelivery makes the read, a whole read, and the cursor counts the hold's
 //     hand-backs on from read_holds (stateMaxHolds). The wake's call for the project's starting
 //     point joins that read too, and defers no call (cursor.readFor, Intake.startingPoint).
-//   - Every other write of a URL resets the cursor (resetCursor): it makes the cursor follow no
-//     daemon (an empty state_url), with every position, reason, holder, store, sequence skipped
-//     past the cap (skipped_state_ids, skipped_seqs) and mark of a store that is no daemon of the
-//     project (foreign_state_ids) back to its empty value (emptyCursor), and deletes the parts of
-//     a split transaction held for it, so the intake has no starting point for the project and
-//     reads the setting's daemon whole at the wake (ReadReasonStart), once that read is due. A
-//     write of the same URL that finds no message holding the read is one of them. The reset
-//     keeps the start of the project's newest whole read (last_read_started_at): whole reads of
-//     one project start ReadRetryAfter apart whatever their reasons, so a write within a minute of
-//     a read makes its starting read when that minute ends (Intake.startingPoint). A mark says
+//   - Every other write resets the cursor (resetCursor), a delete included: it makes the cursor
+//     follow no daemon (an empty state_url), with every position, reason, holder, store, sequence
+//     skipped past the cap (skipped_state_ids, skipped_seqs) and mark of a store that is no daemon
+//     of the project (foreign_state_ids) back to its empty value (emptyCursor), and deletes the
+//     parts of a split transaction held for it, so the intake has no starting point for the
+//     project and reads the setting's daemon whole at the wake (ReadReasonStart), once that read
+//     is due. A write of the same URL that finds no message holding the read is one of them. The
+//     reset keeps the start of the project's newest whole read (last_read_started_at): whole reads
+//     of one project start ReadRetryAfter apart whatever their reasons, so a write within a minute
+//     of a read makes its starting read when that minute ends (Intake.startingPoint). A mark says
 //     only that its store is no daemon the setting named before the write, so no mark outlives a
 //     write. A reset that finds a message holding the owed read comes only from a write of another
-//     URL, which ends that hold: it adds the stream sequence of that message to the messages
-//     recorded as released (released_holders), the newest last, whatever daemon the cursor
-//     followed, none included. A reset that finds no holder keeps those recorded already. Each
-//     message so recorded is finished unapplied at its next delivery, which takes its own record
-//     out and no other, and marks the message's store as no daemon of the project, unless it is
-//     the store recorded below or the cursor's own (cursor.releases, endHold). The cursor records
-//     maxReleasedHolders such messages at the most: past that the oldest record goes, and that
-//     message is judged as any message at its next delivery, so it may hold a read again from a
-//     count of 1. A write that names another daemon records the store the cursor held with the URL
-//     it followed, or keeps the pair recorded already where it held none, as the store of the
-//     daemon the setting named before (previous_state_id, previous_state_url): the intake
-//     finishes each message of that store unapplied (outcomeForgotten). A write of the URL
-//     recorded there names that daemon again, so it clears the pair, and the daemon's messages are
-//     judged as the setting's daemon's: they hold and make an owed read as every message does. A
-//     good read that gives the cursor the store recorded there clears the pair too
-//     (cursor.afterRead). A write of the same daemon keeps what is recorded there.
-//   - A delete deletes the cursor, and with it the held parts (their foreign key).
+//     URL or from a delete, either of which ends that hold: it adds the stream sequence of that
+//     message to the messages recorded as released (released_holders), the newest last, whatever
+//     daemon the cursor followed, none included. A reset that finds no holder keeps those recorded
+//     already. Each message so recorded is finished unapplied at its next delivery, which takes
+//     its own record out and no other, and marks the message's store as no daemon of the project,
+//     unless it is the store recorded below or the cursor's own (cursor.releases, endHold). The
+//     cursor records maxReleasedHolders such messages at the most: past that the oldest record
+//     goes, and that message is judged as any message at its next delivery, so it may hold a read
+//     again from a count of 1. A write that names another daemon, and a delete, record the store
+//     the cursor held with the URL it followed, or keep the pair recorded already where it held
+//     none, as the store of the daemon the setting named before (previous_state_id,
+//     previous_state_url): the intake finishes each message of that store unapplied
+//     (outcomeForgotten). A write of the URL recorded there names that daemon again, so it clears
+//     the pair, and the daemon's messages are judged as the setting's daemon's: they hold and make
+//     an owed read as every message does. A good read that gives the cursor the store recorded
+//     there clears the pair too (cursor.afterRead). A write of the same daemon keeps what is
+//     recorded there.
+//   - A delete is such a reset (read-rule-cases row 6.5). before is the URL the setting named,
+//     never "", so the delete never leaves the cursor as it is. The URL recorded as the previous
+//     daemon's is one that a cursor holding a store followed, never "", so the delete never clears
+//     that pair. The cursor keeps its row, and with it last_read_started_at and released_holders.
+//     The intake reads nothing for a project with no setting (readPosition), so the delete's wake
+//     reads nothing. A write after the delete is a new setting (before ""), which resets the
+//     cursor as a write of another URL does, so its starting read waits ReadRetryAfter after the
+//     project's newest whole read began. A project with no cursor gets none.
 func settingWritten(ctx context.Context, tx pgx.Tx, project, before, stateURL string) error {
-	var err error
-	if stateURL == "" {
-		_, err = tx.Exec(ctx, `delete from legion_event_cursors where project = $1`, project)
-	} else {
-		err = resetCursor(ctx, tx, project, before, stateURL)
-	}
+	err := resetCursor(ctx, tx, project, before, stateURL)
 	if err == nil {
 		_, err = tx.Exec(ctx, `select pg_notify($2, $1)`, project, SettingsChannel)
 	}

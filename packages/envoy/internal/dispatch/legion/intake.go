@@ -179,10 +179,10 @@ const refusedLine = "legion intake: the database refuses a state message for goo
 const heldLine = "legion intake: a state message goes back to the stream until its project's owed whole read is due"
 
 // writeReleasedLine is the log line of a message whose hold of its project's owed whole read a
-// write of the project's Legion setting ended (cursor.releasedHolders), at INFO, on the one
-// delivery after the write that acknowledges it unapplied, naming its stream sequence and its
+// write or a delete of the project's Legion setting ended (cursor.releasedHolders), at INFO, on the
+// one delivery after the write that acknowledges it unapplied, naming its stream sequence and its
 // store.
-const writeReleasedLine = "legion intake: a write of the project's Legion setting ended a state message's hold of the owed whole read, so it is acknowledged unapplied"
+const writeReleasedLine = "legion intake: a write or a delete of the project's Legion setting ended a state message's hold of the owed whole read, so it is acknowledged unapplied"
 
 // releasedLine is the log line of a message that went back to the stream stateMaxHolds times
 // holding its project's owed whole read, at WARN, on the delivery that acknowledges it, naming
@@ -381,9 +381,10 @@ func (in *Intake) takenOver() {
 // message holds the starting read, it queues nothing: that message's redelivery makes the read
 // once it is due (R3: "its redelivery makes the read"), and a deferred call would only join it. A
 // wake or a take-over makes the starting read only where no message holds it: before a message
-// takes it, or once the holder is released (its stateMaxHolds hand-backs, a write of another URL,
-// or a starting read an earlier build blocks). The deferred call and a message's call (callRead)
-// pass false: each wake and each take-over defers one call at the most, and no timer recurs.
+// takes it, or once the holder is released (its stateMaxHolds hand-backs, a write of another URL
+// or a delete of the setting, or a starting read an earlier build blocks). The deferred call and a
+// message's call (callRead) pass false: each wake and each take-over defers one call at the most,
+// and no timer recurs.
 func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) {
 	var pending *wholeRead
 	in.untilDone(ctx, nil, project, func(ctx context.Context) (outcome, error) {

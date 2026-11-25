@@ -27,8 +27,8 @@ import (
 // cursor or the part before it (stateMessage.continues), so the parts of a project are one run of
 // sequences under one run and one store. A good whole read deletes them, since its snapshot holds
 // them, and so does every write of the project's setting that leaves the cursor no starting point,
-// and the delete of the setting, which deletes the cursor they belong to (settingWritten); a failed
-// read keeps them (recordWhole).
+// the delete of the setting included, which resets the cursor as a write of another URL does
+// (settingWritten); a failed read keeps them (recordWhole).
 type part struct {
 	firstSeq, lastSeq int64
 	run, stateID      string
