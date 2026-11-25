@@ -172,8 +172,9 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // code no poll reaches words its cure from the least and the most interval, so those two are
 // exported. defaultDeviceInterval, LeastDeviceInterval and mostDeviceLifetime are the TypeScript
 // device login's DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS and MOST_LIFETIME_SECONDS
-// (packages/cipher-client/src/device-login.ts), which needs no most interval of its own. x/oauth2's
-// own DeviceAccessToken takes any lifetime, and a positive interval a time.Duration holds, as sent.
+// (packages/cipher-client/src/device-login-reach.ts), which needs no most interval of its own.
+// x/oauth2's own DeviceAccessToken takes any lifetime, and a positive interval a time.Duration
+// holds, as sent.
 // It reads any other interval as 5 s in v0.38.0, the version this repository's workspace builds;
 // v0.37.0, which this module's go.mod names on its own, reads 0 as 5 s and panics its ticker on a
 // negative interval, or on one whose seconds wrap negative as a time.Duration.

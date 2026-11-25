@@ -1,11 +1,11 @@
 // packages/cipher-client/test/device-logins.ts
 //
-// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), and a
+// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), a
 // secrets broker serving the three routes a device login meets: the device authorization, the
 // token endpoint's device code, refresh and exchange grants, as `internal/cipher/oauth` serves
-// them. It is for every suite that drives a device login: this package's own, and envoy-client's
-// broker credential and `dispatch login --device`. Every key is made at run time, so the
-// repository holds no private key.
+// them, and the sleeps a test hands the poll. It is for every suite that drives a device login:
+// this package's own, and envoy-client's broker credential and `dispatch login --device`. Every
+// key is made at run time, so the repository holds no private key.
 
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
@@ -442,5 +442,34 @@ export async function writeDeviceLoginFile(
     key: privateKey,
     thumbprint: await calculateJwkThumbprint(publicKey.export({ format: "jwk" }) as JWK),
     refreshToken,
+  };
+}
+
+/** A sleep that waits for nothing and records each wait it was asked for. */
+export function recordedWaits(): { waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  };
+}
+
+/** A sleep that waits for nothing, records each wait, and moves `clock` by it. */
+export function advancingWaits(): {
+  waits: number[];
+  sleep: (ms: number) => Promise<void>;
+  clock: () => number;
+} {
+  let now = 0;
+  const waits: number[] = [];
+  return {
+    waits,
+    clock: () => now,
+    sleep: async (ms) => {
+      waits.push(ms);
+      now += ms;
+    },
   };
 }
