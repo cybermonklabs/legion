@@ -138,7 +138,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
 	testnats.RequireSocketQueues(t)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	tuning := tuningFor(t)
 	tuning.stopBudget = stopBudget

@@ -53,6 +53,8 @@ import (
 // hand-back was counted after beforeHandBackPublish, and a stop that does not seal, each fail the
 // second subtest with the standby's consumer delivering the message twice.
 func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testing.T) {
+	// Serial until the hang a reviewer saw once in requireHandBackBeforeCreation is explained
+	// (build-cluster Job legion-ci-handback-hang-4zwgk reproduces it at main).
 	t.Run("a callback's hand-back that lands before the stop's context ends", func(t *testing.T) {
 		callbackHandBackAsTheStopEnds(t, false)
 	})
@@ -64,7 +66,7 @@ func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testin
 // callbackHandBackAsTheStopEnds is one subtest of the row above: heldPastTheStop holds the callback's
 // hand-back until the stop has returned.
 func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
