@@ -135,10 +135,11 @@ func PullRequestHeadState(action string, merged bool) string {
 // insert, so recordPullRequestHead marks both (markHeadNotStored).
 //
 // One failure of that path is deliberately left unmarked, because no redelivery mends it. A
-// read of GitHub the App refused is answered by the reconcile's own next pass, and handing
-// every rate-limited envelope back would spend the whole limit over again — the rate limit is
-// the only refusal of GitHub that comes back as an error at all, since attributeHead logs
-// every other one at Debug and writes an incomplete row.
+// read of GitHub the App refused is answered by a later pass of the reconcile, the one that
+// takes the row and stamps its try (PullRequestHeadStaleAfter), and handing every rate-limited
+// envelope back would spend the whole limit over again — the rate limit is the only refusal of
+// GitHub that comes back as an error at all, since attributeHead logs every other one at Debug
+// and writes an incomplete row.
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
 // markHeadNotStored marks err as ErrHeadNotStored unless it is the one failure that sentinel's
@@ -554,8 +555,8 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // pull request read at some earlier moment.
 //
 // The write comes before the delete, so a failure between them leaves two rows rather than
-// none: the next pass is handed the old row's key again and re-keys it again, while losing the
-// row would leave the pull request unknown until another event arrived.
+// none: a later pass that takes the old row and stamps its try re-keys it again, while losing
+// the row would leave the pull request unknown until another event arrived.
 //
 // The order matters to the former heads too. Where the canonical row is first written closed, as
 // a pull request read closed under its canonical name is, that write is the close the check states
@@ -1411,9 +1412,9 @@ func (a *Attributor) ReadThroughCommitPulls(
 // made — attributes nobody, since a head that cannot be shown to be this repository's is a
 // fork's as far as Dispatch knows. That write is incomplete too: it leaves the row unstamped, so
 // the reconcile's own read of GitHub, which always names the head repository, attributes the row
-// on its next pass, and it leaves any attribution an earlier, fuller read stored exactly where
-// it is rather than clearing it on the way through — on a merge, which nothing but that arm of
-// the reconcile ever revisits, clearing it would be for good.
+// at the pass that takes it and stamps its try, and it leaves any attribution an earlier, fuller
+// read stored exactly where it is rather than clearing it on the way through — on a merge, which
+// nothing but that arm of the reconcile ever revisits, clearing it would be for good.
 //
 // The envelope carries the commit the base branch was at (`base_sha`), which the row stores with
 // the branch's name (PullRequestHead.BaseSHA): the base branch can move with no change of its
@@ -1456,7 +1457,8 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	// The envelope is itself a fresh read of the head, so the row is stamped read and the
 	// reconcile does not spend three GitHub calls re-reading what the event just delivered —
 	// unless the read was incomplete, because the commit messages were wanted and could not be
-	// had or the envelope named no head repository, which the next pass settles either way.
+	// had or the envelope named no head repository, which the reconcile's read settles either way,
+	// at the pass that takes the row and stamps its try.
 	var checkedAt *time.Time
 	if attributed.complete {
 		now := time.Now()

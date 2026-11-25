@@ -1,4 +1,5 @@
 -- 20261102122300_pull_request_heads.up.sql
+-- replaces: 20261102122300_pull_request_heads.up.sql sha256:a16ce979a9a216ac81cab7772eb77b0adb32a05be557efec3d6ac2d150680318
 --
 -- The current head of every pull request Dispatch has seen an event for, so a recorded check
 -- result can say whether it ran at the commit the work stands at. This is not
@@ -17,9 +18,12 @@
 --   event_at           the pull request's updated_at as the event reported it; an older event
 --                      arriving after a newer one leaves the row as it is.
 --   checked_at         when the reconcile or a read-through last read the pull request through
---                      the App, null when none ever has; the reconcile re-reads an open row
---                      older than five minutes, and reads a never-read merged row that is
---                      attributed to nobody once.
+--                      the App, null when none ever has. An open row is due for the reconcile
+--                      again once this is older than delivery.PullRequestHeadStaleAfter (4.5
+--                      minutes), and a never-read merged row attributed to nobody is due once.
+--                      A pass takes at most delivery.PullRequestHeadBatch due rows, and reads
+--                      a row it takes only once its stamp of the try succeeds: the age bounds
+--                      when a row is due, not when it is read (delivery.PullRequestHeadStaleAfter).
 --
 -- A new table: nothing existing is read, locked or rewritten, and the release before this one
 -- neither reads nor writes it, so it rolls beside this one (cmd/dispatch/README.md, "Database

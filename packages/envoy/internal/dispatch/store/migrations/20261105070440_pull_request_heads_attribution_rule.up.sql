@@ -1,4 +1,5 @@
 -- 20261105070440_pull_request_heads_attribution_rule.up.sql
+-- replaces: 20261105070440_pull_request_heads_attribution_rule.up.sql sha256:7b8e00ee7b3a07f06a8b2550d4120f615f030ad8fe840161f005f6648ba6f507
 --
 -- Which attribution rule last judged a pull_request_heads row, so the reconcile can offer a
 -- merged row to a rule newer than the one that judged it, and offer it once.
@@ -8,7 +9,9 @@
 --                     before this column has, is the rule that took the first candidate the
 --                     five sources named outright, whatever repository that issue resolved to.
 --
--- A merged row is the one row nothing revisits. An open row comes round every five minutes, but
+-- A merged row is the one row nothing revisits. An open row is due again once its last read is
+-- delivery.PullRequestHeadStaleAfter old, and the pass that takes it reads it once its stamp of
+-- the try succeeds (PullRequestHeadStaleAfter says what that bounds and what it does not), but
 -- ListStalePullRequestHeads (delivery/pull_request_heads.go) took a merged row only while its
 -- checked_at was null, a merge envelope that named a head repository stamps checked_at, and a
 -- recorded result reads through only for a commit no head Dispatch knows. So a pull request
