@@ -49,7 +49,7 @@ import {
   FACET_PARAMS,
   type FacetKey,
   type Filters,
-  ownLabel,
+  ownEntry,
   PLACEHOLDER_LABELS,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
@@ -204,8 +204,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
   // Every facet keeps every value the address names, one that names no value of the facet
   // included: Dispatch selects no row by it, so `?priority=P9` alone lists none and beside a known
-  // value lists what the known one does, as at the merge base (R5), and the page draws it as a
-  // chip the reader can take off.
+  // value lists what the known one does, and the page draws it as a chip the reader can take off.
   const filters: Filters = useMemo(() => ({ ...arrayParams, search }), [arrayParams, search]);
 
   const setState = useCallback(
@@ -334,10 +333,11 @@ function OwnColourPicker({
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const options = Object.keys(counts)
-    .filter((value) => !(value in PLACEHOLDER_LABELS))
+    .filter((value) => !Object.hasOwn(PLACEHOLDER_LABELS, value))
     .sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
   const state = selected.length === 0 ? "every value" : `${selected.length} chosen`;
-  const countOf = (value: string) => counts[value] ?? 0;
+  // A chosen agent comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) => ownEntry(counts, value) ?? 0;
   return (
     <MultiSelect
       emptyMessage="No matches."
@@ -411,7 +411,9 @@ function Facet({
   const options = [...new Set([...selected, ...values])];
   const state =
     selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
-  const countOf = (value: string) => counts?.[value] ?? 0;
+  // A selected value comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) =>
+    (counts === undefined ? undefined : ownEntry(counts, value)) ?? 0;
   return (
     <div className="w-full">
       <span className={facetLabelClass}>{label}</span>
@@ -535,13 +537,13 @@ function DeliveryControls({
   const valueLabel = (key: FacetKey, value: string): string => {
     if (isColumnFacet(key)) {
       if (data === undefined && key === "issue")
-        return ownLabel(PLACEHOLDER_LABELS, value) ?? value;
+        return ownEntry(PLACEHOLDER_LABELS, value) ?? value;
       return columnFacetValue(key, value, {
         issueTitles: data?.issue_titles ?? {},
         sessionGroups: data?.session_groups ?? [],
       });
     }
-    const placeholder = ownLabel(PLACEHOLDER_LABELS, value);
+    const placeholder = ownEntry(PLACEHOLDER_LABELS, value);
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
       const title = data?.components?.[value]?.title ?? value;

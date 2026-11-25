@@ -34,14 +34,11 @@ export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
 
 export const REWORK_LABELS: Record<ReworkFacet, string> = { value: "value", rework: "rework" };
 
-/** The label `labels` gives `value` as a key of its own, else none: a value the address carries
- *  can be any word, `constructor` among them, which every object inherits and no label table
- *  names. */
-export function ownLabel(
-  labels: Readonly<Record<string, string>>,
-  value: string
-): string | undefined {
-  return Object.hasOwn(labels, value) ? labels[value] : undefined;
+/** What `table` holds under `key` as a key of its own, else nothing: a label, a title or a count.
+ *  A value the address carries can be any word, `constructor` among them, which every object
+ *  inherits and no table names. */
+export function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
 /** Drops the "owner/" prefix from a repo label when the bare repo name is unique among

@@ -38,7 +38,7 @@ import {
   type DeployedFacet,
   FACET_PARAMS,
   type FacetKey,
-  ownLabel,
+  ownEntry,
   PLACEHOLDER_LABELS,
   REWORK_LABELS,
   type ReworkFacet,
@@ -81,7 +81,7 @@ export const FIXED_FACET_VALUES: Partial<Record<ColumnFacet, readonly string[]>>
 
 /** What a column facet's value reads as - the issue's title, a session group's name, a
  *  placeholder in words - on its header's filter and wherever else the page names it. Every
- *  table is read by its own keys alone (`ownLabel`), since the value can be any word the address
+ *  table is read by its own keys alone (`ownEntry`), since the value can be any word the address
  *  names. */
 export function columnFacetValue(
   key: ColumnFacet,
@@ -97,17 +97,17 @@ export function columnFacetValue(
   switch (key) {
     case "issue":
       return (
-        ownLabel(PLACEHOLDER_LABELS, value) ??
-        `${value} \u2014 ${ownLabel(issueTitles, value) ?? ""}`
+        ownEntry(PLACEHOLDER_LABELS, value) ??
+        `${value} \u2014 ${ownEntry(issueTitles, value) ?? ""}`
       );
     case "parentAgent":
       return parentAgentLabel(value, sessionGroups);
     case "author":
-      return ownLabel(PLACEHOLDER_LABELS, value) ?? value;
+      return ownEntry(PLACEHOLDER_LABELS, value) ?? value;
     case "rework":
-      return ownLabel(REWORK_LABELS, value) ?? value;
+      return ownEntry(REWORK_LABELS, value) ?? value;
     case "deployed":
-      return ownLabel(DEPLOYED_LABELS, value) ?? value;
+      return ownEntry(DEPLOYED_LABELS, value) ?? value;
   }
 }
 

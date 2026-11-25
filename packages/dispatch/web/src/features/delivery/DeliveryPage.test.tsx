@@ -1563,6 +1563,24 @@ for (const [facet, query, chip] of [
   });
 }
 
+// A word every object inherits names no count: the Filter panel's Priority list draws
+// `constructor` with a count of 0, where a plain read of the answer's counts drew Object's own
+// function there.
+test("an address value every object inherits draws no inherited count in the Filter panel", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&priority=constructor`);
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "priority=constructor",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  const names = await facetOptionNames(user, "Priority");
+  expect(names.filter((name) => name.startsWith("constructor"))).toEqual(["constructor, 0 PRs"]);
+});
+
 test("an unknown facet value beside a known one reaches the subscription with it, and each draws its chip", async () => {
   renderPage(
     `${DELIVERY_URL}&priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`
