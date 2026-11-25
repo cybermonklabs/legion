@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,12 +115,16 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// row leaves its snooze out (inboxAtTheCut). An ask whose person rests on a project default
 	// that the records at the cut do not give has no person at the cut, which is neither the
 	// filter's person nor nobody, so it is in no ?assignee= answer.
+	//
+	// The caller's login is bound only where the snooze join that reads it is added, and the join
+	// names it by the place it is appended at, so no other argument moves it.
 	_, atCut := asof.CutFrom(r.Context())
-	snoozeColumn, snoozeJoin := `sn.snoozed_until`, `
-		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4`
-	args := []any{project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID)}
-	if atCut {
-		snoozeColumn, snoozeJoin, args = `null::timestamptz`, ``, args[:3]
+	args := []any{project, assigneeMode, assigneeLogin}
+	snoozeColumn, snoozeJoin := `null::timestamptz`, ``
+	if !atCut {
+		args = append(args, model.CanonicalLogin(caller.ID))
+		snoozeColumn, snoozeJoin = `sn.snoozed_until`, `
+		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $`+strconv.Itoa(len(args))
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,

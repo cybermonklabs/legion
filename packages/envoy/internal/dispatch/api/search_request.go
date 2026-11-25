@@ -26,12 +26,13 @@ import (
 // page a person searched from names, which narrows nothing at all (numberScope). ownKeys is what
 // runSearch resolves the words to when they name an issue (searchOwnIssueKeys) and empty
 // otherwise. stopWordsOnly is whether runSearch found that no plain word of the query gives
-// PostgreSQL a lexeme, every one of them a stop word (ranksFirstAtACut); it is false wherever
-// runSearch did not read it - a query that names an issue by key, the answerer's own search and
-// the package's tests - and the words alone then choose. broaden is empty for the query as
-// typed, which is what every search runs first and what nearly every search runs alone; it holds
-// the rarest words of a query that matched nothing (searchRarestWords) on the one second run such
-// a query is given, and the statement then searches for those words alone (searchQOpener).
+// PostgreSQL a lexeme, every one of them a stop word (ranksFirstAtACut); runSearch reads it only
+// for a search at a cut, and it is false wherever runSearch did not read it (a search of the
+// present, a query that names an issue by key, the answerer's own search and the package's
+// tests), and the words alone then choose. broaden is empty for the query as typed, which is what
+// every search runs first and what nearly every search runs alone; it holds the rarest words of a
+// query that matched nothing (searchRarestWords) on the one second run such a query is given, and
+// the statement then searches for those words alone (searchQOpener).
 // excluded is the -word terms the statement ANDs onto that OR (readSearchQuery, excludedWords),
 // set with broaden and empty whenever broaden is: the query as typed needs none of it, because
 // websearch_to_tsquery is already reading each -word in $1 itself. keywordsOnly is the request's

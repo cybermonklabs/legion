@@ -63,8 +63,16 @@ The cut is a `timestamptz` literal in each shadow, written from the parsed time 
 Each base table in a shadow is named with the schema `public`, so no shadow reads another shadow.
 `Bind` refuses a statement that is not a read, and a string that holds more than one statement, so the pool sends nothing and returns the refusal (`*asof.RefusedError`).
 A batch that begins its own transaction (`pgx.Batch.BeginTx`) queues a `begin`, which `Bind` refuses.
+`Bind` tells a read by the first word after the statement's WITH list, so a read that calls a function that writes, such as `nextval`, passes it.
+So every statement under a cut runs in a read-only transaction, and PostgreSQL refuses that write (SQLSTATE `25006`).
+A transaction that `Begin` or `BeginTx` opens under a cut is read-only, whatever access mode its options name.
+A statement of `Query`, `QueryRow` or `Exec`, and a batch of `SendBatch`, run in a read-only transaction of their own on one pooled connection, and the pool rolls that transaction back when the statement or the batch ends.
+That costs two round trips more for each such statement: the begin and the rollback.
+A statement that `Bind` changes holds the cut in its text, so the pool sends it with `pgx.QueryExecModeCacheDescribe`, and it leaves no prepared statement on its connection.
+pgx sends a batch in the mode of its connection's configuration, and has no mode for one batch, so the pool sends the statements of a batch under a cut one at a time, in order: one round trip for each statement, where pgx sends a batch in one.
+The first error of a statement stops the batch, and `Close` runs the callbacks of the statements not read yet, as pgx does.
 Under a cut the pool refuses each connection that it hands out and each copy, because a connection sends statements that nothing binds, and a copy writes (`RefusedAtCutError`).
-`Acquire`, `AcquireFunc`, `Listener`, `Dedicated`, `CopyFrom` and a transaction's `CopyFrom` and `Prepare` return that error, a transaction's `Conn` and `LargeObjects` panic with it, and `AcquireAllIdle` takes no connection.
+`Acquire`, `AcquireFunc`, `Listener`, `Dedicated`, `CopyFrom`, `BeginTx` with a begin query of the caller's own (`pgx.TxOptions.BeginQuery`, which sets its own access mode) and a transaction's `CopyFrom` and `Prepare` return that error, a transaction's `Conn` and `LargeObjects` panic with it, and `AcquireAllIdle` takes no connection.
 The separate pools that `Rooms`, `RoomAppends`, `Compaction` and `Horizon` hand out check no cut: a statement sent through one of them is sent as the caller wrote it, under a cut too.
 Under a context with no cut, the pool sends each statement as the caller wrote it.
 A table that a read at a cut reads with no shadow is in `asof.MachineryTables`, the state of Dispatch's own machinery read as it is now, or in `asof.CutReadTables`, read under a predicate of its own that holds the read to the cut, each with its reason.

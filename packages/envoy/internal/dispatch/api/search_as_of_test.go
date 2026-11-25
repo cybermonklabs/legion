@@ -204,12 +204,30 @@ func requireNoWord(t *testing.T, answer searchAnswer, word, why string) {
 // ones; a comment written after the cut, and an answer given after the cut, not at all; a
 // document by the version it had at the cut, not by a version made after it; and a comment the
 // cut left alone is found as it stood. Each snippet holds only text at the cut.
+//
+// A search that narrows by status, author or updated_since, or whose query has no word to rank
+// by, reads each post kind's matches whole (ranksFirstAtACut, searchAsOfPosts), and each of its
+// filters reads the state at the cut: the status the issue had at the cut (text_issues reads the
+// issues shadow), the edited_at a comment had at the cut (searchAsOfEditedAt reads the comments
+// shadow), the post's author, and, for a query of stop words and an excluded word, the post's
+// text at the cut. The issue's status and the comment's edit change after the cut. So the present
+// answers the status and updated_since rows otherwise, and so would a search at the cut that read
+// the present status or edited_at.
 func TestAPastTimeKeywordSearchFindsTheTextThen(t *testing.T) {
 	w := newSearchAtCutWorld(t, "ASKW", "Chart the lagoon soundings", "The survey's first notes.")
 	kept := w.comment(t, "The beacon tower stands on the point.")
 	changed := w.comment(t, "The ferry leaves at dawn.")
 	ask := createSearchAsk(t, w.handler, w.issue, "Which sextant do we keep?", "Brass", "Steel")
 	notes := asOfUpload(t, w.handler, "/api/v1/issues/"+w.issue, "notes.md", "# Notes\n\nThe almanac lists the tides.\n")
+	// The tugboat comment is edited once before the cut and once after it.
+	tugboat := w.comment(t, "The tugboat idles.")
+	time.Sleep(5 * time.Millisecond)
+	w.edit(t, "/api/v1/comments/"+tugboat, "The tugboat idles by the pier.")
+	var tugboatWritten, tugboatEdited time.Time
+	if err := w.database.Pool.QueryRow(t.Context(), `select created_at, edited_at from comments where id = $1`, tugboat).
+		Scan(&tugboatWritten, &tugboatEdited); err != nil {
+		t.Fatalf("read the tugboat comment's times: %v", err)
+	}
 	cut := w.cut(t)
 	time.Sleep(5 * time.Millisecond)
 
@@ -218,6 +236,8 @@ func TestAPastTimeKeywordSearchFindsTheTextThen(t *testing.T) {
 	added := w.comment(t, "The zeppelin arrives on Tuesday.")
 	answerSearchAsk(t, w.handler, ask, map[string]any{"text": "Keep the quadrant instead."})
 	asOfUpload(t, w.handler, "/api/v1/issues/"+w.issue, "notes.md", "# Notes\n\nThe almanac lists the tides and the gazetteer.\n")
+	asOfWrite(t, w.handler, http.MethodPatch, "/api/v1/issues/"+w.issue, map[string]any{"status": "backlog"}, "alice")
+	w.edit(t, "/api/v1/comments/"+tugboat, "The tugboat idles by the pier at noon.")
 	w.fill(t, cut)
 
 	// The present finds the text written after the cut, so its absence at the cut is the cut's.
@@ -262,6 +282,39 @@ func TestAPastTimeKeywordSearchFindsTheTextThen(t *testing.T) {
 	}
 	if gone := w.searchAt(t, keywords("ferry"), cut); w.searchNow(t, keywords("ferry")).Total != 0 || gone.Total == 0 {
 		t.Errorf("the comment's old word answers %d hits at the cut; the present must answer none and the cut one", gone.Total)
+	}
+
+	// Each row is a search that reads the matches whole, and whether it finds the post at the cut
+	// and at the present.
+	filtered := func(q, filter, value string) url.Values {
+		query := keywords(q)
+		query.Set(filter, value)
+		return query
+	}
+	betweenEdits := tugboatWritten.Add(tugboatEdited.Sub(tugboatWritten) / 2).Format(time.RFC3339Nano)
+	wholeReads := []struct {
+		name       string
+		query      url.Values
+		kind, id   string
+		atCut, now bool
+	}{
+		{"status: the issue's status at the cut", filtered("beacon", "status", "triage"), "comment", kept, true, false},
+		{"status: the issue's status after the cut", filtered("beacon", "status", "backlog"), "comment", kept, false, true},
+		{"updated_since between the comment's writing and its edit before the cut", filtered("tugboat", "updated_since", betweenEdits), "comment", tugboat, true, true},
+		{"updated_since at the cut, between the comment's edit before it and its edit after it", filtered("tugboat", "updated_since", cut.Time().Format(time.RFC3339Nano)), "comment", tugboat, false, true},
+		{"author: the post's author", filtered("beacon", "author", "alice"), "comment", kept, true, true},
+		{"author: another author", filtered("beacon", "author", "bob"), "comment", kept, false, false},
+		{"stop words and an excluded word that the post's text at the cut does not hold", keywords("the -ferry"), "comment", kept, true, true},
+		{"stop words and an excluded word that the post's text at the cut holds", keywords("the -ferry"), "comment", changed, false, true},
+	}
+	for _, row := range wholeReads {
+		if found := w.searchAt(t, row.query, cut).hit(row.kind, row.id) != nil; found != row.atCut {
+			t.Errorf("%s: the search at the cut for %s finds the %s %s: %t, want %t", row.name, row.query.Encode(), row.kind, row.id, found, row.atCut)
+		}
+		now := searchAnswer{SearchResponse: w.searchNow(t, row.query)}
+		if found := now.hit(row.kind, row.id) != nil; found != row.now {
+			t.Errorf("%s: the present search for %s finds the %s %s: %t, want %t", row.name, row.query.Encode(), row.kind, row.id, found, row.now)
+		}
 	}
 }
 
