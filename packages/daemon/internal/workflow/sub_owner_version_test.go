@@ -82,15 +82,15 @@ func TestASubOwnerLeavesWhetherTheOwnersTasksMerge(t *testing.T) {
 	}
 }
 
-// startReadyRuns is a record.Store that counts the runs of startReady (runs): each run reads the
-// plan once at the top of its loop, and reads it again only after it started a task at its parts.
+// startReadyRuns is a record.Store that counts the runs of startReady at a door (runs): each door
+// runs it through startReadyNow, which reads the plan once for the run and hands it to startReady.
 type startReadyRuns struct {
 	record.Store
 	runs *int
 }
 
 func (s startReadyRuns) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*record.StoredPlan, error) {
-	if pc, _, _, ok := runtime.Caller(1); ok && strings.HasSuffix(runtime.FuncForPC(pc).Name(), ".(*Engine).startReady") {
+	if pc, _, _, ok := runtime.Caller(1); ok && strings.HasSuffix(runtime.FuncForPC(pc).Name(), ".(*Engine).startReadyNow") {
 		*s.runs++
 	}
 	return s.Store.Plan(ctx, tx, issue, generation)

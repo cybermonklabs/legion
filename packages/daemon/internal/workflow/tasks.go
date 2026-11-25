@@ -50,10 +50,13 @@ func mayStart(stored *record.StoredPlan, task record.PlanTask) bool {
 // startReadyNow starts each task of the issue keyed key that may start (startReady), on the issue
 // and its plan as the store holds them in tx now: what a caller that moved a task, and holds an
 // older copy of the issue, runs once the move may let other tasks start. An issue the store no
-// longer holds starts nothing.
+// longer holds starts nothing, and so does an issue that stands before its work (beforeItsWork):
+// the design gate, the waiting line and admission decide when its first step starts, and the
+// gate's opening starts its tasks (gateOpened), so no door starts one before then, a person's todo
+// on a root whose task was stopped before its first step among them (waitForFirstStep).
 func (e *Engine) startReadyNow(ctx context.Context, tx pgx.Tx, key string) error {
 	now, err := e.store.Issue(ctx, tx, key)
-	if err != nil || now == nil {
+	if err != nil || now == nil || beforeItsWork(*now) {
 		return err
 	}
 	stored, err := e.store.Plan(ctx, tx, key, now.Generation)
