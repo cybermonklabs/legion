@@ -16,6 +16,8 @@
 #   a raw string at its backtick; and in all three an identifier must be an identifier token, so
 #   a string or a docstring holds none; shell and YAML lose their hash comments;
 # - a scanner program that fails fails the check, naming its command;
+# - the Go scanner runs under go_build_tags.go_environment(), so a caller's Go variables, under
+#   which a plain go run of it fails, change nothing the check reads;
 # - a code span that starts with a path word and goes on with a hash or a colon and a name, and
 #   is no token, is refused, a token wrapped onto another line included: over three lines, and
 #   wrapped just before its hash, in prose and in a comment; a command wrapped in a comment is
@@ -408,6 +410,40 @@ PATH="$work/scanner-bin:$PATH" run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the command, its exit and what it printed" \
   "$(contains "$out" "^ci_citations.py: ${bt}bun .github/scripts/ci_citations_code.ts${bt} over 1 files exited 3 and printed the code of 0, so they hold no name: bun: no such runtime$")"
+
+echo "case: a caller's Go variables change nothing the Go scan reads"
+# The Go scanner runs under go_build_tags.go_environment() with GOWORK=off, so no Go variable of
+# the caller's reaches it but those that say where go keeps or fetches files. Each one set here
+# changes what a go command that reads it does: GOOS and GOARCH build the scanner for windows/386,
+# whose binary go run cannot start here; GOEXPERIMENT names an experiment no go knows; GOFLAGS asks
+# for -race, which windows/386 has not; GOTOOLCHAIN=local, GO111MODULE=off and a go env file's
+# GOFLAGS (GOENV, not XDG_CONFIG_HOME, which a version manager's python3 or go shim reads too) are
+# set with them. A plain go run of the scanner under them fails first, so the case can fail. The
+# clean run is held to a pass that holds the Go token first, so the two runs cannot agree by both
+# failing.
+root=$(fixture go-environment)
+notes "$root" <<EOF
+$(tok "$app" TestReadsTheConfig)
+EOF
+track "$root"
+printf 'GOFLAGS=-tags=polluted\n' > "$work/go-environment.env"
+polluted=(GOTOOLCHAIN=local GOOS=windows GOARCH=386 GOEXPERIMENT=pollutedexperiment GOFLAGS=-race
+  GO111MODULE=off GOENV="$work/go-environment.env")
+set +e
+(cd "$root" && env "${polluted[@]}" GOWORK=off go run "$script_dir/ci_citations_code.go" </dev/null >/dev/null 2>&1)
+plain_status=$?
+set -e
+check "a plain go run of the scanner under the caller's Go variables fails" "$(is "$((plain_status != 0))" 1)"
+run_check "$root"
+clean_out=$out
+clean_status=$status
+check "passes clean" "$(is "$clean_status" 0)"
+check "and holds the Go token clean" "$(contains "$clean_out" '^1 citation tokens in 1 of')"
+set +e
+out=$(cd "$root" && env "${polluted[@]}" python3 .github/scripts/ci_citations.py 2>&1)
+status=$?
+set -e
+check "gives the clean answer under the caller's Go variables" "$(is "$status:$out" "$clean_status:$clean_out")"
 
 echo "case: a code span that starts with a path and goes on as a citation is a token or is refused"
 root=$(fixture spans)

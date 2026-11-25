@@ -86,6 +86,9 @@ How the code of a cited file is read, each language by its own scanner:
   package.json and bun.lock give, and only a local run meets that.
 - Go through go/scanner, in one go run of .github/scripts/ci_citations_code.go over every Go file
   a token cites: its identifiers, and its text with its comments removed and its strings kept.
+  The run is under go_build_tags.go_environment() with GOWORK=off: none of the caller's Go
+  variables but those that say where the go command keeps or fetches files, and no `go env -w`
+  file, so a caller's GOOS, GOFLAGS, GOEXPERIMENT or GOTOOLCHAIN changes nothing it reads.
 - Shell, YAML, TOML, jq, Dockerfiles, CODEOWNERS, ignore files and an extension-free script that
   starts with #!: a hash comment at a line's start or after whitespace removed, outside '...' and
   "...".
@@ -104,6 +107,8 @@ import re
 import subprocess
 import sys
 import tokenize
+
+from go_build_tags import go_environment
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # The scanner programs beside this file. A test links this file into a fixture, which moves ROOT
@@ -282,18 +287,18 @@ def python_code(body):
     return Code("".join(text), {t.string for t in tokens if t.type == tokenize.NAME})
 
 
-def scanned_code(runner, program, paths, **env):
-    """The Code of each path from one run of a scanner program over them all, which takes the
-    paths on stdin and prints each one's code and then its identifiers, one a line, each followed
-    by a NUL byte. program is its path from the repository root, which names it in a refusal; the
-    file run is the one beside this script."""
+def scanned_code(runner, program, paths, env):
+    """The Code of each path from one run of a scanner program over them all, under the
+    environment env, which takes the paths on stdin and prints each one's code and then its
+    identifiers, one a line, each followed by a NUL byte. program is its path from the repository
+    root, which names it in a refusal; the file run is the one beside this script."""
     if not paths:
         return []
     shown = " ".join([*runner, program])
     try:
         done = subprocess.run([*runner, os.path.join(SCANNERS, os.path.basename(program))], cwd=ROOT,
                               input="".join(p + "\0" for p in paths).encode(), capture_output=True,
-                              env={**os.environ, **env})
+                              env=env)
     except OSError as error:
         raise ScanFailed(f"{BACKTICK}{shown}{BACKTICK} did not start ({error}), so the "
                          f"{len(paths)} files it reads hold no name") from error
@@ -357,8 +362,10 @@ class Repo:
                 self.code[path] = Code(strip_hash(body))
             else:
                 self.code[path] = Code(body)
-        self.code.update(zip(scripts, scanned_code(["bun"], TS_SCANNER, scripts)))
-        self.code.update(zip(go, scanned_code(["go", "run"], GO_SCANNER, go, GOWORK="off")))
+        self.code.update(zip(scripts, scanned_code(["bun"], TS_SCANNER, scripts, dict(os.environ))))
+        # GOWORK=off, as the Go scanner belongs to no module (ci_citations_code.go's header).
+        go_env = {**go_environment(), "GOWORK": "off"}
+        self.code.update(zip(go, scanned_code(["go", "run"], GO_SCANNER, go, go_env)))
 
 
 # ---- the citing files -------------------------------------------------------------------------
