@@ -38,6 +38,7 @@ func dropRole(t *testing.T, admin *pgx.Conn, role string, revokes ...string) {
 // The plants, each by the name its run raises (public.plant_ran).
 const (
 	plantedRight  = "public.right(text, double precision)"
+	plantedSubstr = "public.substr(text, integer, double precision)"
 	plantedFiles  = "the view omp_session_files in the schema named for the login"
 	plantedParts  = "the view omp_session_files_parts in the schema named for the login"
 	plantedPolicy = "the row-security policy on public.omp_session_files"
@@ -157,6 +158,10 @@ func unrestricted(ctx context.Context, conn *pgx.Conn, read func(pgx.Tx) error) 
 //     category's. (A plant of right(text, integer) itself loses to pg_catalog's, which the path
 //     searches first; one of right(text, text) wins, an untyped argument preferring a string type,
 //     but pgx then cannot send the Go int it binds as text, so FindByID fails rather than runs it.)
+//   - public.substr(text, integer, double precision): Titles's head of a row, substr(content, 1,
+//     $1), resolves to it over pg_catalog's substr(text, integer, integer) the same way: the text
+//     and the integer match both candidates exactly, and the untyped $1 takes the numeric
+//     category's preferred type.
 //   - a schema named for the login that runs the statement, which the default search_path,
 //     "$user", public, searches before public, holding a view of each of Oh My Pi's two tables.
 //   - a row-security policy the tables' owner attaches, which runs in each reader's session.
@@ -171,7 +176,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 
 	// A table of the name in a schema the search_path reaches first stands in for the one in
 	// public, so a bare CREATE TABLE IF NOT EXISTS makes nothing and every later statement finds
-	// no table of Oh My Pi's.
+	// no table of Oh My Pi's. Before CreateTables, HasTable and Titles must read public alone and
+	// find no table there, whatever the planted schema holds.
 	t.Run("CreateTables makes the tables in public whatever a planted schema holds", func(t *testing.T) {
 		db := plantDatabase(t, "legion_ompsessions_plant_create", false, func(login string) []string {
 			return []string{
@@ -181,6 +187,15 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 				"CREATE TABLE " + login + ".omp_session_files_parts (path text)",
 			}
 		})
+		// HasTable's row below reads a table that is there, with a statement that fetches no row,
+		// so a HasTable that named the table bare outside the pin would pass it, finding the
+		// planted schema's. These are the reads that fail for such a HasTable or Titles.
+		if held, err := HasTable(ctx, db.conn); held || err != nil {
+			t.Errorf("HasTable before CreateTables = %t, %v; want false, nil: public holds no table, whatever the planted schema holds", held, err)
+		}
+		if titled, err := Titles(ctx, db.conn); titled != nil || err != nil {
+			t.Errorf("Titles before CreateTables = %+v, %v; want nil, nil: public holds no table, whatever the planted schema holds", titled, err)
+		}
 		if err := CreateTables(ctx, db.conn); err != nil {
 			t.Fatal(err)
 		}
@@ -375,6 +390,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		return []string{
 			"CREATE FUNCTION public.right(s text, n double precision) RETURNS text LANGUAGE sql " +
 				"AS $$ SELECT CASE WHEN public.plant_ran('" + plantedRight + "') THEN pg_catalog.right(s, n::integer) END $$",
+			"CREATE FUNCTION public.substr(s text, start integer, n double precision) RETURNS text LANGUAGE sql " +
+				"AS $$ SELECT CASE WHEN public.plant_ran('" + plantedSubstr + "') THEN pg_catalog.substr(s, start, n::integer) END $$",
 			"CREATE SCHEMA " + login,
 			"GRANT USAGE ON SCHEMA " + login + " TO PUBLIC",
 			"CREATE VIEW " + login + ".omp_session_files WITH (security_invoker = true) AS SELECT * FROM public.omp_session_files " +
@@ -392,9 +409,9 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 	// The controls are the package's statements as they were before their pin: Written's naming
 	// its table bare, which reaches the schema named for the login; Append's insert of a part,
 	// which reaches that schema's view of the parts table, whose check option runs the plant on the
-	// new row (the parts table is empty, so a read of it runs nothing); and FindByID's suffix
-	// compare on the table in public under the default search_path, which reaches public.right.
-	// Each must fail naming its plant.
+	// new row (the parts table is empty, so a read of it runs nothing); FindByID's suffix compare
+	// on the table in public under the default search_path, which reaches public.right; and Titles's
+	// head of a row there, which reaches public.substr. Each must fail naming its plant.
 	live := t.Run("control: the statements as they were before their pin run the plants", func(t *testing.T) {
 		suffix := "_" + podSessionID + ".jsonl"
 		for _, control := range []struct {
@@ -414,6 +431,10 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 				var path string
 				return db.conn.c.QueryRow(ctx, "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
 					utf8.RuneCountInString(suffix), suffix).Scan(&path)
+			}},
+			{plantedSubstr, "SELECT substr(content, 1, $1) FROM public.omp_session_files", func() error {
+				var head string
+				return db.conn.c.QueryRow(ctx, "SELECT substr(content, 1, $1) FROM public.omp_session_files", headBytes).Scan(&head)
 			}},
 		} {
 			err := control.run()

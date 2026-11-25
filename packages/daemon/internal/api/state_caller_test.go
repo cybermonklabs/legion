@@ -843,7 +843,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// `intakeGiveUps`, `podHold`, `priority`, claim cause times, `dispatchCredential` and
 		// `questionsForController` among them. The row calls DaemonAPIVersion() because that is the
 		// contract of the body it receives. A caller at shapedAnswersContract that states its
-		// contract receives neither `intakeGiveUps` nor `questionsForController`.
+		// contract receives neither `intakeGiveUps`
+		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps) nor `questionsForController`.
 		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},

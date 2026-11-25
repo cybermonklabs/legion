@@ -282,8 +282,12 @@ func (g pluginGate) verifyPanes(ctx context.Context) error {
 // daemon connects to the session database through the URL every pane's Oh My Pi is pointed at and
 // reads the session table, within the probe budget, refusing to start on a database it cannot
 // reach or a table its login may not read, which would otherwise fail every pane's Oh My Pi at
-// its start and every resume's look-up of its session. A database no Oh My Pi has opened yet holds
-// no table, which the first pane's Oh My Pi creates (ompsessions.HasTable): it passes, logged.
+// its start and every resume's look-up of its session. The read runs in the session package's
+// pinned transaction, so the gate refuses as well a server older than the minor releases that
+// have restrict_nonsystem_relation_kind, a view or a foreign table at public.omp_session_files,
+// and a row-security policy on that table that applies to the login, each of which fails every
+// read the daemon makes of a session. A database no Oh My Pi has opened yet holds no table, which
+// the first pane's Oh My Pi creates (ompsessions.HasTable): it passes, logged.
 func (g pluginGate) verifySessionTable(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()

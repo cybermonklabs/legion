@@ -286,8 +286,12 @@ func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok boo
 }
 
 // HasTable is whether the database holds the session table, read as the connection's login: false
-// for a database no Oh My Pi has opened yet, whose first Oh My Pi creates it; an error for a table
-// the login may not read, or a database that does not answer.
+// for a database no Oh My Pi has opened yet, whose first Oh My Pi creates it. It is an error for a
+// table the login may not read, or a database that does not answer. Since the read runs in the
+// package's pinned transaction (inTransaction), it is an error too for a server older than the
+// minor releases that have restrict_nonsystem_relation_kind, for a view or a foreign table at
+// public.omp_session_files (restrictRelationKinds), and for a row-security policy on that table
+// that applies to the login (refuseRowSecurity).
 func HasTable(ctx context.Context, conn *Conn) (bool, error) {
 	err := inTransaction(ctx, conn, true, func(p pinned) error {
 		_, err := p.exec(ctx, "SELECT 1 FROM public.omp_session_files LIMIT 0")

@@ -1260,14 +1260,16 @@ func TestStateGolden(t *testing.T) {
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
 // row stands above that contract. The response also omits `intakeGiveUps`, issue `podHold`,
 // issue and waiting-line `priority`, claim cause times, `dispatchCredential` and
-// `questionsForController`. The rows for shapedAnswersContract and pauseContract are at or below
-// the contract served, so the golden carries `lowestPluginContract`, each claim view's
-// `updateState` and `paused`.
+// `questionsForController`, whose rows stand above repositoriesLiveContract. No other row of
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract. The rows for
+// shapedAnswersContract and pauseContract are at or below the contract served, so the golden
+// carries `lowestPluginContract`, each claim view's `updateState` and `paused`.
 // The mark's `daemon` names the daemon's own contract, which an entry moves. This test checks
 // that number in memory and removes it before comparing or writing the golden, as TestStateGolden
 // does. The `caller` is 199, which no entry moves, and stays in the golden.
 // `packages/contracts/src/legion-api.test.ts` compares the keys with the current golden and
-// parses the repositories block with a copy of contract 152's schema.
+// parses the repositories block with a copy of contract 152's schema, so the narrowing is held to
+// the reader it is written for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
