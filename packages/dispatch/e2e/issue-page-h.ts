@@ -1,9 +1,9 @@
 import type { Locator, Page } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
-import { LIST_PAGE } from "../web/src/features/issue-page/details-leaves";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { setLiveSessions } from "./agents";
 import {
   claimIssue,
@@ -113,8 +113,8 @@ export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
- *  of a list before the Show more under it (`LIST_PAGE`). */
-export const ONE_PAST_PAGE = LIST_PAGE + 1;
+ *  of a list before the Show more under it (`PAGE_SIZE`). */
+export const ONE_PAST_PAGE = PAGE_SIZE + 1;
 
 export interface DetailsSeed {
   /** Every key `seedDetailsIssue` names, by its part in the rows. */
@@ -206,7 +206,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     route: "role:architect",
   });
   await claimIssue(one.key, asPlanner);
-  // The spec and `LIST_PAGE` documents more: `ONE_PAST_PAGE`.
+  // The spec and `PAGE_SIZE` documents more: `ONE_PAST_PAGE`.
   for (let index = 1; index < ONE_PAST_PAGE; index += 1) {
     await createIssueArtifact(one.key, {
       content: `Notes ${index} of ONE.\n`,
