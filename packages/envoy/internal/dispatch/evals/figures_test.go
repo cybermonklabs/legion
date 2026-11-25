@@ -846,58 +846,127 @@ search:
 // (StoredFigures.SeriesValues), else from the day rows of repos (DayWindowIn, SeriesValuesOf); and
 // beside it the fold of those day rows alone, which the read must answer. Each eval's values are
 // encoded as the list route sends them, by eval id. It answers which evals the stored figures
-// answered too.
+// answered too. It reads the cut's state over window and compare (readListState) and makes the one
+// read of it (listState.values); a check of many reads of one cut reads the state once for all of
+// them (expectReads).
 func (r *refresherRig) listValues(t *testing.T, project string, repos []string, window Range, compare *Range) (stated, folded map[string]string, fromFigures map[string]bool) {
 	t.Helper()
-	ctx := t.Context()
+	ranges := []Range{window}
+	if compare != nil {
+		ranges = append(ranges, *compare)
+	}
+	return r.readListState(t, project, repos, ranges...).values(t, window, compare)
+}
+
+// listState is what the eval list's read of project's cut repos (none or one repository) folds,
+// read once for any number of reads of the cut (readListState): the project's evals, the deploy
+// repository their rows stand recorded under (DeployRepoIn), the first day of each series
+// (FirstDaysIn), and, by eval, the day rows of repos over the span of every range the reads name,
+// from the earliest range's first day to the latest range's end, as one DayWindowIn read with no
+// compare range answers them (each a RangeWindow row). A check of every read of a first paint
+// (expectReads over firstPaintReads, 216 reads of each cut) reads it once for each cut. When it was
+// read again for each read, those DayWindowIn statements kept each first-paint test waiting
+// 15 minutes on CI.
+type listState struct {
+	q                   delivery.Querier
+	project, deployRepo string
+	repos               []string
+	entries             []Entry
+	firsts              map[string]map[string]time.Time
+	rows                map[string][]WindowRow
+}
+
+// readListState reads project's listState of repos for reads whose windows and compare ranges are
+// ranges (at least one).
+func (r *refresherRig) readListState(t *testing.T, project string, repos []string, ranges ...Range) listState {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	state := listState{q: pool, project: project, repos: repos, rows: map[string][]WindowRow{}}
 	page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
 	if err != nil {
 		t.Fatalf("read %s's evals: %v", project, err)
 	}
-	deployRepo, err := DeployRepoIn(ctx, r.database.Pool)
-	if err != nil {
+	state.entries = page.Items
+	if state.deployRepo, err = DeployRepoIn(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	firsts, err := FirstDaysIn(ctx, r.database.Pool, page.Items, deployRepo)
-	if err != nil {
+	if state.firsts, err = FirstDaysIn(ctx, pool, state.entries, state.deployRepo); err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
-	rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, repos, window, compare)
+	span := ranges[0]
+	for _, one := range ranges[1:] {
+		if one.From.Before(span.From) {
+			span.From = one.From
+		}
+		if one.To.After(span.To) {
+			span.To = one.To
+		}
+	}
+	rows, err := DayWindowIn(ctx, pool, []string{project}, state.entries, state.deployRepo, repos, span, nil)
 	if err != nil {
-		t.Fatalf("read %s's day rows of %v: %v", project, repos, err)
+		t.Fatalf("read %s's day rows of %v over %s: %v", project, repos, daysText(span), err)
 	}
-	byEval := map[string][]WindowRow{}
 	for _, row := range rows {
-		byEval[row.EvalID] = append(byEval[row.EvalID], row)
+		state.rows[row.EvalID] = append(state.rows[row.EvalID], row)
 	}
+	return state
+}
+
+// values is listValues' answer to one read of s's cut over window and compare (nil for none), each
+// within the span s read. Of each eval's rows it folds those whose day window holds (dayIn), as
+// RangeWindow rows, and copies of those whose day compare holds, as RangeCompare rows: the rows a
+// DayWindowIn read of window and compare answers, which answers a day of both ranges twice, once for
+// each, since a compare range may overlap its window. Each read folds a slice of its own, since
+// SeriesValuesOf sorts its rows in place. Where FiguresOffered offers the read, it reads the stored
+// figures of the read (ReadStoredFiguresIn).
+func (s listState) values(t *testing.T, window Range, compare *Range) (stated, folded map[string]string, fromFigures map[string]bool) {
+	t.Helper()
 	var stored StoredFigures
-	offered := FiguresOffered(repos, window, compare)
+	offered := FiguresOffered(s.repos, window, compare)
 	if offered {
-		if stored, err = ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, repos, window, compare); err != nil {
-			t.Fatalf("read %s's stored figures: %v", project, err)
+		var err error
+		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.deployRepo, s.repos, window, compare); err != nil {
+			t.Fatalf("read %s's stored figures: %v", s.project, err)
 		}
 	}
 	encode := func(values []SeriesValues) string {
 		encoded, err := json.Marshal(values)
 		if err != nil {
-			t.Fatalf("encode the values of %s's evals: %v", project, err)
+			t.Fatalf("encode the values of %s's evals: %v", s.project, err)
 		}
 		return string(encoded)
 	}
 	stated, folded, fromFigures = map[string]string{}, map[string]string{}, map[string]bool{}
-	for _, entry := range page.Items {
+	for _, entry := range s.entries {
 		id := entry.Definition.EvalID
-		folded[id] = encode(SeriesValuesOf(entry, byEval[id], firsts[id], window, compare))
+		var rows []WindowRow
+		for _, row := range s.rows[id] {
+			if dayIn(row.Part.Day, window) {
+				row.Range = RangeWindow
+				rows = append(rows, row)
+			}
+			if compare != nil && dayIn(row.Part.Day, *compare) {
+				row.Range = RangeCompare
+				rows = append(rows, row)
+			}
+		}
+		folded[id] = encode(SeriesValuesOf(entry, rows, s.firsts[id], window, compare))
 		stated[id] = folded[id]
 		if !offered {
 			continue
 		}
-		if values, _, ok := stored.SeriesValues(entry, firsts[id], window, compare); ok {
+		if values, _, ok := stored.SeriesValues(entry, s.firsts[id], window, compare); ok {
 			stated[id] = encode(values)
 			fromFigures[id] = true
 		}
 	}
 	return stated, folded, fromFigures
+}
+
+// dayIn reports whether of holds day, a UTC midnight, as DayWindowIn's statement selects a range's
+// days: from the UTC date of of.From, inclusive, to the UTC date of of.To, exclusive.
+func dayIn(day time.Time, of Range) bool {
+	return !day.Before(measures.Midnight(of.From)) && day.Before(measures.Midnight(of.To))
 }
 
 // cutRead is what cutValues selects the rows of a read's cut from, read once for the reads of one
@@ -976,9 +1045,6 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 	for _, entry := range c.entries {
 		entries[entry.Definition.EvalID] = entry
 	}
-	in := func(day time.Time, of Range) bool {
-		return !day.Before(measures.Midnight(of.From)) && day.Before(measures.Midnight(of.To))
-	}
 	byEval := map[string][]WindowRow{}
 	for _, key := range slices.Sorted(maps.Keys(c.rows)) {
 		row := c.rows[key]
@@ -1009,10 +1075,10 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 		if len(part.Counts) == 0 {
 			part.Counts = nil
 		}
-		if in(row.Day, window) {
+		if dayIn(row.Day, window) {
 			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeWindow, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner, repo: row.Repo})
 		}
-		if compare != nil && in(row.Day, *compare) {
+		if compare != nil && dayIn(row.Day, *compare) {
 			byEval[evalID] = append(byEval[evalID], WindowRow{Range: RangeCompare, EvalID: evalID, Part: part, UpdatedAt: row.UpdatedAt, owner: owner, repo: row.Repo})
 		}
 	}

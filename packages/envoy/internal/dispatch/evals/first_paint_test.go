@@ -123,17 +123,26 @@ func renameLegionDefault(t *testing.T, r *refresherRig) map[staleCut][]string {
 // expectReads makes each of reads of each cut of marked, of its one repository or of none for the
 // project's own rows, and checks that each eval of the cut's mark is stated from the stored figures
 // where stored answers true for the cut, and from its day rows where it answers false, every eval
-// of each read the fold of its day rows.
+// of each read the fold of its day rows. It reads each cut's state once, over every range of reads
+// (readListState), and makes each read of it as listValues makes one (listState.values).
 func (r *refresherRig) expectReads(t *testing.T, what string, marked map[staleCut][]string, reads []paintRead, stored func(staleCut) bool) {
 	t.Helper()
+	ranges := make([]Range, 0, 2*len(reads))
+	for _, read := range reads {
+		ranges = append(ranges, read.window)
+		if read.compare != nil {
+			ranges = append(ranges, *read.compare)
+		}
+	}
 	for _, cut := range slices.SortedFunc(maps.Keys(marked), compareStaleCuts) {
 		fromStored := stored(cut)
 		var repos []string
 		if cut.repo != "" {
 			repos = []string{cut.repo}
 		}
+		state := r.readListState(t, cut.project, repos, ranges...)
 		for _, read := range reads {
-			stated, folded, fromFigures := r.listValues(t, cut.project, repos, read.window, read.compare)
+			stated, folded, fromFigures := state.values(t, read.window, read.compare)
 			for _, id := range slices.Sorted(maps.Keys(folded)) {
 				if (marked[cut] == nil || slices.Contains(marked[cut], id)) && fromFigures[id] != fromStored {
 					t.Errorf("%s: the read of %s's %s over %s states %s, which its mark names, from the stored figures %t, want %t",
