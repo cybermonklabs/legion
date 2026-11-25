@@ -40,17 +40,28 @@ const SourceGoingRequests = "going_requests"
 
 // RowlessRunSQL is true of the graph_nodes row n that is an interaction node of the source
 // going_requests (SourceGoingRequests), not gone, whose run's going_requests row is no longer
-// there: a run whose rows a process of the release before deleted an hour old, during a roll or
-// after a rollback, which leaves the node live. It is the one test of such a run: the sweep reads
-// those an hour old (api's goingRowlessRuns) and the backfill every one (graphcensus'
-// backfillGoneRuns), and each states the node gone. The kind, the state and the source are the
-// literals graph_nodes_interaction_live is partial on (migration 20261122230407), so a read bound
-// by it can read that index. Every writer of an interaction keys it by its run's uuid as Postgres
-// writes it, and an id of any other shape is read as a run with no row rather than cast
-// (store.CanonicalUUID), so no node can fail the read.
+// there (RunRowGoneSQL): a run whose rows a process of the release before deleted an hour old,
+// during a roll or after a rollback, which leaves the node live. It is the one test of such a
+// node: the sweep reads those an hour old (api's goingRowlessRuns) and the backfill every one
+// (graphcensus' backfillGoneRuns), and each states the node gone. The kind, the state and the
+// source are the literals graph_nodes_interaction_live is partial on (migration 20261122230407),
+// so a read bound by it can read that index. Every writer of an interaction keys it by its run's
+// uuid as Postgres writes it, and an id of any other shape is read as a run with no row rather
+// than cast (store.CanonicalUUID), so no node can fail the read.
 var RowlessRunSQL = `n.kind = '` + KindInteraction + `' and n.state <> '` + StateGone + `'
 		  and n.attributes->>'` + AttributeSource + `' = '` + SourceGoingRequests + `'
-		  and not exists (select 1 from going_requests r where r.id = ` + store.CanonicalUUID("n.id") + `)`
+		  and ` + RunRowGoneSQL(store.CanonicalUUID("n.id"))
+
+// RunRowGoneSQL is true of the run whose uuid is the SQL expression run once its going_requests
+// row is no longer there. The sweep removes that row an hour after the run was asked, in the
+// transaction that states its node gone (api's goRunGone). A process of the release before
+// removes it too, and leaves the node live. The run's going_request_posts and going_events rows
+// go with the row. It is the one test of a run with no row. RowlessRunSQL reads it of a node, and
+// the graph read of the run's own address reads it to answer no frame of such a run (refs'
+// interactionFrames). Where run is null, no row answers it, and the test is true.
+func RunRowGoneSQL(run string) string {
+	return `not exists (select 1 from going_requests r where r.id = ` + run + `)`
+}
 
 // Interaction is one run of the command bar as the store holds it: ID, the run's own uuid in the
 // lowercase form Postgres writes it; Author, the whole credential the POST proved, recorded
@@ -211,7 +222,9 @@ func RunNextSequenceSQL(run string) string {
 // which is a deleted post and a post whose row is gone alike. It is the one test of a withdrawn
 // run (api's goingWithdrawal): the stream reads it on every poll (api's goingRunStateOf), and the
 // graph read of the run's own address reads it to answer what the stream answers (refs'
-// interactionFrames).
+// interactionFrames). It reads no verdict of a run whose going_requests row is gone
+// (RunRowGoneSQL): the run's going_request_posts rows went with the row. The graph read answers
+// no frame of such a run, and reads this only of a run whose row is there.
 func RunWithdrawnSQL(run string) string {
 	return `exists (
 	         select 1
