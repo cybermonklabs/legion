@@ -68,6 +68,11 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # Every test the multiprocess tag adds: the two-process tests and the tests of the server's
       # agent process. The comment above the job's timeout-minutes says why its -timeout is 45m.
       - name: Two-process tests of the Dispatch server

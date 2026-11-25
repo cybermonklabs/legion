@@ -178,6 +178,12 @@ jobs:
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+
       # The step runs every package of the module except the five daemon-go-race's race step tests
       # and internal/textcheck, whose tests are the text-check job's: so each of the five runs once
       # per run of the router, under the detector, and the text checks run once too, in a job with
@@ -319,6 +325,12 @@ jobs:
       # so that it reads the restored module cache.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
