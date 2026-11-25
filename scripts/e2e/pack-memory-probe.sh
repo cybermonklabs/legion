@@ -1178,11 +1178,25 @@ fi
 mkdir -p "$scratch/leak-check"
 cat > "$scratch/leak-check/public-leak-check.sh" << 'SH'
 #!/usr/bin/env bash
-# Clears every call: the push rows measure memory, and the embedded rule file still reads each push.
+# Clears every call: the push rows measure memory, and the rule pass still reads each push.
 exit 0
 SH
 chmod 0755 "$scratch/leak-check/public-leak-check.sh"
 export PUBLIC_LEAK_CHECK=$scratch/leak-check/public-leak-check.sh
+# Nor does the daemon hand it the deployment's private-name rule file, and a guard with no rule file
+# runs no rule pass, so a push would skip work a role's push does. This file of one rule, for a
+# host no push here carries, is what LEGION_PRIVATE_NAME_RULES_FILE names, so the rule pass reads
+# each push and refuses none.
+mkdir -p "$scratch/rules"
+cat > "$scratch/rules/private-name-rules.toml" << 'TOML'
+title = "the pack-memory probe's own rules"
+
+[[rules]]
+id = "pack_memory_probe_rule"
+description = "a host no push of this probe carries"
+regex = '''never-pushed-host[.]pack-memory[.]invalid'''
+TOML
+export LEGION_PRIVATE_NAME_RULES_FILE=$scratch/rules/private-name-rules.toml
 
 # --------------------------------------------------------------------------------------------
 # 4. The four pack settings under the role's block.

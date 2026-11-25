@@ -2,9 +2,9 @@
 
 The Dispatch HTTP API's request and response shapes are generated: `envoy-dispatch openapi`
 reflects the Go route table and the Go types each row takes and answers into
-`packages/contracts/schemas/dispatch-openapi.json`, and `bun run gen:api` renders that into
-`packages/contracts/src/dispatch-api.generated.ts`, which `@legion/contracts` re-exports
-(dispatch://INFRA-1406).
+`packages/contracts/schemas/dispatch-openapi.json`, and every `bun install` renders that into
+`packages/contracts/src/dispatch-api.generated.ts` (`bun run gen:api` in packages/contracts does
+it again), which `@legion/contracts` re-exports (dispatch://INFRA-1406).
 
 The refusal bodies are generated with the rest. Every route's default answer is the common
 `{error, code}` (`ErrorBody`, Go's `errorBody`, which `writeError` writes). A route names each
