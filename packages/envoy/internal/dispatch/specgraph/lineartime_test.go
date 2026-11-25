@@ -27,13 +27,15 @@ const (
 
 // growsLinearly fails t unless the CPU time of the work at full grows from its time at
 // full/growthStep by at most linearSlack*growthStep times. prepare builds the input of one call at
-// a size, untimed, and returns the call. Each call's time is the CPU time of the thread that it runs
-// on (cputest.OnThread), so another test that runs beside it and the garbage collector's workers
-// are left out; the small size is timed three times and the fastest kept, and the full size again,
-// up to three times, only while its fastest is over the bound. Each call runs on a goroutine of its
-// own, and its time is taken with testwait.Receive, whose one bound is the test binary's deadline
-// less its margin: a slow call on a loaded machine passes, and work whose steps grow with the square
-// of the input that has not ended by then fails by this row's name, not at the package's timeout.
+// a size, untimed, and returns the call, which must not use t: it runs on a goroutine of its own
+// that keeps running when testwait.Receive gives up, and a call of t after the test ends panics.
+// Each call's time is the CPU time of the thread that it runs on (cputest.OnThread), so another
+// test that runs beside it and the garbage collector's workers are left out; the small size is
+// timed three times and the fastest kept, and the full size again, up to three times, only while
+// its fastest is over the bound. Each call's time is taken with testwait.Receive, whose one bound
+// is the test binary's deadline less its margin: a slow call on a loaded machine passes, and work
+// whose steps grow with the square of the input that has not ended by then fails by this row's
+// name, not at the package's timeout.
 func growsLinearly(t *testing.T, what string, full int, prepare func(size int) func()) {
 	t.Helper()
 	small := full / growthStep
