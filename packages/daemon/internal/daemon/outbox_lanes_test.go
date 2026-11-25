@@ -211,6 +211,9 @@ func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.Step
 func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *postingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -285,6 +288,9 @@ func (d *laneBoard) ApprovedVersionBefore(context.Context, string, int) (int, er
 func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *laneBoard) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }

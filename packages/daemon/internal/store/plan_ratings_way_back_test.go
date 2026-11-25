@@ -41,8 +41,8 @@ func planRatingsWayBackFor(t *testing.T, project string) string {
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
 // it (commit aa36bcbe4e), the release this rollback goes back to: every field of this release's
-// shape but PlanRating. It is a copy because that release's type is not in the tree.
-// That release decodes a step_record row strictly (record.DecodeOutboxPayload,
+// shape but PlanRating and StepExperiment. It is a copy because that release's type is not in the
+// tree. That release decodes a step_record row strictly (record.DecodeOutboxPayload,
 // DisallowUnknownFields), so a row this shape refuses is a row it fails at every attempt.
 type stepRecordBeforeTheRating struct {
 	ID         string     `json:"id"`
@@ -71,12 +71,14 @@ func decodedBeforeTheRating(payload []byte) error {
 	return decoder.Decode(&value)
 }
 
-// writeOf is how the daemon names a write of payload in the error of a run that failed (its
-// executors: "write the plan record %s of %s", "write the step record %s of %s" and "write the
-// rating of the step record %s of %s"), and the Dispatch route the write goes to, under
-// /api/v1/issues/{key}/, as the daemon's client sends it (dispatch's PutPlan, PutStep and
-// PutStepRating): a plan on its own id, a step record on its own, and a step record carrying a
-// rating on that record's rating route.
+// writeOf is how the daemon names a write of payload in the error of a run that failed, for the
+// three writes this test's rows make (its executors: "write the plan record %s of %s", "write the
+// step record %s of %s" and "write the rating of the step record %s of %s"), and the Dispatch route
+// the write goes to, under /api/v1/issues/{key}/, as the daemon's client sends it (dispatch's
+// PutPlan, PutStep and PutStepRating): a plan on its own id, a step record on its own, and a step
+// record carrying a rating on that record's rating route. No row here names a variant, so none
+// makes the fourth write, "write the variant of the step record %s of %s", on the record's
+// experiment route.
 func writeOf(payload record.OutboxPayload) (what, route string) {
 	switch write := payload.(type) {
 	case record.PlanRecord:

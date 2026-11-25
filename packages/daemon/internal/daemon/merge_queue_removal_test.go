@@ -457,7 +457,7 @@ func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
 		return held.Generation == launch.Generation && held.Locator != nil
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{BootToken: launch.BootToken,
-		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion}, false)
+		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion()}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the session %s of %s's woken merger = %d; body %s", held.Session, issue.key, status, body)
 	}

@@ -172,27 +172,6 @@ check "deletes the output nothing kept names" "$( [ -e "$c/cd/cd$(hexid 4 | cut 
 check "leaves trim.txt, README and the fuzz directory alone" \
   "$( [ -f "$c/trim.txt" ] && [ -f "$c/README" ] && [ -f "$c/fuzz/x/seed" ] && echo true || echo false)"
 
-echo "case: a second family of the job keeps what the first one's build used"
-fake=$work/fake2
-fake_cache "$fake"
-c=$fake/cache
-first_id=ab$(hexid 5 | cut -c3-)
-second_id=cd$(hexid 6 | cut -c3-)
-printf 'first' >"$c/ab/$first_id-d"
-PATH=$fake/bin:$PATH run begin "$fake/first"
-touch "$c/ab/$first_id-d"
-PATH=$fake/bin:$PATH run end "$fake/first"
-# The second restore unpacks an entry over the first build's files, with that entry's old times.
-touch -m -d '@1000000000' "$c/ab/$first_id-d"
-printf 'second' >"$c/cd/$second_id-d"
-PATH=$fake/bin:$PATH run begin "$fake/second" "$fake/first"
-check "begin with an earlier state exits 0" "$(is "$status" 0)"
-touch "$c/cd/$second_id-d"
-PATH=$fake/bin:$PATH run end "$fake/second"
-check "keeps the second build's entry" "$( [ -e "$c/cd/$second_id-d" ] && echo true || echo false)"
-check "keeps the first build's entry, restored with an old time" "$( [ -e "$c/ab/$first_id-d" ] && echo true || echo false)"
-check "does not warn: the second build read an entry of its own restore" "$(lacks "$out" '::warning::')"
-
 echo "case: a build that reads none of the restored entries is named, and an empty restore is not"
 fake=$work/fake5
 fake_cache "$fake"
@@ -212,18 +191,6 @@ PATH=$fake/bin:$PATH run begin "$fake/state"
 printf 'compiled' >"$c/cd/cd$(hexid 9 | cut -c3-)-d"
 PATH=$fake/bin:$PATH run end "$fake/state"
 check "an end after a restore that held nothing does not warn" "$(lacks "$out" '::warning::')"
-fake=$work/fake8
-fake_cache "$fake"
-c=$fake/cache
-printf 'first' >"$c/ab/ab$(hexid 11 | cut -c3-)-d"
-PATH=$fake/bin:$PATH run begin "$fake/first"
-touch "$c/ab/ab$(hexid 11 | cut -c3-)-d"
-PATH=$fake/bin:$PATH run end "$fake/first"
-printf 'second' >"$c/cd/cd$(hexid 12 | cut -c3-)-d"
-PATH=$fake/bin:$PATH run begin "$fake/second" "$fake/first"
-PATH=$fake/bin:$PATH run end "$fake/second"
-check "a second family whose build read nothing of its own restore warns: the first build's entries do not count" \
-  "$(contains "$out" '^::warning::go-cache-working-set: the build marked none of the 2 entries the restore held')"
 
 echo "case: relative state directories are taken from the current directory"
 fake=$work/fake7
@@ -237,8 +204,6 @@ check "and writes its list there" "$( [ -s "$fake/first/before" ] && echo true |
 touch "$c/ab/ab$(hexid 10 | cut -c3-)-d"
 check "end with it exits 0" "$(is "$(in_fake end first)" 0)"
 check "and keeps the entry the build used" "$( [ -e "$c/ab/ab$(hexid 10 | cut -c3-)-d" ] && echo true || echo false)"
-check "begin with a relative earlier state directory exits 0" "$(is "$(in_fake begin second first)" 0)"
-check "and reads its kept list" "$(is "$(cat "$fake/second/carried" 2>/dev/null)" "ab/ab$(hexid 10 | cut -c3-)-d")"
 
 echo "case: the script refuses what would prune the wrong cache or a cache it never marked"
 fake=$work/fake3
@@ -255,7 +220,7 @@ fake_cache "$other"
 PATH=$other/bin:$PATH run end "$fake/state"
 check "an end under another GOCACHE fails" "$(is "$status" 1)"
 check "and names both caches" "$(contains "$out" "go env GOCACHE is $other/cache, but begin marked $fake/cache")"
-PATH=$fake/bin:$PATH run begin "$fake/later" "$fake/nothing"
-check "a begin given an earlier state with no kept list fails" "$(is "$status" 1)"
+PATH=$fake/bin:$PATH run begin "$fake/later" "$fake/state"
+check "a begin given a second state directory is a usage error" "$(is "$status" 2)"
 
 summary "go-cache-working-set.sh"

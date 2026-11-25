@@ -78,6 +78,7 @@ func toldWho(messages []record.MergeForwardMessage) []string {
 }
 
 func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name   string
@@ -160,6 +161,7 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 // retro - a conflict waits for the merger, so a merge that lands there is one the implementer was
 // asked for at an earlier step (askedInReviewing).
 func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
@@ -211,6 +213,7 @@ func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 // asks the merger whatever the task's steps. The controls are the acceptance as the task's last
 // step, the retro of a task whose acceptance a step follows, and its merging.
 func TestAConflictInAcceptingAsksTheImplementerOnlyWhereAStepFollows(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
@@ -253,6 +256,7 @@ func TestAConflictInAcceptingAsksTheImplementerOnlyWhereAStepFollows(t *testing.
 // mergeForwardOnEntry). A move into accepting as the task's last step runs the same code as the
 // first case, so it is no case of its own.
 func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
+	t.Parallel()
 	every := &record.BaseRules{Required: []string{"lint"}}
 	for _, tc := range []struct {
 		name  string
@@ -327,6 +331,7 @@ func sentAgain(ask record.MergeForwardMessage, launch uint64) record.MergeForwar
 // beneath it, held and then released when that issue leaves; the control is the same parent with
 // nothing beneath it, which moves into its retro at the implementer's completion.
 func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) {
+	t.Parallel()
 	unread := &record.BaseRules{Unread: "HTTP 502"}
 	inImplementing := implementerAsked(phase.Implementing, record.ConflictRulesUnread)
 	// asksNothingAgain is LEGION-208 standing in at after what happened last, with want the
@@ -411,6 +416,7 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 // before the implementer, whose
 // planning comes before any pull request work and asks nothing.
 func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -468,6 +474,7 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 // work; the move into merging, after the owner's sign-off where the plan holds one, asks the
 // merger.
 func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}

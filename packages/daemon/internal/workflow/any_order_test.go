@@ -51,6 +51,7 @@ func lastStartOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) 
 // phase of its first step. The twin of each: the default steps, which an issue with no plan rows
 // runs, stay as today.
 func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
+	t.Parallel()
 	t.Run("a: the reviewer after the owner's acceptance is told the implementer's report", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)

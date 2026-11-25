@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -152,9 +153,25 @@ func (f *roleForwarder) publish(sessionID string) {
 		}
 		go func() {
 			_, err := wait()
-			f.finish(forward, err)
+			f.finish(forward, lateForwardFailure(f.cfg, forward, err))
 		}()
 	}
+}
+
+// lateForwardFailure is err, or the failure of a forward the stream stored later than its
+// resolution's fence and the wait that forward ran under (roles.ForwardStoredTooLate,
+// roleForwardTimeout): a forward whose process was held between the fence check and the
+// acknowledgement. Its holder may have lost the role, and the takeover record that would copy the
+// message to the next holder may have ended (takeoverRecordLife), so the copy is no delivery: it
+// is reported failed (roles.ErrForwardStoredTooLate), which clears the attempt, and the sender's
+// next send resolves the holder again. A forward whose resolution is zero - the kept lane's walk,
+// which reads the claim before each copy - is never late.
+func lateForwardFailure(cfg listenerDeliveryHandlerConfig, forward roleForward, err error) error {
+	if err != nil || !roles.ForwardStoredTooLate(forward.resolvedAt, cfg.now(), roleForwardTimeout) {
+		return err
+	}
+	return fmt.Errorf("%w: resolved %s ago, the fence is %s and the wait %s",
+		roles.ErrForwardStoredTooLate, cfg.now().Sub(forward.resolvedAt), roles.ForwardFenceAge, roleForwardTimeout)
 }
 
 // refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
@@ -258,16 +275,23 @@ type roleLane struct {
 // the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
 // errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
 //
+// It is a connect of the listener's start (natsStart): behind a hub whose servers reload a new
+// nkey one at a time, the main client can get in through the one server that has reloaded while
+// the lane's connect meets one that has not, so it waits out a refusal of the credential under
+// the start's bound (natsStart.option), which /healthz reports while it lasts and forgets once the
+// lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
+// the start, as main ends it, and names the credential only when the connect did not get in.
+//
 // An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
 // takes no share of any project's role messages. A shared listener resolves a role's holder, an
 // edge session's among them, and forwards the message to the holder's agent subject, which the
 // holder's session consumer delivers. Its lane holds the forwards alone.
-func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger) (roleLane, error) {
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, start *natsStart) (roleLane, error) {
 	if edge != nil {
 		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
 		return roleLane{forwards: forwards}, nil
 	}
-	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler)
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.option())
 	if err != nil {
 		return roleLane{}, err
 	}
