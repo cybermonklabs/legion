@@ -667,6 +667,7 @@ export function AskCard({
         <MentionField
           {...props}
           askAnswer={true}
+          className="font-normal"
           disabled={disabledWhileOut}
           fieldRef={answerFieldRef}
           issueKey={displayedAsk.issue_key ?? undefined}

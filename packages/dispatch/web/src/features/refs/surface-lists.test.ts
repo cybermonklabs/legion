@@ -114,7 +114,8 @@ interface Construct {
  *  composer input. A function declaration is not a mount. */
 const EDITOR_MOUNT: Construct = {
   name: "an editor mount",
-  pattern: /(?<!function )\b(?:createProofEditor|constructProofEditor)\(|<ComposerPrimitive\.Input\b/,
+  pattern:
+    /(?<!function )\b(?:createProofEditor|constructProofEditor)\(|<ComposerPrimitive\.Input\b/,
 };
 
 /** The elements that mount the shared field, bare or through the composer that dresses it. A
@@ -580,21 +581,23 @@ function sitesOf(constructs: readonly Construct[], skipped: ReadonlySet<string>)
     const lines = LINES_BY_FILE.get(file) ?? [];
     lines.forEach((line, index) => {
       for (const construct of constructs) {
-        if (construct.pattern.test(line)) {
-          sites.push({ at: `${file}:${index + 1}`, construct: construct.name, file });
+        if (!construct.pattern.test(line)) continue;
+        // The library's one-phase factory delegates here. Only the host supplies a writing box.
+        if (
+          construct === EDITOR_MOUNT &&
+          file === "packages/proof-editor/src/lib.ts" &&
+          line.trim() === "const construction = await constructProofEditor(root, opts);"
+        ) {
+          continue;
         }
+        sites.push({ at: `${file}:${index + 1}`, construct: construct.name, file });
       }
     });
   }
   return sites;
 }
 
-// The library's one-phase factory delegates to the two-phase factory. Neither supplies
-// a Dispatch writing box, so count the host's call, not the delegation inside the library.
-const WRITING_SITES = sitesOf(WRITING_CONSTRUCTS, new Set([SHARED_FIELD])).filter(
-  (site) =>
-    site.construct !== EDITOR_MOUNT.name || site.file !== "packages/proof-editor/src/lib.ts"
-);
+const WRITING_SITES = sitesOf(WRITING_CONSTRUCTS, new Set([SHARED_FIELD]));
 
 const WRITING_FILES = new Set(DISPATCH_WRITING_BOXES.flatMap((row) => row.files));
 

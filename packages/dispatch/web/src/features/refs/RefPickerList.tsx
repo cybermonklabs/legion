@@ -170,47 +170,56 @@ export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
 }
 
 /**
- * A row's detail line, in both the hosts that draw the picker's rows. A role's row starts its
- * line with the session that holds the role, which it draws as an agent (`RowAgent`). A party's
- * row ends it with when that session was last seen (`RefPickerRow.seen`), drawn as the
- * `<Timestamp>` every other relative time on the page is: the relative words, the exact time on
- * its `title` (dispatch://INFRA-341, R7).
+ * A row's detail line, in both the hosts that draw the picker's rows: cut to the row's width,
+ * with what it reads whole on its `title` for a pointer reader to hover for what was cut. A
+ * role's row starts its line with the session that holds the role, which it draws as an agent
+ * (`RowAgent`). A party's row ends it with when that session was last seen
+ * (`RefPickerRow.seen`), drawn as the `<Timestamp>` every other relative time on the page is: the
+ * relative words, the exact time on its `title` (dispatch://INFRA-341, R7). The line's own
+ * `title` ends in the same relative words, so the line follows the tick `<Timestamp>` follows
+ * (`useRelativeTimeTick`) and hands its `<Timestamp>` the clock reading the line's `title` is
+ * measured from: the two say the same thing, on one subscription. A row with no detail draws no
+ * line.
  */
-export function RefRowDetail({ row }: { row: RefPickerRow }): ReactNode {
-  const seen =
-    row.seen === undefined ? null : (
-      <>
-        {" · "}
-        <Timestamp at={row.seen} />
-      </>
-    );
-  if (row.kind !== "role" || row.agent === undefined) {
-    return (
-      <>
-        {row.detail}
-        {seen}
-      </>
-    );
-  }
+export function RefRowDetail({
+  className,
+  row,
+}: {
+  /** The host's own classes for the line, before the look every host gives it. */
+  className?: string;
+  row: RefPickerRow;
+}): ReactNode {
+  useRelativeTimeTick(row.detail !== "" && row.seen !== undefined);
+  if (row.detail === "") return null;
+  const now = Date.now();
+  // The stronger muted role, which clears AA over the sky fill a highlighted row wears as well as
+  // over `RefPickerList`'s own recessed surface.
+  const look = `text-xs ${textOptionDescription}`;
   return (
-    <>
-      <RowAgent agent={row.agent} />
-      {row.detail.slice(row.agent.words.length)}
-      {seen}
-    </>
+    <TruncatedText
+      className={className === undefined ? look : `${className} ${look}`}
+      title={
+        row.seen === undefined
+          ? row.detail
+          : `${row.detail} · ${relativeTimeLabel(new Date(row.seen), now) ?? row.seen}`
+      }
+    >
+      {row.kind === "role" && row.agent !== undefined ? (
+        <>
+          <RowAgent agent={row.agent} />
+          {row.detail.slice(row.agent.words.length)}
+        </>
+      ) : (
+        row.detail
+      )}
+      {row.seen === undefined ? null : (
+        <>
+          {" · "}
+          <Timestamp at={row.seen} now={now} />
+        </>
+      )}
+    </TruncatedText>
   );
-}
-
-/**
- * What a row's detail line reads, for its `title`: the line is cut to the row's width, and a
- * pointer reader hovers it for what was cut. It ends in the same relative time the line's
- * `<Timestamp>` draws (`RefRowDetail`), so a host that draws the line keeps the two saying the
- * same thing by following the tick `<Timestamp>` follows (`useRelativeTimeTick`) while its list
- * is open.
- */
-export function refRowDetailTitle(row: RefPickerRow): string {
-  if (row.seen === undefined) return row.detail;
-  return `${row.detail} · ${relativeTimeLabel(new Date(row.seen), Date.now()) ?? row.seen}`;
 }
 
 /**
@@ -236,10 +245,6 @@ export function RefPickerList({
   picker: RefPicker;
 }): ReactNode {
   const headingPrefix = useId();
-  // A party's detail line ends in its session's last-seen time, and the line's `title` says the
-  // same relative time as a string (`refRowDetailTitle`), so the list follows the one tick
-  // `<Timestamp>` follows for as long as it is open.
-  useRelativeTimeTick(picker.open);
   if (!picker.open) return null;
   const take = (id: string) => {
     const insertion = picker.take(id);
@@ -273,16 +278,7 @@ export function RefPickerList({
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
         <RefRowLabel row={one} />
-        {one.detail === "" ? null : (
-          // The stronger muted role, which clears AA over the sky fill a highlighted row wears
-          // as well as over the list's own surface.
-          <TruncatedText
-            className={`text-xs ${textOptionDescription}`}
-            title={refRowDetailTitle(one)}
-          >
-            <RefRowDetail row={one} />
-          </TruncatedText>
-        )}
+        <RefRowDetail row={one} />
       </span>
       <RefPartsControl picker={picker} row={one} />
     </div>

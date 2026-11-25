@@ -1,4 +1,5 @@
 import type { paths } from "./dispatch-api.generated";
+import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import {
   ASK_URGENCIES,
   DEFAULT_ISSUE_PAGE_LIMIT,
@@ -12,7 +13,6 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-constants";
-import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import { goBlankPattern } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";

@@ -19,8 +19,8 @@ export function emptyDraftRefusal(text: string): string | null {
 }
 
 /** One keyed store of unsent drafts, and the ways its callers reach it. Its drafts are `D`: text
- *  (`createDraftStore`), or a record of the text and what else the store's own drafts carry
- *  with it (`createRecordDraftStore`). */
+ *  (`createDraftStore`), or the records a store's own `DraftKind` keeps (the reply drafts',
+ *  `reply-drafts.ts`). */
 export interface DraftStore<D = string> {
   /** The key's draft, read without subscribing to it. */
   read(key: string): D;
@@ -61,8 +61,9 @@ export interface DraftStore<D = string> {
 
 /** What a store's drafts are, to the store: the draft it reads for a key it holds nothing under,
  *  which is also what it forgets a key by, whether a draft holds nothing, whether two say the same
- *  thing, and the text the tab keeps one as and reads it back from. */
-interface DraftKind<D> {
+ *  thing, and the text the tab keeps one as and reads it back from. Text drafts are
+ *  `TEXT_DRAFTS`; the reply drafts define their own (`reply-drafts.ts`). */
+export interface DraftKind<D> {
   /** One value for every empty key, so a box whose draft was dropped reads the same object each
    *  time and re-renders for none of it. */
   readonly empty: D;
@@ -183,11 +184,11 @@ function dropUnknownStores(storage: Storage): void {
  * `name`, one of `STORE_NAMES`, as well (`ENTRY_PREFIX`), so it outlives a reload of the page
  * too, within the bounds above.
  *
- * Each of the app's draft stores is one of these or a store of draft records
- * (`createRecordDraftStore`) - the two the composers' unsent drafts keep for each query client
- * (`unsent-drafts.ts`), the answer drafts (`answer-drafts.ts`) and the reply drafts
- * (`reply-drafts.ts`) - and all of them are `draftStore`, so a fix to the subscription, the
- * listener cleanup, the updater, the sign-in, the sign-out or the keeping reaches every one.
+ * Each of the app's draft stores is one of these - the two the composers' unsent drafts keep for
+ * each query client (`unsent-drafts.ts`) and the answer drafts (`answer-drafts.ts`) - or the reply
+ * drafts, records kept by their own `DraftKind` (`reply-drafts.ts`), and all of them are
+ * `draftStore`, so a fix to the subscription, the listener cleanup, the updater, the sign-in, the
+ * sign-out or the keeping reaches every one.
  * `storage` is the tab's own unless a test names another; undefined, as where the browser gives
  * the page none, it keeps nothing for a reload and says so.
  */
@@ -198,47 +199,13 @@ export function createDraftStore(
   return draftStore(name, TEXT_DRAFTS, storage);
 }
 
-/**
- * A store of drafts that carry more than their text, written with it, keyed by what the draft
- * belongs to (an ask id), as `createDraftStore` keeps text, and kept in the tab as its JSON: a
- * reply draft records whether its ask was settled when the reader wrote it (`reply-drafts.ts`).
- * Only the text is compared, so a write that changes no text is no write, and what the draft
- * carries stays what the last write that changed the text recorded; a draft with no text is
- * empty. `empty` is what the store reads for a key it holds nothing under, and the draft it
- * forgets a key by, and `fits` is the shape a kept draft is read back by: text an older release
- * kept in another shape, or that does not parse, is no draft, and the load drops it.
- */
-export function createRecordDraftStore<D extends { readonly text: string }>(
-  name: StoreName,
-  empty: D,
-  fits: Shape<D>,
-  storage: Storage | undefined = pageStorage()
-): DraftStore<D> {
-  return draftStore(
-    name,
-    {
-      empty,
-      isEmpty: (draft) => draft.text === "",
-      kept: (draft) => JSON.stringify(draft),
-      parse: (text) => {
-        try {
-          const draft: unknown = JSON.parse(text);
-          return fits(draft) ? draft : undefined;
-        } catch {
-          return undefined;
-        }
-      },
-      same: (left, right) => left.text === right.text,
-    },
-    storage
-  );
-}
-
-/** The store both constructors above make, over drafts of `kind`. */
-function draftStore<D>(
+/** The store every draft store is, over drafts of `kind`: `createDraftStore` makes it over text,
+ *  and the reply drafts over their records (`reply-drafts.ts`). `storage` is as `createDraftStore`
+ *  takes it. */
+export function draftStore<D>(
   name: StoreName,
   kind: DraftKind<D>,
-  storage: Storage | undefined
+  storage: Storage | undefined = pageStorage()
 ): DraftStore<D> {
   const drafts = new Map<string, D>();
   const listeners = new Map<string, Set<() => void>>();

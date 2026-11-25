@@ -16,7 +16,6 @@ import {
   useState,
 } from "react";
 
-import { TruncatedText } from "../../components/TruncatedText";
 import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   card,
@@ -24,16 +23,9 @@ import {
   selectedCardBg,
   selectedCardBorder,
   textMutedOnSurface,
-  textOptionDescription,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import {
-  RefPartsControl,
-  RefPickerNotes,
-  RefRowDetail,
-  RefRowLabel,
-  refRowDetailTitle,
-} from "../refs/RefPickerList";
+import { RefPartsControl, RefPickerNotes, RefRowDetail, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
   orderedRows,
@@ -44,7 +36,6 @@ import {
   type RefPickerRow,
   readTrigger,
 } from "../refs/ref-picker";
-import { useRelativeTimeTick } from "../refs/Timestamp";
 import { type RefPicker, useRefPicker } from "../refs/useRefPicker";
 
 /**
@@ -146,14 +137,7 @@ function RefRow({
         <RefKindIcon kind={row.kind} />
         <span className="flex min-w-0 flex-1 flex-col">
           <RefRowLabel row={row} />
-          {item.description === undefined ? null : (
-            <TruncatedText
-              className={`self-stretch text-xs ${textOptionDescription}`}
-              title={refRowDetailTitle(row)}
-            >
-              <RefRowDetail row={row} />
-            </TruncatedText>
-          )}
+          <RefRowDetail className="self-stretch" row={row} />
         </span>
         <RefPartsControl picker={picker} row={row} />
       </div>
@@ -253,10 +237,6 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
     enabled: opened !== undefined,
     text,
   });
-  // A party's detail line ends in its session's last-seen time, and the line's `title` says the
-  // same relative time as a string (`refRowDetailTitle`), so the triggers follow the one tick
-  // `<Timestamp>` follows for as long as the list is open.
-  useRelativeTimeTick(picker.open);
 
   // Each row by its id: assistant-ui's items carry an item's words alone, and what a row writes
   // and whether it holds parts are the picker's row's.

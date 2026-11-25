@@ -39,6 +39,10 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${ANSWER} · the card drawn for another ask, then back`, TYPED)
   ),
   ...answers(
+    `${ANSWER_FIELD} | address prop | {...props}`,
+    cells(`${ANSWER} · the card drawn for another ask, then back`, TYPED)
+  ),
+  ...answers(
     `${ANSWER_FIELD} | conditional | (ownWordsShown) ? …`,
     { reason: REASONS[3] },
     cells(`${ANSWER} · the card ended, then drawn again`, TYPED)

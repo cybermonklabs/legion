@@ -1,7 +1,7 @@
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 
 import { type Shape, shape } from "../writes/tab-storage";
-import { createRecordDraftStore } from "./draft-store";
+import { type DraftKind, draftStore } from "./draft-store";
 
 /** A reply draft: the text, a mention picked in it included (a mention is a reference written in
  *  the text), and whether the ask took a reply as a settled ask (`takesReply` in `AskThread.tsx`)
@@ -18,6 +18,28 @@ const keptReplyDraft = shape.record({
   text: shape.string,
   writtenSettled: shape.boolean,
 }) satisfies Shape<ReplyDraft>;
+
+/**
+ * Reply drafts, to their store (`draftStore`): the tab keeps each as its JSON and reads it back by
+ * `keptReplyDraft`, so text an older release kept in another shape, or that does not parse, is no
+ * draft, and the load drops it. Only the text is compared, so a write that changes no text is no
+ * write, and the `writtenSettled` a draft carries stays what the last write that changed the text
+ * recorded; a draft with no text is empty.
+ */
+const REPLY_DRAFTS: DraftKind<ReplyDraft> = {
+  empty: EMPTY_REPLY_DRAFT,
+  isEmpty: (draft) => draft.text === "",
+  kept: (draft) => JSON.stringify(draft),
+  parse: (text) => {
+    try {
+      const draft: unknown = JSON.parse(text);
+      return keptReplyDraft(draft) ? draft : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  same: (left, right) => left.text === right.text,
+};
 
 /**
  * Unsent ask-reply drafts, by ask id. A draft belongs to the ask, not to the composer showing it:
@@ -38,7 +60,7 @@ const keptReplyDraft = shape.record({
  * read-only (`useUnsentReply`). A draft written while the ask was open is a reply the reader is
  * still writing in that host, which no other thread reads as a send that failed.
  */
-const store = createRecordDraftStore("reply", EMPTY_REPLY_DRAFT, keptReplyDraft);
+const store = draftStore("reply", REPLY_DRAFTS);
 
 /** Drops an ask's draft once its reply is sent, only while its text is still the text sent. */
 export function clearReplyDraft(askId: string, sent: string): void {

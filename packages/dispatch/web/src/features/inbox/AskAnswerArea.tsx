@@ -18,7 +18,7 @@ export interface AskAnswerActions<Name extends string = string> {
 
 /** What the area hands the field its host mounts (`field`): the draft and each edit of it, and the
  *  paste, the drop and the keys, which are the area's own. */
-export type AskAnswerFieldProps = Required<
+type AskAnswerFieldProps = Required<
   Pick<ComponentProps<typeof MentionField>, "body" | "onChange" | "onKeyDown" | "readOnly" | "rows">
 > &
   Pick<ComponentProps<typeof MentionField>, "onDrop" | "onPaste">;

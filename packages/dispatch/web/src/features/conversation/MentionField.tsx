@@ -182,9 +182,8 @@ export function MentionField({
   readonly writing: DispatchWritingBoxRow;
 }): ReactNode {
   const tooltips = useTooltips();
-  const fieldLook = fieldClassName ?? (
-    tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : ON_PAGE.field
-  );
+  const fieldLook =
+    fieldClassName ?? (tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : ON_PAGE.field);
   const labelLook = tooltips ? textSecondaryOnSurface : ON_PAGE.label;
   const hintLook = tooltips ? textMutedOnSurface : ON_PAGE.hint;
   const element = useRef<HTMLTextAreaElement | null>(null);
