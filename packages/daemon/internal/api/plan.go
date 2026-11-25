@@ -102,12 +102,12 @@ const registerPlanRoute = "register_plan"
 const OwnerPlanContract = 219
 
 // runningStepContract is the daemon contract that added `running` to each task of
-// register_plan's answer (version.go's 262, RegisteredTask.Running): the act a running task stands
+// register_plan's answer (version.go's 296, RegisteredTask.Running): the act a running task stands
 // at once a later version that changes its text alone is taken. A caller below it is served each
 // task without it (shaping.go's AnswerPlanRegister row, withoutRunningSteps). It is a literal of
 // its own and the last number of SupportedContracts, for the reason OwnerPlanContract is one: a
 // later contract moves DaemonAPIVersion, and the contract this key arrived at stays where it is.
-const runningStepContract = 262
+const runningStepContract = 296
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are

@@ -1,7 +1,7 @@
 # The go_test_step_expansion_test filter's gate: what job test reads.
 GATE = harness("go_test_step_expansion_test", "Test the go test step expansion",
         f"{SCRIPTS}/go-test-step-expansion.test.sh", [
-    (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:42)"),
+    (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (`.github/scripts/go-test-step-expansion.test.sh#spec_from_file_location`)"),
     (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
     (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
     (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),

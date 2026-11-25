@@ -7,7 +7,7 @@ classifies each command commands_of returns.
 Command position is found by one quote-aware scan of the `run:` (its `${{ … }}` expressions
 elided first), as bash reads it: a `#` starts a comment only at word start — the start of the run,
 after unquoted whitespace or a newline, or after an unquoted `;`, `&`, `|`, `(`, `)`, `<`, `>` or
-backtick, not `{` (`${#x}`, `$#` and `a#b` are words) — and the comment runs to the real newline,
+backtick, not `{` (`$#` is a word, and so are a length expansion such as ${#x} and a#b) — and the comment runs to the real newline,
 so a backslash inside it continues nothing; escaped whitespace and an escaped `#` are word
 characters (`echo a\\ #` has no comment); a backslash-newline joins lines outside single quotes,
 whatever the number of backslashes before it (an escaped backslash is a character: `printf 'x' \\\\`
