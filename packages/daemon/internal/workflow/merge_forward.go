@@ -50,13 +50,19 @@ import (
 // a pull request that is not open, an issue where no merge forward stands on line, the phases its
 // task walks (classify.MergeForwardStands: implementing or a phase after it), and a tree that
 // lingers (record.TreeLingers, where every role is suspended) are asked nothing.
-func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, line []phase.Phase, pr *record.PullRequest, why record.ConflictWhy) error {
+//
+// While a fix of the task holds the task's branch (fixHoldsBranch) nothing else pushes there, so
+// the conflict waits: the record keeps the conflicting head, as it keeps one that needs no merge
+// yet, one line says why, and nobody is asked or told; the way after the fix reads the conflict
+// again (mergeForwardAfterFix). An ask of the head that a fix took as its own (record.MergeForward.Fix)
+// is no ask once that fix no longer holds the branch, so a read of the same head asks again.
+func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
-	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, line) {
+	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, w.Line) {
 		return nil
 	}
 	asker := record.MergeForwardAsker(at)
-	if asked := pr.MergeForward; asked != nil && asked.Head == pr.HeadSHA && (asked.Phase != phase.Implementing || at == phase.Implementing) {
+	if asked := pr.MergeForward; asked != nil && asked.Head == pr.HeadSHA && asked.Fix == nil && (asked.Phase != phase.Implementing || at == phase.Implementing) {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -99,7 +105,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		next.Earlier = before.Earlier
 		if before.Landed != "" {
 			// Clipped, so the append writes a new array: a copy of the pull request shares the old one.
-			next.Earlier = append(slices.Clip(before.Earlier), record.LandedMergeForward{Head: before.Head, Landed: before.Landed})
+			next.Earlier = append(slices.Clip(before.Earlier), record.LandedMergeForward{Head: before.Head, Landed: before.Landed, Fix: before.Fix})
 		}
 	}
 	pr.MergeForward = next
@@ -109,6 +115,66 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	e.logOnCommit(ctx, "workflow: merge forward asked", "issue", issue.Key, "tree", issue.Tree, "phase", at,
 		"pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 	return nil
+}
+
+// fixHoldsBranch says whether a fix of the task of w holds the task's branch: from its opening
+// until its way is taken, that is while the task's latest fix reads its job, runs, or has ended
+// with its way pending (record.TaskFix.Way 0). While a fix holds it, nothing pushes to the branch
+// but the fix's one end push (mergeForward). A fix that a stop, a leave or a new generation ended
+// takes no way (Way 4) and holds nothing.
+func (e *Engine) fixHoldsBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (bool, error) {
+	if !w.Stored {
+		return false, nil
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil {
+		return false, err
+	}
+	return fix.Way == 0, nil
+}
+
+// mergeForwardAfterFix reads the record's conflict again once the way after a fix is taken
+// (afterFix), in that way's transaction and after its act: the fix no longer holds the task's
+// branch, so a conflict that waited for it is judged now. It asks nobody and writes no reason.
+// Where the record holds the task's head in a confirmed conflict (classify.ConflictRound), it asks
+// for a fresh read of GitHub's merge state once the transaction commits (Config.ReadMergeState),
+// whose answer is judged at that head as every confirmed conflict is (mergeability, R0 of
+// dispatch://INFRA-4374): a conflict R0 leaves alone stays recorded, and one it acts on is asked
+// then, once. Where the conflicting head is no longer the task's head, it reads nothing: the reads
+// the head's move owes decide.
+func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string) error {
+	return nil
+}
+
+// takeOwedMerge makes the implementer's owed merge forward of the head the fix of pass opens at the
+// fix's own work, in the transaction that opens it (openFix), before its job is read or its task
+// is delivered: an ask of that head to the implementer that has not landed (owedMerge) takes the
+// fix's name (record.MergeForward.Fix). The fix's task tells it to make that merge first, in its
+// own working copy, and push it with its one end push (fixTask), so the fix stays the one writer
+// of the task's branch: the ask's own messages end undelivered (leftMergeForwardAt), its landing
+// is the fix's (mergeForwardLanded), and no completion fence is made of it (mergedForwardRefusal).
+func (e *Engine) takeOwedMerge(ctx context.Context, tx pgx.Tx, pass *fixPass, number int) error {
+	return nil
+}
+
+// owedMerge is the merge forward the implementer owes at head on pr: the record's ask of head to
+// the implementer that has not landed, which a fix of the task may take as its own (takeOwedMerge)
+// or holds already; nil for none.
+func owedMerge(pr *record.PullRequest, head string) *record.MergeForward {
+	if pr == nil || pr.State != record.PullRequestOpen {
+		return nil
+	}
+	asked := pr.MergeForward
+	if asked == nil || asked.Landed != "" || asked.Head != head || asked.Asked() != claim.RoleImplementer {
+		return nil
+	}
+	return asked
+}
+
+// fixOwns says whether owner names fix of task in issue's generation: the fix that took a merge
+// forward (record.MergeForward.Fix) is of the task a completion reports on.
+func fixOwns(owner *record.MergeForwardFix, issue record.Issue, task string) bool {
+	return false
 }
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
@@ -163,10 +229,10 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 		if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
+		return e.mergeForward(ctx, tx, issue, w, pr, record.ConflictMergeNext)
 	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
 		w.MovesBack(record.StandsAt(issue), phase.Implementing) && !classify.MergeComesNext(issue, w.Line):
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
+		return e.mergeForward(ctx, tx, issue, w, pr, asked.Why)
 	}
 	return nil
 }
@@ -237,6 +303,11 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // merge the new head only once the reviewer's approval of it is on the pull request, where the
 // task has a reviewer step, and to go on at the new head where it has none. A tree that
 // lingers (record.TreeLingers, where every role is suspended) records and tells nothing.
+//
+// A merge forward a fix took as its own (record.MergeForward.Fix, takeOwedMerge) lands with the
+// fix's one end push: the record keeps the new head as the one it left, asks no review, and tells
+// nobody, since the fix's own end decides what runs after it (afterFix) and no step beside the fix
+// was held for this merge.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	asked := pr.MergeForward
 	if asked == nil || asked.Landed != "" || asked.Head == pr.HeadSHA {
@@ -409,7 +480,13 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // move, at the head it reviewed, and the review a landed merge forward then asks of it is made
 // with no completion (record.MergeForwardReview), so a refusal would lose that report for good.
 // It answers false where it does not refuse.
-func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
+//
+// A merge forward a fix of task took as its own (record.MergeForward.Fix, fixOwns) makes no fence:
+// the fix pushed it with its one end push, and the steps beside the fix judged the head the fix
+// started at, which the fix's way reads (afterFix). The fence still stands for every merge no fix
+// took, among the earlier landings too, so a completion at a head such a merge replaced is
+// refused as before.
+func mergedForwardRefusal(issue record.Issue, task string, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
 	case phase.Testing, phase.Reviewing, phase.Retro:
 	default:
@@ -424,9 +501,13 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 	// merge left, whose merge the role can read.
 	var clause, landed string
 	if commit == "" {
-		landed = asked.Landed
-		if landed == "" && len(asked.Earlier) > 0 {
-			landed = asked.Earlier[len(asked.Earlier)-1].Landed
+		if asked.Landed != "" && !fixOwns(asked.Fix, issue, task) {
+			landed = asked.Landed
+		}
+		for i := len(asked.Earlier) - 1; landed == "" && i >= 0; i-- {
+			if !fixOwns(asked.Earlier[i].Fix, issue, task) {
+				landed = asked.Earlier[i].Landed
+			}
 		}
 		if landed == "" {
 			return intake.Result{}, false
@@ -434,7 +515,7 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 		clause = fmt.Sprintf("names no head, so it says nothing about which head its work judged, and a merge of %s forward landed at head %s",
 			asked.Base, landed)
 	} else {
-		replaced, ok := mergedForwardOf(asked, commit)
+		replaced, ok := mergedForwardOf(asked, commit, func(owner *record.MergeForwardFix) bool { return fixOwns(owner, issue, task) })
 		if !ok {
 			return intake.Result{}, false
 		}
@@ -446,7 +527,7 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
 			issue.Key, word)
 	}
-	pending := asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role)
+	pending := asked.Landed == "" && asked.Fix == nil && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role)
 	var next string
 	if pending {
 		next = awaitedMergeForward(pr, again)
@@ -470,14 +551,15 @@ func awaitedMergeForward(pr *record.PullRequest, again string) string {
 
 // mergedForwardOf is the merge forward of the record's stretch of work that replaced commit: the
 // ask the record holds, when it landed and commit is its head, or else the newest of the merge
-// forwards that landed before it (record.MergeForward.Earlier) whose head commit is. It answers
-// false where no merge forward the record keeps replaced commit.
-func mergedForwardOf(asked *record.MergeForward, commit string) (record.LandedMergeForward, bool) {
-	if asked.Landed != "" && asked.Head == commit {
-		return record.LandedMergeForward{Head: asked.Head, Landed: asked.Landed}, true
+// forwards that landed before it (record.MergeForward.Earlier) whose head commit is, leaving out
+// each that a fix of the completion's task took as its own (owned). It answers false where no
+// other merge forward the record keeps replaced commit.
+func mergedForwardOf(asked *record.MergeForward, commit string, owned func(*record.MergeForwardFix) bool) (record.LandedMergeForward, bool) {
+	if asked.Landed != "" && asked.Head == commit && !owned(asked.Fix) {
+		return record.LandedMergeForward{Head: asked.Head, Landed: asked.Landed, Fix: asked.Fix}, true
 	}
 	for i := len(asked.Earlier) - 1; i >= 0; i-- {
-		if asked.Earlier[i].Head == commit {
+		if asked.Earlier[i].Head == commit && !owned(asked.Earlier[i].Fix) {
 			return asked.Earlier[i], true
 		}
 	}

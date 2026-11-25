@@ -192,16 +192,35 @@ type Engine struct {
 	// every other start is written (started), noWayKept leaves the way a fix took unwritten
 	// (afterFix), noEndHold holds no task's end for its CI (retroHold), noFixJoin takes out the
 	// fix rule's join of a failure to the fix that runs (fixFailure), and wayMarkRunningOnly marks
-	// only a running fix as taking no way at a stop, a leave or a new generation (dropFixWay). Only
-	// a test sets any of them, as the control of the rule it takes out.
-	noFixRule          bool
-	everyRoleToldCI    bool
-	fixStartInLine     bool
-	noWayKept          bool
-	noEndHold          bool
-	noFixJoin          bool
-	wayMarkRunningOnly bool
+	// only a running fix as taking no way at a stop, a leave or a new generation (dropFixWay).
+	//
+	// For the one writer of a task's branch: mergeForwardBesideFix asks a confirmed conflict while
+	// a fix holds the branch (mergeForward); waitForOwedMerge opens no fix while the implementer
+	// owes the merge of the head (openFix); mergeOutsideFix leaves an owed merge outside the fix,
+	// neither taken nor named in its task (takeOwedMerge, startFacts); ordinaryMergeAfterTakeover
+	// names the owed merge in the fix's task but takes no ownership of it, so its messages, its
+	// landing and its completion fence are a merge no fix took (takeOwedMerge); noAskAtWay reads
+	// no conflict again at the way after a fix, and askAtWayWithNoRules asks it there at once,
+	// with no rules read (mergeForwardAfterFix). Only a test sets any of them, as the control of
+	// the rule it takes out.
+	noFixRule                  bool
+	everyRoleToldCI            bool
+	fixStartInLine             bool
+	noWayKept                  bool
+	noEndHold                  bool
+	noFixJoin                  bool
+	wayMarkRunningOnly         bool
+	mergeForwardBesideFix      bool
+	waitForOwedMerge           bool
+	mergeOutsideFix            bool
+	ordinaryMergeAfterTakeover bool
+	noAskAtWay                 bool
+	askAtWayWithNoRules        bool
 }
+
+// WithoutEndHold sets the seam noEndHold on e: no task's end is held for its CI (retroHold). Only
+// tests call it, as the control of the end hold on an engine another package builds.
+func (e *Engine) WithoutEndHold() { e.noEndHold = true }
 
 var _ intake.Handler = (*Engine)(nil)
 
@@ -1176,9 +1195,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// fenced: it moves nothing, and its handoff is the report of the work the role did before the
 	// move, which the next phase reads (leftItsPhase) and no later completion can make again,
 	// since the review a landed merge forward asks of the reviewer is made with none
-	// (record.MergeForwardReview).
+	// (record.MergeForwardReview). The fence is judged for the task of the issue's walk, whose fix
+	// may have taken a merge forward as its own (mergedForwardRefusal, fixOwns).
 	if current {
-		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+		task := ""
+		if pr != nil && pr.MergeForward != nil {
+			w, err := e.walk(ctx, tx, *issue)
+			if err != nil {
+				return intake.Result{}, err
+			}
+			task = w.Task
+		}
+		if refusal, fenced := mergedForwardRefusal(*issue, task, fact.Role, reported, fact.Commit, pr); fenced {
 			return refusal, nil
 		}
 	}

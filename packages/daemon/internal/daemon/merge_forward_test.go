@@ -271,3 +271,64 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 		}
 	})
 }
+
+// A merge forward a fix of the task took as its own (record.MergeForward.Fix) is the fix's work, so
+// every ordinary message of that ask still queued ends with nothing published: the ask to the
+// implementer and the hold of the tester queued before the fix took it, and a landed or a review
+// queued once it landed. The control, kept: each same row of an ask no fix took is published once.
+// The test reads the rows, the publishes and the executor's log lines by their fields, never a
+// message's words.
+func TestAFixOwnedMergeForwardMessageEndsUndelivered(t *testing.T) {
+	t.Parallel()
+	owner := &record.MergeForwardFix{Generation: 1, Task: "a", Number: 1}
+	unlanded := record.MergeForward{Head: "sha-1", Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+	landed := unlanded
+	landed.Landed = "sha-2"
+	for _, tc := range []struct {
+		name    string
+		asked   record.MergeForward
+		message record.MergeForwardMessage
+	}{
+		{name: "the ask", asked: unlanded, message: record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk,
+			Head: "sha-1", Base: "main", Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}},
+		{name: "the hold", asked: unlanded, message: record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardHold,
+			Head: "sha-1", Base: "main", Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}},
+		{name: "the landed", asked: landed, message: record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded,
+			Head: "sha-1", Landed: "sha-2", Base: "main", Phase: phase.Testing, PullRequest: 86}},
+		{name: "the review", asked: landed, message: record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview,
+			Head: "sha-1", Landed: "sha-2", Base: "main", Phase: phase.Testing, PullRequest: 86}},
+	} {
+		for _, owned := range []bool{true, false} {
+			name := tc.name + " of a fix's own merge ends undelivered"
+			if !owned {
+				name = "control: " + tc.name + " of a merge no fix took is published"
+			}
+			t.Run(name, func(t *testing.T) {
+				asked := tc.asked
+				if owned {
+					asked.Fix = owner
+				}
+				publisher := &holderPublisher{}
+				runner, _, pool, logs := mergeForwardRunner(t, publisher, &asked)
+				enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", tc.message, time.Now().Add(-time.Minute)))
+				drainAt(t, runner, 0, "the row's attempt")
+				attempts, delivered := publisher.snapshot()
+				if left := outboxRows(t, pool); left != 0 {
+					t.Fatalf("outbox rows left = %d, want the row finished", left)
+				}
+				leftLines, deliveredLines := loggedLines(t, logs.String(), mergeForwardLeftLine), loggedLines(t, logs.String(), mergeForwardDelivered)
+				if owned {
+					if attempts != 0 || len(leftLines) != 1 || leftLines[0]["step"] != string(tc.message.Step) || len(deliveredLines) != 0 {
+						t.Fatalf("the row made %d publishes and logged %v finished and %v delivered, want it finished with nothing published",
+							attempts, leftLines, deliveredLines)
+					}
+					return
+				}
+				if len(delivered) != 1 || len(leftLines) != 0 || len(deliveredLines) != 1 || deliveredLines[0]["step"] != string(tc.message.Step) {
+					t.Fatalf("delivered %+v and logged %v finished and %v delivered, want the row published once", delivered, leftLines, deliveredLines)
+				}
+			})
+		}
+	}
+}

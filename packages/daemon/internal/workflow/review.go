@@ -314,7 +314,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		}
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
+			if err := e.mergeForward(ctx, tx, *issue, w, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {

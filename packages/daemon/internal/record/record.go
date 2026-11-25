@@ -1109,9 +1109,13 @@ type ConflictRead struct {
 // landed message read. Earlier is every merge forward that landed before this ask in the same
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
-// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
-// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
-// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). Fix is
+// the fix of the issue's task that took this ask as its own first work, nil for an ask no fix took:
+// a fix that opens while the implementer owes the merge of the task's head makes it in its own
+// working copy and pushes it in its one end push, so the ask's own messages, its landing and its
+// completion fence are the fix's (workflow's openFix, mergeForwardLanded, mergedForwardRefusal). It
+// is stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
+// jsonb takes Earlier, Role and Fix with no migration of their own, and leaves each out while it is
 // empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
@@ -1123,6 +1127,15 @@ type MergeForward struct {
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+	Fix         *MergeForwardFix     `json:"fix,omitempty"`
+}
+
+// MergeForwardFix names the fix that took a merge forward as its own (MergeForward.Fix,
+// LandedMergeForward.Fix): fix Number of Task in the issue's Generation.
+type MergeForwardFix struct {
+	Generation uint64 `json:"generation"`
+	Task       string `json:"task"`
+	Number     int    `json:"number"`
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
@@ -1138,10 +1151,13 @@ func (m MergeForward) Asked() claim.Role {
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
 // (MergeForward.Earlier): Head is the head it was asked of, the one its merge replaced, and
-// Landed the head the merge left.
+// Landed the head the merge left. Fix is the fix whose one end push landed it, nil for a merge no
+// fix took (MergeForward.Fix): a later ask keeps it, so the completion fence still tells such a
+// landing from a merge forward of the shared working copy.
 type LandedMergeForward struct {
-	Head   string `json:"head"`
-	Landed string `json:"landed"`
+	Head   string           `json:"head"`
+	Landed string           `json:"landed"`
+	Fix    *MergeForwardFix `json:"fix,omitempty"`
 }
 
 // ConflictWhy is one of the reasons R0 acts on a confirmed conflict for (dispatch://INFRA-4374
