@@ -92,12 +92,15 @@ func TestACredentialThatRepeatsAKeyIsRefused(t *testing.T) {
 // this client refuses it before reading either, with a reason of its own.
 func TestACredentialSourceThatNamesBothConfigurationsIsRefused(t *testing.T) {
 	files := writeX509Credential(t, t.TempDir(), "http://127.0.0.1:9", "https://iamcredentials.invalid")
-	rewriteCertificateSource(t, files.credential, map[string]any{"certificate_config_location": files.config, "use_default_certificate_config": true})
-	data, err := os.ReadFile(files.credential)
+	original, err := os.ReadFile(files.credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient()}
+	data := strings.Replace(string(original), `"certificate":{`, `"certificate":{"use_default_certificate_config":true,`, 1)
+	if data == string(original) {
+		t.Fatalf("the credential %s names no certificate to add the default configuration to", original)
+	}
+	identity := &ExternalAccountIdentity{CredentialsJSON: []byte(data), ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient()}
 	_, _, err = identity.Token(context.Background())
 	if want := "its credential_source names a certificate configuration and asks for the default one too"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Token: %v; want %q", err, want)
