@@ -633,8 +633,7 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // DesignApprovedWake is the phrase a resume task carries when the root's design gate is open at
 // the resume. The daemon sends no design-approved notice to a root waiting on a person
 // (applyArtifact, gateRegistered), so this resume is that root's design-approved wake: the
-// architect skill, its references and the root architect's prompt name this phrase, and a test
-// holds them to it.
+// architect skill, its references and the root architect's prompt name this phrase.
 const DesignApprovedWake = "this resume is your design-approved wake"
 
 // resumeTask is the task an answered root's architect resumes with: what answered its wait

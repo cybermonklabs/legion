@@ -16,9 +16,9 @@ import (
 )
 
 // CommitLabel labels the commit a reviewer's task names (record.PhaseRow.ReviewedHead). The
-// reviewer's prompt and the merge gate of skill://legion-worker name it to the reviewer, which a
-// test ties to it, and the tests of the packages that read a reviewer's task name it by this
-// constant rather than type it again.
+// reviewer's prompt and the merge gate of skill://legion-worker name it to the reviewer, and the
+// tests of the packages that read a reviewer's task name it by this constant rather than type it
+// again.
 const CommitLabel = "Last reviewed commit"
 
 // EntryLabel labels the entry of the round a reviewer's task names (record.PhaseRow.Entry). The

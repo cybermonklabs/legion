@@ -1053,6 +1053,12 @@ test("an answer whose field carries a type the contract does not describe is ref
   const refused = await client.state().catch((error: unknown) => error);
   expect(refused).toBeInstanceOf(LegionDaemonContractError);
   expect((refused as Error).message).toContain("issues.LEGION-208.phase");
+  // The phrase the refusal opens with, spelled here rather than taken from the client: a reader
+  // of a log learns from it that the daemon's answer, and not the request, is what this build
+  // cannot read.
+  expect((refused as Error).message).toContain(
+    "answered 200 with a body the daemon API contract does not describe"
+  );
 });
 
 /** The refusal a build at `CONTRACT` raises for a state body it cannot read, from a daemon

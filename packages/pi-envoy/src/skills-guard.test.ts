@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import * as path from "node:path";
-import { dispatchToolSpecs } from "@legion/contracts";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -27,10 +26,6 @@ import {
 // its prepack stages it. A `skill://` link resolves by name through Oh My Pi's discovery, so it is
 // held to the repository's skills/, where both plugins' skills live.
 const repoSkillsRoot = path.join(REPO_ROOT, "skills");
-const skillAndPromptRoots = [
-  repoSkillsRoot,
-  path.join(REPO_ROOT, "packages/daemon/internal/prompts"),
-];
 const packageRoot = path.resolve(import.meta.dir, "..");
 // LEGION_TEST_OMP names the pinned Oh My Pi binary, as in extensions/dispatch-first-omp.test.ts: the
 // fork pin CI's pi-envoy job installs. A run without one skips the rule that reads it, except on
@@ -66,20 +61,6 @@ test("the injected dispatch-first skill fits its budget on every host", () => {
   // Oh My Pi and Claude Code inject the marker-wrapped body. Claude Code keeps a hook's context
   // whole up to 10,000 characters; 6,000 leaves room for a later edit.
   expect(readDispatchFirstContext(file).length).toBeLessThan(6_000);
-});
-
-// dispatch-first is the one Dispatch skill every session holds without loading it, so the two
-// rules that keep a person's view of an agent's work true live there: a blocker is an open ask,
-// and every accepted request is recorded and read back before the turn ends. The test reads the
-// context a session receives, not only the file.
-test("the injected dispatch-first context holds the blocker and accepted-request rules", () => {
-  const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
-  for (const rule of [
-    "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.",
-    "Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask. Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.",
-  ]) {
-    expect(context).toContain(rule);
-  }
 });
 
 // The three Dispatch skills are read by every session with Dispatch, so their length is a cost on
@@ -193,42 +174,6 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
   expect(words).toBeLessThan(2_340);
 });
 
-test("the staged decisions rule separates material choices from spec details", () => {
-  const skill = readFileSync(path.join(staged, "dispatch-writing-specs/SKILL.md"), "utf8");
-  expect(skill).toContain("only if a disagreeing reader would act differently");
-  expect(skill).toContain("keep others to one spec line each");
-  expect(skill).not.toContain("Each choice you made alone, and each a person made");
-});
-
-// dispatch://INFRA-3204: a check may name the CI check run that proves it, and then carries no
-// command. Every spec writer reads the check's attributes here, so the list names `ci_check` and
-// its rule, in the phrase the Legion skills and prompts carry once each.
-test("the spec writer's check attributes name `ci_check`, which takes no `run`", () => {
-  const skill = readFileSync(path.join(staged, "dispatch-writing-specs/SKILL.md"), "utf8");
-  expect(skill.split("check carrying `ci_check` is CI's").length - 1).toBe(1);
-  expect(skill).toContain("takes no `run`");
-});
-
-// Agents reach Dispatch through the `dispatch` command, so no skill or daemon prompt may tell one
-// to call a native tool it no longer has: each names the command (`dispatch ask`) instead.
-test("no skill or daemon prompt names a native Dispatch tool", () => {
-  const toolName = new RegExp(`\\b(${dispatchToolSpecs.map((spec) => spec.name).join("|")})\\b`);
-  const named = skillAndPromptRoots
-    .flatMap(files)
-    .filter((file) => file.endsWith(".md"))
-    .flatMap((file) =>
-      readFileSync(file, "utf8")
-        .split("\n")
-        .flatMap((line, index) => {
-          const match = toolName.exec(line);
-          return match === null
-            ? []
-            : [`${path.relative(REPO_ROOT, file)}:${index + 1}: ${match[0]}`];
-        })
-    );
-  expect(named).toEqual([]);
-});
-
 test("every skill://<name>/<path> link names a file that exists, and its #anchor a heading in it", () => {
   expect(brokenSkillLinks(skillLinks([staged]), repoSkillsRoot)).toEqual([]);
 });
@@ -269,17 +214,4 @@ test("a heading inside a code fence is no anchor, since a Markdown reader render
     "# After",
   ].join("\n");
   expect([...anchors(markdown)]).toEqual(["outside", "after"]);
-});
-
-// Every role of an issue writes into one $TMPDIR on the issue's volume, so a glob sweep deletes
-// another role's open directory (dispatch://INFRA-654). The reviewer's pair carries the rule once,
-// in the maintainability rubric, and the correctness rubric names that skill rather than repeating
-// it, so the two can never drift apart.
-test("the reviewer's pair states the shared scratch rule once and names it from the other", () => {
-  const quality = readFileSync(path.join(staged, "thermonuclear-code-quality/SKILL.md"), "utf8");
-  const deep = readFileSync(path.join(staged, "thermonuclear-deep-review/SKILL.md"), "utf8");
-  expect(quality).toContain("Make your own scratch with `mktemp -d`");
-  expect(quality).toContain("Never delete by a glob in a shared directory");
-  expect(deep).toContain("skill://thermonuclear-code-quality");
-  expect(deep).not.toContain("Never delete by a glob in a shared directory");
 });

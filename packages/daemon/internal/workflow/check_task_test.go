@@ -122,10 +122,9 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
-// not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a
-// search of the repository for one of them finds the texts that state it and never this test.
-// internal/prompts and internal/textcheck keep their own copies, since a test package cannot
-// import another package's test helpers.
+// not carry. Each is joined from halves, so a search of the repository for one of them finds the
+// texts that state it and never this test. internal/textcheck keeps its own copy, since a test
+// package cannot import another package's test helpers.
 var bannedCheckLimits = []string{
 	"not carrying" + " the merge alone",
 	"did not carry the merge" + " within the bound",
@@ -141,9 +140,8 @@ const (
 	lastLookPending = "pending only for an issue with none of those requirements"
 )
 
-// taskClauses are the clauses of a check task, cut as internal/prompts's clauses cuts a prompt:
-// the task folded to one line, then cut after every ". " and every "; ". The task has no blank
-// line, so it is one paragraph.
+// taskClauses are the clauses of a check task: the task folded to one line, then cut after every
+// ". " and every "; ". The task has no blank line, so it is one paragraph.
 func taskClauses(task string) []string {
 	var found []string
 	for _, sentence := range strings.SplitAfter(strings.Join(strings.Fields(task), " "), ". ") {

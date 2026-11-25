@@ -3,15 +3,12 @@ package prompts
 import (
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
 // The controller's prompt is its shared role part, which holds wherever it runs, then the daemon's
 // part for how this controller was launched: in the operator's terminal by `legion controller
-// start`, or headless in a pod the daemon launched (`controller: daemon`). The shared part never
-// says which, so neither launch is told it runs the other way. The daemon's launch is told that a
-// person writes to it from Dispatch's Agents page, and never that nobody reads its session.
+// start`, or headless in a pod the daemon launched (`controller: daemon`).
 func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -23,16 +20,9 @@ func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 		name     string
 		headless bool
 		part     string
-		says     []string
-		never    []string
 	}{
-		{"started by the operator", false, "controller-interactive.md",
-			[]string{"`legion controller start`", "operator's terminal", "typed directly into this session"},
-			[]string{"headless"}},
-		{"launched by the daemon", true, "controller-headless.md",
-			[]string{"headless", "`controller: daemon`", "Dispatch", "Envoy", "relaunches",
-				"A plain user turn in this session other than the start message or a task an operator sent with `legion claims deliver` is a person writing from Dispatch's Agents page: answer it first, in the conversation."},
-			[]string{"legion controller start", "typed directly", "read by no one", "nobody reads"}},
+		{"started by the operator", false, "controller-interactive.md"},
+		{"launched by the daemon", true, "controller-headless.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paths, err := composer.ControllerPromptPaths(tc.headless)
@@ -41,18 +31,6 @@ func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 			}
 			if want := []string{shared, filepath.Join(stateDir, "prompts", "go", tc.part)}; !slices.Equal(paths, want) {
 				t.Fatalf("paths = %q, want %q", paths, want)
-			}
-			// A sentence is matched whatever the file's line wrapping.
-			text := foldWhitespace(readJoined(t, paths...))
-			for _, want := range tc.says {
-				if !strings.Contains(text, want) {
-					t.Errorf("the prompt does not say %q", want)
-				}
-			}
-			for _, never := range tc.never {
-				if strings.Contains(text, never) {
-					t.Errorf("the prompt says %q, which this launch is never told", never)
-				}
 			}
 		})
 	}

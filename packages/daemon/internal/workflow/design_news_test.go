@@ -1,10 +1,8 @@
 package workflow
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -236,21 +234,6 @@ func everyNewsForm() map[string]string {
 	}
 }
 
-// mergerQuote is the gate sentence prompts/roles/merger.md quotes as the message that moves a
-// merge, opened or closed, with its placeholders filled in: the words a merger reads for.
-func mergerQuote(t *testing.T, move, step, document string, version int) string {
-	t.Helper()
-	prompt, err := os.ReadFile(filepath.Join("..", "prompts", "roles", "merger.md"))
-	if err != nil {
-		t.Fatalf("read the merger's prompt: %v", err)
-	}
-	quoted := regexp.MustCompile("`(The design gate of <tree> " + move + ":[^`]*)`").FindStringSubmatch(string(prompt))
-	if quoted == nil {
-		t.Fatalf("the merger's prompt quotes no gate sentence that says %q", move)
-	}
-	return strings.NewReplacer("<tree>", newsTree, "<n>", strconv.Itoa(version), "<step>", step, "<id>", document).Replace(quoted[1])
-}
-
 // newsItem is the item of a news list whose first line opens with opening, that line and the
 // lines indented under it.
 func newsItem(t *testing.T, text, opening string) string {
@@ -284,15 +267,14 @@ func newsLine(t *testing.T, text, opening string) string {
 	return ""
 }
 
-// A holder owed the opening reads the gate sentence first, in the words the merger's prompt
-// quotes as what releases a merge, so a merger released by its news task reads the release it
-// waits for. A holder that was told the opening already reads no gate sentence.
+// A holder owed the opening reads the gate sentence first: the opened sentence
+// (gateOpenedSentence) of the approval that opened the gate, the spec's version 5, which Dispatch
+// recorded last. A holder that was told the opening already reads no gate sentence.
 func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) {
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5)
-	if !strings.HasPrefix(text, opened) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted opening %q first", firstLine(text), opened)
+	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 5) {
+		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	told := rootHolderNews()
 	told.OpeningOwed = false
@@ -307,9 +289,8 @@ func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) 
 func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	closed := mergerQuote(t, "closed", "spec", "artifact-spec", 6)
-	if !strings.HasPrefix(text, closed) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted close at version 6 %q first", firstLine(text), closed)
+	if first, _, _ := strings.Cut(text, "\n\n"); first != gateClosedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 6) {
+		t.Fatalf("the news opens %q, want the closed gate sentence of the spec's version 6 (artifact-spec), the one with its reviewer, first", first)
 	}
 	if strings.Contains(text, "opened") {
 		t.Fatalf("news sent while the gate is closed says it opened:\n%s", text)
@@ -464,14 +445,65 @@ func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	}
 }
 
+// A holder's news (record.AudienceHolder) is of one issue of the tree, for the session that holds
+// that issue's phase: the line over its list of changed documents names the tree, the issue and
+// the phase, here a child's, whose key is not the tree's. The words around them are the daemon's,
+// for the holder; this holds the values.
+func TestAHoldersNewsNamesTheTreeTheIssueAndThePhaseItHolds(t *testing.T) {
+	for _, tc := range []struct {
+		issue string
+		held  phase.Phase
+		named string
+	}{
+		{"LEGION-209", phase.Reviewing, "reviewing"},
+		{"LEGION-218", phase.Planning, "planning"},
+	} {
+		text := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: tc.issue, Phase: tc.held,
+			Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}})
+		header, _, _ := strings.Cut(text, "\n")
+		if strings.HasPrefix(header, "- ") {
+			t.Fatalf("the news to %s's %s holder opens with an item, want the line over its list:\n%s", tc.issue, tc.named, text)
+		}
+		values := newsValues(header)
+		for _, want := range []string{newsTree, tc.issue, tc.named} {
+			if !slices.Contains(values, want) {
+				t.Errorf("the header of the news to %s's %s holder = %q, want it to name %s", tc.issue, tc.named, header, want)
+			}
+		}
+	}
+}
+
+// The planner's news, and no other holder's, names the plan document, `plan.md`, in its closing
+// paragraph: a stale plan is the planner's own work. The words around the name are the daemon's,
+// for the planner; this holds the value and whom it goes to.
+func TestOnlyThePlannersNewsNamesThePlanDocument(t *testing.T) {
+	for _, tc := range []struct {
+		held    phase.Phase
+		planner bool
+	}{
+		{phase.Planning, true},
+		{phase.Implementing, false},
+		{phase.Testing, false},
+		{phase.Reviewing, false},
+		{phase.Accepting, false},
+	} {
+		text := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-218", Phase: tc.held,
+			Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}})
+		rule := lastParagraph(text)
+		if named := slices.Contains(newsValues(rule), "plan.md"); named != tc.planner {
+			t.Errorf("the closing paragraph of the news to the %s holder names plan.md: %t, want %t: %q", tc.held, named, tc.planner, rule)
+		}
+	}
+}
+
 // A version whose only difference is decision blocks, owed only for its opening, tells the holder
 // the gate opened and that nothing its issue holds changed since the version its phase took: no
 // change list, no command and no rule, since nothing asks for an answer.
 func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
-		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
+	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 5) {
+		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
 		t.Fatalf("the news does not say that nothing the issue holds changed since version 4:\n%s", text)
@@ -491,8 +523,8 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
-		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
+	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 5) {
+		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
 		"Version 5 of its spec document (artifact-spec) holds the same text as version 4."; !strings.Contains(text, want) {
@@ -619,6 +651,45 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 	}
 }
 
+// The root architect's summary (record.AudienceArchitect), where no opening is owed, is two lists,
+// each under a header line naming the tree: the pairs of versions it tells of, each pair once in
+// the order distinctPairs gives (the architect's own spec and Verification document pairs, then
+// the spec pair only its members took), and then every member of the tree, in the order the send
+// hands them. The words of each line are the daemon's, for the architect; this holds what each
+// line is about.
+func TestTheRootSummaryNamesItsTreeThenItsPairsAndItsMembers(t *testing.T) {
+	news := treeSummaryNews()
+	text := RenderNews(news)
+	paragraphs := strings.Split(text, "\n\n")
+	if len(paragraphs) != 2 {
+		t.Fatalf("the summary has %d paragraphs, want the pairs and the members:\n%s", len(paragraphs), text)
+	}
+	var members []string
+	for _, member := range news.Members {
+		members = append(members, member.Issue)
+	}
+	for i, want := range [][]string{{"(artifact-spec)", "(artifact-checks)", "(artifact-spec)"}, members} {
+		header, list, _ := strings.Cut(paragraphs[i], "\n")
+		if strings.HasPrefix(header, "- ") || !strings.Contains(header, " "+newsTree) {
+			t.Errorf("the header of the summary's list %d = %q, want a line naming the tree %s", i+1, header, newsTree)
+		}
+		var items []string
+		for _, line := range strings.Split(list, "\n") {
+			if strings.HasPrefix(line, "- ") {
+				items = append(items, line)
+			}
+		}
+		if len(items) != len(want) {
+			t.Fatalf("the summary's list %d has %d items, want %d, one for each of %q:\n%s", i+1, len(items), len(want), want, paragraphs[i])
+		}
+		for j, item := range items {
+			if i == 0 && !strings.Contains(item, want[j]) || i == 1 && !strings.HasPrefix(item, "- "+want[j]+",") {
+				t.Errorf("item %d of the summary's list %d = %q, want it of %s", j+1, i+1, item, want[j])
+			}
+		}
+	}
+}
+
 // A member whose pull request has merged takes no new work, so the summary hands the architect
 // the duty that follows: the work goes to an issue of the tree whose pull request is still open,
 // or to a person. A change to the checks alone still reaches the architect of a merged root, which
@@ -627,8 +698,8 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if opened := mergerQuote(t, "opened", "criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
-		t.Fatalf("the summary owed the opening opens %q, want %q first", firstLine(text), opened)
+	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedSentence(newsTree, record.DesignStepCriteria, "artifact-checks", 3) {
+		t.Fatalf("the summary owed the opening opens %q, want the opened gate sentence of the criteria's version 3 (artifact-checks) first", first)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")
 	for _, want := range []string{"its pull request has merged", "never moves back",
@@ -738,14 +809,18 @@ func noticeKind(word string) bool {
 	return err == nil || !strings.Contains(err.Error(), "unknown controller notice kind")
 }
 
-// firstLine is the first line of text.
-func firstLine(text string) string {
-	line, _, _ := strings.Cut(text, "\n")
-	return line
-}
-
 // lastParagraph is the last paragraph of text.
 func lastParagraph(text string) string {
 	paragraphs := strings.Split(text, "\n\n")
 	return paragraphs[len(paragraphs)-1]
+}
+
+// newsValues is the values a line of news names: its words, each without the backticks, quotes
+// and punctuation around it.
+func newsValues(text string) []string {
+	var values []string
+	for _, word := range strings.Fields(text) {
+		values = append(values, strings.Trim(word, "`\"'.,:;()"))
+	}
+	return values
 }

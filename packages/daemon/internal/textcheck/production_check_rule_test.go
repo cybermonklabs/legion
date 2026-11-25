@@ -1,8 +1,7 @@
 package textcheck
 
-// The pages and the proof scripts that state the production check's rule outside a prompt.
-// main's #4092 read the first two in internal/prompts's production-check test. That half moved
-// here, so an edit of one of them alone starts the text checks and not the daemon's lane
+// The pages and the proof scripts that state the production check's rule outside a prompt. They
+// are read here, so an edit of one of them alone starts the text checks and not the daemon's lane
 // (dispatch://INFRA-1413).
 //ci:reads scripts/e2e/README.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
 //ci:reads docs/site/src/content/docs/legion/concepts.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
@@ -24,14 +23,9 @@ import (
 // requirement. Four pages and the two proof scripts state that rule, or the part of it they are
 // about, outside a prompt: the concepts page, the walkthrough, the using-Legion page, the e2e
 // proof's account of the bound's look (scripts/e2e/README.md) and the tester instructions of the
-// two proofs. This is the page half of that check. It stays apart from the prompt half for the
-// reason every test of this package does: a test that reads a page puts the page in its job's
-// filter, so an edit of a page alone would start the whole daemon Go lane. The prompt half is
-// internal/prompts's
-// TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge, which
-// reads the composed tester's and implementer's prompts, and
-// TestTheProductionCheckRuleHoldsInEveryPromptPart, which reads every prompt part. Neither half
-// alone is the guarantee.
+// two proofs. A test that reads a page puts the page in its job's filter, so this check stays in
+// this package, as every test of it does: an edit of a page alone would otherwise start the whole
+// daemon Go lane.
 //
 // The unit is the clause, cut at `; ` as well as at full stops, never the sentence (ruleClauses):
 // matched sentence by sentence, a test of this rule passed with the concepts page's limit taken
@@ -160,10 +154,9 @@ func TestAProofScriptSaysItsIssuesHaveNoRequirementOnlyTheDeployCanShow(t *testi
 
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
-// not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a
-// search of the repository for one of them finds the texts that state it and never this test.
-// internal/prompts and internal/workflow keep their own copies, since a test package cannot
-// import another package's test helpers.
+// not carry. Each is joined from halves, so a search of the repository for one of them finds the
+// texts that state it and never this test. internal/workflow keeps its own copy, since a test
+// package cannot import another package's test helpers.
 var bannedCheckLimits = []string{
 	"not carrying" + " the merge alone",
 	"did not carry the merge" + " within the bound",
@@ -292,8 +285,8 @@ func scriptProse(script string) string {
 	return strings.Join(lines, "\n")
 }
 
-// ruleClauses splits text as internal/prompts's clauses does: by blank-line paragraph, each folded
-// to one line, then after every `. ` and every `; `.
+// ruleClauses splits text by blank-line paragraph, each folded to one line, then after every `. `
+// and every `; `.
 func ruleClauses(text string) []string {
 	var found []string
 	for _, paragraph := range strings.Split(text, "\n\n") {

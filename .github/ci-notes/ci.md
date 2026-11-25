@@ -272,17 +272,15 @@ packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 b
 for internal/daemon/outbox_scratch_dispatch_test.go:454, and what their tests read
 outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:42,1511, internal/intake/intake_test.go:984,990,1088), the
-agents internal/prompts/roles_test.go:268 stats, the tools skill its :755-756 holds
-roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:412
-holds the reviewer's prompt to, the GitHub App helper
+agents internal/prompts/roles_test.go:100 stats, the GitHub App helper
 internal/api/real_github_test.go:117 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:455,
 internal/config/controller_test.go:216, internal/config/kubernetes_test.go:1803).
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
-No bun_install and no skills/** - the two pages of skills/ this filter names are all
-this job reads of it: the tests of this suite that packed the two plugins - and so
+No bun_install and no skills/** - this job reads no page of skills/: the tests of this
+suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
 this job installs nothing (dispatch://INFRA-1413, A4).
@@ -488,23 +486,13 @@ lockfile and no workspace manifest is an input of this job. The lint and the
 typecheck of the same directory are the tooling-checks job's, which the tooling_checks
 filter names scripts/sessions for.
 
-## pi_legion: src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts
-
-src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
-asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
-lives outside it. A spawn carries no import, so no derivation of this repository
-sees the reach: both patterns are hand-kept, with their declared reads in
-ci_job_reads.py.
-
 ## pi_legion_build: the skills' guard and what it reads
 
 pi-legion-build runs src/skills-guard.test.ts too, so its gate (.github/ci-gates/pi-legion-build.py)
-declares what pi_legion's declares for it: the builder above, and the roots of the guard's sweep
-over every file a Legion agent reads (packages/daemon/internal, AGENTS.md, README.md,
-docs/kubernetes.md, docs/site's docs and the controller's example manifest). A change to any of
-them selects the job, so a skill or prompt change that breaks the guard fails on the pull request,
-not first in the merge queue.
+declares what pi_legion's declares for it beside the skills: the daemon's prompts, whose skill://
+links the guard resolves, and the Legion guides under docs/site's docs, which it reads. A change to
+any of them selects the job, so a skill or prompt change that breaks the guard fails on the pull
+request, not first in the merge queue.
 
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
@@ -714,7 +702,7 @@ module, and the guard step compiles that package's whole test closure, which
 reaches testdata and goldens across the module.
 Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
 the .go files the supervise pins type-check from source - internal/supervise and
-every package of this module it imports - the prompt the `text_checks` filter names (`packages/daemon/internal/prompts/roles/architect-root.md`), the committed copies
+every package of this module it imports - the committed copies
 its text checks hold to the texts they copy, and the store's migrations; and its
 credential-argument check reads every text file of the repository, so the `text_checks` filter's `'**'`
 selects the job for every change but one under docs/plans or docs/superpowers. The
@@ -1986,8 +1974,8 @@ claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone.
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
 `pi_legion` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
 pi-legion-build builds contracts, typechecks the plugin, runs the skills' guard
-(src/skills-guard.test.ts: every skill within its budget, every link resolving, every pinned
-sentence present) and packs the plugin as the release does, uploading the tarball as
+(src/skills-guard.test.ts: every skill within its budget, every link resolving) and packs the
+plugin as the release does, uploading the tarball as
 `pi-legion-pr`: a build, a typecheck and a text check, which a pull request runs (0.8 minutes),
 on ubuntu-24.04-arm, since it installs no Oh My Pi. The guard also runs in pi-legion's suite in
 the merge queue, where it costs under a second.

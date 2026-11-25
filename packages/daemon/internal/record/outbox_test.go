@@ -1248,6 +1248,37 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	}
 }
 
+// A catch-up of a root that a hand-over created with its old root's gate (workflow's catch_up.go
+// sets Carried from the hand-over's GateCarried) is published with `carried` true in its
+// `catch_up` object, the field its architect reads to know the gate came with the hand-over. The
+// published notice is read back as raw JSON, by the two keys spelled here, and not decoded through
+// CatchUp's own tags, which would follow a renamed tag and still pass.
+func TestACarriedCatchUpIsPublishedWithCarriedTrue(t *testing.T) {
+	notice := Notice{Kind: "catch-up", Role: claim.RoleArchitect,
+		CatchUp: &CatchUp{Generation: 3, Launch: 1, HandedOver: true, Carried: true,
+			Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+			Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}}
+	if _, err := NewOutboxRow("LEGION-208", notice, time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("the carried catch-up the daemon writes is refused: %v", err)
+	}
+	published, _ := notice.Published(41)
+	wire, err := json.Marshal(published)
+	if err != nil {
+		t.Fatalf("the published catch-up does not marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatalf("read the published notice back: %v", err)
+	}
+	var catchUp map[string]json.RawMessage
+	if err := json.Unmarshal(fields["catch_up"], &catchUp); err != nil {
+		t.Fatalf("the published notice %s holds no catch_up object: %v", wire, err)
+	}
+	if got := string(catchUp["carried"]); got != "true" {
+		t.Errorf("the published catch-up writes carried as %q, want true: %s", got, wire)
+	}
+}
+
 // A row's backoff after a failed run is one second, doubled at each attempt before it, and stops
 // doubling at 64 seconds, RetryBackoffMost; a count below zero, which RetryOutbox never writes,
 // waits as no attempt does. The daemon's outbox and the store's tests read this one rule.

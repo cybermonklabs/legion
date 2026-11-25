@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -964,8 +966,10 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	}
 }
 
-// The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
-// beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
+// The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name
+// (prompts.RoleReferences), beside the plugin's own: the test's plugin ships no skill and no agent,
+// so each kind's variable holds the role prompts' names of that kind, sorted and joined by commas,
+// and a kind they name none of is not asked for.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
@@ -987,14 +991,13 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	if err := run(context.Background(), cfg, quietLogger(), o); err == nil {
 		t.Fatal("run passed the gate, want the fake's not-loaded refusal")
 	}
-	var skills string
-	for _, line := range strings.Split(f.read(t, "env.1"), "\n") {
-		if value, ok := strings.CutPrefix(line, "LEGION_PROMPT_SKILLS="); ok {
-			skills = value
+	asked := envlisting.Vars(f.read(t, "env.1"))
+	references := prompts.RoleReferences()
+	for variable, kind := range map[string]promptrefs.Kind{"LEGION_PROMPT_AGENTS": promptrefs.TaskAgents, "LEGION_PROMPT_SKILLS": promptrefs.Skills} {
+		want := strings.Join(slices.Sorted(maps.Keys(references[kind])), ",")
+		if got, ok := asked[variable]; got != want || ok != (want != "") {
+			t.Errorf("the load probe was asked for %s=%q (set: %t), want %q, the role prompts' names", variable, got, ok, want)
 		}
-	}
-	if !slices.Contains(strings.Split(skills, ","), "legion-controller") {
-		t.Errorf("the load probe was asked for the skills %q, want legion-controller among them", skills)
 	}
 }
 

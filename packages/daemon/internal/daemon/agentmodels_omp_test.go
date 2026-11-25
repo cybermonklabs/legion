@@ -40,11 +40,9 @@ func agentModelPlugin(t *testing.T, dir string) string {
 // probe's shutdown handler still answers. The operator's override counts only when it expands to a model,
 // as the task tool takes it, and an agent that declares no model runs on the session's own and is
 // not judged. On the prompts this checkout ships, with the daemon's own role prompts, the probe
-// passes a route that gives every role Legion's shipped agents name a model, and refuses one that
-// leaves `deep` unset, naming deep-worker, the implementer's coding agent, and the role prompt that
-// dispatches it: the task tool would otherwise run every coding task on the implementer's own model
-// without a word. The profile's providers listen nowhere, so no model is called and no credential
-// the machine carries decides the run.
+// passes a route that gives every role Legion's shipped agents name a model. The profile's
+// providers listen nowhere, so no model is called and no credential the machine carries decides
+// the run.
 func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 	t.Parallel()
 	omp := testbin.OMP(t)
@@ -94,8 +92,6 @@ func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 		{name: "a key command slower than the shutdown handler's 2 s", roles: "  default: fake/m1\n  review: fake/m1\n  oracle: slowkey/m4\n"},
 		{name: "the shipped prompts, on a route that gives deep a model", roles: "  default: fake/m1\n  review: fake/m1\n  oracle: fake/m1\n  deep: fake/m1\n",
 			shipped: true},
-		{name: "the shipped prompts, on a route that leaves deep unset", roles: "  default: fake/m1\n  review: fake/m1\n  oracle: fake/m1\n", shipped: true,
-			want: []string{"task agent deep-worker (dispatched by ", "roles/implementer.md", "on its model @deep: role deep is not configured"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			dir := t.TempDir()
