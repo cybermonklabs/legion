@@ -91,15 +91,14 @@ var priorityRelationsQuery = `select newest.from_id, newest.to_id
 // $2 the priority ids, one pair per row, each an issue whose own row states a live priority.
 //
 // It reads the two arrays by their subscripts (generate_subscripts) rather than through unnest,
-// so the rows Postgres plans for are the same whatever the arrays hold. pgx prepares every
-// statement, and from a connection's sixth run of one Postgres may run the generic plan it makes
-// once, with no argument known. unnest sizes its rows from its array, which such a plan cannot
-// see, so it planned 10 seed rows for the corpus's 400: the walk then hashed each step's few rows
-// and scanned all of issues for every step, and the four statements over the seed touched 6.7 to
-// 45.8 times the shared buffers of the plans made for their arguments
-// (TestPrioritiesReadKeepsItsPlans, PostgreSQL 18.6, 2026-11-22). generate_subscripts has no
-// such estimate: every plan, made for the arguments or not, plans its 1,000 rows, so the generic
-// plan walks as the others do, by hashing issues once.
+// so the rows Postgres plans for are the same whatever the arrays hold, on the generic plan too
+// (issueListFilters says when a connection runs it). unnest sizes its rows from its array, which
+// that plan cannot see, so it planned 10 seed rows for the corpus's 400: the walk then hashed each
+// step's few rows and scanned all of issues for every step, and the four statements over the seed
+// touched 6.7 to 45.8 times the shared buffers of the plans made for their arguments
+// (TestPrioritiesReadKeepsItsPlans, PostgreSQL 18.6, 2026-11-22). generate_subscripts has no such
+// estimate: every plan, made for the arguments or not, plans its 1,000 rows, so the generic plan
+// walks as the others do, by hashing issues once.
 const priorityRelationSeed = `select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)`
 
