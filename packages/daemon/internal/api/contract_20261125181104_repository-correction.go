@@ -7,13 +7,13 @@ package api
 // not applied and why it has not. The four are the whole of the wire change: no key is removed,
 // no key changes its meaning, and an issue no correction has reached and nothing waits on carries
 // none of them, so most issues are served exactly as before. A caller below this contract is
-// served every issue with the four stripped (`withoutRepositoryCorrection`, the band of
-// `repositoryCorrectionContract`, the last row of shaping.go's stateNarrowings), composed with
-// every band of a lower contract, because one built before sjawhar/legion#2788 reads the state
-// with a strict schema and would refuse the whole body for a key it does not name. The record
-// route serves its one issue through the same band. A caller is placed as 193 places every
-// caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
-// which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
+// served every issue with the four stripped (`withoutRepositoryCorrection`, the band this entry's
+// `bands` row below adds to stateNarrowings), composed with every band of a lower contract,
+// because one built before sjawhar/legion#2788 reads the state with a strict schema and would
+// refuse the whole body for a key it does not name. The record route serves its one issue through
+// the same band. A caller is placed as 193 places every caller: by the contract its
+// `Legion-Plugin-Contract` header states, else by its pod's claims, which count no claim at 193 or
+// above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
 // caller at this entry's number is served what one at the contract before it is with the four
 // keys beside it, so this entry's fixture adds the four key paths to the state's records and the
@@ -91,25 +91,9 @@ package api
 // This entry was numbered 294 before the cutover (d41b74eb), and
 // scripts/daemon-contract-convert.sh converted it at the merge of main at 7102278681e2.
 //
-// repositoryCorrectionContract is the id of this change's entry, the daemon contract that added
-// what a correction of an issue's repository left on its record (dispatch://INFRA-3136):
-// `repoBefore` and `repoCorrectedAt`, the repository the issue left and the moment the daemon
-// applied the correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch
-// has named that the daemon has not applied and why. A plugin before it is served every issue
-// without the four (withoutRepositoryCorrection): one built before sjawhar/legion#2788 reads the
-// state with a strict schema and would refuse the whole body for a key it does not name, and one
-// built after strips the key instead, so the band keeps the body its own contract's record
-// describes. A pod's reading counts no claim at shapedAnswersContract or above (podContracts), so
-// a caller from shapedAnswersContract to below this contract meets the band by the contract its
-// header states. dispatchCredentialContract stands right below it with no row of stateNarrowings
-// between the two, so a caller at that contract is served its keys without the four, and one
-// below it is served the band of each row of a contract above its own as well. The same contract
-// added the claim route `POST /legion/v1/claims/owed` with its answer (answers.go's AnswerOwed),
-// which no contract below it records.
-//
-// It is the entry's id and never a contract number: each build numbers the entry by its place in
-// main's merge order (entryNumber), and every row below names the entry by this constant, so no
-// line moves when another entry merges before it.
+// repositoryCorrectionContract is the entry's id and never a contract number: each build numbers
+// the entry by its place in main's merge order (entryNumber), and every row below names the entry
+// by this constant, so no line moves when another entry merges before it.
 const repositoryCorrectionContract = 20261125181104
 
 func init() {

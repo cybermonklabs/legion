@@ -572,7 +572,8 @@ func (i *slowInstallations) InstalledUnder(ctx context.Context, role appauth.App
 // issues, and every read after it would fail on the expired context. The follow is asked for as a
 // boot's listing asks for it (requestFollow).
 func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the follow's reads of fifteen issues must fit calls.attempt (two seconds) of real
+	// time, which the load of the package's parallel tests on a 4-CPU runner can take from them.
 	calls := productionAppCalls()
 	calls.attempt = 2 * time.Second
 	installs := &slowInstallations{installations: &installations{}, wait: 100 * time.Millisecond}
@@ -613,7 +614,9 @@ func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
 // GitHub never failed. The follow stays owed, and the pass after GitHub answers corrects every
 // issue onto GitHub's spelling and default branch.
 func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the pass after GitHub answers must read and correct three issues within
+	// calls.attempt (half a second) of real time, which the load of the package's parallel tests on a
+	// 4-CPU runner can take from it.
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	installs := &slowInstallations{installations: &installations{}}
@@ -662,7 +665,9 @@ func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain
 // pass already read, not even the one whose change still waits, which a full pass would read
 // again every time and ahead of them. Once GitHub answers, the next pass completes the follow.
 func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testing.T) {
-	t.Parallel()
+	// Not parallel: a pass must read the records, list the issues, prepare three of them and commit
+	// their corrections within calls.attempt (half a second) of real time, which the load of the
+	// package's parallel tests on a 4-CPU runner can take from it.
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	const refusedRepo = "lambda/gadgets"

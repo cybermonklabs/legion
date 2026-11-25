@@ -13,12 +13,14 @@ import (
 // task's first line break (workflow's taskOpening and workingCopyLine). Under tmux the line names
 // a workspace directory under state_dir, so a state_dir that holds a line break would end the line
 // inside its own directory. The load refuses such a state_dir, a carriage return as much as a line
-// feed, and the refusal names the key and says why. It reads the path as the daemon will use it:
-// resolved against the configuration file's directory, and then made absolute against the working
-// directory, as the start does (cmd/legion's start). So a relative state_dir under a directory
-// that holds a line break is refused, and so is one that a file named by a relative path, from a
-// working directory that holds a line break, leaves relative. A path that holds no line break
-// loads as it resolves, one that holds a full stop and a space included.
+// feed, and the refusal names the key and says why. The load stores state_dir absolute, resolved
+// against the configuration file's directory and then made absolute against the working
+// directory, and the refusal reads that same path, which the start then uses as it is (cmd/legion's
+// start). So a relative state_dir under a directory that holds a line break is refused, and so is
+// one that a file named by a relative path, from a working directory that holds a line break,
+// leaves relative. A path that holds no line break loads as it resolves, one that holds a full stop
+// and a space included, and one that a file named by a relative path leaves relative loads made
+// absolute.
 func TestAStateDirThatHoldsALineBreakIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -39,6 +41,7 @@ func TestAStateDirThatHoldsALineBreakIsRefused(t *testing.T) {
 		{name: "a relative path of a file named by a relative path, from a working directory that holds a line feed",
 			stateDir: "state", under: "legion\nwork", relative: true, refused: true},
 		{name: "a plain path", stateDir: "/srv/legion v2. state"},
+		{name: "a relative path of a file named by a relative path", stateDir: "state", relative: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeConfigFile(t, strings.Replace(minimalFile, "state_dir: /var/lib/legion", "state_dir: "+strconv.Quote(tc.stateDir), 1))
@@ -60,8 +63,8 @@ func TestAStateDirThatHoldsALineBreakIsRefused(t *testing.T) {
 			if tc.relative {
 				t.Chdir(filepath.Dir(path))
 				named = filepath.Base(path)
-				// The start makes a relative state_dir absolute against the working directory as the
-				// process reads it, which is what the refusal names.
+				// The load makes a relative state_dir absolute against the working directory as the
+				// process reads it, which is what it stores and what the refusal names.
 				wd, err := os.Getwd()
 				if err != nil {
 					t.Fatal(err)

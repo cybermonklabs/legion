@@ -284,13 +284,20 @@ type budgetWrite struct {
 
 // budgetWrites is every write in body, function literals included, of a budget counter: an
 // assignment, an op-assignment or an increment or decrement whose target is a field of Budgets
-// through any selector chain or pointer, or a whole value of type Budgets.
+// through any selector chain or pointer, or a whole value of type Budgets that outlives the
+// function. A whole value given to a local variable is no counter: it counts against nothing until
+// it is written into one, where that write is judged and lowers follows the variable to it.
 func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]bool) []budgetWrite {
 	writes := func(target ast.Expr) bool {
 		target = ast.Unparen(target)
 		if selector, ok := target.(*ast.SelectorExpr); ok {
 			if selection := s.info.Selections[selector]; selection != nil && counters[selection.Obj()] {
 				return true
+			}
+		}
+		if ident, ok := target.(*ast.Ident); ok {
+			if v, ok := s.info.ObjectOf(ident).(*types.Var); ok && v.Parent() != nil && v.Parent() != s.pkg.Scope() {
+				return false
 			}
 		}
 		return isNamed(s.info.Types[target].Type, s.pkg.Path(), "Budgets")
@@ -309,7 +316,7 @@ func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]b
 				}
 				reset := false
 				if node.Tok == gotoken.ASSIGN && len(node.Lhs) == len(node.Rhs) {
-					reset = s.lowers(node.Rhs[i], map[types.Object]bool{})
+					reset = s.lowers(target, node.Rhs[i], map[types.Object]bool{})
 				}
 				found = append(found, budgetWrite{target: target, reset: reset})
 			}
@@ -329,11 +336,13 @@ func (s *goSource) isZero(expr ast.Expr) bool {
 	return ok && len(literal.Elts) == 0
 }
 
-// lowers is whether expr sets the budget counters it is written to back down and raises none: zero
-// (isZero), the answer of Budgets.OneAttemptLeft, which takes each spent counter to one short of
-// its limit and keeps the others, or a variable whose every value is one of these. seen holds the
-// variables already followed, so a variable given its own value is read once.
-func (s *goSource) lowers(expr ast.Expr, seen map[types.Object]bool) bool {
+// lowers is whether expr sets target, the budget counters it is written to, back down and raises
+// none: zero (isZero), the answer of Budgets.OneAttemptLeft called on target itself, which takes
+// each spent counter of target to one short of its limit and keeps the others, or a variable whose
+// every value is one of these. OneAttemptLeft lowers only the value it is called on, so a call on
+// any other value, a literal among them, can raise target. seen holds the variables already
+// followed, so a variable given its own value is read once.
+func (s *goSource) lowers(target, expr ast.Expr, seen map[types.Object]bool) bool {
 	expr = ast.Unparen(expr)
 	if s.isZero(expr) {
 		return true
@@ -343,25 +352,54 @@ func (s *goSource) lowers(expr ast.Expr, seen map[types.Object]bool) bool {
 		if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "OneAttemptLeft" {
 			return false
 		}
-		recv := fn.Type().(*types.Signature).Recv()
-		return recv != nil && isNamed(recv.Type(), s.pkg.Path(), "Budgets")
+		recv := fn.Signature().Recv()
+		if recv == nil || !isNamed(recv.Type(), s.pkg.Path(), "Budgets") {
+			return false
+		}
+		selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		return ok && s.sameValue(selector.X, target)
 	}
 	ident, ok := expr.(*ast.Ident)
 	if !ok {
 		return false
 	}
 	object := s.info.ObjectOf(ident)
+	if object == nil {
+		return false
+	}
+	if seen[object] {
+		return true
+	}
 	values := s.assignments()[object]
-	if object == nil || seen[object] || len(values) == 0 {
-		return object != nil && seen[object]
+	if len(values) == 0 {
+		return false
 	}
 	seen[object] = true
 	for _, value := range values {
-		if !s.lowers(value, seen) {
+		if !s.lowers(target, value, seen) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameValue is whether a and b name one value: the same chain of field selections from the same
+// variable (m.claim.Budgets and m.claim.Budgets), each step the same field object.
+func (s *goSource) sameValue(a, b ast.Expr) bool {
+	a, b = ast.Unparen(a), ast.Unparen(b)
+	switch a := a.(type) {
+	case *ast.Ident:
+		b, ok := b.(*ast.Ident)
+		return ok && s.info.ObjectOf(a) != nil && s.info.ObjectOf(a) == s.info.ObjectOf(b)
+	case *ast.SelectorExpr:
+		b, ok := b.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		left, right := s.info.Selections[a], s.info.Selections[b]
+		return left != nil && right != nil && left.Obj() == right.Obj() && s.sameValue(a.X, b.X)
+	}
+	return false
 }
 
 // goSource is one package's non-test source, type-checked (testtypes.CheckPackage), with its files
