@@ -1,10 +1,15 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { createComment, createIssue, createProject, getArtifact } from "./api";
+import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { createComment, createIssue, createProject, editArtifact, getArtifact } from "./api";
 import { PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId, specDocument } from "./issue-layout-seed-text";
-import { onScreen } from "./issue-page-i";
+import { issuePage } from "./issue-page";
+import { DESKTOP } from "./issue-page-g";
+import { caretInRowBlock, onScreen, openPreset } from "./issue-page-i";
+import { settledScrollTop } from "./mermaid-helpers";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
  * How the Spec view's rows read the new issue page's Spec view and its Contents slot
@@ -144,6 +149,25 @@ export async function seedTallSpec(): Promise<TallSpecSeed> {
     requirements: Array.from({ length: count }, (_, index) => requirementBlockId(index + 1)),
     specArtifactId: issue.primary_artifact_id,
     specSlug: await specSlugOf(issue.primary_artifact_id),
+  };
+}
+
+/**
+ * `seedTallSpec`'s issue with one block more in its spec, after its third statement: the markdown
+ * `block` writes once the issue stands, which is a statement and anything it names, such as the
+ * text of a footnote it references. A seed for `phase`.
+ */
+export function seedStatement(
+  block: (seeded: TallSpecSeed) => Promise<string> | string
+): () => Promise<TallSpecSeed> {
+  return async () => {
+    const seeded = await seedTallSpec();
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        { after: `block:${requirementBlockId(3)}`, markdown: await block(seeded), op: "insert" },
+      ],
+    });
+    return seeded;
   };
 }
 
@@ -351,18 +375,27 @@ export async function expectOnScreen(target: Locator, what: string): Promise<voi
     .toBe("on screen");
 }
 
-/** The page's scroll once it has stopped moving: two frames apart, two reads that agree. */
-export function scrollAtRest(page: Page): Promise<number> {
-  return page.evaluate(async () => {
-    let last = window.scrollY;
-    for (;;) {
-      const frames = Promise.withResolvers<void>();
-      requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-      await frames.promise;
-      if (window.scrollY === last) return Math.round(last);
-      last = window.scrollY;
+/** A point on the drawn word `word` of `statement`'s words, in the viewport: 1 px into its second
+ *  character, half way down its line; null where the words draw no such word. */
+function drawnWordPoint(
+  statement: Locator,
+  word: string
+): Promise<{ x: number; y: number } | null> {
+  return statement.evaluate((row, wanted) => {
+    const words = row.querySelector("[data-node-words]");
+    if (words === null) return null;
+    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+      const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
+      if (found < 0) continue;
+      const range = document.createRange();
+      range.setStart(text, found + 1);
+      range.setEnd(text, found + 2);
+      const box = range.getBoundingClientRect();
+      return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
     }
-  });
+    return null;
+  }, word);
 }
 
 /** The word the caret stands in, or the one a point of the page would put it in: the run of
@@ -390,4 +423,61 @@ export function wordAtCaret(
     while (end < text.length && !/\s/.test(text.charAt(end))) end += 1;
     return text.slice(start, end);
   }, at);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Moves.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the Spec view of `seeded` at 1440 by 900 and waits until its first load has settled;
+ *  the row of its statement `blockId`, whether the view draws it or not. */
+export async function openSpecStatement(
+  page: Page,
+  seeded: IssueWithSpec,
+  blockId: string
+): Promise<Locator> {
+  await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+  const body = issuePage(page).locator("[data-spec-body]");
+  const traffic = watchApiRequests(page);
+  await openPreset(page, seeded.key, "spec");
+  await expectLoadSettled(traffic);
+  return body.locator(
+    `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, blockId)}"]`
+  );
+}
+
+/**
+ * A turn of the wheel, the reader's own act, brings the word `pressed` of `statement`'s words to
+ * the screen's middle; once the page has stopped moving, a press on that word puts the caret of
+ * the statement's editor, block `blockId`, in it. A row names what the word stands after in its
+ * two failures: `messages.noCaret` where the press puts no caret in the statement's words, and
+ * `messages.otherWord` where the caret stands in another word.
+ */
+export async function pressWordAfterWheel(
+  page: Page,
+  statement: Locator,
+  blockId: string,
+  pressed: string,
+  messages: { readonly noCaret: string; readonly otherWord: string }
+): Promise<void> {
+  const far = await drawnWordPoint(statement, pressed);
+  expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
+  const wheelAt = await settledScrollTop(page);
+  await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+  await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
+  await expect
+    .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
+    .not.toBe(wheelAt);
+  // The poll above waited until the page stopped moving after the wheel, so one read of the
+  // word's box is where it stands when it is pressed.
+  const at = await drawnWordPoint(statement, pressed);
+  expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
+  const point = at ?? { x: 0, y: 0 };
+  expect(
+    await wordAtCaret(page, point),
+    `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
+  ).toBe(pressed);
+  await page.mouse.click(point.x, point.y);
+  await expect.poll(() => caretInRowBlock(page, blockId), { message: messages.noCaret }).toBe(true);
+  expect(await wordAtCaret(page, "selection"), messages.otherWord).toBe(pressed);
 }

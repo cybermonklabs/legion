@@ -101,10 +101,12 @@ import {
   drawnContentsEntries,
   expectOnScreen,
   focusBranchControl,
+  openSpecStatement,
   ownWords,
+  pressWordAfterWheel,
   rowAuthor,
-  scrollAtRest,
   seedChildWithSpec,
+  seedStatement,
   seedTallSpec,
   specRuns,
   statementBlock,
@@ -115,6 +117,7 @@ import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { verificationCheck } from "./issue-page-v";
+import { settledScrollTop } from "./mermaid-helpers";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -1993,19 +1996,7 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 200)),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 200)));
   await phase(browser, seed, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const body = issuePage(page).locator("[data-spec-body]");
@@ -2023,27 +2014,15 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
     // A script's focus, which starts no hold of the reader's: the keys below are the reader's.
     await long.focus();
     await expect(long, "the long statement does not take the focus").toBeFocused();
-    /** The page's scroll once it has stopped moving: two frames apart, two reads that agree. */
-    const restingScroll = (): Promise<number> =>
-      page.evaluate(async () => {
-        let last = window.scrollY;
-        for (;;) {
-          const frames = Promise.withResolvers<void>();
-          requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-          await frames.promise;
-          if (window.scrollY === last) return Math.round(last);
-          last = window.scrollY;
-        }
-      });
     const screen = DESKTOP.height;
     for (const [key, down] of [
       ["PageDown", true],
       ["Space", true],
       ["PageUp", false],
     ] as const) {
-      const before = await restingScroll();
+      const before = await settledScrollTop(page);
       await page.keyboard.press(key);
-      const moved = (await restingScroll()) - before;
+      const moved = (await settledScrollTop(page)) - before;
       expect(
         down ? moved : -moved,
         `${key} on the focused statement moves the page ${moved} px, not half a screen (${screen / 2} px) or more ${down ? "down" : "up"}`
@@ -2070,19 +2049,7 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 600)),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
   await phase(browser, seed, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const body = issuePage(page).locator("[data-spec-body]");
@@ -2102,11 +2069,11 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
     const heads = body.locator("[data-spec-head]");
     const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
     const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await scrollAtRest(page);
+    const wheelAt = await settledScrollTop(page);
     await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
     await page.mouse.wheel(0, top + 200);
     await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
+      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
       .not.toBe(wheelAt);
     const box = await long.evaluate((row) => {
       const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
@@ -2135,14 +2102,14 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
     ).toBe(true);
     const pressed = await wordAtCaret(page, at);
     expect(pressed, "the press's point holds no word of the long statement").toMatch(/^long\d+/);
-    const pressedAt = await scrollAtRest(page);
+    const pressedAt = await settledScrollTop(page);
     await page.mouse.click(at.x, at.y);
     await expect
       .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
         message: "a press on the long statement's words does not put the caret in them",
       })
       .toBe(true);
-    const moved = (await scrollAtRest(page)) - pressedAt;
+    const moved = (await settledScrollTop(page)) - pressedAt;
     expect(
       await wordAtCaret(page, "selection"),
       `a press on the word "${pressed}" puts the caret in another word`
@@ -2222,36 +2189,19 @@ test("a press on a Spec statement's words after a reference puts the caret in th
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
+  const seed = seedStatement(async () => {
     const cited = await createIssue({
       force: true,
       project: PROJECT,
       title: "The issue this statement cites by its key, drawn by its key and its title",
     });
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(
-            LONG_BLOCK_ID,
-            `Read dispatch://${cited.key} first. ${longWords("long", 120)}`
-          ),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
-  await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    return statementBlock(
+      LONG_BLOCK_ID,
+      `Read dispatch://${cited.key} first. ${longWords("long", 120)}`
     );
+  });
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that cites the other issue").toHaveCount(
       1
     );
@@ -2259,53 +2209,13 @@ test("a press on a Spec statement's words after a reference puts the caret in th
       long.locator("[data-node-words] a"),
       "the statement draws no link for the reference it holds"
     ).not.toHaveCount(0);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const words = row.querySelector("[data-node-words]");
-        if (words === null) return null;
-        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after its reference does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after the statement's reference, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after its reference does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after the statement's reference, puts the caret in another word`,
+    });
   });
 });
 
@@ -2322,83 +2232,26 @@ test("a press on a Spec statement's words after inline HTML puts the caret in th
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: statementBlock(
-            LONG_BLOCK_ID,
-            `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
-          ),
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+  const seed = seedStatement(() =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
+    )
+  );
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that holds inline HTML").toHaveCount(1);
     await expect(
       long.locator('[data-node-words] [data-type="html"]'),
       "the statement draws no inline HTML for the placeholders it holds"
     ).toHaveCount(2);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const words = row.querySelector("[data-node-words]");
-        if (words === null) return null;
-        const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after its inline HTML does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after its inline HTML does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`,
+    });
   });
 });
 
@@ -2416,8 +2269,7 @@ test("a press on a Spec statement's words after every inline kind the editor hol
   browser,
 }) => {
   test.setTimeout(120_000);
-  const seed = async () => {
-    const seeded = await seedTallSpec();
+  const seed = seedStatement(async (seeded) => {
     const cited = await createIssue({
       force: true,
       project: PROJECT,
@@ -2428,26 +2280,10 @@ test("a press on a Spec statement's words after every inline kind the editor hol
       `It draws "Kept by <name>" beside ![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
       `and a note[^note].\\\n${longWords("long", 120)}`,
     ].join(" ");
-    await editArtifact(seeded.specArtifactId, {
-      ops: [
-        {
-          after: `block:${requirementBlockId(3)}`,
-          markdown: `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`,
-          op: "insert",
-        },
-      ],
-    });
-    return seeded;
-  };
+    return `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`;
+  });
   await phase(browser, seed, async (page, seeded) => {
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const body = issuePage(page).locator("[data-spec-body]");
-    const traffic = watchApiRequests(page);
-    await openPreset(page, seeded.key, "spec");
-    await expectLoadSettled(traffic);
-    const long = body.locator(
-      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
-    );
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
     await expect(long, "the Spec view draws no statement that holds every inline kind").toHaveCount(
       1
     );
@@ -2465,52 +2301,12 @@ test("a press on a Spec statement's words after every inline kind the editor hol
       "the statement draws no picture"
     ).toHaveCount(1);
     await expect(words.locator("br"), "the statement draws no hard break").toHaveCount(1);
-    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
-    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
-      long.evaluate((row, wanted) => {
-        const drawn = row.querySelector("[data-node-words]");
-        if (drawn === null) return null;
-        const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
-        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-          if (found < 0) continue;
-          const range = document.createRange();
-          range.setStart(text, found + 1);
-          range.setEnd(text, found + 2);
-          const box = range.getBoundingClientRect();
-          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-        }
-        return null;
-      }, word);
     // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
     const pressed = "long60";
-    const far = await wordBox(pressed);
-    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-    const wheelAt = await scrollAtRest(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
-    await expect
-      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    // The poll above waited until the page stopped moving after the wheel, so one read of the
-    // word's box is where it stands when it is pressed.
-    const at = await wordBox(pressed);
-    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-    const point = at ?? { x: 0, y: 0 };
-    expect(
-      await wordAtCaret(page, point),
-      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-    ).toBe(pressed);
-    await page.mouse.click(point.x, point.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message:
-          "a press on the statement's words after every inline kind does not put the caret in them",
-      })
-      .toBe(true);
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`
-    ).toBe(pressed);
+    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
+      noCaret:
+        "a press on the statement's words after every inline kind does not put the caret in them",
+      otherWord: `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`,
+    });
   });
 });
