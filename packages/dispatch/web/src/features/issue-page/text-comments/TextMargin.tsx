@@ -3,6 +3,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -29,9 +30,16 @@ import type { SlotProps } from "../slot-props";
 import { useFollowing } from "../slots/following";
 import { moveToRow } from "../useTreeKeymap";
 import { highlightThreadWords, type ThreadWords } from "./highlights";
-import { SelectionComposer, type TextComposerOutcome, wordsKeyOf } from "./SelectionComposer";
+import { ITEM_KINDS } from "./on-text";
+import {
+  type SelectedWords,
+  SelectionComposer,
+  type TextComposerOutcome,
+  wordsKeyOf,
+} from "./SelectionComposer";
 import { itemBlocksOf, type QuotedNode, rangeOf } from "./selection-quote";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
+import type { QuotedWords } from "./text-comment-write";
 import { type NodeThreads, type TextThread, threadHolds } from "./text-threads";
 import { useTextThreads, type ViewThreads } from "./useTextThreads";
 
@@ -54,16 +62,7 @@ const THREAD_NODE_ATTRIBUTE = "data-text-thread-node";
 /** The words a person selected, as the control hands them to the column to open its composer on
  *  (R5): the node they are in, by its tree id (`TreeNode.id`), and what the server needs to find
  *  them again. */
-export interface TextComposerRequest {
-  /** The item's block that holds the selection, or null for a node that has one text. */
-  readonly block: string | null;
-  /** The tree id of the node the words are in. */
-  readonly nodeId: string;
-  /** How many matches of `quote` start before the selection in the block's (or node's) text. */
-  readonly occurrence: number;
-  /** The selected words as plain text reads them. */
-  readonly quote: string;
-}
+export type TextComposerRequest = SelectedWords;
 
 /** The composer of this part: the request it is open on, or undefined while none is open, and
  *  what its last send left the page to do. */
@@ -135,7 +134,7 @@ function holdComposer(
  * R8, or a composer of R5, calls before it opens a thread on text, which the column draws only
  * while Details is closed (R2).
  */
-export function useCloseDetails(): () => void {
+function useCloseDetails(): () => void {
   const drawer = useMarginDrawer();
   return useCallback(() => {
     if (drawer?.open === true) drawer.setOpen(false);
@@ -144,7 +143,7 @@ export function useCloseDetails(): () => void {
 
 /**
  * The composer's one state for the issue the router is at, which the column draws and the control
- * opens (`SelectionComment`, t8): reachable from anywhere inside the page's providers, since it is
+ * opens (`SelectionComment`): reachable from anywhere inside the page's providers, since it is
  * the query client's (`composerStoreOf`). A request held for another issue is no composer here.
  */
 export function useTextComposer(): TextComposer {
@@ -263,9 +262,32 @@ function placedOf(threads: ReadonlyMap<string, NodeThreads>, order: readonly str
  * the row's key names (`tree-keys.ts`' `rowKeyOf`), else the first.
  */
 function rowIn(stage: Element, nodeId: string, parent: string | undefined): HTMLElement | null {
-  const rows = [...stage.querySelectorAll<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`)];
+  return rowAmong(
+    [...stage.querySelectorAll<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`)],
+    parent
+  );
+}
+
+/** The row `rowIn` answers among `rows`, the rows the stage draws for one node in the order it
+ *  draws them: the one under the stored parent `parent` where there are two or more, else the
+ *  first. */
+function rowAmong(rows: readonly HTMLElement[], parent: string | undefined): HTMLElement | null {
   if (rows.length < 2 || parent === undefined) return rows[0] ?? null;
   return rows.find((row) => row.dataset.rowKey?.split(">").at(-2) === parent) ?? rows[0] ?? null;
+}
+
+/** The rows the stage draws, by the tree id of each one's node, each node's rows in the order the
+ *  stage draws them, so `measure` reads the stage once for all its boxes. */
+function rowsByNode(stage: Element): Map<string, HTMLElement[]> {
+  const rows = new Map<string, HTMLElement[]>();
+  for (const row of stage.querySelectorAll<HTMLElement>("[data-node-id]")) {
+    const id = row.dataset.nodeId;
+    if (id === undefined) continue;
+    const held = rows.get(id);
+    if (held === undefined) rows.set(id, [row]);
+    else held.push(row);
+  }
+  return rows;
 }
 
 /** The ids of the nodes of `threads` in the order the stage draws their rows. */
@@ -278,31 +300,45 @@ function rowOrder(stage: Element, threads: ReadonlyMap<string, NodeThreads>): st
   return order;
 }
 
+/** The stage the column stands beside: the element before it in the page's row. */
+function stageOf(column: RefObject<HTMLElement | null>): Element | null {
+  return column.current?.previousElementSibling ?? null;
+}
+
+/** The card of the thread `key` names in `container` - the column's list or a node's sheet - or
+ *  null where it draws none. */
+export function cardIn(container: Element | null, key: string): HTMLElement | null {
+  return container?.querySelector<HTMLElement>(`[data-margin-item="${CSS.escape(key)}"]`) ?? null;
+}
+
+/** Gives `target` the focus, as a script gives it to an element out of the tab order: one with
+ *  no `tabindex` takes `tabIndex = -1` first. */
+export function takeFocus(target: HTMLElement): void {
+  if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+  target.focus();
+}
+
 /** What the column finds a box's words by in its node's row: the quote, which match of it, the
  *  item's block it is in, and whether the words left the node's text, which places the box at
  *  the row's first line. */
-interface Words {
-  readonly block: string | null;
-  readonly firstLine: boolean;
-  readonly occurrence: number;
-  readonly quote: string;
-}
+type Words = QuotedWords & { readonly firstLine: boolean };
 
 /** The node `nodeId` as `rangeOf` and `quoteOf` read its words: its text, and an item's blocks in
  *  order. */
 export function quotedNodeOf(view: ViewThreads, nodeId: string): QuotedNode | undefined {
   const node = view.nodes.get(nodeId);
   if (node === undefined) return undefined;
-  const item =
-    node.supertag === "ask" || node.supertag === "comment" || node.supertag === "message";
+  const item = ITEM_KINDS[node.supertag] === true;
   return item && view.answer !== undefined
     ? { blocks: itemBlocksOf(view.answer, node.id), text: node.text, text_tree: node.text_tree }
     : node;
 }
 
-/** The range of `words` in `row`, or null where the row draws none of them. */
-function wordsRange(row: Element, words: Words, node: QuotedNode | undefined): Range | null {
+/** The range of `words` in `row`, the row of the node `nodeId` of `view`, or null where the row
+ *  draws none of them. */
+function wordsRange(row: Element, words: Words, view: ViewThreads, nodeId: string): Range | null {
   if (words.firstLine) return null;
+  const node = quotedNodeOf(view, nodeId);
   const block =
     words.block === null ? undefined : node?.blocks?.find((one) => one.block_id === words.block);
   return rangeOf(row, words.quote, words.occurrence, {
@@ -353,7 +389,7 @@ function Column({
           thread.thread.key,
           {
             block: thread.replyRoot ? (thread.thread.anchor?.block_id ?? null) : null,
-            firstLine: thread.firstLine || thread.orphaned,
+            firstLine: thread.firstLine,
             occurrence: thread.occurrence,
             quote: thread.quote,
           },
@@ -417,15 +453,16 @@ function Column({
   const measure = useCallback(() => {
     const column = aside.current;
     const region = list.current;
-    const stage = column?.previousElementSibling ?? null;
+    const stage = stageOf(aside);
     if (column === null || region === null || stage === null) return;
     const origin = regionOrigin(region);
+    const rows = rowsByNode(stage);
     const ranges: { key: string; range: Range }[] = [];
     let bottom = 0;
     let shown = 0;
     for (const box of region.querySelectorAll<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)) {
       const nodeId = box.getAttribute(THREAD_NODE_ATTRIBUTE) ?? "";
-      const row = rowIn(stage, nodeId, box.dataset.textThreadParent);
+      const row = rowAmong(rows.get(nodeId) ?? [], box.dataset.textThreadParent);
       const composing = box.hasAttribute(TEXT_COMPOSER_ATTRIBUTE);
       box.hidden = row === null && !composing;
       if (row === null) {
@@ -443,8 +480,7 @@ function Column({
           : request === undefined
             ? undefined
             : { ...request, firstLine: false };
-      const range =
-        boxWords === undefined ? null : wordsRange(row, boxWords, quotedNodeOf(view, nodeId));
+      const range = boxWords === undefined ? null : wordsRange(row, boxWords, view, nodeId);
       const rect = range?.getClientRects()[0] ?? row.getBoundingClientRect();
       const top = Math.max(0, rect.top - origin);
       box.style.top = `${top}px`;
@@ -455,15 +491,14 @@ function Column({
     }
     region.style.minHeight = `${bottom}px`;
     column.hidden = shown === 0;
-    if (shown === 0) column.parentElement?.removeAttribute(TEXT_MARGIN_ATTRIBUTE);
-    else column.parentElement?.setAttribute(TEXT_MARGIN_ATTRIBUTE, "");
+    column.parentElement?.toggleAttribute(TEXT_MARGIN_ATTRIBUTE, shown !== 0);
     marked.current = ranges;
     mark();
   }, [mark, request, view, words]);
 
   // After each render: the order of the rows the threads stand by, then the places.
   useLayoutEffect(() => {
-    const stage = aside.current?.previousElementSibling ?? null;
+    const stage = stageOf(aside);
     if (stage !== null) {
       const next = rowOrder(stage, view.threads);
       if (next.length !== order.length || next.some((id, at) => order[at] !== id)) setOrder(next);
@@ -475,7 +510,7 @@ function Column({
   // once in an animation frame.
   useEffect(() => {
     const column = aside.current;
-    const stage = column?.previousElementSibling ?? null;
+    const stage = stageOf(aside);
     if (column === null || stage === null) return;
     let frame: number | undefined;
     const soon = () => {
@@ -522,9 +557,7 @@ function Column({
     if (landing === undefined || landed.current === landing.following || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => threadHolds(one, landing.id))?.thread.thread;
     if (thread === undefined) return;
-    const card = list.current?.querySelector<HTMLElement>(
-      `[data-margin-item="${CSS.escape(thread.key)}"]`
-    );
+    const card = cardIn(list.current, thread.key);
     // The thread's root takes the focus as the card, a reply as its row, and a lens as its own
     // row, which the card draws under the comment it was invoked on.
     const lens = card?.querySelector<HTMLElement>(
@@ -536,8 +569,7 @@ function Column({
         : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
     if (target === null || target === undefined) return;
     landed.current = landing.following;
-    if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
-    target.focus();
+    takeFocus(target);
     focusBefore.current = target;
   });
 
@@ -547,15 +579,9 @@ function Column({
   useEffect(() => {
     if (sent === undefined || !("root" in sent) || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
-    const card =
-      thread === undefined
-        ? null
-        : (list.current?.querySelector<HTMLElement>(
-            `[data-margin-item="${CSS.escape(thread.thread.thread.key)}"]`
-          ) ?? null);
+    const card = thread === undefined ? null : cardIn(list.current, thread.thread.thread.key);
     if (card === null) return;
-    if (!card.hasAttribute("tabindex")) card.tabIndex = -1;
-    card.focus();
+    takeFocus(card);
     focusBefore.current = card;
     composer.settle();
   });
@@ -583,7 +609,7 @@ function Column({
       `[${TEXT_COMPOSER_ATTRIBUTE}], textarea, input, select, [contenteditable="true"]`
     );
     const box = target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`);
-    const stage = aside.current?.previousElementSibling ?? null;
+    const stage = stageOf(aside);
     if (inComposer !== null || box === null || stage === null) return;
     const row = rowIn(
       stage,
@@ -615,7 +641,7 @@ function Column({
   // to the row of its node (R5's table, R6).
   const leaveComposer = () => {
     const nodeId = request?.nodeId;
-    const stage = aside.current?.previousElementSibling ?? null;
+    const stage = stageOf(aside);
     composer.close();
     if (nodeId === undefined || stage === null) return;
     const row = rowIn(stage, nodeId, view.threads.get(nodeId)?.parent);

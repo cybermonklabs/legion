@@ -7,6 +7,7 @@ import { MentionComposer } from "../../conversation/MentionComposer";
 import { MARGIN_ANSWERS } from "../page-words";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
+import { quotedBlock } from "./on-text";
 import { quoteLine } from "./quote-line";
 import {
   type LiveWrite,
@@ -26,8 +27,8 @@ import type { ViewThreads } from "./useTextThreads";
  *
  * Its send (`useSelectionSend`) writes the request of the node's kind (`text-comment-write.ts`).
  * `MentionComposer` sends through its own path, which carries none of R5's fields until pull
- * request 3125 is on the base, so the composer's Send takes this send at G5 (t11), and the page
- * mounts the control that opens this composer only where `GATES.COMPOSER` is on.
+ * request 3125 is on the base, so the composer's Send takes this send at G5, and the page mounts
+ * the control that opens this composer only where `GATES.COMPOSER` is on.
  */
 
 /** The words a person selected and the node they are in, by its tree id: what the control hands
@@ -58,8 +59,8 @@ function wordsGone(error: unknown): boolean {
 }
 
 /** Whether a reply's answered block kept the quote the send carried (`reply_block.quote`, G4). */
-function quoteKept(block: object | null): boolean {
-  const quote = block === null ? undefined : Reflect.get(block, "quote");
+function quoteKept(block: Parameters<typeof quotedBlock>[0] | null): boolean {
+  const quote = block === null ? undefined : quotedBlock(block).quote;
   return typeof quote === "string" && quote !== "";
 }
 
@@ -73,7 +74,7 @@ function treeOf(view: ViewThreads, issue: string): string | null | undefined {
 }
 
 /** The send of a composer of this part and what it said last. */
-export interface SelectionSend {
+interface SelectionSend {
   /** The sentence the last refusal left in the composer, with the role `status`: the words are no
    *  longer in the text. */
   readonly said: string | undefined;
@@ -90,7 +91,7 @@ export interface SelectionSend {
  * the words are in (`writeFor`), taken from the view while it draws the node, and from where it
  * last drew it once it is folded or paged away, where the composer stays.
  */
-export function useSelectionSend({
+function useSelectionSend({
   issue,
   onLand,
   view,

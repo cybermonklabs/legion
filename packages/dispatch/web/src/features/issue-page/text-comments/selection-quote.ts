@@ -2,6 +2,7 @@ import { referenceSpans } from "../../refs/reference-spans";
 import { wordsOf } from "../../refs/tree-fragment";
 import { addressesAsShortForms } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
+import { ITEM_KINDS } from "./on-text";
 import { asRead, rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 
 /**
@@ -50,9 +51,6 @@ const HEADING_MARKER = /^#{1,6} +/u;
 /** One character of white space, as `plainWords` reads it. */
 const SPACE = /\s/u;
 
-/** The kinds of node an item's blocks stand under. */
-const ITEM_KINDS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
-
 /**
  * The block nodes the tree read hangs under the ask, comment or message `item` names, in the
  * answer's order, which is the item's: each is the item's kind's block (`comment_block`,
@@ -77,25 +75,27 @@ export function itemBlocksOf(answer: TreeAnswer, item: string): TreeAnswerNode[]
  * one range inside the row's own words (`rowTextOf`), holds no character of the node's text,
  * touches what the row draws that is not that text (a chip, a reference's drawn name, a typed
  * block's head, a deleted line), runs past the words the node's text holds, or, in an item, does
- * not lie inside one of its blocks.
+ * not lie inside one of its blocks. `runs` are the runs of the row's words (`textRuns`), where the
+ * caller has read them already.
  */
 export function quoteOf<Block extends ItemBlock = ItemBlock>(
   selection: Selection,
   row: Element,
-  node: QuotedNode<Block>
+  node: QuotedNode<Block>,
+  runs?: TextRuns
 ): TextQuote<Block> | null {
-  const words = rowTextOf(row);
-  if (words === null || selection.rangeCount !== 1) return null;
+  if (selection.rangeCount !== 1) return null;
   const range = selection.getRangeAt(0);
   if (range.collapsed) return null;
-  const runs = textRuns(words);
-  const start = runs.offsetOf(range.startContainer, range.startOffset);
-  const end = runs.offsetOf(range.endContainer, range.endOffset);
+  const rowRuns = runs ?? runsOfRow(row);
+  if (rowRuns === null) return null;
+  const start = rowRuns.offsetOf(range.startContainer, range.startOffset);
+  const end = rowRuns.offsetOf(range.endContainer, range.endOffset);
   if (start === null || end === null) return null;
-  const drawn = drawnSelection(runs, start, end);
+  const drawn = drawnSelection(rowRuns, start, end);
   if (drawn === null) return null;
   const source = sourceOf(node);
-  const alignment = aligned(runs.text, source);
+  const alignment = aligned(rowRuns.text, source);
   if (drawn.end > alignment.length) return null;
   let from = alignment.from[drawn.start] ?? 0;
   const to = alignment.to[drawn.end - 1] ?? 0;
@@ -120,6 +120,13 @@ export function quoteOf<Block extends ItemBlock = ItemBlock>(
     occurrence: matchesBefore(source.slice(holder.start, holder.end), quote, from - holder.start),
     quote,
   };
+}
+
+/** The runs of the words `row` draws (`rowTextOf`, `textRuns`), or null where it has no words
+ *  element. */
+function runsOfRow(row: Element): TextRuns | null {
+  const words = rowTextOf(row);
+  return words === null ? null : textRuns(words);
 }
 
 /**
@@ -338,7 +345,7 @@ function matchesBefore(text: string, quote: string, before: number): number {
 
 /** Where match `occurrence` of `quote` starts in `text` between `start` and `end`, counting from
  *  `start` and overlapping matches included; undefined where there is no such match. */
-function matchAt(
+export function matchAt(
   text: string,
   quote: string,
   occurrence: number,

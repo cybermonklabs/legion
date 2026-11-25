@@ -25,6 +25,7 @@ import {
   viewQuery,
 } from "../tree-read/tree-read";
 import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
+import { type OnTextReads, onTextReads } from "./on-text";
 import { type NodeThreads, textThreadsOf } from "./text-threads";
 
 /**
@@ -50,12 +51,20 @@ export interface ViewThreads {
   /** Each node of that answer by the tree id the view draws it by (part T's `treeIdOf`): the
    *  first node of each id. */
   readonly nodes: ReadonlyMap<string, TreeAnswerNode>;
+  /** What R1's rule reads of that answer and the comments and messages reads (`onTextReads`),
+   *  which the threads are built from. */
+  readonly onText: OnTextReads;
   /** The threads of each node, by the node's tree id (`textThreadsOf`). */
   readonly threads: ReadonlyMap<string, NodeThreads>;
 }
 
 /** A view that holds no tree read, or whose read has not answered. */
-const NO_VIEW_THREADS: ViewThreads = { answer: undefined, nodes: new Map(), threads: new Map() };
+const NO_VIEW_THREADS: ViewThreads = {
+  answer: undefined,
+  nodes: new Map(),
+  onText: onTextReads(undefined, {}),
+  threads: new Map(),
+};
 
 /** The reads the threads are built from beside the answer, each compared by identity. */
 const READ_NAMES = [
@@ -93,12 +102,14 @@ export function viewThreadsOf(answer: TreeAnswer, reads: IssueTreeReads): ViewTh
     const id = idOf(node.id);
     if (id !== reads.issue.key && !nodes.has(id)) nodes.set(id, node);
   }
+  const onText = onTextReads(answer, reads);
   // Each node the view's read holds but the issue is one the view draws: a thread stands by the
   // node its words are in where the read holds it, else by the node the read hangs it under.
   const view: ViewThreads = {
     answer,
     nodes,
-    threads: textThreadsOf(answer, reads, new Set(nodes.keys())),
+    onText,
+    threads: textThreadsOf(answer, reads, new Set(nodes.keys()), idOf, onText),
   };
   builtThreads.set(answer, [...held.slice(1 - BUILT_PER_ANSWER), { reads, view }]);
   return view;

@@ -136,7 +136,7 @@ export const MOUNTED_GATES: Readonly<Record<GateName, boolean>> = { ...GATES, CO
 
 /** The kinds that stand as items of their own: an ask, a comment, a message, and a lens with its
  *  findings, risks, constraints and results. */
-const ITEM_KINDS: Readonly<Record<string, true>> = {
+const ITEM_PLACE_KINDS: Readonly<Record<string, true>> = {
   ask: true,
   comment: true,
   constraint: true,
@@ -149,8 +149,8 @@ const ITEM_KINDS: Readonly<Record<string, true>> = {
 
 /** The place `node` stands in: an item of its own, a block of the document the tree read names
  *  (`document`), or else a block written in the room. */
-export function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
-  if (ITEM_KINDS[node.supertag] === true) return "item";
+function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
+  if (ITEM_PLACE_KINDS[node.supertag] === true) return "item";
   return node.document === undefined ? "room" : "document";
 }
 

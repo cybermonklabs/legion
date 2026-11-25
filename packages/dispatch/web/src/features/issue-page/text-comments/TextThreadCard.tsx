@@ -1,12 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
-import { api, type WriteBounds } from "../../../api/client";
+import type { WriteBounds } from "../../../api/client";
 import { whoAmIQuery } from "../../../api/queries";
 import type { Anchor, Comment, IssueDetails } from "../../../api/types";
 import { commentWritten } from "../../../api/write-events";
 import { pageRowActs } from "../../../theme/classes";
-import type { CarriedBlockIds, SaveCommentEdit } from "../../conversation/send-request";
+import {
+  type CarriedBlockIds,
+  type SaveCommentEdit,
+  saveCommentEdit,
+} from "../../conversation/send-request";
 import { marginReplySendKey } from "../../margin/margin-context";
 import { ThreadCard } from "../../margin/ThreadCard";
 import {
@@ -33,7 +37,7 @@ import { threadCommentNode } from "./thread-node";
  * 1024 px: `main`'s `ThreadCard`, always expanded (`expanded` true and a toggle that does
  * nothing), with every control it draws on `main` - the reply composer, Resolve or Reopen, Edit
  * of the reader's own comment, Accept and Reject of a suggestion, the copy reference. Its writes
- * are the margin's own (`useCommentActionQueue`, `api.editComment`) on the comments read the page
+ * are the margin's own (`useCommentActionQueue`, `saveCommentEdit`) on the comments read the page
  * already holds (`["comments", key]`), and they read again what the margin's writes read again:
  * no read of their own. Under each comment of the thread stand its lenses (R7), each drawn as part
  * W draws a lens's row - its verdict, its kind's words, author, time and state, its lines and its
@@ -68,7 +72,7 @@ export interface ThreadCardHost {
 export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
   const client = useQueryClient();
   const key = issue.key;
-  const commentsKey = issueCommentsQuery(key).queryKey;
+  const commentsKey = useMemo(() => issueCommentsQuery(key).queryKey, [key]);
   const viewerLogin = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login ?? "";
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
@@ -111,7 +115,7 @@ export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
-        const saved = await api.editComment(id, { body, ...carried }, bounds);
+        const saved = await saveCommentEdit(id, body, carried, bounds);
         void client.invalidateQueries({ queryKey: commentsKey });
         return saved;
       } finally {

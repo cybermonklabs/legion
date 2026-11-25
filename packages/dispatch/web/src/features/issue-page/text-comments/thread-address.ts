@@ -10,7 +10,7 @@ import { filterOfUndrawn } from "../presets";
 import { pathTo } from "../tree-fold";
 import { nextTreeCursor } from "../tree-read/tree-nodes";
 import { outlineOf, outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
-import { type OnTextReads, onTextOf, onTextReads } from "./on-text";
+import { type OnTextReads, onTextOf } from "./on-text";
 import { threadHolds } from "./text-threads";
 import { useStageIssue, useThreadReads, viewThreadsOf } from "./useTextThreads";
 
@@ -66,9 +66,10 @@ function itemKindOf(
  * text, or the reads do not yet say (the page of comments or of the tree that would hold it is
  * not loaded): the address is then any other address of the page, resolved as before.
  */
-export function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarget | undefined {
+function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarget | undefined {
   const { answer, preset, reads, root } = input;
-  for (const [host, { threads }] of viewThreadsOf(answer, reads).threads) {
+  const view = viewThreadsOf(answer, reads);
+  for (const [host, { threads }] of view.threads) {
     if (!threads.some((thread) => threadHolds(thread, id))) continue;
     const chain = pathTo(root, host);
     const node = chain?.at(-1);
@@ -79,9 +80,8 @@ export function threadTargetOf(id: string, input: ThreadTargetInput): ThreadTarg
   }
   // An item that is on text and stands in no margin: the read hangs it under no node a view draws
   // and its words are in none. The node may be on a page the tree read has not given yet.
-  const onText = onTextReads(answer, reads);
-  const supertag = itemKindOf(id, onText);
-  if (supertag === undefined || onTextOf({ id, supertag }, onText) === null) return undefined;
+  const supertag = itemKindOf(id, view.onText);
+  if (supertag === undefined || onTextOf({ id, supertag }, view.onText) === null) return undefined;
   if (reads.comments === undefined || reads.messages === undefined) return undefined;
   return nextTreeCursor(answer) === undefined ? { kind: "none" } : undefined;
 }

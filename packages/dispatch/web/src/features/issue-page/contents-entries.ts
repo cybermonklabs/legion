@@ -2,6 +2,7 @@ import { isViewer } from "../refs/actor";
 import type { TreeNode } from "./issue-tree";
 import type { NodeThreads } from "./text-comments/text-threads";
 import { threadCommentNode } from "./text-comments/thread-node";
+import { nodesInOrder } from "./tree-keys";
 
 /**
  * Whether `child`, drawn under `parent`, is an entry of the Contents list: an ask, or a comment
@@ -50,13 +51,6 @@ export interface ThreadEntryTree {
   readonly root: TreeNode;
 }
 
-/** The id of `node` and of every node under it. */
-function idsIn(node: TreeNode, ids: Set<string> = new Set()): Set<string> {
-  ids.add(node.id);
-  for (const child of node.children) idsIn(child, ids);
-  return ids;
-}
-
 /** What one node gives the walk of `withThreadEntries`: the node, with its entries drawn in, and
  *  the entries that stand after it, in its parent's place, where it is a comment or a message. */
 interface WithEntries {
@@ -87,7 +81,8 @@ export function withThreadEntries(
 ): ThreadEntryTree {
   const kinds = new Map<string, "comment" | "message">();
   const entries = new Map<string, TreeNode[]>();
-  const present = threads.size === 0 ? new Set<string>() : idsIn(root);
+  const present =
+    threads.size === 0 ? new Set<string>() : new Set(nodesInOrder(root).map((node) => node.id));
   for (const [nodeId, { parent, threads: held }] of threads) {
     const host = present.has(nodeId) ? nodeId : parent;
     if (!present.has(host)) continue;

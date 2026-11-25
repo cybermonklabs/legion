@@ -9,7 +9,7 @@ import { rowTextOf } from "./row-text-runs";
  * the element. Answers the function that takes it away, or null where the row has no words
  * element.
  *
- * No key calls this before G5 (t11): Enter on a read-only row keeps B0's "This row has no text to
+ * No key calls this before G5: Enter on a read-only row keeps B0's "This row has no text to
  * put the caret in." until part I's browser row moves at G5.
  */
 
@@ -104,17 +104,9 @@ export function caretIn(row: Element): (() => void) | null {
     { signal: listening.signal }
   );
 
-  // Blur takes the caret away when the focus leaves `words`, unless a press on a link inside it
-  // is moving the focus to that link so the browser follows it.
-  words.addEventListener(
-    "blur",
-    (event: FocusEvent) => {
-      const next = event.relatedTarget;
-      if (next instanceof Node && words.contains(next)) return;
-      remove();
-    },
-    { signal: listening.signal }
-  );
+  // Focus leaving `words` or anything inside it takes the caret away (`focusout` fires wherever
+  // `blur` does, and for a child too), unless a press on a link inside it is moving the focus to
+  // that link so the browser follows it.
   words.addEventListener(
     "focusout",
     (event: FocusEvent) => {
@@ -128,7 +120,7 @@ export function caretIn(row: Element): (() => void) | null {
   // When a re-read replaces or removes `words` from the row or document, take its attributes and
   // listeners away.
   const root = words.ownerDocument.body ?? row.parentNode ?? row;
-  if (typeof MutationObserver !== "undefined" && root !== null) {
+  if (typeof MutationObserver !== "undefined") {
     observer = new MutationObserver(() => {
       if (!words.isConnected || !row.contains(words)) remove();
     });

@@ -109,20 +109,26 @@ interface NodeAnchored {
   };
 }
 
-/** The kinds of node an item answers: what the tree read hangs a reply under. */
-const ITEM_KINDS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
+/** The kinds of node that are an item: an ask, a comment and a message. The tree read hangs a
+ *  reply, an item's blocks and a lens on an item's block under one of them. */
+export const ITEM_KINDS: Readonly<Record<string, true>> = {
+  ask: true,
+  comment: true,
+  message: true,
+};
 
 /** The key of a typed block in `OnTextReads.blocks`: its document's id and its block id. */
 function blockKey(artifactId: string, blockId: string): string {
   return `${artifactId}\u0000${blockId}`;
 }
 
-/** The answer and the comments and messages reads as the rule reads them, each by id. */
+/** The answer and the comments and messages reads as the rule reads them, each by id. `nodes` is
+ *  the answer's nodes by read id (`firstOfEachId`), where the caller holds them already. */
 export function onTextReads(
   answer: TreeAnswer | undefined,
-  reads: Pick<IssueTreeReads, "comments" | "messages">
+  reads: Pick<IssueTreeReads, "comments" | "messages">,
+  nodes: ReadonlyMap<string, TreeAnswerNode> = firstOfEachId(answer?.nodes ?? [])
 ): OnTextReads {
-  const nodes = firstOfEachId(answer?.nodes ?? []);
   const blocks = new Map<string, TreeAnswerNode>();
   for (const node of nodes.values()) {
     if (node.document === undefined || node.block_id === undefined) continue;

@@ -10,9 +10,11 @@ import { MARGIN_WORDS, type Preset } from "../page-words";
 import { moveToRow } from "../useTreeKeymap";
 import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import {
+  cardIn,
   TEXT_COMPOSER_ATTRIBUTE,
   type TextComposer,
   type TextComposerRequest,
+  takeFocus,
   useTextComposer,
 } from "./TextMargin";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
@@ -63,7 +65,7 @@ function useStopsOutOfTabOrder(box: RefObject<HTMLElement | null>, out: boolean)
  * - a check or a plan task under each requirement it serves - has its threads under its stored
  * parent's row alone, as in the column (R2). `tabStops` is the row's: in a tree whose keys reach a
  * row's controls the sheet's links and buttons are out of the tab order, and `f` reaches them.
- * Each row site mounts it at its part's gate (t14).
+ * Each row site mounts it at its part's gate.
  */
 export function NodeThreads({
   node,
@@ -74,9 +76,26 @@ export function NodeThreads({
   readonly parent?: string;
   readonly tabStops?: boolean;
 }): ReactNode {
-  const stage = useStageIssue();
   const wide = useMediaQuery(CONTENTS_PANE_QUERY);
-  if (stage === undefined || wide) return null;
+  if (wide) return null;
+  return (
+    <NarrowSheet node={node} tabStops={tabStops} {...(parent === undefined ? {} : { parent })} />
+  );
+}
+
+/** The sheet below 1024 px, once the issue the router is at is read (`useStageIssue`): only a
+ *  width the sheet is drawn at watches the address and the issue's read. */
+function NarrowSheet({
+  node,
+  parent,
+  tabStops,
+}: {
+  readonly node: TreeNode;
+  readonly parent?: string;
+  readonly tabStops: boolean;
+}): ReactNode {
+  const stage = useStageIssue();
+  if (stage === undefined) return null;
   return (
     <Sheet
       issue={stage.issue}
@@ -145,15 +164,9 @@ function SheetBody({
   useEffect(() => {
     if (sent === undefined || !("root" in sent)) return;
     const thread = threads.find((one) => one.thread.root.comment.id === sent.root);
-    const card =
-      thread === undefined
-        ? null
-        : (sheet.current?.querySelector<HTMLElement>(
-            `[data-margin-item="${CSS.escape(thread.thread.key)}"]`
-          ) ?? null);
+    const card = thread === undefined ? null : cardIn(sheet.current, thread.thread.key);
     if (card === null) return;
-    if (!card.hasAttribute("tabindex")) card.tabIndex = -1;
-    card.focus();
+    takeFocus(card);
     composer.settle();
   });
 

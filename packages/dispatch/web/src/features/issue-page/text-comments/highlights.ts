@@ -9,8 +9,10 @@
  *
  * The page's global stylesheet (`web/src/styles.css`) is outside `issue-page/`, so the rules that
  * style the two highlights are this module's: they are put in the document once, at the first
- * mark (`HIGHLIGHT_RULES`). Their colours are those the document editor marks a comment's words
- * with (`.dispatch-doc .mark-comment` and `.mark-active` in `styles.css`).
+ * mark (`HIGHLIGHT_RULES`). The base rule takes the colours the document editor marks a comment's
+ * words with (`.dispatch-doc .mark-comment` in `styles.css`: a 30% amber-300 tint and an amber-300
+ * line). The focus rule's colours are its own: a 55% amber-300 tint and an amber-500 underline, a
+ * little stronger than the editor's `.mark-active` (a 50% tint and an amber-400 line).
  */
 
 /** The highlight that holds the quoted words of every thread the column draws. */
@@ -24,7 +26,7 @@ export const HIGHLIGHT_STYLE_ATTRIBUTE = "data-text-comment-highlights";
 
 /** The rules of the two highlights: an underline and a tint, and the focus's stronger tint and
  *  darker underline, which is registered after the first and so wins where both hold a word. */
-export const HIGHLIGHT_RULES = `::highlight(${TEXT_COMMENT_HIGHLIGHT}) {
+const HIGHLIGHT_RULES = `::highlight(${TEXT_COMMENT_HIGHLIGHT}) {
   background-color: color-mix(in oklab, var(--color-amber-300) 30%, transparent);
   text-decoration: underline 2px var(--color-amber-300);
 }

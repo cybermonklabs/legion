@@ -8,6 +8,7 @@ import { readingOf, treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES } from "./gates";
 import {
+  ITEM_KINDS,
   type OnTextItem,
   type OnTextReads,
   onTextOf,
@@ -18,6 +19,7 @@ import {
   type TextPlace,
 } from "./on-text";
 import { quoteLine } from "./quote-line";
+import { matchAt } from "./selection-quote";
 
 /**
  * Each drawn node's threads on text (R2's place, R4's entries, R7's lenses, R9), from the reads
@@ -97,21 +99,20 @@ const NO_THREADS: ReadonlyMap<string, NodeThreads> = new Map();
 /** No comment has a lens. */
 const NO_LENSES: ReadonlyMap<string, readonly TreeNode[]> = new Map();
 
-/** The kinds of node a lens on an item's block is read up to: the item. */
-const ITEM_KINDS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
-
 /**
  * The threads of each node `drawn` holds, by its tree id (part T's `treeIdOf`): `answer` is the
  * read the view holds, `reads` the page's reads (the comments and messages reads give each entry
- * its fields), `drawn` the tree id of each node the view draws.
+ * its fields), `drawn` the tree id of each node the view draws. `idOf` and `onText` are the tree
+ * ids and the rule's reads of that answer and those reads, where the caller holds them already.
  */
 export function textThreadsOf(
   answer: TreeAnswer,
   reads: IssueTreeReads,
-  drawn: ReadonlySet<string>
+  drawn: ReadonlySet<string>,
+  idOf: (readId: string) => string = treeIdOf(answer, reads),
+  onText: OnTextReads = onTextReads(answer, reads)
 ): ReadonlyMap<string, NodeThreads> {
   const key = reads.issue.key;
-  const onText = onTextReads(answer, reads);
   const roots = new Map<string, Root>();
   for (const node of onText.nodes.values()) {
     const foreign = node.issue !== undefined && node.issue !== key;
@@ -132,7 +133,6 @@ export function textThreadsOf(
   }
   const items = new Set([...roots.keys(), ...[...replies.values()].flat().map(({ id }) => id)]);
   const lenses = lensesOf(answer, reads, onText, new Set(roots.keys()), items);
-  const idOf = treeIdOf(answer, reads);
   const words = new Map<TreeAnswerNode, string>();
   const placed = new Map<string, { node: TreeAnswerNode; rows: Placed[] }>();
   for (const [id, { node, place }] of roots) {
@@ -209,7 +209,7 @@ function placedThread(
         ? place.orphaned
         : place.block.removed;
   const from = place.kind === "item" ? Math.max(0, words.indexOf(plainWords(place.block.text))) : 0;
-  const at = orphaned ? undefined : matchAt(words, quote, occurrence, from);
+  const at = orphaned ? undefined : quotedAt(words, quote, occurrence, from);
   const anchor = cardAnchorOf(place);
   const own = new Map(
     [record.id, ...entries.map((entry) => entry.id)].flatMap(
@@ -359,6 +359,19 @@ function storedParentOf(
   drawn: ReadonlySet<string>,
   key: string
 ): string {
+  for (const parent of ancestorsOf(node, onText)) {
+    const id = idOf(parent.id);
+    if (id === key || drawn.has(id)) return id;
+  }
+  return key;
+}
+
+/** The nodes above `node` in the read, nearest first: its `parent`, then each one's own parent as
+ *  the answer holds it. A chain that runs in a circle ends where it comes round. */
+function* ancestorsOf(
+  node: TreeAnswerNode,
+  onText: OnTextReads
+): Generator<NonNullable<TreeAnswerNode["parent"]>> {
   const passed = new Set<string>();
   for (
     let parent = node.parent;
@@ -366,10 +379,8 @@ function storedParentOf(
     parent = onText.nodes.get(parent.id)?.parent ?? null
   ) {
     passed.add(parent.id);
-    const id = idOf(parent.id);
-    if (id === key || drawn.has(id)) return id;
+    yield parent;
   }
-  return key;
 }
 
 /** The anchor the card draws: the place's own, with its quote cut to one line (`quoteLine`). */
@@ -408,8 +419,9 @@ function cardAnchorOf(place: TextPlace): Anchor {
 }
 
 /** Where match `occurrence` of `quote` starts in `words`, counting from `from` and overlapping
- *  matches included, as `quoteAnchor` counts; undefined where there is no such match. */
-function matchAt(
+ *  matches included, as `quoteAnchor` counts, with the quote's white space read as `plainWords`
+ *  reads it; undefined where there is no such match or the quote holds no words. */
+function quotedAt(
   words: string,
   quote: string,
   occurrence: number,
@@ -417,9 +429,7 @@ function matchAt(
 ): number | undefined {
   const wanted = quote.replace(/\s+/gu, " ").trim();
   if (wanted === "") return undefined;
-  let at = words.indexOf(wanted, from);
-  for (let seen = 0; seen < occurrence && at !== -1; seen += 1) at = words.indexOf(wanted, at + 1);
-  return at === -1 ? undefined : at;
+  return matchAt(words, wanted, occurrence, from, words.length);
 }
 
 /** How two times stand, by the instants they name, and by their text where either is no
@@ -521,17 +531,11 @@ function lensesOf(
 function hasThreadLens(onText: OnTextReads, items: ReadonlySet<string>): boolean {
   for (const node of onText.nodes.values()) {
     if (node.supertag !== "lens") continue;
-    const passed = new Set<string>();
-    for (
-      let parent = node.parent;
-      parent !== null && !passed.has(parent.id);
-      parent = onText.nodes.get(parent.id)?.parent ?? null
-    ) {
+    for (const parent of ancestorsOf(node, onText)) {
       if (ITEM_KINDS[parent.supertag] === true) {
         if (items.has(parent.id)) return true;
         break;
       }
-      passed.add(parent.id);
     }
   }
   return false;

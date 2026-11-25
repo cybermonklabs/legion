@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { IssueDetails } from "../../../api/types";
 import { borderDefault, surfaceBg, textPrimaryOnSurface } from "../../../theme/classes";
 import { MARGIN_WORDS, type Preset } from "../page-words";
-import { rowTextOf, textRuns } from "./row-text-runs";
+import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
 import type { SelectedWords } from "./SelectionComposer";
 import { quoteOf } from "./selection-quote";
 import { quotedNodeOf, useTextComposer } from "./TextMargin";
@@ -50,14 +50,13 @@ const ROW = "[data-node-id]";
 const TEXT_BLOCK = "p, h1, h2, h3, h4, h5, h6, pre, li, td, th, dt, dd";
 
 /**
- * Whether `range` takes the words of one text block of `words`, the row's words element: the
- * block of the first character it takes is the block of its last, its edges read as `quoteOf`
- * reads them (a range that ends at the start of the next block ends in the block before). The
- * server's search refuses words that span text blocks (`pmdoc.ErrTargetSpansBlocks`), so such a
- * selection takes no control, as one across two blocks of an item takes none (`quoteOf`).
+ * Whether `range` takes the words of one text block of the row's words element, whose runs are
+ * `runs`: the block of the first character it takes is the block of its last, its edges read as
+ * `quoteOf` reads them (a range that ends at the start of the next block ends in the block
+ * before). The server's search refuses words that span text blocks (`pmdoc.ErrTargetSpansBlocks`),
+ * so such a selection takes no control, as one across two blocks of an item takes none (`quoteOf`).
  */
-function inOneTextBlock(range: Range, words: HTMLElement): boolean {
-  const runs = textRuns(words);
+function inOneTextBlock(range: Range, runs: TextRuns): boolean {
   const start = runs.offsetOf(range.startContainer, range.startOffset);
   const end = runs.offsetOf(range.endContainer, range.endOffset);
   if (start === null || end === null) return false;
@@ -86,9 +85,12 @@ function selectedIn(view: ViewThreads, page: string): Selected | null {
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
   if (writeFor(subjectOf(node, page), MOUNTED_GATES) === null) return null;
   const quoted = quotedNodeOf(view, nodeId);
-  const quote = quoted === undefined ? null : quoteOf(selection, row, quoted);
   const words = rowTextOf(row);
-  if (quote === null || words === null || !inOneTextBlock(range, words)) return null;
+  if (quoted === undefined || words === null) return null;
+  // The row's words are read once, for the quote and for its text blocks.
+  const runs = textRuns(words);
+  const quote = quoteOf(selection, row, quoted, runs);
+  if (quote === null || !inOneTextBlock(range, runs)) return null;
   const rects = range.getClientRects();
   const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
   return {
