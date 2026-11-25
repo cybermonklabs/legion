@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The `dispatch ask` and `dispatch edit-ask` descriptions, which their `--help` prints, no longer
+  tell every ask to give a recommendation, and `dispatch ask`'s no longer tells it to keep an
+  option not to act (Hold). They say that a question between two or more real choices gives one
+  recommendation and its reason, and that a request for one act only the person can do (an
+  approval, a credential, a grant, a setting of their own account) says what the act is, what it
+  changes and how to do it, gives no recommendation and has the two options Done and Can't. The
+  options carry only the real choices: none that breaks the agent's rules or that no one would
+  choose. `dispatch ask`'s also says to ask for a decision only when two or more choices are real,
+  to state a safer alternative as a fact and never as an option, and to offer an option not to act
+  only where not acting is a real choice whose cost the question names.
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

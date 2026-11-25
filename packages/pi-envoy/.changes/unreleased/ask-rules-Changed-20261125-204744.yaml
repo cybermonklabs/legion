@@ -1,0 +1,21 @@
+kind: Changed
+body: |-
+  The `dispatch` skill states four ask rules in "Asks and ask blocks". Ask a question only between
+  two or more real choices, and make a choice that is the only real one. Give each choice's cost
+  and one recommendation with its reason. Ask for one act only the person can do as that act, with
+  no recommendation and the options `Done` and `Can't`. Add no option that breaks the rules or that
+  no one would choose, and add an option not to act only where the question names its cost. The
+  skill's defect bullet has the agent fix a hard-to-use command in its own pull request, and
+  coordinate only with an open pull request that changes the same file, where it sent the defect
+  to another project's controller. `dispatch-writing-specs` points its ask bullet at those rules in
+  place of "2 to 4 options".
+
+  AskGate's rules no longer say that every good ask has a recommendation: an ask between real
+  choices has one, and an ask for one act only the person can do has none. Its first authority
+  failure keeps its `blocker` for an ask whose whole content is a click on a pull request that an
+  agent identity may approve. It passes an approval that the repository's rules require of the
+  person and that no agent identity can give, such as a required code owner's review, asked as
+  that one act with `Done`/`Can't` and no recommendation.
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

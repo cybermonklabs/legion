@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The Legion skills ask as the `dispatch` skill's ask rules say. The architect no longer asks a
+  person with a recommendation in every ask. A finding ask holds only the real choices, gives each
+  one's effect and one recommendation with its reason, and names what its `Do not file` option
+  costs.
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

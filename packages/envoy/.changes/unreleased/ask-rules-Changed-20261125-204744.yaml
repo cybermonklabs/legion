@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The `dispatch_ask` and `dispatch_edit_ask` entries of `GET /api/v1/going/catalogue` carry the
+  new ask rules of `@legion/contracts`: a question between two or more real choices gives one
+  recommendation and its reason, a request for one act only the person can do gives none and has
+  the two options Done and Can't, and an option not to act goes in only where not acting is a real
+  choice whose cost the question names. They no longer tell every ask to give a recommendation
+  and to keep an option not to act (Hold).
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

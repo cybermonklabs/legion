@@ -197,7 +197,22 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // words name the list the command replaces. Counted as this test counts, over the staged skills,
 // the three stand at 2,334 words, 6 under the bound: the other edits of the three since #5051
 // hold the words the two counts above leave out.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+//
+// The bound moved again by what an approved requirement costs when R52 of INFRA-898's spec v153,
+// approved on 2026-11-25, put five rules about asks and ownership in skills/dispatch/SKILL.md, the
+// skill every session with Dispatch reads. Four are in "Asks and ask blocks". An agent asks a
+// question only between two or more real choices, and makes a choice that is the only real one.
+// It gives each choice's cost and one recommendation. It asks for an act only the person can do as
+// that act, with no recommendation and the options `Done` and `Can't`. It adds no option that
+// breaks the rules or that no one would choose, and an option not to act only with its cost. The
+// fifth is the defect bullet, which now has the agent fix a hard-to-use command in its own pull
+// request and coordinate only with an open pull request that changes the same file, where it sent
+// the defect to another project's controller. No other skill holds these rules: the ask bullet of
+// dispatch-writing-specs links that section where it said "2 to 4 options", at the same count.
+// Counted as this test counts, over the staged skills, the three stand at 2,334 + 145 = 2,479
+// words, and the bound moves from 2,340 by those 145 to 2,485, keeping the margin of 6 under it
+// and adding none.
+test("the three Dispatch skills total fewer than 2,485 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -207,7 +222,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_485);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The `dispatch` skill this plugin ships states the ask rules. Ask a question only between two or
+  more real choices. Give each choice's cost and one recommendation. Ask for one act only the
+  person can do as that act, with no recommendation and the options `Done` and `Can't`. Add no
+  option that breaks the rules or that no one would choose. The skill's defect bullet has the agent
+  fix a hard-to-use command in its own pull request, and coordinate only with an open pull request
+  that changes the same file. The Legion skills the plugin builds for a Claude Code role ask by the
+  same rules.
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The planner's role prompt no longer asks with one recommendation in every ask. It asks a
+  question only when its answer changes what the tree delivers and two or more choices are real,
+  and makes a choice that is the only real one. A question names each real choice's cost and gives
+  one recommendation with its reason. A request for an act only the person can do says what the
+  act is, what it changes and how to do it, with no recommendation and the options `Done` and
+  `Can't`. No option breaks the planner's rules or is one that no one would choose, and an option
+  not to act goes in only where the question names its cost.
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

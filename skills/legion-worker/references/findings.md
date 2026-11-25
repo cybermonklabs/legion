@@ -7,8 +7,8 @@ Read it when you find a problem your issue does not cover (a defect in another c
 A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
 1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in the PR body.
-2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
-3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
+2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It puts it on the open issue that tracks it, hands it to a running tree whose pull request can carry the fix, or files a Legion root.
+3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, a change of scope, cost or risk) is a `dispatch ask`, with one recommendation where its options are real choices (*What the ask says*).
 
 A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
 
@@ -36,7 +36,7 @@ An ask goes on the controller's report issue while it is open: the issue the dep
 
 ## What the ask says
 
-The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Clear defect from <your role token>` for a clear defect no controller took, else `Finding from <your role token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect and your recommendation. A clear defect carries the fix instead, with `Hand it to the owning tree` as the first, recommended option. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
+The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Clear defect from <your role token>` for a clear defect no controller took, else `Finding from <your role token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect, and your recommendation with its reason where the options are real choices (`skill://dispatch/SKILL.md#asks-and-ask-blocks`). Offer only the real choices. A clear defect carries the fix instead, with `Hand it over` as the first, recommended option. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
 
 ```bash
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
@@ -44,11 +44,11 @@ dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
 EOF
 # Keep `File it for Legion` only when your Legion addressing line lists the repository where the fix belongs.
 dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --question-file - \
-  --option 'File an issue: <what it would track, and who would own it>' \
+  --option 'File an issue: <what it would track, and who would work it>' \
   --option 'File it for Legion: Legion works it once it is filed' \
-  --option 'Do not file: <what stays as it is>' <<'EOF'
+  --option 'Do not file: <what stays as it is, and what that costs>' <<'EOF'
 Finding from <your role token>
-<what went wrong, where and to whom, with dispatch://<KEY> and the numbers; where the fix belongs; what each option does to whom; your recommendation and why>
+<what went wrong, where and to whom, with dispatch://<KEY> and the numbers; where the fix belongs; what each option does to whom; where the options are real choices, your recommendation and why>
 EOF
 ```
 

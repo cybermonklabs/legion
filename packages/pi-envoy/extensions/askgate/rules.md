@@ -41,13 +41,19 @@ access 7.) These shapes fail it:
 1. **The whole ask is a click on a pull request** — approve, review, or
    merge a PR, such as "the only step left is your approval", "it needs
    your approval and nothing more", or `Done`/`Can't` under "Merge the two
-   open pull requests". Agents approve and merge pull requests.
-   The person is not a step in a merge.
+   open pull requests". Agents approve and merge a pull request that an
+   agent identity may approve.
+   The person is not a step in that merge.
    `blocker` when `kind` is `action`. (Not this: a real risk question about
    *whether* to merge on the evidence in hand — "merge now on the test
    results, or wait a week in staging" — that is their risk appetite and passes. Not
    this: an ask whose main action is their own — rotate their keys, log in, tap
-   the key — with a PR to look at mentioned alongside; that passes whole.)
+   the key — with a PR to look at mentioned alongside; that passes whole. Not
+   this: an approval that the repository's rules require of the person and
+   that no agent identity can give, such as a required code owner's review
+   when the ask says that the person is the only code owner. Asked as that one
+   act — what it is, what the merge changes, how to give it, `Done`/`Can't`
+   and no recommendation — it passes.)
 2. **A chore the agent could run with a credential it already holds**: the
    ask hands the person a command that runs under a credential the ask itself
    names as the agent's — an `aws …` command under a named profile (the
@@ -152,9 +158,9 @@ the same text states have already decided: take each option in turn against
 what the text itself reports, a measurement, a rule it quotes, a limit or a
 deadline it names, and when all but one of them contradict one of those
 facts, the text has answered its own question and what is left to write is a
-report of the answer, not an ask. A recommendation with reasons is not this — every good ask has
-one, and neither is a choice the text leaves genuinely open on taste, risk or
-cost once its facts are in.
+report of the answer, not an ask. A recommendation with reasons is not this — an ask between
+real choices has one, and an ask for one act only the person can do has none. A choice the
+text leaves genuinely open on taste, risk or cost once its facts are in is not this either.
 
 ### Self-contained failures (`concern`)
 
@@ -266,9 +272,12 @@ without complaint. Each is silence:
   person, team or model name, and any label the person used themselves in the
   transcript. Whether any other label is explained is self-contained 3.
 - **The `title` field** (it is the issue's).
-- **No recommendation.** Preferred, not required; they answered every such ask.
-- **A recommendation being present**, or the ask's reasoning supporting it.
-  That is what a good ask looks like, not evidence the question is settled.
+- **No recommendation.** An ask for one act only the person can do carries
+  none. An ask between real choices should carry one, but they answered every
+  such ask without it.
+- **A recommendation being present** in an ask between real choices, or the
+  ask's reasoning supporting it. That is what a good ask between real choices
+  looks like, not evidence the question is settled.
 - **Design and product decisions with a recommendation.** How Dispatch,
   Legion, the platform, an API, a schema, a UI, a data model, a rollout, or a
   roadmap should work; what to build next; which of several designs. These
@@ -300,7 +309,8 @@ We invented these examples. Each one shows a shape that passes.
   ahead? … I recommend a month." Customer-facing timing with a
   recommendation: passes.
 - "Design gate for LEGION-N… Change: the import page takes files of any
-  size… Recommendation: Approve." A configured gate: passes.
+  size… Approve it, or say what to revise." A configured gate, asked as the
+  approval it is, with no recommendation: passes.
 - "Every test site shares one disk, and the disk is almost full… The
   fastest way to make room is to delete the oldest site… Recommendation:
   delete it only if you confirm nobody still uses it." Deleting a shared
@@ -326,6 +336,12 @@ We invented these examples. Each one shows a shape that passes.
   large." with options `Include them` / `Leave them out`. The link reaches
   the person's words, and the cost bears on the choice: passes, 10, 12 and
   13 included.
+- "The repository's rules require a code owner's review before the pull
+  request that adds the retry button merges, and you are its only code
+  owner, so no agent identity can give it… The merge adds the retry button
+  to the export page. Approve it on the pull request's review page." with
+  `Done`/`Can't` and no recommendation. An approval only the person can
+  give, asked as that one act: passes.
 
 ## Asks that fail — examples
 
@@ -333,8 +349,9 @@ We invented these examples. Each one shows a shape that fails, and the
 failure it shows.
 
 - "Approve the pull request that adds the retry button… The only step left
-  is your approval." `Done`/`Can't` → authority 1, `blocker`. Agents
-  approve and merge pull requests, and the person is not a step in that.
+  is your approval." `Done`/`Can't` → authority 1, `blocker`. The ask names
+  no rule that needs the person's own review, so the agents approve and
+  merge it, and the person is not a step in that.
 - "Your approval is needed to turn on versioning for the test bucket…
   Command: `AWS_PROFILE=test aws s3api put-bucket-versioning …`" →
   authority 2, `blocker`. The command runs under a profile the ask names

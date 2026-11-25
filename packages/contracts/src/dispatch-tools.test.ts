@@ -1834,7 +1834,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_ask",
-      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, never offer it cut down, and keep an option not to act (Hold). Set urgency high when your work halts on the answer, and keep working on everything else.",
+      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, and never offer it cut down. Offer an option not to act (Hold) only where not acting is a real choice and the question names its cost. Set urgency high when your work halts on the answer, and keep working on everything else.",
     ],
     [
       "dispatch_issue_update",
