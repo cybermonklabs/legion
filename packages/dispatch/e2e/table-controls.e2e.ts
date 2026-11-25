@@ -5967,7 +5967,7 @@ interface PickListSeed {
   readonly member: string;
   /** The issue whose spec, and whose `notes.md`, are each in two versions. */
   readonly documented: string;
-  /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
+  /** The issue whose header's Assignee, Repository and Edit priorities are read, assigned to
    *  alice and inheriting CORE's default repository. */
   readonly header: string;
   /** For each width, three questions waiting on alice that the Inbox lists newest first, one
@@ -6075,9 +6075,9 @@ async function seedPickLists(): Promise<PickListSeed> {
   };
 }
 
-/** The twenty-six lists, in the order the row reads them at one width; `step` is the width's
- *  place, which picks the question it hands on, the issue it addresses, and the person and the
- *  repository the issue header's lists and the Settings page's people lists pick. */
+/** The twenty-five single-pick lists, in the order the row reads them at one width; `step` is the
+ *  width's place, which picks the question it hands on, the issue it addresses, and the person
+ *  and the repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const main = page.getByTestId("main-content");
   const palette = page.getByRole("dialog", { name: "Search" });
@@ -6119,7 +6119,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
   const assignee = listTrigger(page, `Assignee of ${seed.header}`);
   const repository = listTrigger(page, `Repository of ${seed.header}`);
-  const advance = listTrigger(page, "Priority to advance");
   const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
   const dialogProject = listTrigger(createIssueDialog, "Project");
   // The Settings page's lists. The New project form's Default assignee is the one whose label
@@ -6134,7 +6133,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
   const [repositoryWord, repositoryLeft, repositoryPicked] =
     step === 0 ? ["acme/gadgets", [], /^acme\/gadgets$/] : ["inh", ["Inherit"], /^acme\/widgets$/];
-  const reviewQueue = /^P\d+ Cut the review queue$/;
   // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
   // the row the column shows; without it, in the row itself.
   const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
@@ -6440,20 +6438,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: repositoryPicked,
     },
     {
-      // A pick stages the priority, which Add would write.
-      name: "the issue header's Priority to advance",
-      reach: async () => {
-        await page
-          .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
-          .click();
-      },
-      trigger: advance,
-      value: shown(advance),
-      word: "queue",
-      left: [reviewQueue],
-      picked: reviewQueue,
-    },
-    {
       // Opened with `c` over the issue page, whose project it starts on, and read once its title
       // has the focus the dialog gives it on opening. The focus is taken off the list read before
       // this one first: a character typed on a list's closed trigger is the list's search, so `c`
@@ -6537,7 +6521,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery mode
 // (`AgentsPage`), the Spec tab's Version (`SpecToolbar`), a document page's Version
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
-// (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
+// (`AssigneeControl`), Repository (`RepoControl`) and Edit priorities (`IssuePriorityLine`),
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
@@ -6584,7 +6568,10 @@ test("every list of options a reader picks from holds a text box that narrows it
   const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
    *  in that panel's one text box; or records why not, and shuts what the press opened. */
-  const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
+  const open = async (
+    list: Pick<PickList, "trigger">,
+    at: string
+  ): Promise<Locator | undefined> => {
     await list.trigger.click();
     const named = await expect(list.trigger)
       .toHaveAttribute("aria-controls", /\S/)
@@ -6637,9 +6624,8 @@ test("every list of options a reader picks from holds a text box that narrows it
         missing.push(`${at}: no control opens the list`);
         continue;
       }
-      // A trigger says its list is loading until the read of its options lands, as the issue
-      // header's Priority to advance says "Loading priorities…": read before then, the value
-      // the row compares each later read with would be one no press of the reader's gave.
+      // A trigger says its list is loading until the read of its options lands: read before then,
+      // the value the row compares each later read with would be one no press of the reader's gave.
       await expect
         .poll(() => list.value(), { message: `${at}: the list's options never loaded` })
         .not.toMatch(/^Loading/);
@@ -6731,13 +6717,113 @@ test("every list of options a reader picks from holds a text box that narrows it
         ).toBeFocused();
       }
     }
+    // The issue header's Edit priorities (main's #4316) is the shared list in multi-pick mode:
+    // its trigger stays `+`, Enter toggles the narrowed priority in the draft, and closing saves.
+    const at = `the issue header's Edit priorities at ${size.width}x${size.height}`;
+    const [priorityWord, priorityOption] =
+      step === 0
+        ? ["queue", /^#\d+ Cut the review queue$/]
+        : ["ledger", /^#\d+ Retire the old ledger$/];
+    await page.goto(`/issues/${seed.header}`);
+    const header = page.getByTestId("issue-header");
+    const editPriorities = header.getByRole("button", { exact: true, name: "Edit priorities" });
+    const chipLink = header.getByRole("link", { name: priorityOption });
+    const drawn = await expect(editPriorities)
+      .toBeVisible()
+      .then(
+        () => true,
+        () => false
+      );
+    if (!drawn) {
+      missing.push(`${at}: no control opens the list`);
+    } else {
+      await expect(chipLink, `${at}: the priority is already on the issue`).toHaveCount(0);
+      const escaped = await open({ trigger: editPriorities }, at);
+      if (escaped !== undefined) {
+        await expect
+          .poll(() => escaped.count(), {
+            message: `${at}: the list holds no option "${priorityWord}" does not match`,
+          })
+          .toBeGreaterThan(1);
+        await page.keyboard.type(priorityWord);
+        await expect(
+          escaped,
+          `${at}: "${priorityWord}" left other options than its own`
+        ).toHaveText([priorityOption]);
+        await page.keyboard.press("Escape");
+        await expect(editPriorities, `${at}: Escape left the list open`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+        await expect(editPriorities, `${at}: Escape left the focus elsewhere`).toBeFocused();
+        await expect(chipLink, `${at}: Escape added a priority`).toHaveCount(0);
+
+        const tab = step === 0 ? "Tab" : "Shift+Tab";
+        const tabbed = await open({ trigger: editPriorities }, at);
+        if (tabbed !== undefined) {
+          await page.keyboard.press(tab);
+          await expect(editPriorities, `${at}: ${tab} left the list open`).toHaveAttribute(
+            "aria-expanded",
+            "false"
+          );
+          await expect(editPriorities, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
+          await expect(chipLink, `${at}: ${tab} added a priority`).toHaveCount(0);
+        }
+
+        await page.keyboard.press("?");
+        await nextFrames(page);
+        if ((await shortcuts.count()) > 0) {
+          keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+          await page.keyboard.press("Escape");
+          await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
+          await editPriorities.focus();
+        } else {
+          const typed = listOf(editPriorities).locator(TEXT_BOXES);
+          await expect(
+            typed,
+            `${at}: ? on the closed trigger is not in its list's text box`
+          ).toHaveValue("?");
+          await expect(
+            typed,
+            `${at}: ? on the closed trigger left the focus off its list`
+          ).toBeFocused();
+          await page.keyboard.press("Escape");
+          await expect(editPriorities, `${at}: Escape left the list ? opened open`).toHaveAttribute(
+            "aria-expanded",
+            "false"
+          );
+          await expect(chipLink, `${at}: ? and Escape added a priority`).toHaveCount(0);
+        }
+
+        const entered = await open({ trigger: editPriorities }, at);
+        if (entered !== undefined) {
+          await page.keyboard.type(priorityWord);
+          await expect(
+            entered,
+            `${at}: "${priorityWord}" left other options than its own`
+          ).toHaveText([priorityOption]);
+          await page.keyboard.press("Enter");
+          await expect(
+            entered.first(),
+            `${at}: Enter did not tick the option "${priorityWord}" left`
+          ).toHaveAttribute("aria-selected", "true");
+          await page.keyboard.press("Escape");
+          await expect(
+            editPriorities,
+            `${at}: Escape left the list open after pick`
+          ).toHaveAttribute("aria-expanded", "false");
+          await expect(editPriorities, `${at}: closing left the focus elsewhere`).toBeFocused();
+          await expect(chipLink, `${at}: closing did not save the ticked priority`).toBeVisible();
+        }
+      }
+    }
   }
   expect(missing, missing.join("; ")).toEqual([]);
   expect(keyed, keyed.join("; ")).toEqual([]);
 });
 
-/** A title wider than any list's trigger is at 1024x768, given to an epic, a priority and a named
- *  version, each of which a list then picks. */
+/** A title wider than any list's trigger is at 1024x768, given to an epic and a named version,
+ *  each of which a list then picks. */
 const LONG_TITLE =
   "Retire the ledger mirror and hand every lease it still holds to the regional daemons";
 
@@ -6797,14 +6883,13 @@ function longValueDrawing(trigger: Locator): Promise<string[]> {
 // SLOW(>=2s): three pages and a document version, four lists each picked from at 1024x768.
 // INFRA-3135, round 12: below 1280 px `styles.css` makes every button a flex box, whose own text
 // ends in no ellipsis (`TruncatedText`), so a list's trigger cut a long picked value mid-word; no
-// trigger showed that it opens a list, as a `<select>`'s arrow did; and Priority to advance was
-// as wide as the words it showed, so the Add and Cancel beside it moved at each pick. At 1024x768,
-// between `md` and `xl`, four lists of the shared list (`components/MultiSelect.tsx`) each pick a
-// value longer than their trigger - the List's Move to epic, an epic's Merge into another epic,
-// the Spec tab's Version and the issue header's Priority to advance: the element holding the
-// value cuts it and ends it in an ellipsis, and the chevron is whole at the trigger's end. And
-// Priority to advance is one width before a pick, after a short one and after a long one.
-test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, and Priority to advance keeps its width across picks, at 1024x768", async ({
+// trigger showed that it opens a list, as a `<select>`'s arrow did. At 1024x768, between `md`
+// and `xl`, three lists of the shared list (`components/MultiSelect.tsx`) each pick a value
+// longer than their trigger - the List's Move to epic, an epic's Merge into another epic, and
+// the Spec tab's Version: the element holding the value cuts it and ends it in an ellipsis, and
+// the chevron is whole at the trigger's end. (Priority to advance became the fixed `+` multi-pick
+// Edit priorities trigger in main's #4316, which displays no picked title and has no chevron.)
+test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, at 1024x768", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 768, width: 1024 });
@@ -6823,7 +6908,6 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
     title: "Lease handover",
   });
   await createNamedVersion(documented.primary_artifact_id, LONG_TITLE);
-  for (const title of ["Ship", LONG_TITLE]) await createPriority({ owner: "alice", title });
   const wrong: string[] = [];
   /** Opens `trigger`'s list, types `word`, and takes the one option the word leaves with Enter. */
   const pick = async (trigger: Locator, word: string) => {
@@ -6865,24 +6949,6 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
   const version = listTrigger(page, "Version");
   await pick(version, "regional");
   await read("the Spec tab's Version", version);
-
-  await page.goto(`/issues/${member.key}`);
-  await page.getByRole("button", { exact: true, name: `Add a priority to ${member.key}` }).click();
-  const advance = listTrigger(page, "Priority to advance");
-  const width = () => advance.evaluate((node) => node.getBoundingClientRect().width);
-  await expect(advance).toHaveText("Choose a priority");
-  const widths = [await width()];
-  await pick(advance, "ship");
-  await expect(advance).toHaveText(/^P\d+ Ship$/);
-  widths.push(await width());
-  await pick(advance, "regional");
-  await read("the issue header's Priority to advance", advance);
-  widths.push(await width());
-  if (widths.some((each) => Math.abs(each - widths[0]) > 0.5)) {
-    wrong.push(
-      `the issue header's Priority to advance is ${widths.join(", ")} px wide before a pick, after a short one and after a long one`
-    );
-  }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
