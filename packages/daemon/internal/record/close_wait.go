@@ -397,17 +397,22 @@ func productionTerm(f CloseFacts) string {
 }
 
 // unapprovedSince says whether a check block of the approved version was removed or reworded in
-// the current version. A block the current version holds as it was approved is the approved
-// check. So is a block whose only difference is the attributes subject and program, where the
-// approved block held neither: the comparison takes the two out of both blocks, and reads equal
-// blocks as the approved check only where the approved block holds neither. Every other difference
-// is a rewording: a changed value, a removed value, and a mark gained where the approved block held
-// one of the two. A check added after the approval is no rewording: it holds the close like any
-// other check. Where no version is approved, no approved set exists to weaken, and nothing is
-// unapproved.
-func unapprovedSince(approval *CheckApproval) bool {
+// the current version (UnapprovedChecks).
+func unapprovedSince(approval *CheckApproval) bool { return len(UnapprovedChecks(approval)) > 0 }
+
+// UnapprovedChecks is the id of each check block of the approved version that the current version
+// removed or reworded, in the approved version's order: the checks the stored wait names as
+// waiting for a person's approval. A block the current version holds as it was approved is the
+// approved check. So is a block whose only difference is the attributes subject and program,
+// where the approved block held neither: the comparison takes the two out of both blocks, and
+// reads equal blocks as the approved check only where the approved block holds neither. Every
+// other difference is a rewording: a changed value, a removed value, and a mark gained where the
+// approved block held one of the two. A check added after the approval is no rewording: it holds
+// the close like any other check. Where no version is approved, no approved set exists to
+// weaken, and it is nil.
+func UnapprovedChecks(approval *CheckApproval) []string {
 	if approval == nil || approval.Version == 0 {
-		return false
+		return nil
 	}
 	current := make(map[string]dispatch.DocumentBlock, len(approval.Current))
 	for _, block := range approval.Current {
@@ -415,16 +420,16 @@ func unapprovedSince(approval *CheckApproval) bool {
 			current[block.ID] = block
 		}
 	}
+	var unapproved []string
 	for _, approved := range approval.Approved {
 		if approved.Type != checkBlockType {
 			continue
 		}
-		now, kept := current[approved.ID]
-		if !kept || !sameCheckBlock(approved, now) {
-			return true
+		if now, kept := current[approved.ID]; !kept || !sameCheckBlock(approved, now) {
+			unapproved = append(unapproved, approved.ID)
 		}
 	}
-	return false
+	return unapproved
 }
 
 // sameCheckBlock says whether now is the check approved approved: the same text and attributes,
