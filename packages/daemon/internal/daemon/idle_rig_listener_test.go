@@ -25,17 +25,17 @@ import (
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — on a listening socket the test holds for its
-// whole run and hands every listener it starts as ENVOY_LISTEN_FD, so no other program can take the
-// port, before the first start or between a stop and the next.
+// its own, waited on until /healthz says healthy — but on a listening socket the test holds from
+// the listener's first start until the test ends, handed to each start as ENVOY_LISTEN_FD, so no
+// other program can take the port before the first start or between a stop and the next.
 type idleRigListener struct {
 	t      *testing.T
 	url    string
 	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
-	// socket is the test's copy of the listening socket on port, handed to each start as
-	// ENVOY_LISTEN_FD.
+	// socket is the test's descriptor of the listening socket on port, which each start inherits
+	// as ENVOY_LISTEN_FD.
 	socket *os.File
 	port   int
 	stop   func()
@@ -73,8 +73,8 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_LISTEN_FD=3",
 		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
-	// ExtraFiles entry 0 is descriptor 3 in the listener. The test keeps its own copy open, so the
-	// port stays held while no listener runs.
+	// ExtraFiles' first entry is the listener's descriptor 3. The test keeps its own descriptor of
+	// the socket open, so the port stays held while no listener runs.
 	cmd.ExtraFiles = []*os.File{socket}
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {

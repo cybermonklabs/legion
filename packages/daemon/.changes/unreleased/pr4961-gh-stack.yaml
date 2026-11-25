@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    The worker image carries `gh stack` (github/gh-stack v0.3.0), the GitHub CLI extension for
+    stacked pull requests, pinned by version and by the sha256 of its binary, at
+    /opt/legion/gh-extensions/gh-stack. gh reads an extension only from its data directory, which
+    in a pod is on the issue's scratch, so the worker shim links each extension the image ships
+    there before the agent starts, and leaves an entry already there as it is. The pod's `gh`
+    wrapper still refuses extensions, so `gh stack` is not yet usable through it. The merger's
+    instructions now say what to do with a pull request that is part of a stack, which GitHub
+    lets no GitHub App merge or queue while it is in one: wait while every pull request below it
+    lands through its own issue, then take the stack apart, after which it merges as any other.
+time: 2026-11-22T06:26:10Z
+custom:
+    Issue: pr4961

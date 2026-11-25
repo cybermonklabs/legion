@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The approval page's two cookies (internal/cipher/approval): the session a sign-in makes, and
@@ -528,8 +530,15 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 			t.Fatalf("ada's page for %s on the short-session broker offers no decision", recordB)
 		}
 		old := &http.Cookie{Name: sessionCookieName, Value: b.Cookie(t, sessionCookieName)}
-		// The one fixed wait: past the session's two-second absolute expiry.
-		time.Sleep(3 * time.Second)
+		// The session's two-second absolute expiry is this broker's own setting, in a process of
+		// its own, so what the row waits for is the first read that shows the session gone — a
+		// GET answered with the sign-in redirect — rather than a span of its own. Each read is a
+		// page the address's bucket pays for, so it is asked every tenth of a second.
+		expired := newBrowser(t)
+		testwait.UntilPolling(t, 100*time.Millisecond, "the short-session broker's session to pass its expiry", func() (string, bool) {
+			res := expired.Get(t, "/approve/"+recordB, old)
+			return fmt.Sprintf("%d to %q", res.Status, res.Header.Get("Location")), res.Status == http.StatusFound
+		})
 		replay := newBrowser(t)
 		res := replay.Post(t, "/approve", ciphertest.Decision(form, "approve"), map[string]string{"Origin": base}, old)
 		if res.Status != http.StatusOK || !strings.Contains(ciphertest.PageText(t, res.Body), "Not signed in") ||
@@ -631,7 +640,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 
 		for _, process := range []*brokerProcess{first, second} {
 			process.Terminate(t)
-			if err := process.AwaitExit(t, stopTimeout); err != nil {
+			if err := process.AwaitExit(t); err != nil {
 				t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 			}
 		}

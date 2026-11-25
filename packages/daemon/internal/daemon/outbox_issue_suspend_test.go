@@ -50,6 +50,7 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // session is the store's and outlives the Sandbox, which owned no part of it. The tree stays live
 // until its linger closes, and its cleanup then finds the issue's Sandbox already gone.
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
@@ -175,10 +176,10 @@ func issueSandboxOptions(t *testing.T, st sandbox.Store, log *slog.Logger) sandb
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, log),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, log),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: log,
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+		RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,
 	}
 }
 
@@ -201,8 +202,8 @@ func issueSandboxRuntime(t *testing.T, api *issueSandboxAPI, st sandbox.Store) *
 
 // sandboxTeardowns is the idle rig's runtime with the issue's two teardowns, the close's
 // (SuspendIssue) and the release's (ReleaseIssue), made by the real Sandbox runtime over the
-// test's API. What else a release asks of the runtime — the bundle, the role stops, and the pod
-// the idle pass reads — stays the rig's.
+// test's API. What else a release asks of the runtime — the workspace read, the role stops, and
+// the pod the idle pass reads — stays the rig's.
 type sandboxTeardowns struct {
 	*releaseRuntime
 	sandboxes *sandbox.Runtime
@@ -212,8 +213,9 @@ func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string,
 	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
 }
 
-func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize, writing)
 }
 
 // A release leaves the issue in the workflow, so its teardown row (record.IssueRelease) asks the
@@ -223,7 +225,18 @@ func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string,
 // release rules do this: the idle release, and the release of a pod no claim of the issue owns. A
 // close takes the issue out of the workflow, and its row (record.IssueSuspend) deletes the kept
 // volume's Sandbox in the foreground too.
+//
+// A teardown whose Sandbox another hand deleted after the release was marked finds none, and the
+// runtime answers that it released none. The release of a pod no claim owns then records no pod
+// release and logs no release line, since it took nothing, and logs that it found no Sandbox to
+// release. The idle release records its release and logs its line all the same, since its stops
+// suspended the roles a wake pairs with that record. Both still do what is owed whoever took the
+// pod: the end of the pod runs, the claims the idle release's stops suspended get their backstop,
+// and the mark is cleared. A kept Sandbox the release of a pod no claim owns has just released is
+// not released again by the pass after it, though the runtime's store has not yet shown the
+// release's record (INFRA-3149).
 func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overSandbox is the idle rig whose issue's Sandbox the test API holds, Running, owning a kept
 	// volume where kept is true and no volume otherwise, with the issue's teardowns made by the
@@ -253,12 +266,20 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 	for _, release := range []struct {
 		name  string
 		queue func(t *testing.T, rig *idleRig)
+		// backstops is how many backstops the release arms: one for the implementer the idle
+		// release's stop suspended, none for the release that suspends no claim.
+		backstops int
+		// line is the release's own line, and recordsGone whether its teardown records the release
+		// when the runtime found no Sandbox to release: the idle release does, the release that
+		// suspends no claim does not.
+		line        string
+		recordsGone bool
 	}{
-		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }},
+		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, 1, idleRigIdleTeardown, true},
 		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
 			rig.stoppedImplementer(t, false)
 			rig.w.releaseUnownedPods(ctx)
-		}},
+		}, 0, idleRigUnownedTeardown, false},
 	} {
 		t.Run(release.name+" keeps a kept volume's Sandbox", func(t *testing.T) {
 			rig, api, name := overSandbox(t, true)
@@ -297,7 +318,98 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 			}
 			served(t, api)
 		})
+		t.Run(release.name+" that finds the Sandbox already gone", func(t *testing.T) {
+			rig, api, name := overSandbox(t, false)
+			var logs syncBuffer
+			rig.runner.log = jsonLogger(&logs)
+			rig.runner.backstop = time.Hour
+			var ended []string
+			rig.runner.podEnded = func(_ context.Context, issues []string) { ended = append(ended, issues...) }
+			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
+				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+			}
+			// The Sandbox goes by another hand between the mark and the teardown, as an operator's
+			// own delete of it would take it.
+			api.mu.Lock()
+			api.deleteLocked("sandboxes", name)
+			api.mu.Unlock()
+
+			rig.drain(t)
+
+			if rig.marked(t) {
+				t.Fatal("the release left its mark behind, so its teardown never finished")
+			}
+			records, lines, found := 1, 1, 0
+			if !release.recordsGone {
+				records, lines, found = 0, 0, 1
+			}
+			if releases := rig.records(t).Releases; len(releases) != records {
+				t.Fatalf("releases recorded = %+v, want %d", releases, records)
+			}
+			if got := loggedMessages(t, logs.String(), release.line); len(got) != lines {
+				t.Fatalf("the teardown logged %d lines %q, want %d", len(got), release.line, lines)
+			}
+			nothing := loggedMessages(t, logs.String(), idleRigUnownedFoundNothing)
+			if len(nothing) != found || (found == 1 && nothing[0]["issue"] != rig.issue.Key) {
+				t.Fatalf("the teardown's lines saying it found no Sandbox to release = %v, want %d for %s", nothing, found, rig.issue.Key)
+			}
+			if options, deleted := api.deleted(name); deleted {
+				t.Fatalf("the runtime sent a delete of the Sandbox another hand took (%+v), want none", options)
+			}
+			if !slices.Equal(ended, []string{rig.issue.Key}) {
+				t.Fatalf("the end of the pod ran for %v, want %s once: the pod is gone whoever took it", ended, rig.issue.Key)
+			}
+			var backstops int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and not fired`,
+				rig.issue.Key).Scan(&backstops); err != nil {
+				t.Fatal(err)
+			}
+			if backstops != release.backstops {
+				t.Fatalf("backstops armed = %d, want %d", backstops, release.backstops)
+			}
+			served(t, api)
+		})
 	}
+	t.Run("the release of a pod no claim owns releases a kept volume's Sandbox once", func(t *testing.T) {
+		rig, api, name := overSandbox(t, true)
+		// The daemon's passes read the real runtime's store, as they read the Kubernetes
+		// runtime's in a deployment.
+		pods := rig.sup.deps.Runtime.(*sandboxTeardowns).sandboxes
+		rig.w.idleRuntime = pods
+		idleRigEventually(t, 10*time.Second, "the runtime's store to hold the running kept Sandbox", func() bool {
+			got, present := pods.IssueSandbox(rig.issue.Key)
+			return present && got == name
+		})
+		// The watch holds the release's record until the daemon's next pass has run: the API
+		// answers the teardown's patch, and the runtime's store still holds the kept Sandbox as
+		// the suspension left it, Suspended with no record.
+		release := make(chan struct{})
+		let := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(let)
+		api.holdWatches(release, heldReleaseRecord)
+		rig.stoppedImplementer(t, false)
+		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Contains(queued, "issue_release") {
+			t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+		}
+		rig.drain(t)
+		if got := api.mode(name); got != "Suspended" {
+			t.Fatalf("the kept volume's Sandbox after the release is %s, want it kept, Suspended", got)
+		}
+
+		// The daemon's next pass, while the store does not show the release's record yet.
+		if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); slices.Contains(queued, "issue_release") {
+			t.Fatalf("the pass after the release queued %v, want no second release of the kept Sandbox it released", queued)
+		}
+		let()
+		rig.drain(t)
+		if releases := rig.records(t).Releases; len(releases) != 1 {
+			t.Fatalf("releases recorded = %+v, want the one release of the kept Sandbox", releases)
+		}
+		if rig.marked(t) {
+			t.Fatal("a release's mark is left behind")
+		}
+		served(t, api)
+	})
 	t.Run("a close deletes a kept volume's Sandbox", func(t *testing.T) {
 		rig, api, name := overSandbox(t, true)
 		engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
@@ -343,6 +455,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
 // neither the session id nor the resume path.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
+	t.Parallel()
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
 	// works the phase the root stands in, so admission's pass starts no worker of the root's while
@@ -549,7 +662,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		putOutboxIssue(t, pool, records, child)
 	}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -667,7 +780,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		t.Helper()
 		row := mustOutboxRow(t, issue, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: role, Generation: 1}, due)
 		var id int64
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			id, err = records.EnqueueID(ctx, tx, row)
 			return err
@@ -695,6 +808,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 // itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
 // out of the workflow declines the start while a status the workflow runs in still starts it.
 func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	t.Parallel()
 	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
 	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
@@ -829,6 +943,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
 	// park this door needs: a running root holding its admission slot, the tree's one child under
@@ -1038,14 +1153,14 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// The rows admit.startMidPhaseMembers wrote for the member, which is the only pass that
 		// wrote a start of it here: the phase's own role, the implementer, through
-		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
-		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
+		// workflow.StartOrOwe, which writes one row carrying the phase's resume task (workflow's
+		// Engine.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
 		// slot — and, beside it, one start with no task at all for each other role of the member
 		// that has run, since a role with nothing to do comes back and is told nothing. The
 		// planner is the one such role here: the claim row it kept through the close is the
 		// durable record that it ran, and the tester, the reviewer, the merger and the member's
 		// own sub-architect hold none, so the re-admission starts no session for them at all.
-		resume := workflow.ResumePhaseTask(*carried)
+		resume := resumeTaskOf(t, pool, engine, member.Key)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {
@@ -1145,6 +1260,7 @@ func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.Supe
 // the claim records the row as its newest start, and the issue is still done when the look is
 // running: a look runs behind the close rather than reopening the issue.
 func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

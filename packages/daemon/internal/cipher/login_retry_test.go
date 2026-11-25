@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // loginRoute is the token login's path, which every cause below names, since do wraps a failed

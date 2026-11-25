@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // probe-boot names its configuration only by --config: an argument is refused as start refuses it.

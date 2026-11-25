@@ -881,7 +881,8 @@ describe("DispatchClient", () => {
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
         `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect: check whether it did before retrying it."
+        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
+        "command does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
       expect.objectContaining({ mayHaveReachedDispatch: true })
@@ -1091,7 +1092,9 @@ describe("DispatchClient", () => {
     expect(messages[5]).toBe(
       `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
-        "so it may or may not have taken effect: check whether it did before retrying it."
+        "so it may or may not have taken effect. Dispatch finishes an attempt it received " +
+        "whatever this command does, so read the write back before you send it again: a new " +
+        "command sends it under a new key."
     );
     for (const message of messages) {
       expect(message).not.toContain(user);
@@ -1515,6 +1518,7 @@ test("createProject posts the key, name and actor and answers the created projec
     default_assignee: "alice@example.com",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
+    proven_sessions: false,
   };
   const { fetchImpl, requests } = fakeFetch([jsonResponse(project, 201)]);
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl);

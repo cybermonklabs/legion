@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestNoCallPrintsAPartOfAHostThatCarriesACredential: GCE_METADATA_HOST is a host, so a value with

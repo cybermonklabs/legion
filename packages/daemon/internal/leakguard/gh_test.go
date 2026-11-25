@@ -33,22 +33,31 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	const repo = "invented-org/invented-repo"
 	args := []string{"search", "code", theHost}
 	proven := hexSHA256(theProgram)
-	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+	// guardFor is a guard under check, with program beside it, and the destinations its
+	// visibility was asked of; call is its GhCall under ctx.
+	guardFor := func(t *testing.T, check, program string) (*Guard, *[]string) {
 		t.Helper()
-		var asked []string
+		asked := new([]string)
 		script := leakguardtest.Write(t, t.TempDir(), check)
 		if program != "" {
 			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(program), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		guard := New(Options{
+		return New(Options{
 			Check:      script,
-			Visibility: answers(Public, &asked),
+			Visibility: answers(Public, asked),
 			Env:        fixtureenv.Isolated(t.TempDir()),
-		})
-		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
-		return asked, answer, err
+		}), asked
+	}
+	ghCall := func(guard *Guard, ctx context.Context, writesNothing bool) (GhAnswer, error) {
+		return guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
+	}
+	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+		t.Helper()
+		guard, asked := guardFor(t, check, program)
+		answer, err := ghCall(guard, ctx, writesNothing)
+		return *asked, answer, err
 	}
 	t.Run("a read the check clears", func(t *testing.T) {
 		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
@@ -68,11 +77,12 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	})
 	t.Run("a read whose check runs past its bound", func(t *testing.T) {
 		const theBound = 2 * time.Second
+		guard, asked := guardFor(t, "cat >/dev/null 2>&1\nexec sleep 86400\n", theProgram)
 		ctx, cancel := context.WithTimeout(context.Background(), theBound)
 		defer cancel()
+		var err error
 		started := time.Now()
-		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
-		answeredWithin10s(t, started)
+		answered(t, "the read whose check never answers", func() { _, err = ghCall(guard, ctx, true) })
 		// The stop is the caller's own deadline, not a bound of the guard's shorter than it: a
 		// bound the guard set itself would end the check, and the call, while ctx is still alive,
 		// and stoppedByItsBound would read its shorter seconds as a late start.
@@ -80,9 +90,9 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 			t.Fatalf("the call answered %s after it began, inside the caller's %s: a bound shorter than the caller's stopped the check",
 				time.Since(started).Round(time.Millisecond), theBound)
 		}
-		stoppedByItsBound(t, setupFailure(t, err), "the shared public leak check", theBound)
-		if len(asked) != 0 {
-			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
+		stoppedByItsBound(t, setupFailure(t, err), theBound)
+		if len(*asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read whose check was stopped", *asked)
 		}
 	})
 	for _, tc := range []struct {
@@ -106,57 +116,58 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	}
 }
 
-// stopSaid reads the sentence a setup failure ends with where the end of the caller's context
-// stopped a child (stoppedError.said) for name, the shared check or a read's program: the whole
-// seconds it ran, then the bound it was given or the cancel that stopped it. A test reads the
-// sentence for what stopped the child, its bound or a cancel, and never for its seconds: on a
-// loaded machine a child starts later and runs another whole number of seconds than the test's own
-// bound or cancel gave it, so the numbers are read only against each other (stoppedByItsBound).
-func stopSaid(t *testing.T, failed *SetupFailure, name string) (ran, bound int64, cancelled bool) {
+// theStop is the sentence a setup failure says of a shared check its context stopped
+// (stoppedError.said): the whole seconds the check ran, then the bound it was given or the cancel.
+var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by (?:its bound of (\d+) s|a cancel)$`)
+
+// sharedStop is the shared check's stop as failed says it, failing t where failed says something
+// else: the whole seconds the check ran, and the bound it was given, or a cancel where byBound is
+// false.
+func sharedStop(t *testing.T, failed *SetupFailure) (ran, bound int64, byBound bool) {
 	t.Helper()
-	sentence := regexp.MustCompile(`: ` + regexp.QuoteMeta(name) + ` ran (\d+) s and was stopped by (?:its bound of (\d+) s|(a cancel))$`)
-	said := sentence.FindStringSubmatch(failed.Error())
+	said := theStop.FindStringSubmatch(failed.Why)
 	if said == nil {
-		t.Fatalf("the setup failure says %q, want it to end saying %s was stopped by its bound or a cancel", failed.Error(), name)
+		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound or a cancel", failed.Error())
 	}
 	ran, err := strconv.ParseInt(said[1], 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if said[3] != "" {
-		return ran, 0, true
+	if said[2] == "" {
+		return ran, 0, false
 	}
-	bound, err = strconv.ParseInt(said[2], 10, 64)
-	if err != nil {
+	if bound, err = strconv.ParseInt(said[2], 10, 64); err != nil {
 		t.Fatal(err)
 	}
-	return ran, bound, false
+	return ran, bound, true
 }
 
-// stoppedByItsBound fails t unless failed says name was stopped by its bound, with the seconds the
-// guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter than that
-// bound, since the child is stopped at its deadline and never before. The bound is what was left
-// of the caller's deadline when the child started (Guard.run), so on a loaded machine, where the
-// guard's own work before the child takes longer, it is less than the caller's whole bound: it is
-// read against the ceiling, as stopBound reads a child's, and never for its exact seconds.
-func stoppedByItsBound(t *testing.T, failed *SetupFailure, name string, ceiling time.Duration) {
+// stoppedByItsBound fails t unless failed is the shared check stopped by its bound, said with the
+// seconds the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
+// than that bound, since the check is stopped at its deadline and never before. The bound is what
+// was left of the caller's deadline when the check started (Guard.run), so on a loaded machine,
+// where the guard's own work before the check takes longer, it is less than the caller's whole
+// bound: it is read against the ceiling, as stopBound reads a child's, and never for its exact
+// seconds.
+func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration) {
 	t.Helper()
-	ran, bound, cancelled := stopSaid(t, failed, name)
-	if cancelled {
-		t.Fatalf("the setup failure says %q, want %s stopped by its bound, not a cancel", failed.Error(), name)
-	}
-	if bound > wholeSeconds(ceiling) || ran < bound {
-		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
-			failed.Error(), bound, ran, wholeSeconds(ceiling))
+	ran, bound, byBound := sharedStop(t, failed)
+	if !byBound || bound > wholeSeconds(ceiling) || ran < bound {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by a bound no longer than the caller's %d s, after a run no shorter than its bound",
+			failed.Error(), wholeSeconds(ceiling))
 	}
 }
 
-// stoppedByACancel fails t unless failed says name was stopped by a cancel, whatever whole seconds
-// it ran before the cancel reached it.
-func stoppedByACancel(t *testing.T, failed *SetupFailure, name string) {
+// stoppedByACancel fails t unless failed is the shared check stopped by a cancel, said with a run
+// no shorter than atLeast, the time the check had run when the cancel came. The run is measured
+// from the check's start to the end of its stop, and on a loaded machine the stop takes longer
+// after the cancel, so it is read against that floor and never for its exact seconds.
+func stoppedByACancel(t *testing.T, failed *SetupFailure, atLeast time.Duration) {
 	t.Helper()
-	if _, _, cancelled := stopSaid(t, failed, name); !cancelled {
-		t.Fatalf("the setup failure says %q, want %s stopped by a cancel", failed.Error(), name)
+	ran, _, byBound := sharedStop(t, failed)
+	if byBound || ran < wholeSeconds(atLeast) {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by a cancel after a run no shorter than the %d s it had run when the cancel came",
+			failed.Error(), wholeSeconds(atLeast))
 	}
 }
 

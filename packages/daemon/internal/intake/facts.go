@@ -18,8 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -47,6 +50,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Priority is the issue's own Dispatch priority as the observation showed it: an event's
+	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
+	// null). The record takes it wherever it takes the observation's rank.
+	Priority record.Priority
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -70,13 +77,13 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
-	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
-	// repository mapping names record the issue on no repository: the role App that is not
-	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
-	// all. It is read where the fact is applied, in place of what the daemon holds in memory
-	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
-	// next preparation of the issue reads GitHub again, so an operator who installs the App is
-	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for the repository
+	// the issue resolves to record the issue on no repository: the role App that is not installed
+	// on it, a repository GitHub does not have, or a name that is no <owner>/<name> at all. It is
+	// read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because no such refusal decides a later
+	// preparation: the next preparation of the issue reads GitHub again, so an operator who
+	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
@@ -103,7 +110,8 @@ type DispatchIssue struct {
 	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
 	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
 	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
-	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
+	// issue fact of the issue has applied (the copy's applied sequence,
+	// record.Store.DispatchIssueApplied): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
 	// (release_children, or another delivery, recording it meanwhile), or nothing when Delivered is
 	// nil, so a state the view shows never reaches a record without the actor of the event that
@@ -149,7 +157,7 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
@@ -158,8 +166,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -185,8 +193,16 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+}
+
+// dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
+// listing and the detail answer no event's fields the decoder could report, and Dispatch writes
+// no level outside 0 to 3, so a level it could not read is none here (record.DispatchPriority).
+func dispatchPriority(level *int) record.Priority {
+	priority, _ := record.DispatchPriority(level)
+	return priority
 }
 
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
@@ -232,16 +248,6 @@ func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
 
-// RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
-// repository was mapped to the project, unmapped, moved or made its default. It is no workflow
-// fact: the consumer has the daemon read the mapping again (ConsumerSpec.RepositoryMapping) and
-// applies nothing.
-type RepoMappingChanged struct {
-	Project string
-}
-
-func (RepoMappingChanged) namedIssue() (string, bool) { return "", false }
-
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
 
@@ -282,10 +288,17 @@ type DispatchArtifact struct {
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
 	// the daemon's workflowRuntime.prepareArtifact, for a person's approval that is not a carried
 	// one (CarriedApproval), outside the fact lock; nil for every other fact, a seed's or the boot
-	// catch-up's among them. The workflow reads its parent, label, status and primary document to
+	// catch-up's among them. MayQueueHandover reads its parent, label, status and primary document,
+	// for the preparation to decide whether to read the issue's event log and for the workflow to
 	// decide whether the approval queues the root: a nil view queues nothing and is never an
 	// error, since nothing but that decision reads it.
 	Issue *dispatch.Issue
+	// StatusChangedSeq is the sequence of the first issue event of the issue's Dispatch event log
+	// after the approval (Mark.Seq) that carries another status than the issue event before it
+	// (WithStatusChange), set when the daemon prepares a person's approval that needs the log
+	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
+	// nothing read the log for.
+	StatusChangedSeq int64
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -315,6 +328,21 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()
+}
+
+// MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
+// document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
+// backlog or icebox. Such an approval queues the root as the person's handover unless the root's
+// tree is live or its status changed after the approval (StatusChangedSeq), which the workflow
+// decides. The daemon reads the issue's event log for it when it prepares the fact (NeedsEventLog),
+// and the workflow decides from it, so the read side and the deciding side test one predicate.
+func (a DispatchArtifact) MayQueueHandover() bool {
+	if a.Issue == nil || !a.PersonApproval() {
+		return false
+	}
+	view := a.Issue
+	parked := view.Status == "backlog" || view.Status == "icebox"
+	return view.Parent == nil && view.HandedOver && parked && view.PrimaryArtifactID == a.ArtifactID
 }
 
 // GateAboveDispatch is the gate seed of a generation (Generation) finding the document at a version
@@ -533,9 +561,11 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // pass: the pause held every promotion, and the pass runs now rather than at the next fact or
 // tick. Admission promotes on it as on every fact that is not a Dispatch issue
 // (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
-// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
-// nothing else.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
+// release leaves free wakes the controller as any fact's pass does
+// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
+// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
+// of that capacity.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -710,9 +740,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
+// cannot be parsed, it names no head, or the head it names is not spelled as a head is
+// (reviewround.IsHead) - a short SHA or a branch name names no commit, since only the whole of it
+// says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -722,7 +752,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
+	if !reviewround.IsHead(head) {
 		return ""
 	}
 	return head
@@ -751,21 +781,6 @@ func (r PullRequestReview) LegionEntry() int64 {
 		return 0
 	}
 	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -820,7 +835,8 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps); any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
 // reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
@@ -1020,16 +1036,29 @@ type HandoffComplete struct {
 	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
 	// a plugin before that contract sends no rating, and its retro ends with none.
 	MustRate bool
+	// ReturnTo is the step of the issue's running task that a failed step names as the one the
+	// task returns to: the place of that step in the task, 1 for its first. The route takes
+	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
+	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
+	// returns to the step the workflow reads from the steps' types.
+	ReturnTo int
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 
-// BackwardMove asks the workflow to return to an earlier phase.
+// BackwardMove asks the workflow to return to an earlier phase. By, Generation and Entry are the
+// architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
+// claim of the architect, the issue's generation and the run of the step the issue stood in
+// (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
 type BackwardMove struct {
-	Issue     string
-	Requester claim.Role
-	To        phase.Phase
-	Reason    string
+	Issue      string
+	Requester  claim.Role
+	To         phase.Phase
+	Reason     string
+	By         claim.Token
+	Generation uint64
+	Entry      record.StepEntry
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1045,11 +1074,16 @@ const (
 // RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
 // answered as it did, which a retry writes into the task the restarted role is given and into
 // the daemon's own log line for the release; it is empty for a response that names none, which
-// leaves the daemon's own words in both.
+// leaves the daemon's own words in both. By and Generation are the architect's retry_or_escalate
+// (api's phaseRetry): its claim and the issue's generation its route read, which the workflow
+// judges again under the fact lock (ArchitectRequest). The operator's retry of a held claim
+// (`legion claims retry`, api's retryClaim) is no architect's request, and carries neither.
 type RetryOrEscalate struct {
-	Issue    string
-	Decision RetryOrEscalateDecision
-	Reason   string
+	Issue      string
+	Decision   RetryOrEscalateDecision
+	Reason     string
+	By         claim.Token
+	Generation uint64
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1073,8 +1107,16 @@ type RestartPhase struct {
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
-// SignOff records the architect's post-production-check approval.
-type SignOff struct{ Issue string }
+// SignOff records the architect's post-production-check approval: the claim of the architect, and
+// the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
+// accepting) as the route read them (api's signOff), which the workflow judges again under the
+// fact lock (ArchitectRequest, EnteredRequest).
+type SignOff struct {
+	Issue      string
+	By         claim.Token
+	Generation uint64
+	Entry      record.StepEntry
+}
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 
@@ -1115,15 +1157,192 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	// By and Generation are the architect's register_gate (api's gateRegister): its claim and the
+	// root's generation its route read, which the workflow judges again under the fact lock
+	// (ArchitectRequest). A registration the workflow makes itself carries neither.
+	By         claim.Token
+	Generation uint64
 }
 
 func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
+// PlanGiven is the plan the owner of an issue gave Legion with register_plan (api's
+// registerPlan): the blocks of one version of its plan document, as the route read them from
+// Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
+// check refuses never reaches the workflow. Generation is the issue's generation the route read,
+// and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
+// issue's first step takes the newest plan its owner gave, or, where the issue's experiment's
+// group takes no plan from its owner, passes it over. GivenBy is the claim of the architect whose
+// grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
+//
+// The workflow judges the giver and the generation again in the fact's own transaction, since
+// the route read them before the fact lock: a giver that owns the issue no longer is refused
+// ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
+// PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
+// issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
+// has not started, and applies the rules of a later version. It answers PLAN_REFUSED
+// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
+// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
+// takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
+// (Result.Unspent). The route names one registration by the issue, the generation, the document
+// and the version, so a version refused while its task ran is the same fact when the owner gives
+// it again after stop_task, and must apply then.
+type PlanGiven struct {
+	Issue      string
+	Generation uint64
+	Plan       plan.Plan
+	GivenBy    claim.Token
+}
+
+func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
+
+// TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
+// claim of the architect whose grant asked for it, at Generation, the issue's generation the route
+// read. The workflow judges the stop again in the fact's own transaction: an architect that owns
+// the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
+// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then answers
+// TaskNotStopped for every task of an issue whose experiment's group takes no plan from its owner,
+// whatever state the task stands in, and for any other issue stops the task or answers
+// TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no refusal.
+// Each request is its own fact, so a task the owner stops, starts again with a later
+// version and stops once more is stopped twice.
+type TaskStopped struct {
+	Issue, Task string
+	By          claim.Token
+	Generation  uint64
+}
+
+func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
+
+// ArchitectRequest is a fact an architect's request applies to one issue (Request). Its route
+// judged the requester and read the issue before the fact lock (api's architectForIssue,
+// architectOwns and planOwner), and an adoption, a new run or a re-parent can commit between that
+// read and the fact. So the workflow judges the request again on the record as the fact reads it,
+// before the fact's own handler reads anything (workflow's Engine.Apply): the owner, by the rule
+// its route judged, then the generation. Each refusal there is left unspent.
+type ArchitectRequest interface {
+	Fact
+	// Request is the request the fact carries; ok is false where the fact is no architect's
+	// request: a phase worker's backward move, or the operator's retry.
+	Request() (request Request, ok bool)
+	// StaleGeneration is the refusal of the request where the issue is on generation now, and
+	// not on the one its route read.
+	StaleGeneration(now uint64) *Refusal
+}
+
+// EnteredRequest is an ArchitectRequest about the run of the step its issue stands in, accepting:
+// sign_off and request_backward_move. The run its route read (record.Store.OpenStep) is judged
+// too, so the request of an architect that read one run of accepting does not act on the next.
+type EnteredRequest interface {
+	ArchitectRequest
+	// ReadEntry is the run of the step its route read.
+	ReadEntry() record.StepEntry
+	// StaleEntry is the refusal of the request where now is the run that stands.
+	StaleEntry(now record.StepEntry) *Refusal
+}
+
+// Request is one architect's request on one issue as its route read it: Issue the issue the
+// request names, By the claim of the architect that made it, and Generation the issue's
+// generation the route read, 0 where it read no record of the issue, which only register_plan
+// takes (that plan waits at generation 0 for the issue's first step). Owners is the rule of who
+// owns the issue for the request, the one its route judges, and Operation the request's name, which
+// a refusal names.
+type Request struct {
+	Issue      string
+	By         claim.Token
+	Generation uint64
+	Owners     record.OwnerRule
+	Operation  string
+}
+
+func (f PlanGiven) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.GivenBy, Generation: f.Generation, Owners: record.OwnerOfTree, Operation: "register_plan"}, true
+}
+
+func (f PlanGiven) StaleGeneration(now uint64) *Refusal {
+	return PlanStaleGeneration(f.Issue, f.Generation, now)
+}
+
+func (f TaskStopped) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerOfTree, Operation: "stop_task"}, true
+}
+
+func (f TaskStopped) StaleGeneration(now uint64) *Refusal {
+	return TaskStaleGeneration(f.Issue, f.Generation, now)
+}
+
+func (f SignOff) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "sign_off"}, true
+}
+
+func (f SignOff) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("SIGNOFF_STALE_GENERATION", "the sign-off", f.Issue, f.Generation, now, "Read the issue again before you sign it off. This sign-off changed nothing.")
+}
+
+func (f SignOff) ReadEntry() record.StepEntry { return f.Entry }
+
+func (f SignOff) StaleEntry(now record.StepEntry) *Refusal {
+	return staleEntry("SIGNOFF_STALE_ENTRY", "the sign-off", f.Issue, f.Entry, now, "Read the evidence of the run that stands before you sign it off. This sign-off changed nothing.")
+}
+
+// Request is the architect's move from accepting alone (Requester claim.RoleArchitect): a phase
+// worker's move is judged by its role (workflow's backwardRefusal).
+func (f BackwardMove) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "request_backward_move"},
+		f.Requester == claim.RoleArchitect
+}
+
+func (f BackwardMove) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("BACKWARD_STALE_GENERATION", "the backward move", f.Issue, f.Generation, now, "Read the issue again before you move it back. This move changed nothing.")
+}
+
+func (f BackwardMove) ReadEntry() record.StepEntry { return f.Entry }
+
+func (f BackwardMove) StaleEntry(now record.StepEntry) *Refusal {
+	return staleEntry("BACKWARD_STALE_ENTRY", "the backward move", f.Issue, f.Entry, now, "Read the run that stands before you move it back. This move changed nothing.")
+}
+
+// Request is the architect's retry_or_escalate; the operator's retry carries no claim (By "").
+func (f RetryOrEscalate) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "retry_or_escalate"}, f.By != ""
+}
+
+func (f RetryOrEscalate) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("RETRY_STALE_GENERATION", "the retry_or_escalate", f.Issue, f.Generation, now, "Read the issue again before you decide its hold. This decision changed nothing.")
+}
+
+// Request is the root architect's close_root (api's closeRoot), which only the root's own
+// architect makes (record.ArchitectAbove); a fact that names no claim is none of an architect's
+// request.
+func (f CloseRoot) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "close_root"}, f.By != ""
+}
+
+// Request is the root architect's register_gate (api's gateRegister), which only the root's own
+// architect makes (record.ArchitectAbove); a registration the workflow makes itself names no claim
+// and is no architect's request.
+func (f GateRegistered) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "register_gate"}, f.By != ""
+}
+
+func (f CloseRoot) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("CLOSE_STALE_GENERATION", "the close", f.Issue, f.Generation, now, "Read the root again before you close it. This close changed nothing.")
+}
+
+func (f GateRegistered) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("GATE_STALE_GENERATION", "the registration", f.Issue, f.Generation, now, "Register the document again for the run that stands. This registration changed nothing.")
+}
+
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
-// the reason it gives: a human decided no change at the design gate, or the issue is moot.
+// the reason it gives: a human decided no change at the design gate, or the issue is moot. By and
+// Generation are the architect's claim and the root's generation its route read (api's
+// closeRoot), which the workflow judges again under the fact lock (ArchitectRequest).
 type CloseRoot struct {
-	Issue  string
-	Reason string
+	Issue      string
+	Reason     string
+	By         claim.Token
+	Generation uint64
 }
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
@@ -1231,6 +1450,30 @@ type MemoryGuardKill struct {
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 
+// ControllerMemoryGuardKill is one process the memory guard of a gVisor controller pod ended with
+// SIGKILL because the pod was near its memory limit, or one that a microVM controller pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the controller's session), as that pod's launcher reported it on the controller's
+// connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's
+// frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per report under
+// the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`, which names
+// the kill once, so a report the launcher sent twice is applied once. For the kernel's kill,
+// <guard> is the id of the launcher's guest watch (memoryguard.Guest).
+//
+// Token and PodUID are the launcher session's own (the claim the connection authenticated for and
+// its pod), never anything the report says. The controller's pod is of no issue, so the fact names
+// none. The workflow tells the project's controller, in a controller notice of its own for each
+// kill, which of its programs was ended and why, in the note the report's Cause chooses
+// (workflow's controllerMemoryGuardKill).
+type ControllerMemoryGuardKill struct {
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false }
+
 // VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
 // trimmer in that pod's launcher process swept the cache roots and the volume was still above
 // its low mark when it stopped, or the trimmer has switched itself off after three faults. It is
@@ -1281,9 +1524,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
@@ -1375,15 +1618,24 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 // look the check stood at when the wake was named, so a row of a look the check has since left
 // starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
 // merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// zero OpenedAt names none. WakeAt is the wake the row was queued for, so a row whose wake the
+// check no longer records — a failure between looks named the next look later — starts nothing;
+// a zero WakeAt, a row a release before the field queued, is not fenced.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
+	WakeAt   time.Time
 	Reason   string
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
+
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, WakeAt: wake.WakeAt, Reason: wake.Reason}
+}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
@@ -1500,48 +1752,265 @@ type Result struct {
 	Unspent   bool
 }
 
-type commitHooksKey struct{}
-
-// WithCommitHooks scopes OnCommit to one transaction: the returned function runs, in order, every
-// hook registered on the returned context, and the transaction's owner calls it once the
-// transaction has committed, never when it rolls back. ApplyFact is that owner for every fact.
-// The hook list is not goroutine-safe: a transaction's handlers run one after another on one
-// goroutine, and OnCommit must only be called on that goroutine.
-func WithCommitHooks(ctx context.Context) (context.Context, func()) {
-	hooks := &[]func(){}
-	return context.WithValue(ctx, commitHooksKey{}, hooks), func() {
-		for _, hook := range *hooks {
-			hook()
-		}
-	}
-}
-
-// OnCommit runs fn once the transaction ctx scopes has committed. Handler state kept in memory,
-// and the journal line saying what a fact did, must never claim more than what committed: a later
-// handler's failure rolls the transaction back, and a fact retried after a failed commit would say
-// it twice. OnCommit panics on a context no WithCommitHooks scopes, since a handler run outside
-// ApplyFact has no commit to wait for.
-func OnCommit(ctx context.Context, fn func()) {
-	hooks, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	if !ok {
-		panic("intake.OnCommit outside a transaction's commit scope (intake.WithCommitHooks)")
-	}
-	*hooks = append(*hooks, fn)
-}
-
-// CommitScoped reports whether ctx is within a transaction's commit scope (WithCommitHooks): a
-// caller that wants a hook to run once the write it just made has committed can tell a transaction
-// that will commit from a write made outside any scope, which has no commit to wait for.
-func CommitScoped(ctx context.Context) bool {
-	_, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	return ok
-}
-
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
+// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// its task where it has one, which the route writes beside the code; every other refusal is its
+// code and its sentence, and carries none.
 type Refusal struct {
 	Status  int
 	Code    string
 	Message string
+	Reasons []plan.Refusal
+}
+
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
+// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
+// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
+// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+func PlanRefused(reasons []plan.Refusal) *Refusal {
+	texts := make([]string, len(reasons))
+	for i, reason := range reasons {
+		texts[i] = reason.Reason
+	}
+	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
+}
+
+// RunningTaskChanged is the reason a later version of the plan is refused when it changes or
+// removes task, which is running: the owner stops it first.
+func RunningTaskChanged(task string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
+}
+
+// PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
+// at or below held, the version in force: Legion takes only a later version.
+func PlanVersionOld(issue string, held, given int) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_VERSION_OLD", Message: fmt.Sprintf(
+		"the plan in force of %s is version %d, and Legion takes only a later version: version %d changed nothing.", issue, held, given)}
+}
+
+// PlanDocumentChanged is the 409 PLAN_DOCUMENT_CHANGED refusal of a version of another document
+// than artifact, the document of issue's plan in force.
+func PlanDocumentChanged(issue, artifact string) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_DOCUMENT_CHANGED", Message: fmt.Sprintf(
+		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
+}
+
+// GroupClause is the one text of a group: the sentence that names the variant of the experiment
+// issue was drawn into (group, the issue's row of the experiment that sets how it is done),
+// whose issues run the project's default steps, the one group of this release that takes no plan
+// from an issue's owner (workflow's takesNoPlan). The refusals of register_plan and stop_task
+// (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
+// call it, and no other text states a group.
+func GroupClause(issue string, group record.Assignment) string {
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, group.Variant, group.Experiment)
+}
+
+// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
+// of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
+// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
+// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
+// each refusal of a plan, so the same registration sent again gets this same answer.
+func PlanNotTaken(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+}
+
+// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
+// names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
+// no stop of one of its tasks from its owner either, and the code is the one register_plan
+// answers for the same issue.
+func TaskNotStopped(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+}
+
+// StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
+// plan rows at its generation and whose work has started: it ran before Legion took plans, and it
+// walks today's line to its end. It names no task, and it does not end with "This release
+// of Legion does not carry it out yet.", since no later release gives such a run a plan.
+func StartedBeforePlans(issue string) plan.Refusal {
+	return plan.Refusal{Reason: fmt.Sprintf(
+		"%s started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing.", issue)}
+}
+
+// PlanStaleGeneration is the 409 PLAN_STALE_GENERATION refusal of a plan given at generation given
+// of issue, which is on generation now: the route read the issue before its generation moved, or
+// read it unrecorded (given 0) before the daemon recorded it and its first step took a plan, so
+// the plan was given for a run that is over or that started without it.
+func PlanStaleGeneration(issue string, given, now uint64) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_STALE_GENERATION", Message: fmt.Sprintf(
+		"the plan was given for generation %d of %s, and %s is on generation %d now. Give the plan again. This plan changed nothing.", given, issue, issue, now)}
+}
+
+// TaskStaleGeneration is the 409 TASK_STALE_GENERATION refusal of a stop of a task of issue asked
+// at generation given, where issue is on generation now: the route read the issue before its
+// generation moved, so the stop names a task of a run that is over, and a task of the new run has
+// the same id where its plan gives it one.
+func TaskStaleGeneration(issue string, given, now uint64) *Refusal {
+	return staleGeneration("TASK_STALE_GENERATION", "the stop", issue, given, now, "Ask for the stop again if the task of this run must stop. This stop changed nothing.")
+}
+
+// staleGeneration is the 409 refusal code of request, an architect's request on issue that its
+// route read at generation given, where issue is on generation now (ArchitectRequest's
+// StaleGeneration), and then, what the architect does.
+func staleGeneration(code, request, issue string, given, now uint64, then string) *Refusal {
+	return &Refusal{Status: 409, Code: code, Message: fmt.Sprintf(
+		"%s was asked for generation %d of %s, and %s is on generation %d now. %s", request, given, issue, issue, now, then)}
+}
+
+// staleEntry is the 409 refusal code of request, an architect's request on issue that its route
+// read at the run given of the step the issue stood in, where the run now stands
+// (EnteredRequest's StaleEntry), and then, what the architect does.
+func staleEntry(code, request, issue string, given, now record.StepEntry, then string) *Refusal {
+	return &Refusal{Status: 409, Code: code, Message: fmt.Sprintf(
+		"%s was asked of %s of %s, and %s stands at %s now. %s", request, describeEntry(given), issue, issue, describeEntry(now), then)}
+}
+
+// describeEntry names a run of a step as a refusal does.
+func describeEntry(entry record.StepEntry) string {
+	if entry == (record.StepEntry{}) {
+		return "no run of a step"
+	}
+	return fmt.Sprintf("run %d of the %s at place %d of task %s", entry.Starts, entry.Place.Kind, entry.Place.Place, entry.Place.Task)
+}
+
+// IssueOutsideTree is the 403 ISSUE_OUTSIDE_TREE refusal of operation, a request that architect
+// made as an owner of issue, where architect is no architect of the issue's tree when the workflow
+// applies it (record.ArchitectOfTree): an adoption moved the issue to another tree, or the member
+// whose architect it is left the issue's tree, after the route judged the request. The code is the
+// one the route answers for an issue outside the architect's tree.
+func IssueOutsideTree(issue string, architect claim.Token, operation string) *Refusal {
+	return &Refusal{Status: 403, Code: "ISSUE_OUTSIDE_TREE", Message: fmt.Sprintf(
+		"%s is outside the architect tree now: %s is no architect of its tree, so %s changed nothing.", issue, architect, operation)}
+}
+
+// IssueNotOwned is the 403 ISSUE_NOT_OWNED refusal of operation, which only an issue's own
+// architect or one above it in its tree makes (record.ArchitectAbove), where architect is neither
+// when the workflow applies it: a person moved the issue under another issue of the tree after the
+// route judged the request. The code is the one the route answers for that rule (api's
+// architectOwns).
+func IssueNotOwned(operation, issue string, architect claim.Token) *Refusal {
+	return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf(
+		"%s of %s belongs to its own architect or one above it in the tree, and %s is neither now, so %s changed nothing.", operation, issue, architect, operation)}
+}
+
+// TaskNotFound is the 404 TASK_NOT_FOUND refusal of stop_task for task, which the plan Legion
+// runs for issue does not hold; tasks are the ids that plan holds, none for an issue with no plan
+// rows.
+func TaskNotFound(issue, task string, tasks []string) *Refusal {
+	message := fmt.Sprintf("%s has no plan of tasks in Legion's record, so it has no task %s. This stop changed nothing.", issue, task)
+	if len(tasks) > 0 {
+		message = fmt.Sprintf("the plan Legion runs for %s has no task %s; its tasks are %s. This stop changed nothing.", issue, task, strings.Join(tasks, ", "))
+	}
+	return &Refusal{Status: 404, Code: "TASK_NOT_FOUND", Message: message}
+}
+
+// TaskAct is what a call asks of a task, as its TASK_DONE refusal names it (FinishedTask).
+type TaskAct int
+
+const (
+	// ChangeOfTask is a version of the plan that changes the task (register_plan).
+	ChangeOfTask TaskAct = iota
+	// StopOfTask is the owner's stop of the task (stop_task).
+	StopOfTask
+)
+
+// words is what act does to a task, as the refusal says nothing of the task is left to do, and the
+// call that changed nothing.
+func (act TaskAct) words() (does, call string) {
+	if act == StopOfTask {
+		return "stop", "stop"
+	}
+	return "change", "plan"
+}
+
+// FinishedTask is the 409 TASK_DONE refusal of act on task of issue, whose state is done or left
+// (record.TaskDone, record.TaskLeft), and nil for a task in any other state. A task that is done
+// has nothing of it left, and one that left the workflow with its issue before it was done is
+// never moved again, so each refuses every act with the one code, the code of a stop of a done
+// task. Every refusal of a finished task is made here, so the workflow judges the state once for
+// each act: a version of the plan (versionRefusal) and the owner's stop (taskStopped).
+func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refusal {
+	var stands string
+	switch state {
+	case record.TaskDone:
+		stands = "is done"
+	case record.TaskLeft:
+		stands = "left the workflow with its issue before it was done"
+	default:
+		return nil
+	}
+	does, call := act.words()
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s %s, so nothing of it is left to %s. This %s changed nothing.", task, issue, stands, does, call)}
+}
+
+// TaskAwaitsPerson is the 409 TASK_AWAITING_PERSON refusal of stop_task for task of issue, a root
+// that waits on a person before its first step (phase.AwaitingPerson): the record holds no hold
+// from that phase, so the task cannot stop there (workflow's stopRefusal). A task that has not
+// started takes a later version of its plan, and the stop is taken once the person has answered.
+func TaskAwaitsPerson(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_AWAITING_PERSON", Message: fmt.Sprintf(
+		"%s waits on a person before its first step, and Legion cannot stop task %s there. To change the task, give a later version of the plan with register_plan; to stop it, call stop_task again once the person has answered. This stop changed nothing.", issue, task)}
+}
+
+// RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
+// architect's retry or escalation, the operator's restart — where the issue is held because task
+// was stopped for reason, the stop reason the task stores (record.PlanTask.StoppedReason): by its
+// owner, or by a failed step with no step before it to take the work back (record.HoldTaskStopped).
+// Its first sentence is that reason (stoppedSentence). A later version of the plan starts the task
+// again, and so does a person's todo on a root (workflow's releaseHeldRoot), but no retry of the
+// hold does.
+func RetryOfStoppedTask(issue, task, reason string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
+		"%s; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing.", stoppedSentence(issue, task, reason))}
+}
+
+// stoppedSentence is the sentence that says why task of issue was stopped, from reason, the stop
+// reason the task stores: the reason itself where it names the task already, as an owner's stop
+// does, and otherwise that the task was stopped for it, as a failed step's stop does.
+func stoppedSentence(issue, task, reason string) string {
+	if strings.HasPrefix(reason, fmt.Sprintf("task %s of %s ", task, issue)) {
+		return reason
+	}
+	return fmt.Sprintf("task %s of %s was stopped: %s", task, issue, reason)
+}
+
+// RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
+// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
+// beneath (record.HoldForChildren): the last of them to leave starts the retro.
+func RetryOfHeldParent(issue string, beneath []string) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
+}
+
+// HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
+// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
+// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
+// person beside a set-back todo included, and carries none of the architect's rules for ending a
+// child, which the architect's own retro-held notice gives.
+func HeldParentWaitsForChildren(issue string, beneath []string) string {
+	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
+}
+
+// RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
+// where issue, a parent held before its retro for the issues beneath it (record.HoldForChildren),
+// has none of them open, so its retro waits only for its tree to run (HeldParentWaitsForTree).
+func RetryOfHeldParentUntilTreeRuns(issue, tree string, lingers bool) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForTree(issue, tree, lingers) + " This retry changed nothing."}
+}
+
+// HeldParentWaitsForTree says why issue, a parent held before its retro for the issues beneath it
+// with none of them open, still waits: its retro waits only for its tree, tree, to run. The tree
+// lingers after its root left the workflow, where lingers says so, and otherwise its root waits in
+// the line for the tree to be opened. The reopen or the promotion that runs the tree starts the
+// retro.
+func HeldParentWaitsForTree(issue, tree string, lingers bool) string {
+	waits := fmt.Sprintf("its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs", tree)
+	if lingers {
+		waits = fmt.Sprintf("its tree %s lingers after its root left the workflow, and Legion starts the retro once the tree runs again", tree)
+	}
+	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: %s.", issue, waits)
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of
@@ -1568,6 +2037,23 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
+// LateReportOfStoppedTask is the 409 TASK_STOPPED refusal of a report of step, run by role, of task
+// of issue, which was stopped at that step for reason, the stop reason the task stores
+// (record.PlanTask.StoppedReason): the stop ended the step's run, and the report moves nothing
+// (workflow's lateReport). Its first sentence is the stored reason (stoppedSentence). The task's row
+// holds no stop time, so the text names none, and it names no result, because the daemon holds no
+// record of how that run ended: the step record in Dispatch does (dispatch steps). Where the report
+// names a handoff record (named), the workflow keeps it as the role's last one, so the step's next
+// run is refused that record (HANDOFF_NOT_NEW), and the text says so.
+func LateReportOfStoppedTask(issue, task, reason string, step int, role string, named bool) *Refusal {
+	why := stoppedSentence(issue, task, reason)
+	end := fmt.Sprintf("This report moved nothing. dispatch steps --issue %s shows how that run ended.", issue)
+	if named {
+		end += " Its handoff record counts as used, so the next run of this step writes a handoff of its own."
+	}
+	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf("%s. Step %d (%s) has ended. %s", why, step, role, end)}
+}
+
 // PlanRatingRequired is the 400 PLAN_RATING_REQUIRED refusal of what, the completion that ends the
 // retro, which carries no rating of the plan though its caller must rate (HandoffComplete.MustRate).
 // The workflow answers it where it ends the retro (its planRatingRefusal), and records nothing.
@@ -1587,23 +2073,6 @@ func PlanRatingUnexpected(what string) *Refusal {
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
-// Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
-// positions in and reads what it has already applied from. In the daemon it is always the store's
-// guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
-// for a second connection while the fact's own transaction holds one — under the global fact lock
-// every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
-// waiting for a connection only it can give back (INFRA-3169).
-//
-// It is named as the three methods the intake uses rather than as that one type because the
-// packages that measure the handlers against a real Postgres — the workflow engine's and
-// admission's tests — open pools of their own and apply facts straight on them, and the guard has
-// nothing to say about a pool a test owns. Nothing in the daemon opens a pool but the store.
-type Pool interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
@@ -1611,7 +2080,10 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
+// give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
+// already applied (closeReplayed). The fact commits through store.Transact, so a fact whose
+// commit's reply is lost is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1625,6 +2097,16 @@ type Pool interface {
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
 //
+// A fact takes its pool's turn (factTurns, store.Pool.FactTurn) before it asks the pool for a
+// connection, and hands it on at its COMMIT, as the first of its commit hooks (store.OnCommit), so
+// the turn is held exactly as long as the fact lock plus the wait for a connection, and no later
+// hook holds it; a fact that does not commit hands it on when store.Transact returns. The facts of
+// one process then wait for each other outside the pool rather than each on a connection of its
+// own, so a burst of facts leaves the rest of the pool to every other read. A fact whose ctx ends
+// while it waits for the turn leaves the line holding nothing. A fact applied inside a transaction
+// already open on ctx joins that transaction (store.TransactWith) and needs no connection, so it
+// takes no turn: taking one there could wait on the very fact whose transaction it joins.
+//
 // Before anything else, source, eventID and every string fact carries are given through the
 // store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
 // handler see the fact as the store keeps it. A handler compares what the fact says with what the
@@ -1635,104 +2117,112 @@ type Pool interface {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
-func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return Result{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	if err := SerializeFacts(ctx, tx); err != nil {
-		return Result{}, fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
-	}
-
-	fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
-	if err != nil {
-		return Result{}, err
-	}
-	// A duplicate records its position too: it is acknowledged as applied, so its consumer is past
-	// it either way.
-	if err := recordStreamPosition(ctx, tx); err != nil {
-		return Result{}, err
-	}
-	if !fresh {
-		if err := tx.Commit(ctx); err != nil {
-			return Result{}, err
-		}
-		committed = true
-		return Result{Duplicate: true}, nil
-	}
-
-	fact, apply, err := settleObserved(ctx, tx, fact)
-	if err != nil {
-		return Result{}, err
-	}
-	if !apply {
-		handlers = nil
-	}
-	ctx, committedHooks := WithCommitHooks(ctx)
-	ctx, settle := OpenSettlers(ctx, handlers...)
-	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
+	turn := func() {}
+	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
+		release, err := turns.FactTurn(ctx)
 		if err != nil {
-			return Result{}, err
+			return Result{}, fmt.Errorf("wait for the pool's turn to apply fact %s/%s: %w", source, eventID, err)
 		}
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
-		}
-		result.Unspent = result.Unspent || candidate.Unspent
+		turn = release
 	}
-	if err := settle(ctx, tx); err != nil {
+	defer turn()
+	var result Result
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		// The turn's release is the fact's first commit hook, so the next fact's turn starts at
+		// this one's COMMIT, as its wait on the fact lock does, and no later hook holds it.
+		store.OnCommit(ctx, turn)
+		if err := SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
+		}
+		fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
+		if err != nil {
+			return err
+		}
+		// A duplicate records its position too: it is acknowledged as applied, so its consumer is
+		// past it either way.
+		if err := recordStreamPosition(ctx, tx); err != nil {
+			return err
+		}
+		if !fresh {
+			result = Result{Duplicate: true}
+			return closeReplayed(ctx, tx, record.IntakeAlreadyApplied)
+		}
+
+		fact, apply, err := settleObserved(ctx, tx, fact)
+		if err != nil {
+			return err
+		}
+		if !apply {
+			handlers = nil
+		}
+		ctx, settle := OpenSettlers(ctx, handlers...)
+		for _, handler := range handlers {
+			candidate, err := handler.Apply(ctx, tx, fact)
+			if err != nil {
+				return err
+			}
+			if result.Refusal == nil && candidate.Refusal != nil {
+				result.Refusal = candidate.Refusal
+			}
+			result.Unspent = result.Unspent || candidate.Unspent
+		}
+		if err := settle(ctx, tx); err != nil {
+			return err
+		}
+		// A refused report of a production check leaves its event unmarked, so a report sent
+		// again — the same look and verdict, which is the same fact id its route mints (api's
+		// checkReport) — applies instead of being answered as one already received. Beside it, a
+		// handler leaves a fact unmarked only where the refusal's cause can clear without changing
+		// the fact's id (Result.Unspent). An unmarked refusal of any other fact would make a
+		// refused handoff apply on its next delivery, which those refusals exist to stop.
+		_, report := fact.(CheckReport)
+		if (report && result.Refusal != nil) || result.Unspent {
+			if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+				return err
+			}
+		}
+		return closeReplayed(ctx, tx, record.IntakeApplied)
+	}); err != nil {
 		return Result{}, err
 	}
-	// A refused report of a production check leaves its event unmarked, so a report sent again —
-	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
-	// applies instead of being answered as one already received. Beside it, a handler leaves a
-	// fact unmarked only where the refusal's cause can clear without changing the fact's id
-	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
-	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
-	_, report := fact.(CheckReport)
-	if (report && result.Refusal != nil) || result.Unspent {
-		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
-			return Result{}, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Result{}, err
-	}
-	committed = true
-	committedHooks()
 	return result, nil
 }
 
-// Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
-// outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
-// production check report or a fact a handler left unspent removes its own (ApplyFact), so an id
-// read here as applied is one ApplyFact would only take the lock to skip. A caller that
-// replays many facts it has most likely applied before (the boot's terminal replay) applies only
-// the rest: the duplicates cost one read between them, not a transaction each queued on the lock
-// behind every live fact.
+// factTurns is a pool that gives one fact at a time its turn to apply (store.Pool.FactTurn): a
+// release that is safe to call more than once, or ctx's error once ctx ends first. A pool without
+// it, such as a test's own pgx pool, gives every fact its turn at once.
+type factTurns interface {
+	FactTurn(ctx context.Context) (release func(), err error)
+}
+
+// Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only
+// transaction and outside the fact lock. A fact's processed_events row commits with the fact, and
+// only a refused production check report or a fact a handler left unspent removes its own
+// (ApplyFact), so an id read here as applied is one ApplyFact would only take the lock to skip. A
+// caller that replays many facts it has most likely applied before (the boot's terminal replay)
+// applies only the rest: the duplicates cost one read-only transaction between them, not a
+// transaction each queued on the lock behind every live fact.
 //
 // ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
 // the store keeps them, and each one found is answered under the id the caller gave: a caller that
 // looks up its own id finds it, whatever the rule made of it.
-func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
+func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
 	stored := storetext.Strings(eventIDs)
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
-	if err != nil {
-		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	var ids []string
+	err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
+		if err != nil {
+			return err
+		}
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
@@ -1755,10 +2245,13 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // or nothing when it was prepared in place of none. Every other fact applies as it is, so no
 // handler sees Observed or Delivered.
 //
-// A view older than an event of the issue the daemon has already applied (the mirror, which every
-// applied issue event writes first, holds a later sequence) applies nothing while the issue is
-// unrecorded: Dispatch has said something since, which the view does not show — a person's
-// withdrawal after the release's write, say — and that later event, applied, recorded no issue.
+// A view older than an issue fact of the issue the daemon has already applied (the copy's applied
+// sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
+// fact) applies nothing while the issue is unrecorded: Dispatch has said something since, which the
+// view does not show — a person's withdrawal after the release's write, say — and that later fact,
+// applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
+// re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
+// edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -1771,11 +2264,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 	}
 	switch {
 	case recorded == nil:
-		mirrored, found, err := store.DispatchIssueSeq(ctx, tx, issue.Key)
+		applied, err := store.DispatchIssueApplied(ctx, tx, issue.Key)
 		if err != nil {
 			return nil, false, err
 		}
-		if found && mirrored > issue.Seq {
+		if applied > issue.Seq {
 			return nil, false, nil
 		}
 		issue.Observed, issue.Delivered = false, nil
@@ -1791,15 +2284,17 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
-// boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot and its publication, so a repository an
-// admission is recording an issue on is never unsubscribed under it. The subscription update
-// itself is outside this lock and outside any transaction of that pool: a stream call made under
-// either left every connection of the pool idle in a transaction waiting on JetStream
-// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
-// superset before it takes this lock and narrows after it has let it go, and a recording's own
-// update runs in the commit hook, after the transaction returned its connection and Postgres
-// released this lock (internal/daemon's hearRecorded).
+// boot's reconcile, which records issues in its own transaction, takes it, as do the daemon's
+// read of the live records for its repository caches, across that read and its publication, and
+// its backfill of a record's repository columns (internal/daemon's refreshLive and
+// backfillLater), so no read of the records is published over an issue an admission recorded
+// meanwhile. The subscription update itself is outside this lock and outside any transaction of
+// that pool: a stream call made under either left every connection of the pool idle in a
+// transaction waiting on JetStream (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the
+// daemon's publication of the whole heard set reads the records in a transaction of its own and
+// calls JetStream after it, and a recording's own update runs in the commit hook, after the
+// transaction returned its connection and Postgres released this lock (internal/daemon's
+// hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err

@@ -167,7 +167,7 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
 	r, err := configure(opts)
 	if err != nil {
@@ -202,7 +202,9 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"AGENT_SECRETS_KEY_DIR", "AGENT_SECRETS_URL", "BUN_INSTALL_CACHE_DIR", "DISPATCH_TOKEN_FILE", "DISPATCH_URL",
 		"ENVOY_NATS_URL", "ENVOY_URL", "GH_CONFIG_DIR", "GH_HOST", "GH_TOKEN",
 		"GITHUB_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3", "GIT_CONFIG_KEY_4",
-		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
+		"GIT_CONFIG_KEY_5", "GIT_CONFIG_KEY_6", "GIT_CONFIG_KEY_7", "GIT_CONFIG_KEY_8",
+		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4",
+		"GIT_CONFIG_VALUE_5", "GIT_CONFIG_VALUE_6", "GIT_CONFIG_VALUE_7", "GIT_CONFIG_VALUE_8", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
 		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_LEAK_CHECKER_MANIFEST_SHA256", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
 		"OMP_SESSION_EXCLUSIVE", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
@@ -279,8 +281,8 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 	}
 }
 
-// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: every mapped
-// repository lacks an App) still runs its controller, with gh acting as nobody, as `legion
+// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its
+// App installed on no account) still runs its controller, with gh acting as nobody, as `legion
 // controller start` does there: the launch succeeds, its role Secret holds the launcher token and
 // an empty default owner and no gh files, its gh volume is an empty directory rather than a
 // projection of the Secret (a projection with no items would project every key, the launcher

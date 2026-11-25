@@ -33,7 +33,8 @@ var (
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
-// a shim's failed adoption, enrollment or token read. The connection is fine; the agent said no.
+// a shim's failed adoption, enrollment, token read or workspace read. The connection is
+// fine; the agent said no.
 //
 // A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
 // budget on unless Reason is OMP's busy answer (runtime.RefusalReason); a refused adoption is
@@ -282,41 +283,37 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
 }
 
-// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in. The shim
-// runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
-// plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
-// larger than one line.
-func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
+// WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
+// origin holds. The shim runs its two jj reads within timeout; the answer is awaited for that plus
+// the RPC timeout, the round trip. A shim built before the read forwards it to OMP, whose
+// unknown-command answer is a refusal like the shim's own.
+func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceWork, error) {
 	id := rand.Text()
-	frame := shimwire.BundleWorkspace{
-		ID: id, Issue: issue, MaxBytes: runtime.MaxWorkspaceBundleBytes, TimeoutMs: int(timeout.Milliseconds()),
-	}
+	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(timeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
 	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
 	if err != nil {
-		return runtime.WorkspaceBundle{}, err
+		return runtime.WorkspaceWork{}, err
 	}
 	switch answer := answer.(type) {
-	case shimwire.BundleWorkspaceResult:
+	case shimwire.WorkspaceWorkResult:
 		if err := answer.Validate(); err != nil {
-			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+			return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 		}
 		if !answer.OK {
-			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
 		}
-		return runtime.WorkspaceBundle{
-			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks, At: answer.At,
-		}, nil
+		return runtime.WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
 		if !answer.Success {
-			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
 		}
 	}
-	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
+	return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeWorkspaceWork, answer.FrameType())
 }
 
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for its pod; the shim writes it
@@ -560,7 +557,7 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
 		c.answerShim(frame.ID, frame)
-	case shimwire.BundleWorkspaceResult:
+	case shimwire.WorkspaceWorkResult:
 		c.answerShim(frame.ID, frame)
 	}
 }

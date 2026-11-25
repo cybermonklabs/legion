@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -62,8 +63,8 @@ const (
 )
 
 // admissionIssuesLive is one run of the proof: the booted daemon, the keys of the two trees it
-// drives, the architect session of the tree whose children it releases and parks, and the
-// stand-ins the steps read the daemon's own writes back from.
+// drives, the architect session of the tree whose children it releases and moves to backlog, and
+// the stand-ins the steps read the daemon's own writes back from.
 type admissionIssuesLive struct {
 	liveProof
 	rt    *fake.Runtime
@@ -92,15 +93,16 @@ type admissionIssuesArchitect struct {
 // against one booted daemon, in the order each step's state follows from the last: two live trees
 // holding no admission row at all, the two released children holding both rows of a cap that
 // counts issues while their parent waits, a red head that returns the second tree's root to
-// implementing and leaves its start waiting for a row the full cap has none of, and the
-// parking of the two children, which frees the rows that return and that parent's first phase
-// then take.
+// implementing and leaves its start waiting for a row the full cap has none of, and the owning
+// architect's backlog of the two children, which frees the rows that return and that parent's
+// first phase then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)
 	r.step("step3-a-backward-move-returns-a-waiting-issue-and-its-start-waits-for-a-slot", r.backwardMoveReturnsAWaitingIssue)
-	r.step("step4-the-parked-children-free-the-slots-the-return-and-the-parent-take", r.freedSlotsGoToTheReturnAndTheParent)
+	r.step("step4-the-children-in-backlog-free-the-slots-the-return-and-the-parent-take", r.freedSlotsGoToTheReturnAndTheParent)
 }
 
 // newAdmissionIssuesLive boots the daemon over the package's broker with the two trees already
@@ -257,7 +259,9 @@ func (r *admissionIssuesLive) seedTrees() {
 // it was seeding on an error.
 func (r *admissionIssuesLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 }
@@ -295,7 +299,7 @@ func (r *admissionIssuesLive) registerArchitectOf(root, session string) *admissi
 	dialShim(t, r.built.address, launch.BootToken)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -442,7 +446,7 @@ func (r *admissionIssuesLive) childrenHoldTheSlots() {
 	}
 	r.note("drove POST /legion/v1/waves/release {%s, %s} by %s's architect: %d %s", r.childOne, r.childTwo, r.root, status, body)
 	for _, child := range []string{r.childOne, r.childTwo} {
-		r.publishStatus(child, "todo", r.root, true)
+		r.publishStatus(child, "todo", r.root, dispatch.DaemonSession(child))
 	}
 
 	state := r.waitForState("both children holding a slot", func(state api.State) bool {
@@ -505,20 +509,16 @@ func (r *admissionIssuesLive) backwardMoveReturnsAWaitingIssue() {
 		r.accepting, got.Phase, state.Admission.Waiting)
 }
 
-// Step 4. The architect parks both children, which takes them out of the workflow and frees the
-// two slots they held. The line hands them to the returning issue first, whose work came back, and
-// to the parent, whose children have now left: the parent's first phase starts, which is the order
-// children-first keeps, and both issues hold slots of the same cap that held the children.
+// Step 4. The architect writes backlog on both children in Dispatch, which takes them out of the
+// workflow and frees the two slots they held: the daemon takes the write of the architect that
+// owns a child as it takes a person's move. The line hands the slots to the returning issue first,
+// whose work came back, and to the parent, whose children have now left: the parent's first phase
+// starts, which is the order children-first keeps, and both issues hold slots of the same cap that
+// held the children.
 func (r *admissionIssuesLive) freedSlotsGoToTheReturnAndTheParent() {
 	t := r.t
 	for _, child := range []string{r.childOne, r.childTwo} {
-		status, body := r.d.request(http.MethodPost, "/legion/v1/children/park",
-			api.ChildRequest{GrantID: r.grant(), Issue: child}, false)
-		if status != http.StatusOK {
-			t.Fatalf("park_child of %s by %s's architect = %d %s, want 200", child, r.root, status, body)
-		}
-		r.note("drove POST /legion/v1/children/park of %s by %s's architect: %d", child, r.root, status)
-		r.publishStatus(child, "backlog", r.root, true)
+		r.publishStatus(child, "backlog", r.root, r.architect.session)
 	}
 
 	state := r.waitForState("the freed slots taken by the return and by the parent", func(state api.State) bool {
@@ -539,25 +539,23 @@ func (r *admissionIssuesLive) freedSlotsGoToTheReturnAndTheParent() {
 	}
 	for _, child := range []string{r.childOne, r.childTwo} {
 		if got := state.Issues[child]; got.Slot != nil {
-			t.Fatalf("the parked %s still holds slot %s, want the slot freed when it left the workflow", child, slotOf(got))
+			t.Fatalf("%s in backlog still holds slot %s, want the slot freed when it left the workflow", child, slotOf(got))
 		}
 	}
-	r.note("read back: %d slots of a cap of %d, held by the returned %s and by %s, which is planning; the two parked children hold none",
+	r.note("read back: %d slots of a cap of %d, held by the returned %s and by %s, which is planning; the two children in backlog hold none",
 		len(state.Admission.Active), state.Admission.Cap, r.accepting, r.root)
 }
 
-// publishStatus publishes Dispatch's own event of key's move to status under parent, which the
-// daemon's consumer reads as it reads any issue event: the architect's own route writes the status
-// to Dispatch, and this is the event Dispatch relays for that write (daemon true) or for a
-// person's (daemon false). The board is moved with it, as Dispatch's board moves.
-func (r *admissionIssuesLive) publishStatus(key, status, parent string, daemon bool) {
+// publishStatus publishes Dispatch's own event of key's move to status under parent, written by
+// session, which the daemon's consumer reads as it reads any issue event. session is the daemon's
+// own (dispatch.DaemonSession) for the event Dispatch relays for a write the architect's route made,
+// or the architect's registered session for the architect's own write in Dispatch. The board is
+// moved with it, as Dispatch's board moves.
+func (r *admissionIssuesLive) publishStatus(key, status, parent, session string) {
 	r.t.Helper()
 	r.board.place(key, status, parent, false)
 	r.seq++
-	actor := map[string]string{"kind": "user", "id": "operator"}
-	if daemon {
-		actor = map[string]string{"kind": "session", "id": dispatch.DaemonSession(key)}
-	}
+	actor := map[string]string{"kind": "session", "id": session}
 	payload, err := json.Marshal(map[string]any{
 		"id": r.seq, "issue_key": key, "project": r.cfg.Project, "seq": r.seq, "type": "issue.updated",
 		"actor": actor, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -571,7 +569,7 @@ func (r *admissionIssuesLive) publishStatus(key, status, parent string, daemon b
 	}
 	r.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch",
 		fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
-	r.note("drove Dispatch's own event of that write: %s is %s under %s", key, status, parent)
+	r.note("drove Dispatch's own event of that write: %s is %s under %s, actor %s", key, status, parent, session)
 }
 
 // sendBackFromAccepting is the architect's request_backward_move of the accepting issue to

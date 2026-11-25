@@ -6,22 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -106,7 +110,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-		Origin:    dispatchOrigin,
+		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
 		Now:       tick.now,
@@ -116,7 +120,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	}
 	verifier, err := ciphertoken.New(opts)
 	if err != nil {
-		t.Fatalf("brokertoken.New: %v", err)
+		t.Fatalf("ciphertoken.New: %v", err)
 	}
 	return &rig{broker: broker, clock: tick, verifier: verifier}
 }
@@ -199,15 +203,18 @@ func readOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection {
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
-// person but comes from
-// another client, and the six whose project scope or list this package cannot read — an answer
-// carrying no project scope at all, one carrying a word it does not know, a named scope with no
-// project and no person, a named scope with two projects, and a list no exchange could have
-// minted. Those are refused rather than read as a token that names no project, which would hand
-// their caller every project the person may write; the one naming a project under no scope would
-// otherwise be the louder of the two, since the project beside the scope is then read under
-// nothing at all. The proof-checked Verify and the answer-only Live refuse every one, so an open
-// connection cannot keep one alive either.
+// person but comes from another client, and the ten whose project scope or list this package
+// cannot read — an answer carrying no project scope at all, one carrying a word it does not know,
+// a named scope naming no person and no project and a service that is no whole account subject (a
+// fleet, the bare account prefix, an account with no name, an upper-case account), a named scope
+// naming an account and a project, a named scope with two projects, and a list no exchange could
+// have minted. Those are refused rather than read as a token that names no project, which would
+// hand their caller every project the person may write; the one naming a project under no scope
+// would otherwise be the louder of the two, since the project beside the scope is then read under
+// nothing at all. A named scope naming no person is minted only by an account entry naming no
+// person, whose service is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same
+// answer naming any other service is no token the broker mints. The proof-checked Verify and the
+// answer-only Live refuse every one, so an open connection cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -219,8 +226,24 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	namedNoOne := liveToken(caller.jkt, time.Hour)
-	namedNoOne.Person, namedNoOne.Service, namedNoOne.Projects = "", "example-fleet", nil
+	namedFleet := liveToken(caller.jkt, time.Hour)
+	namedFleet.Person, namedFleet.Service, namedFleet.Projects = "", "example-fleet", nil
+	// Services that open like an account and are no whole account subject, which no account
+	// entry can hold (exchange.NewSet holds each to oauthwire.AccountSubject).
+	namedPrefixOnly := liveToken(caller.jkt, time.Hour)
+	namedPrefixOnly.Person, namedPrefixOnly.Service, namedPrefixOnly.Projects = "", "system:serviceaccount:", nil
+	namedNoName := liveToken(caller.jkt, time.Hour)
+	namedNoName.Person, namedNoName.Service, namedNoName.Projects = "", "system:serviceaccount:ns", nil
+	namedUpperCase := liveToken(caller.jkt, time.Hour)
+	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects = "", "system:serviceaccount:NS:Name", nil
+	// An account with text after it, and an account with text before it: the grammar is anchored
+	// at both ends, so neither is the account it holds.
+	namedTrailing := liveToken(caller.jkt, time.Hour)
+	namedTrailing.Person, namedTrailing.Service, namedTrailing.Projects = "", "system:serviceaccount:example-ns:example-public===x", nil
+	namedLeading := liveToken(caller.jkt, time.Hour)
+	namedLeading.Person, namedLeading.Service, namedLeading.Projects = "", "xsystem:serviceaccount:example-ns:example-public", nil
+	namedServiceProject := liveToken(caller.jkt, time.Hour)
+	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
 	namedTwo := liveToken(caller.jkt, time.Hour)
 	namedTwo.Projects = []string{"INFRA", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
@@ -231,7 +254,13 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 		"a token of another client":                     anotherClient,
 		"a token naming no project scope":               noScope,
 		"a token of an unknown project scope":           unknownScope,
-		"a named scope naming no project and no person": namedNoOne,
+		"a named scope naming a fleet and no person":    namedFleet,
+		"a named scope naming the bare account prefix":  namedPrefixOnly,
+		"a named scope naming an account with no name":  namedNoName,
+		"a named scope naming an upper-case account":    namedUpperCase,
+		"a named scope naming an account and more":      namedTrailing,
+		"a named scope naming text and an account":      namedLeading,
+		"a named scope naming an account and a project": namedServiceProject,
 		"a named scope naming two projects":             namedTwo,
 		"a list no exchange mints":                      unsorted,
 	} {
@@ -266,9 +295,9 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 }
 
 // TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
-// one project, or none for an account entry naming none, and always a person. An answer of that
-// scope naming two or more projects, or none and no person, is no token the exchange minted and is
-// refused, so a Dispatch reader never takes it as a caller no project limits.
+// one project, or none for an account entry naming none. An answer of that scope naming two,
+// sixteen or seventeen projects is no token the exchange minted and is refused, so a Dispatch
+// reader never takes it as a caller no project limits.
 func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -338,6 +367,51 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 		decided, err := decide()
 		if err != nil || !reflect.DeepEqual(decided, want) {
 			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+}
+
+// TestANamedAnswerNamingNoPersonIsItsAccount: an account entry naming no person and no project
+// mints a named token naming no person and no project, whose service is the account it acts as;
+// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike,
+// and so is the answer of such an entry that fixes its session (<service account>===<session>),
+// whose service is the same account. The same answer naming a project, or naming no service, is
+// no token the exchange mints.
+func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
+	const account = "system:serviceaccount:example-ns:example-public"
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.Person, answer.Service, answer.Projects = "", account, nil
+	const token = "a-personless-account-token"
+	rig.broker.Says(token, answer)
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}
+	for name, decide := range map[string]func() (ciphertoken.Caller, error){
+		"Verify": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		},
+		"Live": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+		},
+		"SessionCaller": func() (ciphertoken.Caller, error) { return ciphertoken.SessionCaller(answer) },
+	} {
+		decided, err := decide()
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+	fixed := answer
+	fixed.Session = "example-public-session"
+	if decided, err := ciphertoken.SessionCaller(fixed); err != nil || !reflect.DeepEqual(decided, ciphertoken.Caller{Session: fixed.Session, Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}) {
+		t.Errorf("SessionCaller of the answer of an entry naming no person that fixes its session = %+v, %v; want that session acting for %s", decided, err, account)
+	}
+	withProject := answer
+	withProject.Projects = []string{"INFRA"}
+	noService := answer
+	noService.Service = ""
+	for name, refused := range map[string]ciphertoken.Introspection{"naming a project": withProject, "naming no service": noService} {
+		if _, err := ciphertoken.SessionCaller(refused); !errors.Is(err, ciphertoken.ErrNotASession) {
+			t.Errorf("SessionCaller of a named answer naming no person and %s = %v, want ErrNotASession", name, err)
 		}
 	}
 }
@@ -508,6 +582,247 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	}
 }
 
+// TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly: a token narrowed to reading — a
+// narrowed project scope beside the scope read, or read person for a read-person token that names
+// its person — is a session's credential only to a verifier whose service serves a read-only
+// token, as the read entry's token is. With the switch, each answer of the golden file the
+// broker's own test holds its narrowed answers to is a Caller marked read-only, naming the
+// session, the person, the service and the projects the answer names, under the base word its
+// narrowed word narrows, with the answer's cut. Without the switch, and to SessionCaller, each is
+// ErrNotASession, as a build that predates the words refuses it.
+//
+// The switch widens the rule by nothing else. With it, these are ErrNotASession too: read person,
+// in either order, on a narrowed word that may not hold person, approve or machine beside read,
+// read named twice, no scope at all, a read-none token naming a person or a project, a read-named
+// token whose projects break the named rules, one naming no person and a service that is no
+// Kubernetes account, and one naming no person, an account and a project, a cut on a token that
+// writes, a cut on the read entry's token (the word none, which no trade that asks for read and a
+// cut carries), and a cut that is not an RFC 3339 time. The controls are the golden machine
+// login's answer with a cut, which the switch accepts with its cut, and the named token with no
+// cut, which both verifiers accept unmarked, so each refusal of a cut is the cut's. Each row goes
+// through Verify and through Live.
+func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	// bases is the word each narrowed word reads as, written out here rather than read from
+	// oauthwire.BaseProjectScope, so the test holds the helper to it.
+	bases := map[string]string{
+		oauthwire.ProjectScopeReadNamed:  ciphertoken.ProjectScopeNamed,
+		oauthwire.ProjectScopeReadPerson: ciphertoken.ProjectScopePerson,
+		oauthwire.ProjectScopeReadNone:   ciphertoken.ProjectScopeNone,
+	}
+	const cutText = "2026-11-18T09:30:00.123456Z"
+	cut := time.Date(2026, 11, 18, 9, 30, 0, 123456000, time.UTC)
+	// cuts is the cut of each golden answer that names one; every other names none.
+	cuts := map[string]time.Time{"machine-login-with-a-cut": cut}
+
+	type row struct {
+		name   string
+		answer ciphertoken.Introspection
+		// without and with are the Caller each verifier answers: the zero Caller is a refusal,
+		// which is ErrNotASession for every row here.
+		without ciphertoken.Caller
+		with    ciphertoken.Caller
+	}
+	var rows []row
+	narrowedWords := map[string]bool{}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		answer := answers[kind]
+		base, narrowed := bases[answer.ProjectScope]
+		if !narrowed {
+			t.Fatalf("the golden answer %s carries the project scope %q, which is no narrowed word", kind, answer.ProjectScope)
+		}
+		narrowedWords[answer.ProjectScope] = true
+		rows = append(rows, row{name: "the golden answer " + kind, answer: answer, with: ciphertoken.Caller{
+			Session: session, Person: answer.Person, Service: answer.Service, Projects: answer.Projects,
+			ProjectScope: base, ReadOnly: true, Cut: cuts[kind],
+		}})
+	}
+	if len(narrowedWords) != len(bases) {
+		t.Fatalf("the golden answers carry the narrowed words %v, want each of %v", slices.Sorted(maps.Keys(narrowedWords)), slices.Sorted(maps.Keys(bases)))
+	}
+
+	// changed is the golden answer of kind with one change made, on a copy of its projects.
+	changed := func(kind string, change func(*ciphertoken.Introspection)) ciphertoken.Introspection {
+		answer, ok := answers[kind]
+		if !ok {
+			t.Fatalf("the golden file holds no answer for %s", kind)
+		}
+		answer.Projects = slices.Clone(answer.Projects)
+		change(&answer)
+		return answer
+	}
+	scoped := func(kind, scope string) ciphertoken.Introspection {
+		return changed(kind, func(answer *ciphertoken.Introspection) { answer.Scope = scope })
+	}
+	named := liveToken(caller.jkt, time.Hour)
+	namedCaller := ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}
+	namedCut := liveToken(caller.jkt, time.Hour)
+	namedCut.AsOf = cutText
+	personCut := liveToken(caller.jkt, time.Hour)
+	personCut.ProjectScope, personCut.Projects, personCut.AsOf = ciphertoken.ProjectScopePerson, nil, cutText
+	readEntryCut := readOnlyToken(caller.jkt, time.Hour)
+	readEntryCut.AsOf = cutText
+	rows = append(rows,
+		row{name: "read person on read-named", answer: scoped("pod-entry", "read person")},
+		row{name: "read person on read-none", answer: scoped("read-entry", "read person")},
+		row{name: "read person on read-person naming a service", answer: scoped("google-identity-no-person", "read person")},
+		row{name: "approve beside read", answer: scoped("pod-entry", "read approve")},
+		row{name: "approve beside read person", answer: scoped("machine-login", "read person approve")},
+		row{name: "machine beside read", answer: scoped("machine-login", "read machine")},
+		row{name: "person before read on read-named", answer: scoped("pod-entry", "person read")},
+		row{name: "read named twice", answer: scoped("read-entry", "read read")},
+		row{name: "a narrowed word with no scope", answer: scoped("pod-entry", "")},
+		row{name: "read-none naming a person", answer: changed("read-entry", func(answer *ciphertoken.Introspection) {
+			answer.Person = "ada@example.com"
+		})},
+		row{name: "read-none naming a project", answer: changed("read-entry", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME"}
+		})},
+		row{name: "read-named naming two projects", answer: changed("pod-entry", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME", "OTHER"}
+		})},
+		row{name: "read-named naming no person and a service that is no account", answer: changed("pod-entry", func(answer *ciphertoken.Introspection) {
+			answer.Person, answer.Service, answer.Projects = "", "example-fleet", nil
+		})},
+		row{name: "read-named naming no person, an account and a project", answer: changed("pod-entry-no-person", func(answer *ciphertoken.Introspection) {
+			answer.Projects = []string{"ACME"}
+		})},
+		row{name: "a cut on a named token", answer: namedCut},
+		row{name: "a cut on a person token", answer: personCut},
+		row{name: "a cut that does not parse", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "yesterday"
+		})},
+		row{name: "a cut with a space for its T", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "2026-11-18 09:30:00.123456Z"
+		})},
+		row{name: "a cut at the zero time", answer: changed("machine-login-with-a-cut", func(answer *ciphertoken.Introspection) {
+			answer.AsOf = "0001-01-01T00:00:00Z"
+		})},
+		// A trade that asks for no scope keeps the read entry's word none, and the broker refuses a
+		// cut without scope=read, so no broker mints none beside a cut: only a narrowed word
+		// carries one.
+		row{name: "a cut on the read entry's token", answer: readEntryCut},
+		row{name: "the named token with no cut", answer: named, without: namedCaller, with: namedCaller},
+	)
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for every row's token: what is under test is the answer.
+		rig := newRig(t, func(options *ciphertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 2 * len(rows)}
+		})
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, row := range rows {
+			t.Run(verifier+"/"+row.name, func(t *testing.T) {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				want := row.without
+				if serves {
+					want = row.with
+				}
+				var wantErr error
+				if reflect.DeepEqual(want, ciphertoken.Caller{}) {
+					wantErr = ciphertoken.ErrNotASession
+				}
+
+				decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(decided, want) {
+					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
+				}
+				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				}
+			})
+		}
+	}
+	for _, row := range rows {
+		t.Run("SessionCaller/"+row.name, func(t *testing.T) {
+			var wantErr error
+			if reflect.DeepEqual(row.without, ciphertoken.Caller{}) {
+				wantErr = ciphertoken.ErrNotASession
+			}
+			got, err := ciphertoken.SessionCaller(row.answer)
+			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
+				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
+	}
+}
+
+// TestShapeOfReadsTheScopeAsASet: a scope is a set of words, whose order means nothing (RFC
+// 6749, section 3.3). So each golden answer of a narrowed person's token, whose scope the broker
+// grants as read person, reads the same with its scope written person read: the same Caller,
+// marked read-only and carrying its cut, to a verifier that serves a read-only token, and the
+// same refusal to one that does not and to SessionCaller, as a read-only token's shape reads from
+// outside. Each row goes through Verify and through Live.
+func TestShapeOfReadsTheScopeAsASet(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_scope_set"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	var kinds []string
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		if answers[kind].Scope == "read person" {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no golden answer carries the scope read person")
+	}
+	reordered := func(kind string) ciphertoken.Introspection {
+		answer := answers[kind]
+		answer.Projects = slices.Clone(answer.Projects)
+		answer.Scope = "person read"
+		return answer
+	}
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for both tokens of every kind: what is under test is the answer.
+		rig := newRig(t, func(options *ciphertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 4 * len(kinds)}
+		})
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, kind := range kinds {
+			t.Run(verifier+"/"+kind, func(t *testing.T) {
+				granted, written := "a-token-of-"+kind+"-granted", "a-token-of-"+kind+"-reordered"
+				rig.broker.Says(granted, answers[kind])
+				rig.broker.Says(written, reordered(kind))
+				for _, read := range []struct {
+					name string
+					call func(context.Context, *http.Request) (ciphertoken.Caller, error)
+				}{{"Verify", rig.verifier.Verify}, {"Live", rig.verifier.Live}} {
+					want, wantErr := read.call(t.Context(), caller.at(resourcePath, granted))
+					if serves && (wantErr != nil || !want.ReadOnly) {
+						t.Fatalf("%s of the scope read person = %+v, %v; want a read-only Caller", read.name, want, wantErr)
+					}
+					got, err := read.call(t.Context(), caller.at(resourcePath, written))
+					if !reflect.DeepEqual(got, want) || (err == nil) != (wantErr == nil) || (wantErr != nil && !errors.Is(err, wantErr)) {
+						t.Fatalf("%s of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", read.name, got, err, want, wantErr)
+					}
+				}
+			})
+		}
+	}
+	for _, kind := range kinds {
+		t.Run("SessionCaller/"+kind, func(t *testing.T) {
+			want, wantErr := ciphertoken.SessionCaller(answers[kind])
+			got, err := ciphertoken.SessionCaller(reordered(kind))
+			if !reflect.DeepEqual(got, want) || !errors.Is(err, wantErr) || (err == nil) != (wantErr == nil) {
+				t.Fatalf("SessionCaller of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", got, err, want, wantErr)
+			}
+		})
+	}
+}
+
 // TestALiveTokenWithASoundProofIsAccepted: the two checks together admit the caller, and what
 // the broker said the token is reaches the caller's decision.
 func TestALiveTokenWithASoundProofIsAccepted(t *testing.T) {
@@ -583,46 +898,6 @@ func TestOneTokenCostsOneIntrospectionInsideTheCachesLife(t *testing.T) {
 	}
 	if rig.broker.Count() != 2 {
 		t.Fatalf("the request past the answer's expiry cost %d introspections in all, want 2", rig.broker.Count())
-	}
-}
-
-// TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection: the single flight is what makes a
-// burst on a cold cache cost one introspection rather than one a request, and the address bucket
-// is spent inside that flight, so the burst costs one request of it rather than one each. The
-// bucket here holds exactly one, so charging per request would refuse every request but the
-// first — which is what an honest caller making a burst of calls on a token it has just been
-// given would meet.
-func TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
-	})
-	caller := newSigner(t)
-	const token = "a-token-many-requests-arrive-with-at-once"
-	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
-
-	// Each request needs its own proof: a replayed one is refused, which is a different check.
-	const requests = 8
-	signed := make([]*http.Request, requests)
-	for i := range signed {
-		signed[i] = caller.at(fmt.Sprintf("%s/%d", resourcePath, i), token)
-	}
-	var wait sync.WaitGroup
-	failures := make([]error, requests)
-	for i := range signed {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			_, failures[i] = rig.verifier.Verify(t.Context(), signed[i])
-		}()
-	}
-	wait.Wait()
-	for i, err := range failures {
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
-	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("%d requests arriving at once cost %d introspections, want 1", requests, rig.broker.Count())
 	}
 }
 
@@ -714,58 +989,46 @@ func TestTheProofIsCheckedAgainstDispatchsOwnOriginNotAForwardedHeader(t *testin
 	}
 }
 
-// TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker: the address bucket is
-// what stops a stranger spending the budget a person's approval needs (INFRA-228), so K requests
-// bearing K tokens the broker has never issued cost fewer than K introspections. With the bound
-// lifted and nothing else changed they cost K, which is what says the bucket did it.
-func TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker(t *testing.T) {
-	const flood = 40
-	spend := func(t *testing.T, rig *rig) int64 {
-		caller := newSigner(t)
-		for request := range flood {
-			token := fmt.Sprintf("a-token-the-broker-never-issued-%d", request)
-			if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); err == nil {
-				t.Fatalf("request %d was accepted; want a refusal", request)
-			}
-		}
-		return rig.broker.Count()
-	}
-
-	bounded := spend(t, newRig(t))
-	if bounded >= flood || bounded < int64(ciphertoken.DefaultAddressLimit.Burst) {
-		t.Fatalf("%d requests from one address cost %d introspections, want the bucket's burst of %d and fewer than %d",
-			flood, bounded, ciphertoken.DefaultAddressLimit.Burst, flood)
-	}
-	// The negative control: the same flood with the bucket wide enough to admit all of it.
-	unbounded := spend(t, newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: flood}
-	}))
-	if unbounded != flood {
-		t.Fatalf("with the bound lifted, %d requests cost %d introspections, want %d", flood, unbounded, flood)
-	}
-}
-
-// TestARefusedAddressIsNeverTheBrokersVerdict: the refusal a spent bucket gives is its own
-// outcome, so a caller is told to come back rather than told its token is bad.
-func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
-	})
+// TestAProofForAnOriginDispatchNamesIsAccepted: Dispatch is reached at more than one origin — its
+// public one, DISPATCH_SERVER_URL, and the in-cluster address pods and daemons call — and a client
+// signs the URL it calls, so a proof whose 'htu' is any origin Dispatch names plus the request's
+// path is accepted. The controls: a proof naming an origin no setting names is refused for its
+// 'htu', as a wrong target always was, and one proof presented once at each of the two origins
+// is refused the second time, by the one replay store, whichever origin it names.
+func TestAProofForAnOriginDispatchNamesIsAccepted(t *testing.T) {
+	const inClusterOrigin = "http://dispatch.internal.example:8766"
+	rig := newRig(t, func(o *ciphertoken.Options) { o.Origins = []string{dispatchOrigin, inClusterOrigin} })
 	caller := newSigner(t)
-	rig.broker.Says("the-first-token", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-first-token")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
+	const token = "a-token-presented-inside-the-cluster"
+	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
+
+	decided, err := rig.verifier.Verify(t.Context(), caller.request(inClusterOrigin+resourcePath, token))
+	if err != nil {
+		t.Fatalf("a proof naming the second origin Dispatch names was refused: %v", err)
+	}
+	if decided.Session != "ses_a1b2c3" || decided.Person != "sjawhar" {
+		t.Fatalf("Verify = %+v, want the session and the person the token names", decided)
 	}
 
-	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-second-token"))
-	if !errors.Is(err, ciphertoken.ErrRateLimited) {
-		t.Fatalf("the request with no token left in the bucket answered %v, want ErrRateLimited", err)
+	elsewhere := caller.request("https://dispatch.elsewhere.example"+resourcePath, token)
+	if _, err := rig.verifier.Verify(t.Context(), elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "'htu'") {
+		t.Fatalf("a proof naming an origin no setting names answered %v, want ErrProofInvalid for its 'htu'", err)
 	}
-	if rig.broker.Count() != 1 {
-		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())
-	}
-	if rig.verifier.RetryAfter() != time.Minute {
-		t.Fatalf("RetryAfter = %v, want the bucket's minute", rig.verifier.RetryAfter())
+
+	for signedFor, presentedAt := range map[string]string{dispatchOrigin: inClusterOrigin, inClusterOrigin: dispatchOrigin} {
+		first := caller.request(signedFor+resourcePath, token)
+		if _, err := rig.verifier.Verify(t.Context(), first); err != nil {
+			t.Fatalf("a proof for %s, presented there first: %v", signedFor, err)
+		}
+		other, err := url.Parse(presentedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := first.Clone(t.Context())
+		second.URL.Scheme, second.URL.Host, second.Host = other.Scheme, other.Host, other.Host
+		if _, err := rig.verifier.Verify(t.Context(), second); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "already been used") {
+			t.Fatalf("the proof for %s, presented again at %s, answered %v, want ErrProofInvalid as a replay", signedFor, presentedAt, err)
+		}
 	}
 }
 
@@ -862,26 +1125,28 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 }
 
 // TestNewRefusesAnOriginItCannotCheckAProofAgainst: an origin that is not an absolute http(s)
-// origin is a deployment error, and it fails the build of the verifier rather than every
-// request.
+// origin is a deployment error, wherever it stands in the list, and so is no origin at all; each
+// fails the build of the verifier rather than every request.
 func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	database := storetest.Open(t)
-	for name, origin := range map[string]string{
-		"empty":       "",
-		"no scheme":   "dispatch.test",
-		"not http":    "ftp://dispatch.test",
-		"with a path": "https://dispatch.test/dispatch",
+	for name, origins := range map[string][]string{
+		"none":                 nil,
+		"empty":                {""},
+		"no scheme":            {"dispatch.test"},
+		"not http":             {"ftp://dispatch.test"},
+		"with a path":          {"https://dispatch.test/dispatch"},
+		"a second with a path": {dispatchOrigin, "http://dispatch.internal.example:8766/dispatch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-				Origin:    origin,
+				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
 			})
 			if err == nil {
-				t.Fatalf("New accepted the origin %q", origin)
+				t.Fatalf("New accepted the origins %q", origins)
 			}
 		})
 	}
@@ -897,7 +1162,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-			Origin:    dispatchOrigin,
+			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
 	}
@@ -908,5 +1173,72 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	supplied.Address = sourceAddress
 	if _, err := ciphertoken.New(supplied); err != nil {
 		t.Fatalf("New refused the same options with the address function supplied: %v", err)
+	}
+}
+
+// TestLiveUntilAnswersWhenTheTokenStopsBeingLive: a connection that outlives its request tells a
+// token whose life ended from one the broker ended early by the instant the broker said it would
+// end, since both answer ErrNotActive once they are over. So LiveUntil hands that instant back beside
+// the caller: the answer's 'exp', to the second the broker writes it, and the zero time for an answer
+// that names none. A token the broker does not hold live answers ErrNotActive and no instant, as
+// Live does.
+func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const (
+		dated   = "a-token-the-broker-dated"
+		undated = "a-token-the-broker-named-no-expiry-for"
+		unknown = "a-token-the-broker-never-issued"
+	)
+	answer := liveToken(caller.jkt, time.Hour)
+	rig.broker.Says(dated, answer)
+	decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, dated))
+	if err != nil {
+		t.Fatalf("LiveUntil of a live token: %v", err)
+	}
+	if want := time.Unix(answer.ExpiresAt, 0); !until.Equal(want) {
+		t.Fatalf("LiveUntil answered the expiry %v, want the answer's exp %v", until, want)
+	}
+	if decided.Session != answer.Session || decided.Person != answer.Person {
+		t.Fatalf("LiveUntil = %+v, want the caller Live answers for the same token", decided)
+	}
+
+	noExpiry := liveToken(caller.jkt, time.Hour)
+	noExpiry.ExpiresAt = 0
+	rig.broker.Says(undated, noExpiry)
+	if _, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, undated)); err != nil || !until.IsZero() {
+		t.Fatalf("LiveUntil of a token with no exp = %v, %v; want the zero time and no error", until, err)
+	}
+
+	if decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, unknown)); !errors.Is(err, ciphertoken.ErrNotActive) || !until.IsZero() || !reflect.DeepEqual(decided, ciphertoken.Caller{}) {
+		t.Fatalf("LiveUntil of a token the broker does not hold = %+v, %v, %v; want no caller, the zero time and ErrNotActive", decided, until, err)
+	}
+}
+
+// TestLiveUntilSpendsNoAddressBucket: LiveUntil is the recheck of a connection whose opening
+// request Verify already admitted with its proof (the listener's relay socket), so it introspects
+// with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
+// stranger who empties the bucket of an address, which every client behind one load balancer
+// shares, cannot close the sockets opened from it. The bucket is spent by a token the broker does
+// not know, since a live answer gives its request back to the bucket. Control: Live, with the same
+// bucket spent, is refused ErrRateLimited and reaches no broker.
+func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+	})
+	caller := newSigner(t)
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); !errors.Is(err, ciphertoken.ErrNotActive) {
+		t.Fatalf("the request that spends the bucket = %v, want ErrNotActive", err)
+	}
+	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
+	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {
+		t.Fatalf("LiveUntil with the address's bucket spent = %v, want the broker's answer", err)
+	}
+	if rig.broker.Count() != 2 {
+		t.Fatalf("LiveUntil cost %d introspections in all, want 2", rig.broker.Count())
+	}
+	rig.broker.Says("a-websocket-token", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, "a-websocket-token")); !errors.Is(err, ciphertoken.ErrRateLimited) {
+		t.Fatalf("Live with the address's bucket spent = %v, want ErrRateLimited", err)
 	}
 }

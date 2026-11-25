@@ -25,30 +25,32 @@ func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
 		name string
 		// given is the entry the silent claim was last given work of (record.RoleClaim.GivenEntry).
 		given int64
-		// want is the task the repair's start must carry, entry the entry that start must be of
-		// and resume whether it is marked the phase's resume task: the row's own entry and work
-		// for a claim behind it, and no entry with the resume for a claim level with it.
-		want   func(record.Issue) string
+		// want is the task the repair's start must carry, "" for the phase's resume task
+		// (phaseResumeTask), entry the entry that start must be of and resume whether it is marked the
+		// phase's resume task: the row's own entry and work for a claim behind it, and no entry with
+		// the resume for a claim level with it.
+		want   string
 		entry  int64
 		resume bool
 		// did is what the architect's notice must say the daemon wrote.
 		did string
 	}{
 		{name: "behind the entry its row names", given: silenceEntry - 1,
-			want: func(record.Issue) string { return silenceEntryTask }, entry: silenceEntry,
+			want: silenceEntryTask, entry: silenceEntry,
 			did: fmt.Sprintf("sends the work of phase entry %d its phase row names, which its claim, last given entry %d, never had",
 				silenceEntry, silenceEntry-1)},
 		{name: "level with the entry its row names", given: silenceEntry,
-			want: ResumePhaseTask, entry: 0, resume: true,
+			entry: 0, resume: true,
 			did: fmt.Sprintf("sends the phase's task again, on phase entry %d its phase row names", silenceEntry)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			rec := aSilentTester()
 			rec.given = tc.given
-			issue := seedSilence(t, pool, rec)
+			seedSilence(t, pool, rec)
+			engine := testEngine(config.DesignGateRootIssues, nil)
 
-			if err := applySilence(t, pool, testEngine(config.DesignGateRootIssues, nil), aSilenceOf(claim.RoleTester, 1)); err != nil {
+			if err := applySilence(t, pool, engine, aSilenceOf(claim.RoleTester, 1)); err != nil {
 				t.Fatalf("apply the silence: %v", err)
 			}
 
@@ -56,12 +58,15 @@ func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
 			if len(starts) != 1 {
 				t.Fatalf("the silence queued %+v, want the one start it writes for the silent claim", starts)
 			}
-			start := starts[0]
-			if start.Task != tc.want(issue) || start.Entry != tc.entry || start.ResumeTask != tc.resume ||
+			start, want := starts[0], tc.want
+			if tc.resume {
+				want = phaseResumeTask(t, pool, engine, silenceIssue)
+			}
+			if start.Task != want || start.Entry != tc.entry || start.ResumeTask != tc.resume ||
 				start.ResendEntry || start.RuleResume || !start.NeedsSlot {
 				t.Fatalf("the silence of a claim given entry %d under a row at entry %d sent %q at entry %d, resume task %t, resend %t, rule resume %t, needs slot %t; want %q at entry %d, resume task %t, no resend, no rule resume, waiting for the slot",
 					tc.given, silenceEntry, start.Task, start.Entry, start.ResumeTask, start.ResendEntry, start.RuleResume, start.NeedsSlot,
-					tc.want(issue), tc.entry, tc.resume)
+					want, tc.entry, tc.resume)
 			}
 			notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
 			if len(notices) != 1 {

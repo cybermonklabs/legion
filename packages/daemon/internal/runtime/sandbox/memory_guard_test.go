@@ -3,7 +3,9 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,88 +22,211 @@ func rigLauncherHello(g *rig, name, podUID string, role claim.Role) shimwire.Lau
 		Sandbox: name, Role: string(role), PodUID: podUID, LauncherID: "l-" + string(role)}
 }
 
-// Every role's launcher of an issue pod is answered with the memory guard's settings the runtime
-// was given, and the controller's launcher with none: its pod's guard settings are a block this
-// runtime does not carry. A refused hello is answered with the zero acknowledgement.
-func TestMemoryGuardTheResolverHandsTheSettingsToAnIssuePodsLaunchersAlone(t *testing.T) {
-	settings := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard = &settings }))
-	controller := g.spawn(controllerSpec(t))
-	issue := g.spawn(workerSpec(t))
-	accept := g.r.LauncherResolver()
+// issueGuardSettings and controllerGuardSettings are a deployment's two memory guard blocks, every
+// number of one different from the other's, so an answer carrying one kind's settings is never
+// mistaken for the other's.
+var (
+	issueGuardSettings      = shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
+	controllerGuardSettings = shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 400}
+)
 
+// guardText is a memory guard member as a failure names it: its settings, or none.
+func guardText(g *shimwire.LauncherMemoryGuard) string {
+	if g == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%+v", *g)
+}
+
+// sameGuard reports whether got carries want's settings, none for none included.
+func sameGuard(got, want *shimwire.LauncherMemoryGuard) bool {
+	return (got == nil) == (want == nil) && (got == nil || *got == *want)
+}
+
+// resolvedGuards are the memory guard settings g's resolver answers the launchers of issue, an
+// issue pod, with, by role, and the controller's launcher on controller, the controller's pod. A
+// refused hello fails the test.
+func resolvedGuards(t *testing.T, g *rig, issue, controller runtime.Locator) (map[claim.Role]*shimwire.LauncherMemoryGuard, *shimwire.LauncherMemoryGuard) {
+	t.Helper()
+	accept := g.r.LauncherResolver()
+	issueGuards := map[claim.Role]*shimwire.LauncherMemoryGuard{}
 	for _, role := range claim.Roles {
 		handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
 		if handler == nil {
 			t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
 		}
-		if ack.MemoryGuard == nil || *ack.MemoryGuard != settings {
-			t.Fatalf("the issue pod's %s launcher was answered %+v (memory guard %+v), want the settings %+v", role, ack, ack.MemoryGuard, settings)
-		}
+		issueGuards[role] = ack.MemoryGuard
 	}
 	handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
 	if handler == nil {
 		t.Fatalf("the controller's launcher was refused: %s", reason)
 	}
-	if ack.MemoryGuard != nil {
-		t.Fatalf("the controller's launcher was answered the memory guard settings %+v, want none", *ack.MemoryGuard)
+	return issueGuards, ack.MemoryGuard
+}
+
+// With different numbers in the two blocks, every role's launcher of an issue pod is answered with
+// the issue pods' settings and the controller's launcher with the controller pod's, and neither
+// ever with the other kind's. A refused hello is answered with the zero acknowledgement.
+func TestMemoryGuardTheResolverHandsEachPodKindItsOwnSettings(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.MemoryGuard, o.ControllerMemoryGuard = &issueSettings, &controllerSettings
+	}))
+	controller := g.spawn(controllerSpec(t))
+	issue := g.spawn(workerSpec(t))
+
+	issueGuards, controllerGuard := resolvedGuards(t, g, issue, controller)
+	for role, got := range issueGuards {
+		if !sameGuard(got, &issueGuardSettings) {
+			t.Errorf("the issue pod's %s launcher was answered the memory guard %s, want the issue pods' %+v and never the controller pod's %+v",
+				role, guardText(got), issueGuardSettings, controllerGuardSettings)
+		}
+	}
+	if !sameGuard(controllerGuard, &controllerGuardSettings) {
+		t.Errorf("the controller's launcher was answered the memory guard %s, want the controller pod's %+v and never the issue pods' %+v",
+			guardText(controllerGuard), controllerGuardSettings, issueGuardSettings)
 	}
 	refused := rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester)
 	refused.Token = "not-the-token"
-	if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack.MemoryGuard != nil {
+	if handler, ack, reason := g.r.LauncherResolver()(refused); handler != nil || reason == "" || ack.MemoryGuard != nil {
 		t.Fatalf("a hello with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement", handler, ack, reason)
 	}
 }
 
-// A deployment that turned the guard off (Options.MemoryGuard nil) answers an issue pod's launcher
-// with no settings, which the launcher reads as "run no guard".
-func TestMemoryGuardTheResolverHandsNoSettingsWhenTheGuardIsOff(t *testing.T) {
-	g := newRig(t, nil)
-	issue := g.spawn(workerSpec(t))
-	handler, ack, reason := g.r.LauncherResolver()(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester))
-	if handler == nil {
-		t.Fatalf("the issue pod's tester launcher was refused: %s", reason)
-	}
-	if ack.MemoryGuard != nil {
-		t.Fatalf("the launcher was answered the settings %+v, want none from a runtime given none", *ack.MemoryGuard)
+// A deployment that turned one kind's guard off (its Options member nil) answers that kind's
+// launchers with no settings, which they read as "run no guard", and still answers the other
+// kind's launchers with that kind's own settings; with both off, no launcher is handed any.
+func TestMemoryGuardTheResolverLeavesOneKindOnWhenTheOtherIsOff(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	for _, tc := range []struct {
+		name              string
+		issue, controller *shimwire.LauncherMemoryGuard
+	}{
+		{"the issue pods' guard off", nil, &controllerSettings},
+		{"the controller pod's guard off", &issueSettings, nil},
+		{"both off", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard, o.ControllerMemoryGuard = tc.issue, tc.controller }))
+			controller := g.spawn(controllerSpec(t))
+			issue := g.spawn(workerSpec(t))
+
+			issueGuards, controllerGuard := resolvedGuards(t, g, issue, controller)
+			for role, got := range issueGuards {
+				if !sameGuard(got, tc.issue) {
+					t.Errorf("the issue pod's %s launcher was answered the memory guard %s, want %s", role, guardText(got), guardText(tc.issue))
+				}
+			}
+			if !sameGuard(controllerGuard, tc.controller) {
+				t.Errorf("the controller's launcher was answered the memory guard %s, want %s", guardText(controllerGuard), guardText(tc.controller))
+			}
+		})
 	}
 }
 
-// Every role's launcher of an issue pod is told the daemon knows the pod's kernel's kill
-// (kernelKills), with the guard's settings and with the guard turned off alike, since a microVM
-// pod's launcher sends those reports on nothing else; the controller's launcher is not, nor is a
-// refused hello.
-func TestKernelKillsTheResolverTellsEveryIssuePodLauncherAndNotTheControllers(t *testing.T) {
-	settings := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
-	for name, guard := range map[string]*shimwire.LauncherMemoryGuard{"the guard on": &settings, "the guard off": nil} {
-		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard = guard }))
-			controller := g.spawn(controllerSpec(t))
-			issue := g.spawn(workerSpec(t))
-			accept := g.r.LauncherResolver()
+// Two configurations that differ only in the controller pod's memory guard — off, on at the
+// defaults, on at other numbers — build the controller's pod with the same recorded shape
+// (podShape) and the same template (podTemplate), so the pod one of them built reads as no drift
+// to the other: a daemon restarted on a changed runtime.kubernetes.memory_guard.controller_pod
+// replaces no pod, and the settings reach the running pod's launcher on its next hello instead.
+func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
+	built := func(guard *shimwire.LauncherMemoryGuard) (*Runtime, podTemplate) {
+		t.Helper()
+		opts := goldenOptions()
+		opts.ControllerMemoryGuard = guard
+		r, err := configure(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r, r.podTemplate(launchOf(t, r, controllerSpec(t)))
+	}
+	off, offTemplate := built(nil)
+	for _, guard := range []*shimwire.LauncherMemoryGuard{
+		{ActPercent: shimwire.MemoryGuardActDefault, FloorPercent: shimwire.MemoryGuardFloorDefault,
+			WaitSeconds: shimwire.MemoryGuardWaitDefault, IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault},
+		&controllerGuardSettings,
+	} {
+		on, onTemplate := built(guard)
+		if got, want := podShape(on, controllerPod{}, nil), podShape(off, controllerPod{}, nil); got != want {
+			t.Errorf("the controller pod's shape with the guard at %+v is\n%s\nwant the shape with it off\n%s", *guard, got, want)
+		}
+		if !reflect.DeepEqual(onTemplate, offTemplate) {
+			t.Errorf("the controller pod's template with the guard at %+v is\n%+v\nwant the template with it off\n%+v", *guard, onTemplate, offTemplate)
+		}
+		for _, pair := range []struct {
+			name    string
+			now     *Runtime
+			running podTemplate
+		}{{"off, then on", on, offTemplate}, {"on, then off", off, onTemplate}} {
+			s := &sandbox{}
+			s.Spec.PodTemplate = pair.running
+			if drifted := pair.now.shapeDrift(s, controllerInGVisor); len(drifted) > 0 {
+				t.Errorf("the controller's pod built with the guard %s at %+v reads as drifted: %q, want no drift", pair.name, *guard, drifted)
+			}
+		}
+	}
+}
 
-			for _, role := range claim.Roles {
-				handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
+// Every launcher the resolver accepts is told the daemon knows the pod's kernel's kill
+// (kernelKills), with the guard's settings and with the guard turned off alike: each role's
+// launcher of an issue pod beside the issue pods' settings, and the controller's launcher beside
+// the controller pod's own (controller_pod's), in a gVisor project and in a microVM one alike. A
+// microVM pod's launcher sends the kernel's reports on kernelKills and nothing else, and a gVisor
+// controller pod's launcher reads the settings and ignores kernelKills, so a controller pod built
+// under either type is answered all it reads (launcherHelloAck). The controller's pod is rendered
+// in the project's sandbox, or the microVM case would prove nothing of a microVM controller. A
+// refused hello is told neither.
+func TestKernelKillsTheResolverTellsEveryLauncher(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	for _, project := range []SandboxConfig{{Type: SandboxGVisor}, {Type: SandboxMicroVM, MicroVM: testMicroVM()}} {
+		for _, tc := range []struct {
+			name              string
+			issue, controller *shimwire.LauncherMemoryGuard
+		}{
+			{"the guards on", &issueSettings, &controllerSettings},
+			{"the guards off", nil, nil},
+		} {
+			t.Run(string(project.Type)+"/"+tc.name, func(t *testing.T) {
+				g := newRig(t, nil, withOptions(func(o *Options) {
+					o.Sandbox, o.MemoryGuard, o.ControllerMemoryGuard = project, tc.issue, tc.controller
+				}))
+				controller := g.spawn(controllerSpec(t))
+				issue := g.spawn(workerSpec(t))
+				if got := renderedSandbox(t, g.sandbox(controller.Sandbox.Name).Spec.PodTemplate); got != project.Controller() {
+					t.Fatalf("the controller's pod of a %s project runs in %s, want %s", project.Type, got, project.Controller())
+				}
+				accept := g.r.LauncherResolver()
+
+				for _, role := range claim.Roles {
+					handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
+					if handler == nil {
+						t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
+					}
+					if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.issue) {
+						t.Fatalf("the issue pod's %s launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and %s",
+							role, ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.issue))
+					}
+				}
+				handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
 				if handler == nil {
-					t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
+					t.Fatalf("the controller's launcher was refused: %s", reason)
 				}
-				if !ack.KernelKills {
-					t.Fatalf("the issue pod's %s launcher was answered %+v, want kernelKills", role, ack)
+				if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.controller) {
+					t.Fatalf("the controller's launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and the controller pod's %s",
+						ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.controller))
 				}
-			}
-			handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
-			if handler == nil {
-				t.Fatalf("the controller's launcher was refused: %s", reason)
-			}
-			if ack.KernelKills {
-				t.Fatalf("the controller's launcher was answered %+v, want no kernelKills", ack)
-			}
-			refused := rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester)
-			refused.Token = "not-the-token"
-			if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack.KernelKills {
-				t.Fatalf("a hello with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement", handler, ack, reason)
-			}
-		})
+				for _, refused := range []shimwire.LauncherHello{
+					rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester),
+					rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController),
+				} {
+					refused.Token = "not-the-token"
+					if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack != (shimwire.LauncherHelloAck{}) {
+						t.Fatalf("a hello of the %s launcher with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement",
+							refused.Role, handler, ack, reason)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -122,6 +247,26 @@ func recordedMemoryKills() (runtime.MemoryGuardKilled, <-chan memoryKillCall) {
 	return func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 		_, bounded := ctx.Deadline()
 		calls <- memoryKillCall{issue: issue, token: token, podUID: podUID, report: report, bounded: bounded}
+		return nil
+	}, calls
+}
+
+// controllerMemoryKillCall is one call of a runtime's ControllerMemoryGuardKilled receiver, and
+// whether the context it was called with carried a deadline.
+type controllerMemoryKillCall struct {
+	token   claim.Token
+	podUID  string
+	report  shimwire.LauncherMemoryKill
+	bounded bool
+}
+
+// recordedControllerMemoryKills is a ControllerMemoryGuardKilled receiver that records each call
+// on the channel it answers.
+func recordedControllerMemoryKills() (runtime.ControllerMemoryGuardKilled, <-chan controllerMemoryKillCall) {
+	calls := make(chan controllerMemoryKillCall, 8)
+	return func(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+		_, bounded := ctx.Deadline()
+		calls <- controllerMemoryKillCall{token: token, podUID: podUID, report: report, bounded: bounded}
 		return nil
 	}, calls
 }
@@ -174,8 +319,8 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, killed, nil, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	noGuard := memoryKillReport(1)
@@ -211,14 +356,51 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 	}
 }
 
+// A kill report from the controller's launcher, a session of no issue, reaches the controller's
+// receiver with the session's own token and pod, under a bounded context, and the issue pods'
+// receiver is not called: the controller's pod is of no issue, so there is no issue to name.
+func TestMemoryGuardServeLauncherHandsAControllerKillToTheControllerReceiverWithTheSessionsOwnTokenAndPod(t *testing.T) {
+	var logs lockedLog
+	issueKilled, issueCalls := recordedMemoryKills()
+	controllerKilled, controllerCalls := recordedControllerMemoryKills()
+	launchers := newLaunchers(testLeakCheck, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
+	session := launchers.accept(controllerToken, "", time.Time{}, shimwire.LauncherHello{PodUID: "pod-c", LauncherID: "l-c"})
+	w, done := serveLauncherPipe(t, session)
+
+	report := memoryKillReport(1)
+	sendFrame(t, w, report)
+	var call controllerMemoryKillCall
+	select {
+	case call = <-controllerCalls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the controller's receiver was never called with the report")
+	}
+	if call != (controllerMemoryKillCall{token: controllerToken, podUID: "pod-c", report: report, bounded: true}) {
+		t.Fatalf("the controller's receiver was called with %+v, want the session's %s and pod-c, the report %+v, and a bounded context", call, controllerToken, report)
+	}
+	// The write returns once the loop has read it, so the state's write returns only once the
+	// report has been handled.
+	sendFrame(t, w, shimwire.LauncherState{})
+	select {
+	case call := <-issueCalls:
+		t.Fatalf("the issue pods' receiver was called with %+v, want only the controller's", call)
+	case <-done:
+		t.Fatal("the frame loop ended, want the connection open after the report")
+	default:
+	}
+	if text := logs.String(); strings.Contains(text, "launcher memory guard") {
+		t.Fatalf("log = %q, want no warning for a report a receiver took", text)
+	}
+}
+
 // A report of a process the pod's kernel stopped reaches the daemon's receiver, which applies it
 // as the intake fact, with its cause as the launcher sent it; a report whose cause the frame's own
 // rule does not know is dropped with a warning naming the cause, and the connection stays open.
 func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, killed, nil, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	unknown := memoryKillReport(1)
@@ -243,29 +425,36 @@ func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing
 	}
 }
 
-// A kill report from a launcher of no issue (the controller's pod, whose role has no issue to
-// hold a note) and one a runtime with no receiver reads are dropped with a warning naming the
-// launcher, and the connection stays open: the launcher's frames after them are read.
-func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing.T) {
+// A kill report a runtime with no receiver for its pod's kind reads is dropped with a warning
+// naming the launcher and the line that sets the missing receiver, and the connection stays open:
+// the launcher's frames after it are read. The other kind's receiver, which the runtime has, is
+// not called with it.
+func TestMemoryGuardServeLauncherDropsAKillNoReceiverCanTake(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		receiver bool
-		token    claim.Token
-		issue    string
-		warning  string
+		name    string
+		token   claim.Token
+		issue   string
+		warning string
 	}{
-		{"a launcher of no issue", true, controllerToken, "", "a launcher of no issue reported a kill"},
-		{"a runtime with no receiver", false, workerToken, testTree, "this runtime has no receiver for it"},
+		{"an issue pod's launcher", workerToken, testTree, "this runtime has no receiver for it, which is dropped; " +
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.MemoryGuardKilled)"},
+		{"the controller's launcher", controllerToken, "", "this runtime has no receiver for it, which is dropped; " +
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.ControllerMemoryGuardKilled)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs lockedLog
-			var killed runtime.MemoryGuardKilled
-			var calls <-chan memoryKillCall
-			if tc.receiver {
-				killed, calls = recordedMemoryKills()
+			// The runtime has the receiver of the other kind alone.
+			var issueKilled runtime.MemoryGuardKilled
+			var controllerKilled runtime.ControllerMemoryGuardKilled
+			var issueCalls <-chan memoryKillCall
+			var controllerCalls <-chan controllerMemoryKillCall
+			if tc.issue == "" {
+				issueKilled, issueCalls = recordedMemoryKills()
+			} else {
+				controllerKilled, controllerCalls = recordedControllerMemoryKills()
 			}
-			launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-			session := launchers.accept(tc.token, tc.issue, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+			launchers := newLaunchers(testLeakCheck, nil, nil, issueKilled, controllerKilled, nil, slogTo(&logs))
+			session := launchers.accept(tc.token, tc.issue, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 
 			sendFrame(t, w, memoryKillReport(1))
@@ -275,8 +464,10 @@ func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing
 			sendFrame(t, w, shimwire.LauncherState{})
 
 			select {
-			case call := <-calls:
-				t.Fatalf("the receiver was called with %+v, want the report dropped", call)
+			case call := <-issueCalls:
+				t.Fatalf("the issue pods' receiver was called with %+v, want the report dropped", call)
+			case call := <-controllerCalls:
+				t.Fatalf("the controller's receiver was called with %+v, want the report dropped", call)
 			case <-done:
 				t.Fatal("the frame loop ended, want the connection open after the report")
 			default:

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.
@@ -80,6 +80,7 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 // under -race (the envoy-go-race job), a record that is not synchronized fails here. Each connect
 // makes the bus's ten attempts a second apart, so this takes about ten seconds.
 func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
+	t.Parallel()
 	dialer, err := socks5Proxy(proxiedLookup("127.0.0.1:1"))
 	if err != nil {
 		t.Fatalf("read the proxy setting: %v", err)

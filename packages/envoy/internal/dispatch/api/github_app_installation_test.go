@@ -35,6 +35,7 @@ func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 // An agent asks whether Dispatch's App is installed on a repository: GitHub's installation is
 // true, whatever permissions it grants, and GitHub's 404 is false.
 func TestAgentReadsWhetherTheAppInstallationExists(t *testing.T) {
+	t.Parallel()
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/installation":
@@ -60,6 +61,7 @@ func TestAgentReadsWhetherTheAppInstallationExists(t *testing.T) {
 
 // Dispatch with no App key cannot ask GitHub, which is no answer about the repository.
 func TestAppInstallationWithoutAnAppKeyAnswers503(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/acme/widgets", nil, "agent-token")
 	body := decodeBody[map[string]string](t, response)
@@ -70,6 +72,7 @@ func TestAppInstallationWithoutAnAppKeyAnswers503(t *testing.T) {
 
 // GitHub failing the lookup is no answer either: 502 naming the repository and GitHub's error.
 func TestAppInstallationGitHubFailureAnswers502(t *testing.T) {
+	t.Parallel()
 	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprint(w, `{"message":"Server Error"}`)
@@ -82,10 +85,14 @@ func TestAppInstallationGitHubFailureAnswers502(t *testing.T) {
 	}
 }
 
-// A lookup GitHub fails with a page that is no JSON carries the whole page in its error, so the
-// 502 words it as every GITHUB_UNREADABLE does (gitHubReason): its first gitHubReasonBytes, and
-// a note that GitHub's error was cut, never the page whole.
+// A lookup GitHub fails with a page that is no JSON carries the page in its error as
+// githubapp.ShownBody shows it, so the 502 words it as every GITHUB_UNREADABLE does
+// (gitHubReason): the start of the page and its size, never the page whole. The page here is
+// ASCII, so its first 512 characters and its size come to fewer than gitHubReasonBytes with the
+// rest of the sentence: ShownBody's bound is the one that acts, and gitHubReason's cut, which
+// bounds the whole reason, finds nothing to cut.
 func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
+	t.Parallel()
 	page := "<html>" + strings.Repeat("x", 4*gitHubReasonBytes) + "</html>"
 	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -97,21 +104,56 @@ func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
 		t.Fatalf("GitHub 502 page: status=%d body=%.300s", response.Code, response.Body.String())
 	}
 	said := body["error"]
-	if !strings.Contains(said, "acme/widgets") || !strings.Contains(said, "(GitHub's error, cut to its first") {
-		t.Fatalf("the refusal reads %.300q, want the repository and the cut named", said)
+	if !strings.Contains(said, "acme/widgets") || !strings.Contains(said, "<html>xxxx") ||
+		!strings.Contains(said, fmt.Sprintf("… (%d bytes)", len(page))) {
+		t.Fatalf("the refusal reads %.300q, want the repository, the start of the page and its size named", said)
 	}
 	if longest := gitHubReasonBytes + 512; len(said) > longest {
 		t.Fatalf("the refusal is %d bytes, want at most %d: GitHub's page went in whole", len(said), longest)
 	}
 }
 
-// The installation read's path is held to the names GitHub allows, as a mapping's is
-// (repoProjectPath): its halves go into the lookup's own path as they are, and `...git` and
+// A rate limit GitHub answers the lookup with is worded by the `message` of its JSON in place of
+// its body, read from the whole body (gitHubErrorText), so a message of a few kilobytes reaches
+// gitHubReason whole, past githubapp.ShownBody's bound: gitHubReason's cut is the bound that acts
+// on it, and the 502 names the start of the message and says it was cut, never the message whole.
+// The lookup words every other refusal by its status and its body (githubapp's installation
+// lookup, StatusText), which ShownBody bounds, so a rate limit is the refusal whose message
+// reaches the cut.
+func TestAppInstallationGitHubFailureWithALongMessageIsCutToTheBound(t *testing.T) {
+	t.Parallel()
+	message := "API rate limit exceeded for installation ID 77. " + strings.Repeat("y", 4*gitHubReasonBytes)
+	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"message":"`+message+`"}`)
+	})
+	response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/acme/widgets", nil, "agent-token")
+	body := decodeBody[map[string]string](t, response)
+	if response.Code != http.StatusBadGateway || body["code"] != "GITHUB_UNREADABLE" {
+		t.Fatalf("GitHub 429 with a long message: status=%d body=%.300s", response.Code, response.Body.String())
+	}
+	said := body["error"]
+	if !strings.Contains(said, "acme/widgets") || !strings.Contains(said, "status 429") ||
+		!strings.Contains(said, "API rate limit exceeded for installation ID 77. yyyy") ||
+		!strings.Contains(said, "(GitHub's error, cut to its first") {
+		t.Fatalf("the refusal reads %.300q, want the repository, the status, the start of the message and the cut named", said)
+	}
+	if strings.Contains(said, message) {
+		t.Fatalf("the refusal holds GitHub's %d-byte message whole", len(message))
+	}
+	if longest := gitHubReasonBytes + 512; len(said) > longest {
+		t.Fatalf("the refusal is %d bytes, want at most %d: GitHub's message went in whole", len(said), longest)
+	}
+}
+
+// The installation read's path is held to the names GitHub allows, as a source's is
+// (githubRepoPath): its halves go into the lookup's own path as they are, and `...git` and
 // `.git` are no dot segments, so the mux does not clean them, while the trailing `.git` trimmed
 // leaves `..` or an empty name, which would ask GitHub about `/repos/acme/../installation`.
 // `.git.git` and `...git.git` are the same names once canonicalising has trimmed one `.git`. Each
-// is refused 400 INVALID_REPO_PROJECT, and GitHub is asked nothing.
+// is refused 400 INVALID_REPOSITORY, and GitHub is asked nothing.
 func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
+	t.Parallel()
 	var asked atomic.Int32
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
 		asked.Add(1)
@@ -121,8 +163,8 @@ func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	})
 	for _, path := range []string{"acme/...git", "acme/.git", "acme/.git.git", "acme/...git.git"} {
 		response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/"+path, nil, "agent-token")
-		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPO_PROJECT" {
-			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPO_PROJECT", path, response.Code, response.Body.String())
+		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPOSITORY" {
+			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPOSITORY", path, response.Code, response.Body.String())
 		}
 	}
 	if requests := asked.Load(); requests != 0 {

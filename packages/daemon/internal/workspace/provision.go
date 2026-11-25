@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"golang.org/x/sys/unix"
@@ -69,7 +70,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	defer func() {
 		_ = source.remove()
 	}()
-	if err := ensureRepoClone(ctx, run, WallClock{}, workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
+	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
 		return Workspace{}, err
 	}
 	if err := ensureFetchConfiguration(ctx, run, workspace.Clone, source); err != nil {
@@ -110,6 +111,9 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
+	if err := configurePackWindows(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
 	if err := configureCloneDefaultRepository(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
@@ -138,11 +142,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// daemon bounds checkouts by.
 	//
 	// It is also the one command past those steps that no change of this repository's makes fit
-	// CommandTimeout's five minutes: one write of the largest repository mapped took nine minutes
-	// in an issue pod (CheckoutTimeout), and the runner killing it there failed the whole
-	// provision and spent one of the claim's three launches. So this command alone takes
-	// CheckoutTimeout (request.checkoutBound), and every provisioning command but it and those
-	// steps keeps the runner's slow-command budget.
+	// CommandTimeout's five minutes: one write of the largest repository a project then worked
+	// in took nine minutes in an issue pod (CheckoutTimeout), and the runner killing it there
+	// failed the whole provision and spent one of the claim's three launches. So this command
+	// alone takes CheckoutTimeout (request.checkoutBound), and every provisioning command but it
+	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
 		release, err := request.checkoutPlace(ctx)

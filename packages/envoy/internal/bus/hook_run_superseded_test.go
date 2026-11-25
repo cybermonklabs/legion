@@ -14,8 +14,8 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/testport"
 )
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
@@ -124,6 +124,7 @@ type hookCall struct {
 // hook that returns the cancel, which ends the run there, and for one that swallows it and returns
 // nil, after which the hooks behind it run on the ended context; the run is superseded either way.
 func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		swallow bool

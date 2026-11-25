@@ -100,7 +100,10 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 		}
 		w.WriteHeader(204)
 	})
-	b.srv = httptest.NewServer(mux)
+	// The handlers read b.srv on the server's goroutines, so it is set before the server serves:
+	// built unstarted, assigned, then started.
+	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
 }
@@ -224,10 +227,11 @@ func signedIn(t *testing.T, f *enrolBroker, person, credentialID string) *cipher
 // read the operator file at all, which on such a machine names nothing and would fail the
 // enrolment before it was ever sent.
 func TestAMachinesSessionEnrolsWithNoOperatorAtAll(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, credential := machineIdentityBroker(t, f)
 
-	id, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint-of-the-box-key", nil)
+	id, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil)
 	if err != nil {
 		t.Fatalf("a machine with no operator file could not enrol a session: %v", err)
 	}
@@ -249,6 +253,7 @@ func TestAMachinesSessionEnrolsWithNoOperatorAtAll(t *testing.T) {
 // TestAMachineLoginsSessionStillStatesItsApprover: where a person approved this machine's login,
 // the credential carries that person, so the enrolment states them exactly as it always has.
 func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	key, err := proof.NewKey()
 	if err != nil {
@@ -260,7 +265,7 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 	b.installCredential(&machineCredential{key: key, id: f.mint("credential-of-the-machine-login", key), expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
 	b.credMu.Unlock()
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	enrols, _ := f.calls()
@@ -273,12 +278,13 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 // person's — signed with their box key under their own credential, stating them — and this
 // machine's credential signs nothing.
 func TestASignedInPersonsSessionEnrolsAsThem(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, machine := machineIdentityBroker(t, f)
 	person := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
 	b.SignIns = &stubSignIns{authority: person}
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	enrols, _ := f.calls()
@@ -300,6 +306,7 @@ func TestASignedInPersonsSessionEnrolsAsThem(t *testing.T) {
 // waiting on the enrolment gets one; and this machine's credential, which nothing refused,
 // is still held.
 func TestARevokedSignInEnrolsUnderTheMachineInTheSameCall(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, machine := machineIdentityBroker(t, f)
 	person := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
@@ -310,7 +317,7 @@ func TestARevokedSignInEnrolsUnderTheMachineInTheSameCall(t *testing.T) {
 	b.SignIns = signIns
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 1, http.StatusUnauthorized, "LAUNCHER_INVALID"
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatalf("a session registered after the sign-in was revoked must still enrol: %v", err)
 	}
 	enrols, _ := f.calls()
@@ -334,12 +341,13 @@ func TestARevokedSignInEnrolsUnderTheMachineInTheSameCall(t *testing.T) {
 // TestAPersonsCredentialRefusedTwiceIsTheEnrolmentsAnswer: the retry is one, not a loop, so a
 // broker refusing everything answers the caller rather than spinning.
 func TestAPersonsCredentialRefusedTwiceIsTheEnrolmentsAnswer(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, _ := machineIdentityBroker(t, f)
 	b.SignIns = &stubSignIns{authority: signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")}
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 2, http.StatusUnauthorized, "LAUNCHER_INVALID"
 	// The second call is refused too: the stub keeps answering the same authority.
-	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil)
+	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil)
 	var be *BrokerError
 	if !errors.As(err, &be) || be.Code != "LAUNCHER_INVALID" {
 		t.Fatalf("two refusals answered %v, want the broker's own refusal", err)
@@ -354,11 +362,12 @@ func TestAPersonsCredentialRefusedTwiceIsTheEnrolmentsAnswer(t *testing.T) {
 // sessions these are (two people signed in and nothing naming which, a record it cannot read)
 // enrols nothing, rather than quietly giving the session this machine's lesser authority.
 func TestAnUndecidedSignInFailsTheEnrolmentRatherThanDownscopingIt(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, _ := machineIdentityBroker(t, f)
 	b.SignIns = &stubSignIns{err: errors.New("2 people are signed in on this machine")}
 
-	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil)
+	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "2 people are signed in") {
 		t.Fatalf("an undecided box answered %v, want the refusal that says why", err)
 	}
@@ -373,6 +382,7 @@ func TestAnUndecidedSignInFailsTheEnrolmentRatherThanDownscopingIt(t *testing.T)
 // credential is answered by signing with this machine's, and a session the machine enrolled
 // before anyone signed in is still revocable.
 func TestRevokeFallsBackToTheMachinesOwnCredential(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, machine := machineIdentityBroker(t, f)
 	person := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
@@ -394,6 +404,7 @@ func TestRevokeFallsBackToTheMachinesOwnCredential(t *testing.T) {
 // TestRevokeUnderOneCredentialIsOneCall: nothing retries a revoke the broker accepted, or one
 // it refused for any reason but "not this credential's".
 func TestRevokeUnderOneCredentialIsOneCall(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, machine := machineIdentityBroker(t, f)
 	if err := b.Revoke(context.Background(), "enr-1"); err != nil {
@@ -412,6 +423,7 @@ func TestRevokeUnderOneCredentialIsOneCall(t *testing.T) {
 // person's credential and states them; after the sign-in is revoked, both are back to the
 // machine's. Nothing is restarted between the three: the same Broker answers all six.
 func TestBothKindsOfSessionFollowTheBoxAcrossASignIn(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	b, _, machine := machineIdentityBroker(t, f)
 	signIns := &stubSignIns{}
@@ -430,7 +442,7 @@ func TestBothKindsOfSessionFollowTheBoxAcrossASignIn(t *testing.T) {
 	}
 	box := func(t *testing.T, n int) {
 		t.Helper()
-		if _, _, err := b.EnrollSessionKey(context.Background(), "agent-box-"+strconv.Itoa(n), "thumbprint-of-box-"+strconv.Itoa(n), nil); err != nil {
+		if _, _, err := b.EnrollSessionKey(context.Background(), "agent-box-"+strconv.Itoa(n), "thumbprint-of-box-"+strconv.Itoa(n), nil, nil); err != nil {
 			t.Fatalf("enrol an agent box: %v", err)
 		}
 	}

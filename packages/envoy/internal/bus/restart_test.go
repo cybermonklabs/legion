@@ -23,6 +23,7 @@ import (
 // place rather than closing, so a JetStream handle taken from it before the restart is still bound
 // to a live connection afterwards.
 func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -40,7 +41,7 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 
 	srv.Stop(t)
 	srv.Start(t)
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, "the client to reconnect", client.Connected)
 	var putErr error
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -64,7 +65,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to notice the server is gone", func() bool { return !client.Connected() })
+	waitFor(t, "the client to notice the server is gone", func() bool { return !client.Connected() })
 	item := contracts.Envelope{
 		EventID:       "evt-publish-while-reconnecting",
 		Source:        "agent",
@@ -87,7 +88,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	if err := observer.Flush(); err != nil {
 		t.Fatalf("flush subscription: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, "the client to reconnect", client.Connected)
 	select {
 	case message := <-received:
 		t.Fatalf("the publish that failed was sent after the reconnect: %s", message.Data)
@@ -99,6 +100,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 // rather than failing at once: a webhook that gets an error answers 503, and the sender does not
 // redeliver, so a failure fast enough to beat a one-second NATS restart loses the event.
 func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -107,7 +109,7 @@ func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 	restarted := make(chan struct{})
 	go func() {
 		defer close(restarted)
@@ -316,7 +318,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	if err := client.Conn.Publish(roleSubject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish to the role lane: %v", err)
 	}
-	waitFor(t, 10*time.Second, "both deliveries after the restart", func() bool {
+	waitFor(t, "both deliveries after the restart", func() bool {
 		return durableDeliveries.Load() >= 1 && roleDeliveries.Load() >= 1
 	})
 	time.Sleep(time.Second)
@@ -383,7 +385,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			if !tc.stop {
 				const retried = "envoy nats reconnect hook failed; it is retried"
 				const uncovered = "envoy nats reconnect hooks have not succeeded"
-				waitFor(t, 15*time.Second, "the failed run reported at WARN", func() bool {
+				waitFor(t, "the failed run reported at WARN", func() bool {
 					return logs.lineAt("WARN", retried) != ""
 				})
 				if line := logs.lineAt("WARN", retried); !strings.Contains(line, "connection closed") {
@@ -396,7 +398,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				// them again with backoff, up to 30 s between attempts, so the ERROR comes with the
 				// next run rather than at once.
 				clock.Advance(bus.RepairGrace)
-				waitFor(t, 40*time.Second, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
+				waitFor(t, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
 					return logs.lineAt("ERROR", uncovered) != ""
 				})
 				if line := logs.lineAt("ERROR", uncovered); !strings.Contains(line, "connection closed") {

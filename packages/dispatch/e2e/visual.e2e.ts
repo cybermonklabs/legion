@@ -24,12 +24,13 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row's
- *  write would be seen by every row after it, so each row signs in and navigates afresh, and the
- *  seed writes first each read mark a page of the shot set writes as it draws - the broadcast
- *  page's read of its replies and the Spec tab's read of the spec (`e2e/review-seed.ts`) - so a
- *  page's own write changes nothing any row compares. The review runs its rows in normal and in
- *  reverse order (`e2e/visual-order.ts`) so that a row reading another row's write fails by name.
+ *  baseline was taken against is the one the host wrote once. What that asks of a row is that its
+ *  page write nothing, since a write would be seen by every row after it, so each row signs in and
+ *  navigates afresh, and the seed writes first each read mark a page of the shot set writes as it
+ *  draws - the broadcast page's read of its replies and the Spec tab's read of the spec
+ *  (`e2e/review-seed.ts`) - so a page's own write changes nothing any row compares. Every other
+ *  write a row's page tries, to the API or on a document socket, is stopped before it reaches the
+ *  corpus and fails that row by name (`guardSharedCorpus`, `e2e/visual-guard.ts`).
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -40,9 +41,10 @@
  *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
  *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
- *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
- *    that the text of a timestamp is in no baseline; its place, its size and the layout around
- *    it still are.
+ *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are painted over as well, by the
+ *    page itself (`e2e/visual-time.css`; the mask list below says why that is not a mask). The
+ *    cost is that the text of a timestamp is in no baseline; its place, its size and the layout
+ *    around it still are.
  *  - Animations. `toHaveScreenshot` disables CSS animations, CSS transitions and Web Animations
  *    by default (`animations: "disabled"`), so no option is passed for them.
  *  - The 150 ms colour ease. `web/src/styles.css:51-57` transitions `color`, `background-color`
@@ -70,6 +72,7 @@
  *    measured).
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { type Browser, expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
@@ -78,18 +81,29 @@ import {
   type ReviewedRoute,
   type ReviewSeed,
   railInboxLink,
+  type SeededReadMarks,
   shotRoutes,
   topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
-import { inVisualOrder, visualOrder } from "./visual-order";
-import { workspaceSessions } from "./workspace";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "./visual-guard";
+import { reviewSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
  *  paid once rather than twice, and each shot names its scheme. */
 const SCHEMES = ["light", "dark"] as const;
+
+/** The stylesheet each shot is taken under, which paints every `<time>` over (the mask list
+ *  below says why it is painted and not masked). */
+const TIME_PAINT = fileURLToPath(new URL("./visual-time.css", import.meta.url));
 
 /** The JSON `e2e/visual-seed.ts` wrote on the host. Unset says this run is not the containerised
  *  one, which is every run but `e2e/visual-run.sh`'s. */
@@ -102,14 +116,15 @@ const SKIP_REASON =
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
 // runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
-// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
-// time the first row opens a page: the Agents page then draws "No agents are connected." and
-// every shot of it would be a baseline of an empty registry. The database half of the corpus is
-// untouched by that reset, which is why only this half is written again here. `./agents` and
-// `./workspace` reach no module that spawns `psql`.
+// fake Envoy when its sentinel check ends, so the sessions `seedReviewRoutes` wrote are gone by
+// the time the first row opens a page: the Agents page then draws "No agents are connected."
+// and every shot of it would be a baseline of an empty registry, and every claim the corpus's
+// two claim holders hold would read as free. The database half of the corpus is untouched by
+// that reset, which is why only this half is written again here. `./agents` and `./workspace`
+// reach no module that spawns `psql`.
 test.beforeAll(async () => {
   if (seedPath === undefined) return;
-  await setLiveSessions(workspaceSessions);
+  await setLiveSessions(reviewSessions);
 });
 
 /** The host's seed, with the moment it was written. A file without `seededAt` fails the row
@@ -118,10 +133,13 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
+  // needs, which the checks below hold.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -129,7 +147,14 @@ function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
@@ -142,6 +167,8 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   }
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
+    // Before the first navigation, so every write the page tries is stopped and named.
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -219,18 +246,41 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // drop CI drew past it was never explained, no seed state can pin a step that was never
         // found, and so this mask stands in for one.
         //
-        // Nothing else is masked, and the Decisions panel is why that matters. It prints the
-        // id of the spec block a decision shaped until the reference graph answers, and a
-        // mask over that id did NOT settle it: a uuid is a fixed count of characters and not
-        // a fixed width, so the painted rectangle moved with the glyphs. That page is scanned
-        // and not shot now, since one block it draws has no words to wait for
+        // A `<time>` is painted over by the page itself and not masked: the stylesheet the
+        // shot is taken under (`stylePath`, `e2e/visual-time.css`) gives every `<time>` and
+        // everything inside one a background in Playwright's own mask colour and transparent
+        // text, so its box is in the baseline and its words are not, as under the mask. What
+        // the mask did that this does not is paint where the page shows nothing. Playwright
+        // paints a mask's rectangle over the finished shot at the element's box wherever that
+        // box is, and an element its box has scrolled out of view still has one: a priorities
+        // row the table's box had scrolled away painted its time over the pager's "50 per
+        // page" under the box, at 1280 and on a phone, and a row the Active tab's box had
+        // scrolled away painted its time over that tab's pager. A background is drawn by the
+        // page, so it is clipped wherever the element is: by the box it scrolls in, under a
+        // sticky header drawn over it, and not drawn at all where the element is hidden. A
+        // time a box cuts part of is painted up to the box's edge and no further, which is all
+        // of it the page shows. The painted rectangles are the time's own line boxes, which is
+        // the rectangle the mask painted for a time on one line; a time that wraps is painted
+        // line by line, where the mask painted one rectangle round both lines. They hold still
+        // for the reason a mask's did: the clock is pinned, so the words, and the box they
+        // make, are the same on every run.
+        //
+        // Every mask in the list below stands where the page shows the whole of it - a page's
+        // own header row, the rail's link, the top bar's badge, a measures card's line - and
+        // none in a box that scrolls, so a mask paints nothing there the page does not show. A
+        // `<time>` stands in rows a box scrolls, which is why it is painted instead.
+        //
+        // Nothing else is masked or painted, and the Decisions panel is why that matters. It
+        // prints the id of the spec block a decision shaped until the reference graph answers,
+        // and a mask over that id did NOT settle it: a uuid is a fixed count of characters and
+        // not a fixed width, so the painted rectangle moved with the glyphs. That page is
+        // scanned and not shot now, since one block it draws has no words to wait for
         // (`e2e/review-routes.ts`). A mask is the last resort here and not the first, because
         // it hides only a difference whose box holds still.
         //
         // Each of these was found by reading a diff image of a container run against the run
         // before it, not by widening the bound until the rows passed.
         mask: [
-          page.locator("time"),
           page
             .locator("header")
             .filter({ has: page.getByText(/^Generated /) })
@@ -239,6 +289,9 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
           railInboxLink(page),
           topBarInboxBadge(page),
         ],
+        // Every `<time>`, painted in the mask's colour by the page, which clips it where it
+        // clips the time (the list above says why). No layout property, so nothing moves.
+        stylePath: TIME_PAINT,
         // MEASURED, both numbers, by starting at zero.
         // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
         // -its-separation-stated-pr2502.md asks for the bound to start at zero, for the
@@ -298,14 +351,18 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
+    expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }
 
-// The rows of each project in the order `DISPATCH_E2E_VISUAL_ORDER` asks for (e2e/visual-order.ts
-// says why the review runs in two orders); the config puts the projects in that order too.
-const order = visualOrder();
-
-for (const route of inVisualOrder(shotRoutes, order)) {
+for (const route of shotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
     await shoot(browser, route);
@@ -317,7 +374,7 @@ for (const route of inVisualOrder(shotRoutes, order)) {
 // The ` @phone` tag is what puts a row in the `visual-phone` project and keeps it out of
 // `visual` (e2e/playwright.config.ts), so the two shots of one page land in two baseline
 // directories under the same file name.
-for (const route of inVisualOrder(phoneShotRoutes, order)) {
+for (const route of phoneShotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
     await shoot(browser, route);

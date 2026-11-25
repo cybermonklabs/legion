@@ -30,8 +30,8 @@ const notLoggedInNotice = "agent-secrets: this machine's agent-secrets-helper ho
 func runInSession(t *testing.T, binary, sock string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	cmd := exec.Command(binary, append([]string{"register", "--exec", "--", binary}, args...)...)
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=",
-		"AGENT_SECRETS_URL=http://127.0.0.1:1", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=",
+		"AGENT_SECRETS_URL=http://127.0.0.1:1")
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	_ = cmd.Run()
@@ -54,7 +54,8 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 // the real helper while it holds no launcher credential: its enroll loop cannot succeed, so the
 // helper answers at once instead of holding the launch for the full wait. The launch still execs,
 // warning that the machine is not logged in, what the session's secrets calls do until it is, and
-// the login command. The bound only rules out the 10 s wait.
+// the login command. The time check rules out the 10 s wait: the command waits for nothing, timed
+// against no deadline, allowing for the time this process was held up (requireOnTime).
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
@@ -62,18 +63,16 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
+	meter := startStallMeter(t)
 	start := time.Now()
 	out, err := cmd.Output()
-	elapsed := time.Since(start)
+	elapsed := requireCommandOnTime(t, meter, "register --wait 10 with no credential", start, 0)
 	if err != nil || strings.TrimSpace(string(out)) != "ran" {
 		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
 	}
 	const warning = "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: this machine's agent-secrets-helper holds no credential at the secrets broker (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 	if stderr.String() != warning {
 		t.Fatalf("stderr %q, want the no-credential warning %q", stderr.String(), warning)
-	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("register --wait 10 took %s with no credential; it must not wait", elapsed)
 	}
 	t.Logf("register --wait 10 with no credential returned in %s", elapsed)
 }
@@ -104,12 +103,11 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 	if _, err := srv.Broker.Login(context.Background(), srv.Hostname); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !srv.Broker.HasCredential() && time.Now().Before(deadline) {
+	for !srv.Broker.HasCredential() {
+		if waitsGaveUp(t) {
+			t.Fatalf("the helper never installed the issued launcher credential, %s before the test binary's deadline", waitMargin)
+		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	if !srv.Broker.HasCredential() {
-		t.Fatal("the helper never installed the issued launcher credential")
 	}
 	code, stdout, stderr := runInSession(t, binary, sock, "identity")
 	if code != 0 || stdout != "" || stderr != "" {

@@ -39,6 +39,7 @@ func keptLogin(t *testing.T, f *fakeBroker) (path string, kept *MachineFile) {
 // reports it issued, and refreshes it right away: the refresh spends the kept refresh token, and
 // the file then holds the rotated one.
 func TestALoginIsKeptOnDiskAndAStartResumesIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -84,6 +85,7 @@ func TestALoginIsKeptOnDiskAndAStartResumesIt(t *testing.T) {
 // login was revoked, lapsed, or its refresh token was reused) drops the credential with its own
 // reason and deletes the machine file, so the next start holds no login.
 func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
@@ -116,6 +118,7 @@ func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
 // (here the broker answers 503) keeps the credential and the machine file as they were, and the
 // refresh loop retries it at the fixed retry until one succeeds.
 func TestARefreshThatDoesNotReachTheBrokerKeepsTheLogin(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -154,11 +157,42 @@ func TestARefreshThatDoesNotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	}
 }
 
+// TestARefreshKeepsTheLoginUnlessTheBrokerEndsItsGrant: the helper reads the broker's invalid_grant
+// as the login's end only from a 400 or 401 answer (oauthrefusal.EndsGrant), narrower than the
+// refusal it reads a login poll's code from. A 403 or a 408 naming invalid_grant, and a 5xx, a
+// broker that could not answer, end nothing: the refresh is retried and the credential and the
+// machine file stay as they were.
+func TestARefreshKeepsTheLoginUnlessTheBrokerEndsItsGrant(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusForbidden, http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			f := newFakeBroker(t)
+			b := loggedInBroker(t, f, "ada@example.com")
+			held := b.cred.Load()
+			f.mu.Lock()
+			f.refreshOutcome, f.oauthErrorStatus = "invalid_grant", status
+			f.mu.Unlock()
+			if err := b.refresh(context.Background()); err == nil {
+				t.Fatalf("a refresh the broker answered %d invalid_grant settled; want it retried", status)
+			}
+			if b.cred.Load() != held {
+				t.Fatalf("a refresh the broker answered %d invalid_grant dropped or replaced the credential", status)
+			}
+			kept, err := LoadMachineFile(b.MachineFile)
+			if err != nil || kept.RefreshToken != held.refreshToken {
+				t.Fatalf("the machine file after a refresh answered %d invalid_grant: %+v %v; want the held login unchanged", status, kept, err)
+			}
+		})
+	}
+}
+
 // TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts: a refresh with no answer
 // from the broker (a refused dial, a DNS failure, no route, a timeout, a lost answer, a cancelled
-// request) or a 5xx waits the fixed 15 s retry every time, however long the run, with no switch to
-// backoff past the broker's five-minute grace. The schedule's answers are computed, with no clock.
+// request), a 5xx or a 408, the outage set but 429 (oauthrefusal.Outage), waits the fixed 15 s
+// retry every time, however long the run, with no switch to backoff past the broker's five-minute
+// grace. The schedule's answers are computed, with no clock.
 func TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts(t *testing.T) {
+	t.Parallel()
 	post := func(err error) error {
 		return &url.Error{Op: "Post", URL: "https://broker.internal.example/v1/oauth/token", Err: err}
 	}
@@ -171,6 +205,7 @@ func TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts(t *tes
 		"a cancelled request": post(context.Canceled),
 		"a 502":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}}},
 		"a 503":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{}}},
+		"a 408":               &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusRequestTimeout, Header: http.Header{}}},
 	}
 	for name, err := range noAnswer {
 		s := (&Broker{}).newRetrySchedule()
@@ -187,6 +222,7 @@ func TestARefreshTheBrokerDidNotAnswerIsRetriedEvery15sForAsLongAsItLasts(t *tes
 // than the fixed retry when it names a shorter one or none (at most a minute, capped elsewhere),
 // and does not start a backoff.
 func TestARateLimitedRefreshWaitsItsRetryAfter(t *testing.T) {
+	t.Parallel()
 	limited := func(retryAfter string) error {
 		h := http.Header{}
 		if retryAfter != "" {
@@ -211,6 +247,7 @@ func TestARateLimitedRefreshWaitsItsRetryAfter(t *testing.T) {
 // 429 nor invalid_grant (a 400, a 403) waits a minute, doubling to an hour and holding there; a
 // success restarts it at a minute, and a run of no answers between keeps the fixed retry.
 func TestARefreshTheBrokerRefusedOtherwiseBacksOff(t *testing.T) {
+	t.Parallel()
 	refused := func(status int, code string) error {
 		return &oauth2.RetrieveError{Response: &http.Response{StatusCode: status, Header: http.Header{}}, ErrorCode: code}
 	}
@@ -236,6 +273,7 @@ func TestARefreshTheBrokerRefusedOtherwiseBacksOff(t *testing.T) {
 // so the credential is not dropped at the expiry it was installed with, and no warning or drop is
 // logged for that earlier expiry.
 func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	f.mu.Lock()
@@ -277,6 +315,7 @@ func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
 // TestAMachineFileThatDoesNotParseStopsTheStart: Start refuses a machine file it cannot read as a
 // login, naming it, rather than starting with no login and a file it would later overwrite.
 func TestAMachineFileThatDoesNotParseStopsTheStart(t *testing.T) {
+	t.Parallel()
 	path := machineFilePath(t)
 	if err := os.MkdirAll(path[:len(path)-len("/machine.json")], 0o700); err != nil {
 		t.Fatal(err)
@@ -318,6 +357,7 @@ func heldRefresh(t *testing.T, f *fakeBroker, b *Broker) (release func() error) 
 // drops nothing: the helper holds the refreshed credential, its machine file names it, and no
 // expiry is logged.
 func TestAnExpiryDuringARefreshNeverUndoesIt(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
@@ -369,6 +409,7 @@ func TestAnExpiryDuringARefreshNeverUndoesIt(t *testing.T) {
 // waits for the refresh, then finds the credential refreshed: it drops nothing and hands the
 // caller the broker's refusal to retry, not errNoCredential.
 func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	signed := b.cred.Load()
@@ -396,6 +437,7 @@ func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
 // TestAStartRefreshesTheKeptLoginBeforeItHoldsIt: Start refreshes a kept login before it returns,
 // so a restarted helper's first answer already holds the rotated login, in memory and on disk.
 func TestAStartRefreshesTheKeptLoginBeforeItHoldsIt(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -425,6 +467,7 @@ func TestAStartRefreshesTheKeptLoginBeforeItHoldsIt(t *testing.T) {
 // reads expired, refused for that reason, and the machine file is gone: a revoked machine never
 // resumes its login as issued.
 func TestAStartWhoseRefreshIsRefusedHoldsNothing(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	path, _ := keptLogin(t, f)
 	f.mu.Lock()
@@ -448,6 +491,7 @@ func TestAStartWhoseRefreshIsRefusedHoldsNothing(t *testing.T) {
 // TestAStartWhoseRefreshFailsResumesTheLogin: a refresh whose outcome the helper does not learn
 // (here a 503) resumes the kept login as issued, the file unchanged, for the loop to retry.
 func TestAStartWhoseRefreshFailsResumesTheLogin(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	f.mu.Lock()
@@ -473,6 +517,7 @@ func TestAStartWhoseRefreshFailsResumesTheLogin(t *testing.T) {
 // login at once; the broker refuses it (the machine was revoked), so the machine file is deleted
 // within seconds rather than at the next day's refresh.
 func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -489,7 +534,7 @@ func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
 	f.enrollUnauthorizedNext = 1
 	f.refreshOutcome = "invalid_grant"
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, func() bool {
@@ -505,6 +550,7 @@ func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
 // the broker could not verify (clock skew, a URL mismatch) of a login it has not ended: the
 // refresh the drop wakes succeeds, and the machine file keeps the rotated login for a restart.
 func TestALauncherRefusalTheBrokerStillRefreshesKeepsTheFile(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -521,7 +567,7 @@ func TestALauncherRefusalTheBrokerStillRefreshesKeepsTheFile(t *testing.T) {
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, func() bool {
@@ -565,6 +611,7 @@ func fileHoldsTheHeldLogin(b *Broker, old string) bool {
 // rotated login and retries at the retry interval, not at the next day's refresh, so the file
 // holds a current refresh token soon after the disk takes writes again.
 func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	restore := unwritable(t, path)
@@ -590,6 +637,7 @@ func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
 // rotated credential, so it keeps working, and retries at the retry interval until the file holds
 // the login it holds.
 func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -607,7 +655,7 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, b.HasCredential)
@@ -621,6 +669,7 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 // the credential and the machine file stay as they were, and the next attempt waits at least the
 // Retry-After the broker named (1 s here), however short the loop's own retry.
 func TestARateLimitedRefreshKeepsTheLoginAndWaitsItsRetryAfter(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -667,6 +716,7 @@ func TestARateLimitedRefreshKeepsTheLoginAndWaitsItsRetryAfter(t *testing.T) {
 // answer is abandoned at Start's bound (shortened here from 5 s), so serve listens within the
 // wait `register` gives it: the kept login is installed as issued and the loop retries the refresh.
 func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	gate := make(chan struct{})
@@ -702,6 +752,7 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 // than the day between refreshes still sees each refreshed before it lapses: the loop refreshes
 // at half the time left, rescheduled when a login installs one.
 func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	f.mu.Lock()
 	f.loginLifetime = 2 * time.Second
@@ -724,6 +775,7 @@ func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
 }
 
 func TestNextRefreshIsHalfTheTimeLeftAtMostEvery(t *testing.T) {
+	t.Parallel()
 	b := &Broker{}
 	if got := b.nextRefresh(24 * time.Hour); got != 24*time.Hour {
 		t.Fatalf("holding nothing: %s; want every", got)

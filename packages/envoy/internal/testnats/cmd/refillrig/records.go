@@ -95,8 +95,11 @@ func topics(set recordSet, index int, role string) []string {
 	return out
 }
 
+// sessionRecord is the record a registration of the set's index-th session writes, naming its own
+// key as every writer's does (session.SessionEntry.SessionID).
 func sessionRecord(set recordSet, index int, now int64) session.SessionEntry {
 	return session.SessionEntry{
+		SessionID:      sessionID(set.name, index),
 		MachineID:      machineID,
 		Dir:            "/refill/" + set.name,
 		Title:          sessionTitle(set.name, index, set.variant),

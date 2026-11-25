@@ -26,12 +26,18 @@ const (
 	SignInDomain       = "example.com"
 )
 
-// SignIn arms issuer's code flow for the broker's own client, signing ID tokens with key, and
-// answers the sign-in configuration naming it, with sessions of an hour: what BROKER_SIGNIN_* and
-// the provider give a deployed broker. The issuer answers a code exchange with no refresh token,
-// as Google answers the broker's online sign-in.
+// SignInCallbacks are the callbacks the broker's client registers: the approval page's
+// /signin/callback on a loopback port, over plain http (a broker process a test starts) or TLS
+// (an httptest.NewTLSServer), which the provider takes at whatever port the test's broker bound
+// (RFC 8252 section 7.3), as every broker a test starts serves on loopback.
+var SignInCallbacks = []string{"http://127.0.0.1/signin/callback", "https://127.0.0.1/signin/callback"}
+
+// SignIn arms issuer's code flow for the broker's own client, signing ID tokens with key and
+// redirecting only to SignInCallbacks, and answers the sign-in configuration naming it, with
+// sessions of an hour: what BROKER_SIGNIN_* and the provider give a deployed broker. The issuer
+// answers a code exchange with no refresh token, as Google answers the broker's online sign-in.
 func SignIn(issuer *oidctest.Issuer, key *oidctest.Key) approval.SignIn {
-	issuer.EnableCodeFlow(key, SignInClientID, SignInClientSecret)
+	issuer.EnableCodeFlow(key, SignInClientID, SignInClientSecret, SignInCallbacks...)
 	issuer.OmitRefreshTokens()
 	return approval.SignIn{Issuer: issuer.URL(), ClientID: SignInClientID, ClientSecret: SignInClientSecret, Domain: SignInDomain, SessionLifetime: time.Hour}
 }
@@ -64,6 +70,15 @@ func Decide(t *testing.T, brokerURL string, issuer *oidctest.Issuer, login, reco
 	b := NewBrowser(t, brokerURL, http.DefaultTransport, issuer)
 	b.SignIn(t, recordID, Person(login))
 	b.Decide(t, recordID, approve)
+}
+
+// DecideRefused is Decide for a decision the broker refuses with a reason the page names: the
+// page's redirect must carry code, one of its fixed refusal codes (Browser.DecideRefused).
+func DecideRefused(t *testing.T, brokerURL string, issuer *oidctest.Issuer, login, recordID string, approve bool, code string) {
+	t.Helper()
+	b := NewBrowser(t, brokerURL, http.DefaultTransport, issuer)
+	b.SignIn(t, recordID, Person(login))
+	b.DecideRefused(t, recordID, approve, code)
 }
 
 // Response is one answer as a browser received it.
@@ -260,8 +275,27 @@ func (b *Browser) Page(t *testing.T, recordID string) Response {
 }
 
 // Decide opens recordID's page with a live session and posts its Approve or Deny for the record,
-// failing t unless the page offers that form and answers it with a 303 back to the record.
+// failing t unless the page offers that form and answers it with a 303 back to the record that
+// carries no refusal: the decision the broker applied, or one whose landing page says itself why
+// it did not (a record the person may not decide, one already decided). A decision the broker
+// refuses for a reason the page names is DecideRefused's.
 func (b *Browser) Decide(t *testing.T, recordID string, approve bool) {
+	t.Helper()
+	b.decide(t, recordID, approve, "")
+}
+
+// DecideRefused is Decide for a decision the broker refuses and the landing page names the reason
+// of: the 303 must carry `&refused=<record>:<code>`, code being one of the fixed codes the
+// approval page maps to its own sentences (approval.refusalSentences: policy, chain, error).
+func (b *Browser) DecideRefused(t *testing.T, recordID string, approve bool, code string) {
+	t.Helper()
+	if code == "" {
+		t.Fatal("DecideRefused needs the refusal's code; a decision whose redirect carries none is Decide's")
+	}
+	b.decide(t, recordID, approve, code)
+}
+
+func (b *Browser) decide(t *testing.T, recordID string, approve bool, refused string) {
 	t.Helper()
 	form := DecisionForm(t, b.Page(t, recordID).Body, recordID)
 	if form == nil {
@@ -272,7 +306,11 @@ func (b *Browser) Decide(t *testing.T, recordID string, approve bool) {
 		value = "approve"
 	}
 	res := b.FromPage(t, "/approve", Decision(form, value))
-	if want := "/approve/" + recordID + "?decided=" + recordID; res.Status != http.StatusSeeOther || res.Header.Get("Location") != want {
+	want := "/approve/" + recordID + "?decided=" + recordID
+	if refused != "" {
+		want += "&refused=" + recordID + ":" + refused
+	}
+	if res.Status != http.StatusSeeOther || res.Header.Get("Location") != want {
 		t.Fatalf("%s %s = %d to %q, want 303 to %s:\n%s", value, recordID, res.Status, res.Header.Get("Location"), want, res.Body)
 	}
 }

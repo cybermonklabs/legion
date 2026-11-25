@@ -20,12 +20,13 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
@@ -123,7 +124,7 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),

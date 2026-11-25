@@ -19,6 +19,7 @@ import type {
   SessionContext,
 } from "@legion/pi-shared/pi-types";
 import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provider-refusal";
+import { turnGoesOn } from "./turn-end";
 
 /**
  * The session's model across a provider's refusal (INFRA-956 R1): a content filter that refuses a
@@ -92,8 +93,10 @@ export interface ModelFallback {
    * says whether a content filter is what it walked for. */
   readonly armFromEvent: (event: RetryFallbackAppliedEvent, ctx: ModelFallbackContext) => void;
   /** The host's `agent_end`: a turn that has settled, which the provider ended cleanly, with a
-   * content filter, or with some other failure. It makes no return: a return the timer found the
-   * pane too busy for is made at the timer's first firing on an idle pane (`maybeRestore`). */
+   * content filter, or with some other failure. That is every end but one the host goes on from
+   * itself; an end that waits only on a background job's result has settled. It makes no return:
+   * a return the timer found the pane too busy for is made at the timer's first firing on an idle
+   * pane (`maybeRestore`). */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
   /**
    * The return to the model the session fell back from, which this runner makes in one place:
@@ -206,7 +209,7 @@ function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | 
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
  * host stamps every entry with an ISO time (`SessionEntryBase`,
- * `session/session-entries.ts:98-116` at the pinned tag). */
+ * `session/session-entries.ts:99-117` at the pinned tag). */
 function changedAt(entry: ModelChangeEntry): number | undefined {
   const at = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
   return Number.isFinite(at) ? at : undefined;
@@ -402,12 +405,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1782-1816` and `:3153-3163` at tag
-   * `v18.18.6-sami.20261119-162325`).
+   * (`turn-recovery.ts:1820-1854` and `:3228-3238` at tag
+   * `v18.18.6-sami.20261125-001804`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
-   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:322-325` at the
+   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:327-331` at the
    * pinned tag), so nothing on the branch would carry the host's claim at all.
    */
   const walkChain = async (ctx: ModelFallbackContext, current: HostModel): Promise<void> => {
@@ -456,9 +459,24 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   };
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
-    // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5902-5910` at the pinned tag).
-    if (event.willContinue === true) return;
+    // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
+    // acting on it would step the session down twice (`session/agent-session.ts:6195-6203` at the
+    // pinned tag). An end that waits only on a background job's result has settled, and the job's
+    // result starts the next turn on the model this end leaves the session on.
+    //
+    // One window stays open there. The host does not wait for this handler (it fires the
+    // extensions' `agent_end` without awaiting them, `:6560`), and it picks each request's model
+    // before that request's `context` hook runs, so a request of a run a job's result starts that
+    // the host selects before the walk below has finished `setModel` goes to the model that
+    // refused; requests selected after the switch completes use the new model. There is no bound
+    // of one request: while `setModel` is still pending, every request selected meanwhile takes
+    // the old model. Measured on 2026-11-21 at the pinned build with a job that had already ended
+    // when the refused turn ended, the result's first request went to the next model in 5 of 5
+    // runs: that is the outcome when the switch is fast (it awaits only the model registry and
+    // `setModel`), not a bound; a `setModel` that waits on the network (a local backend's model
+    // metadata) can be slow. What would close it is in the host: awaiting the extensions'
+    // `agent_end` handlers before it starts the run a background job's result asks for.
+    if (turnGoesOn(event)) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
     const outcome = classifyTurnEnd(event);
@@ -522,14 +540,27 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       save(step({ kind: "superseded" }));
       return;
     }
-    const target = ctx.models?.resolve?.(arming.restoreTo);
+    const resolve = ctx.models?.resolve;
+    // The return undoes the fallback's own move and nothing after it. A launch that names its
+    // model (`--model @default`) moves the session without a `model_change` entry, so the
+    // arming's entry can still be the newest while the session runs a model its deployment chose
+    // since: the session goes back only while it still runs the model that entry names. A host
+    // that names no current model cannot show that, so the arming ends, as it does below for a
+    // model gone from the roster, rather than reading the branch again at every request.
+    const current = ctx.models?.current?.();
+    const fallback = newest.entry.model === undefined ? undefined : resolve?.(newest.entry.model);
+    if (!sameModel(current, fallback)) {
+      save(step({ kind: "superseded" }));
+      return;
+    }
+    const target = resolve?.(arming.restoreTo);
     if (target === undefined) {
       // Gone from this session's roster (a credential lost, a catalog change): nothing to go back
       // to, so the arming ends rather than being tried at every request for the rest of the run.
       save(step({ kind: "superseded" }));
       return;
     }
-    if (sameModel(ctx.models?.current?.(), target)) {
+    if (sameModel(current, target)) {
       save(step({ kind: "restored" }));
       return;
     }
@@ -628,7 +659,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261119-162325`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261125-001804`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -637,7 +668,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3736` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:3811` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and

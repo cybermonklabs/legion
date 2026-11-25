@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/testport"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -118,7 +117,7 @@ func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 // the raw protocol lines in then to it; it returns the server's URL.
 func fakeServer(t *testing.T, then string) string {
 	t.Helper()
-	ln, err := testport.ListenLoopback()
+	ln, err := testnats.ListenLoopback()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +296,7 @@ type proxy struct {
 // dropProxy is a proxy to upstream, closed with t.
 func dropProxy(t *testing.T, upstream string) *proxy {
 	t.Helper()
-	ln, err := testport.ListenLoopback()
+	ln, err := testnats.ListenLoopback()
 	if err != nil {
 		t.Fatal(err)
 	}

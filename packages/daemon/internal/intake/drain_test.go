@@ -56,7 +56,15 @@ const (
 	drainRoundTrip = 3 * time.Millisecond
 	// drainBound is how long the backlog may take to drain when the drain is measured.
 	drainBound = 60 * time.Second
+	// lagMessage is the message of lagWatch's warn line (consume.go), word for word: a consumer
+	// reached a message more than consumerLagWarn after its publish. The row leaves out a warn line
+	// only when its message is this one and its fields are lagFields (isLagLine), so a line that
+	// differs in either, a changed wording among them, fails the row.
+	lagMessage = "intake: a durable consumer is behind its stream; every event it has not reached yet waits for it"
 )
+
+// lagFields are the fields of lagWatch's warn line beside slog's own time, level and msg, in order.
+var lagFields = []string{"behindSeconds", "consumer", "delivered", "pending", "published_at", "stream_seq", "subject"}
 
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
 func drainChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
@@ -72,11 +80,14 @@ func (drainRepositories) ResolveRepository(resolved string) (workflow.Resolution
 	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
-// transactions counts the transactions a pool's connections begin.
+// transactions counts the read-write transactions a pool's connections begin. A read-only
+// transaction, which every read outside a fact runs in (store.TransactWith), is not counted: it
+// takes no fact lock and writes nothing.
 type transactions struct{ begun atomic.Int64 }
 
 func (c *transactions) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(data.SQL)), "begin") {
+	sql := strings.ToLower(strings.TrimSpace(data.SQL))
+	if strings.HasPrefix(sql, "begin") && !strings.Contains(sql, "read only") {
 		c.begun.Add(1)
 	}
 	return ctx
@@ -84,7 +95,8 @@ func (c *transactions) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pg
 
 func (c *transactions) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// warnings keeps every log line at warn or above the consumer and the handlers write.
+// warnings keeps every log line at warn or above the consumer and the handlers write, one JSON
+// object a line, so the row reads each line's message and fields as slog wrote them.
 type warnings = testlog.Buffer
 
 // A repository Legion works in carries far more GitHub events than Legion's own pull requests:
@@ -94,10 +106,17 @@ type warnings = testlog.Buffer
 // Here a project runs 350 trees and keeps 10,000 records, its Postgres is a 3 ms round trip away,
 // and 5,000 events that are not Legion's wait on the stream with 50 of Legion's among them. The
 // daemon's consumer, with the handlers the daemon runs, drains them: every Legion event is applied
-// and every other one is acknowledged with no transaction. With LEGION_TEST_DRAIN_MEASURE=1 the
-// drain must also take under a minute from the first publish; the time is logged either way.
+// and every other one is acknowledged with no read-write transaction. With
+// LEGION_TEST_DRAIN_MEASURE=1 the drain must also take under a minute from the first publish; the
+// time is logged either way.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
 	ctx := context.Background()
+	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,
+	// the test binary's deadline less 30 s (testwait.Remaining), in place of the five seconds the
+	// client gives a request whose context has no deadline (nats.go's defaultAPITimeout), so a NATS
+	// server the machine holds is waited out.
+	requests, cancelRequests := context.WithTimeout(ctx, testwait.Remaining(t))
+	defer cancelRequests()
 	dsn := testpg.Clone(t, "legion_intake_drain_test")
 	direct := drainPool(t, dsn)
 	seedDrainProject(t, direct)
@@ -118,7 +137,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	js := testnats.JetStream(t)
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	logs := &warnings{}
-	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	repository := ghrepo.MustParse(drainRepo)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: drainProject, Repositories: drainRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -128,7 +147,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	var asked atomic.Int64
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
-		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log,
+		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {
 			asked.Add(1)
 			return true, nil
@@ -138,12 +157,16 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	counter.begun.Store(0)
+	github, err := stream.Consumer(requests, "legion-go-"+drainProject+"-github")
+	if err != nil {
+		t.Fatalf("read the GitHub consumer: %v", err)
+	}
 
 	backlog := drainBacklog()
 	started := time.Now()
 	var last uint64
 	for _, event := range backlog {
-		ack, err := js.Publish(ctx, event.subject, event.data)
+		ack, err := js.Publish(requests, event.subject, event.data)
 		if err != nil {
 			t.Fatalf("publish %s: %v", event.subject, err)
 		}
@@ -152,13 +175,22 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// A publish's ack says the stream stored the message; the server counts it into a consumer's
 	// pending afterwards, in a goroutine of its own (nats-server's signalConsumersLoop, which
 	// processStreamSignal's npc++ runs under), so a read right after the last ack can trail it by
-	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once.
+	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once, and
+	// the wait for it is bounded by the test binary's deadline less 30 s (testwait.Remaining)
+	// rather than by a span of its own, which a loaded server could outrun.
+	// A read that fails, the server held past the row's deadline among them, makes the next poll
+	// read again, and the wait's own message names the last count read and the last failure.
 	var waiting uint64
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
-		waiting = githubWaiting(t, consumers)
+	var unread error
+	if !testwait.Holds(testwait.Remaining(t), 10*time.Millisecond, func() bool {
+		count, err := intake.ConsumerWaiting(requests, github)
+		if unread = err; err != nil {
+			return false
+		}
+		waiting = count
 		return waiting == uint64(len(backlog))
 	}) {
-		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d", waiting, len(backlog))
+		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d%s", waiting, len(backlog), lastFailure(unread))
 	}
 
 	run, cancel := context.WithCancel(ctx)
@@ -174,17 +206,25 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	})
 	defer stop()
 
-	if !testwait.Holds(testwait.Bounded(t, 10*time.Minute, 5*time.Second), 20*time.Millisecond, func() bool {
-		if githubWaiting(t, consumers) == 0 {
+	// The drain's own time is measured below and judged only when it is asked for
+	// (LEGION_TEST_DRAIN_MEASURE); the wait for it is a hang guard, bounded by the test binary's
+	// deadline less 30 s (testwait.Remaining) and not by a span the handlers' store work must
+	// finish inside.
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
+		count, err := intake.ConsumerWaiting(requests, github)
+		if unread = err; err != nil {
+			return false
+		}
+		if waiting = count; waiting == 0 {
 			return true
 		}
 		if begun := counter.begun.Load(); begun > drainLegion {
 			t.Fatalf("%d transactions begun with %d messages still waiting, want one for each of the %d Legion events and none for any other",
-				begun, githubWaiting(t, consumers), drainLegion)
+				begun, waiting, drainLegion)
 		}
 		return false
 	}) {
-		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
+		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait at the last read%s", len(backlog), time.Since(started).Round(time.Millisecond), waiting, lastFailure(unread))
 	}
 	drained := time.Since(started)
 	stop()
@@ -193,19 +233,19 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Errorf("the backlog drained in %s, want under %s", drained.Round(time.Millisecond), drainBound)
 	}
 
-	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
-	// warn or above, so none was poison or failed. The 30 second window the ConsumerSpec above takes
-	// is what makes this exact count sound: a handling here is a decode and, for a Legion event, one
-	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
-	// above the work each message does, and a redelivery the count would see needs the whole
-	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
-	// is intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
-	// in consume.go).
-	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
-	if err != nil {
-		t.Fatalf("read the GitHub consumer: %v", err)
-	}
-	info, err := item.Info(ctx)
+	// Every message was delivered once, so none was nacked or redelivered, and every one through the
+	// last was acknowledged, so none was left waiting for its acknowledgement. The window the
+	// ConsumerSpec above takes is what makes this exact count sound: a handling here is a decode,
+	// for a review or a checks settlement the store read of whether its pull request is recorded,
+	// and for a Legion event one transaction against a Postgres drainRoundTrip - 3 ms - away, and a
+	// redelivery the count would see needs the whole window to pass before that handling's
+	// acknowledgement reaches the server. A fixed window let the machine decide that count: a store
+	// read of 61 s was cut at the 30 s this row used to set, and its message naked and delivered
+	// again. The window is what is left of the test binary's deadline less 30 s
+	// (testwait.Remaining), so a read however slow is waited out. This consumer is
+	// intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+	// consume.go).
+	info, err := github.Info(requests)
 	if err != nil {
 		t.Fatalf("read the GitHub consumer's info: %v", err)
 	}
@@ -213,8 +253,31 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Errorf("the GitHub consumer delivered %d messages and acknowledged through stream sequence %d, want each of the %d delivered once and every one through %d acknowledged",
 			info.Delivered.Consumer, info.AckFloor.Stream, len(backlog), last)
 	}
-	if logged := logs.String(); logged != "" {
-		t.Errorf("the consumer and the handlers logged, want nothing at warn or above:\n%s", logged)
+	// Nothing was logged at warn or above, so no message was poison, dropped, refused, read with a
+	// field taken as absent, cut or failed: a dropped settlement, a committed refusal and a field
+	// taken as absent are each acknowledged, so the count above cannot see them. One line is left
+	// out: lagWatch's (consume.go), which says the consumer reached a message more than
+	// consumerLagWarn, five minutes, after its publish. It tells how long the drain took, not
+	// whether it drained, and here that time follows from how long the handlers' store reads take:
+	// one read held 300 s writes it while every count of this row holds. The drain's time is judged
+	// only when it is asked for (LEGION_TEST_DRAIN_MEASURE, against drainBound, a minute, well
+	// inside the line's five), so the row's verdict does not depend on how long a store read takes.
+	// That line is known by what slog wrote of it, its message and its fields (isLagLine), never by
+	// its text appearing somewhere in a line: another line that quotes it is not it. The lines
+	// left out are logged.
+	var others strings.Builder
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		if isLagLine(line) {
+			t.Logf("left out of the warn lines, the drain's time: %s", line)
+			continue
+		}
+		others.WriteString(line + "\n")
+	}
+	if others.Len() != 0 {
+		t.Errorf("the consumer and the handlers logged, want nothing at warn or above but lagWatch's line:\n%s", others.String())
 	}
 
 	// Only the Legion events took a transaction, and each was applied.
@@ -366,21 +429,34 @@ func drainJSON(value any) []byte {
 	return data
 }
 
-// githubWaiting is the GitHub consumer's waiting messages, as the daemon's state reads them
-// (Consumers.Lag).
-func githubWaiting(t *testing.T, consumers *intake.Consumers) uint64 {
-	t.Helper()
-	for _, lag := range consumers.Lag(context.Background()) {
-		if lag.Name != "legion-go-"+drainProject+"-github" {
-			continue
-		}
-		if lag.Unavailable != "" {
-			t.Fatalf("the GitHub consumer's lag is unavailable: %s", lag.Unavailable)
-		}
-		return lag.Waiting
+// lastFailure is how a wait's message names the last read that failed, or nothing when the last
+// read answered.
+func lastFailure(err error) string {
+	if err == nil {
+		return ""
 	}
-	t.Fatal("the consumers' lag names no GitHub consumer")
-	return 0
+	return "; the last read failed: " + err.Error()
+}
+
+// isLagLine reports whether line, one JSON object the row's logger wrote, is lagWatch's warn line:
+// level WARN, the message lagMessage word for word, and beside slog's time, level and msg exactly
+// the fields lagFields names. A line that is not one JSON object is not it.
+func isLagLine(line string) bool {
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(line), &fields); err != nil {
+		return false
+	}
+	if fields["level"] != "WARN" || fields["msg"] != lagMessage {
+		return false
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		if key != "time" && key != "level" && key != "msg" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return slices.Equal(keys, lagFields)
 }
 
 // processedGitHubEvents is every processed event's id, sorted in Go's byte order as the test's

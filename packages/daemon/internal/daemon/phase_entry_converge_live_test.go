@@ -80,6 +80,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -630,7 +631,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
 	// lane of this daemon can claim a lifecycle row of the issue, so the row the move writes below
 	// is a row no lane has run.
-	lock, err := r.st.Pool().Begin(ctx)
+	lock, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("take the lane's lock: %v", err)
 	}

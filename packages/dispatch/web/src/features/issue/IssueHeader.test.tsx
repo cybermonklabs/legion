@@ -1,15 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the Enter and the Escape that end an input method's composition below, which user-event cannot mark as one
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { patchAnswer } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
@@ -99,11 +103,11 @@ function PageHeader(): ReactNode {
 }
 
 /** `ui` on `client`, signed in as alice, with every read of the viewer's state (`getMyState`) and
- *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find a
- *  project with no repository mapping, architecture source or subscriber. */
+ *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find no
+ *  project default repository, architecture source or subscriber. */
 function renderHeader(client: QueryClient, ui: ReactNode) {
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  const projects = spyOn(api, "listProjects").mockResolvedValue([]);
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const reads: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
@@ -133,7 +137,7 @@ function renderHeader(client: QueryClient, ui: ReactNode) {
       view.unmount();
       architectureSources.mockRestore();
       getMyState.mockRestore();
-      mappings.mockRestore();
+      projects.mockRestore();
       putIssueState.mockRestore();
       subscribers.mockRestore();
     },
@@ -241,5 +245,60 @@ test("a read of the state asked while the header's pin is out waits for its answ
   } finally {
     view.unmount();
     stopListening();
+  }
+});
+
+// The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
+// word being composed, and the Escape that cancels one drops it: each is the input method's key
+// and no key of the reader's, so the title's editor stays open with its draft and writes nothing.
+// Chromium and Firefox mark such a key `isComposing`; Safari sends it after the composition's end,
+// unmarked, with keyCode 229 (`inputMethodKey`). A plain key after it still ends the edit: Escape
+// puts the issue's title back and writes nothing, and Enter writes the title, once.
+test.each([
+  ["Enter", "isComposing"],
+  ["Enter", "keyCode 229"],
+  ["Escape", "isComposing"],
+  ["Escape", "keyCode 229"],
+] as const)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, mark) => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
+  );
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  try {
+    await view.user.click(view.q.getByRole("heading", { level: 1, name: issue.title }));
+    const title = view.q.getByRole("textbox", { name: "Issue title" });
+    await view.user.clear(title);
+    await view.user.paste("Pin it from the header");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(
+      title,
+      mark === "isComposing"
+        ? { isComposing: true, key }
+        : { isComposing: false, key, keyCode: 229 }
+    );
+    expect(title).toBeInTheDocument();
+    expect(title).toHaveValue("Pin it from the header");
+    expect(title).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await view.user.keyboard(`{${key}}`);
+    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+    if (key === "Escape") {
+      expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+      expect(patchIssue).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { title: "Pin it from the header" },
+        keyedAttempt
+      );
+    }
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
   }
 });

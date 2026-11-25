@@ -7,9 +7,11 @@
 // (legion/metrics) read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
-// ResponseLimit on the body, about nine times the 877,746 bytes the INFRA daemon's state measured.
+// ResponseLimit on the body, 32 MiB. The INFRA daemon's state measured 877,746 bytes when the
+// bounds were first set at 20 s and 8 MiB, and 7,606,561 bytes on 2026-11-21, growing 0.3 to
+// 0.5 MB a day, so both were raised before its reads met the old cap.
 // A read over the cap is a failed read — the board's header says so and the last good
-// observations stand — never a parse of the first 8 MiB.
+// observations stand — never a parse of the first 32 MiB.
 package legion
 
 import (
@@ -30,16 +32,17 @@ import (
 const StatePath = "/legion/v1/state"
 
 // RequestTimeout bounds one call to a daemon — the request and reading its body — unless the
-// caller's own context ends sooner, which always wins. It is the plan's D14: twenty seconds is
-// room for a daemon under load to project a state of some megabytes and for Dispatch to read it
-// at ResponseLimit, and a bound at all is what keeps a minute's pass from piling up behind a
-// daemon that accepts a connection and never answers.
-const RequestTimeout = 20 * time.Second
+// caller's own context ends sooner, which always wins. It is sixty seconds: a full read of the
+// INFRA daemon's state took 10.9 to 11.9 s on 2026-11-21 and grows about 3.4 ms with each issue,
+// and a daemon under load must still project and send a state of some megabytes in it. A bound at
+// all is what keeps a minute's pass from piling up behind a daemon that accepts a connection and
+// never answers.
+const RequestTimeout = 60 * time.Second
 
-// ResponseLimit is the most of a daemon's answer Dispatch reads: 8 MiB, about nine times the
-// 877,746 bytes the INFRA daemon's state measured at (the plan's D14). A body over it is a failed
+// ResponseLimit is the most of a daemon's answer Dispatch reads: 32 MiB, about four times the
+// 7,606,561 bytes the INFRA daemon's state measured on 2026-11-21. A body over it is a failed
 // read.
-const ResponseLimit = 8 << 20
+const ResponseLimit = 32 << 20
 
 // ErrUnavailable is every failed call to a daemon: it could not be reached, it answered something
 // other than 200, its answer was over the cap, or its answer was not the JSON the route serves.

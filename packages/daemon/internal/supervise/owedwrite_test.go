@@ -27,6 +27,8 @@ type countingStore struct {
 	Store
 	mu    sync.Mutex
 	calls []string
+	fails int
+	err   error
 }
 
 func (s *countingStore) record(method string) {
@@ -35,9 +37,31 @@ func (s *countingStore) record(method string) {
 	s.calls = append(s.calls, method)
 }
 
+// failNext makes the next n PutClaim calls fail with err, writing nothing, as stopTransaction's
+// failNext does for PauseStopped. They are counted all the same.
+func (s *countingStore) failNext(n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fails, s.err = n, err
+}
+
 func (s *countingStore) PutClaim(ctx context.Context, c Claim) error {
 	s.record("PutClaim")
+	s.mu.Lock()
+	failing, err := s.fails > 0, s.err
+	if failing {
+		s.fails--
+	}
+	s.mu.Unlock()
+	if failing {
+		return err
+	}
 	return s.Store.PutClaim(ctx, c)
+}
+
+func (s *countingStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
+	s.record("ReleaseHolds")
+	return s.Store.ReleaseHolds(ctx, c, holds)
 }
 
 func (s *countingStore) PutDelivery(ctx context.Context, token claim.Token, d Delivery) error {

@@ -24,6 +24,26 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
+/* The end room of a scroller under the foot's floats (`hooks/useFootInset.ts` says what that is
+   and how a scroller takes it). Not inherited: a scroller holding no room of its own reads 0,
+   never the room of a scroller around it. */
+@property --foot-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The spacer at the end of the content of a scroller marked `after`. A pseudo-element inherits
+   from its own element, and a property registered as not inherited reaches it only by an explicit
+   `inherit`: without it the spacer reads the initial 0px, whatever room its scroller holds. */
+[data-foot-clearance="after"]::after {
+  --foot-clearance: inherit;
+  content: "";
+  display: block;
+  flex: none;
+  height: var(--foot-clearance);
+}
+
 /* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
    exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
    built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import
@@ -606,6 +626,14 @@ html:has([data-issue-page]) {
   max-width: none;
 }
 
+/* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
+   is a short field of the priority and not a whole document, so it does not take a document's
+   24rem. The editor library's own `min-height` is unlayered, so a utility class on the
+   description cannot lower it; this rule (0,4,0) outranks the one above (0,3,0). */
+.dispatch-doc.dispatch-description .milkdown .editor {
+  min-height: 6rem;
+}
+
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes
    `h1` at 2em, so an issue specification that opens with a heading repeating the issue title
    printed that title twice, the second time at nearly twice the size of the page title 40px
@@ -820,6 +848,58 @@ html:has([data-issue-page]) {
 
 [data-node-words] .dispatch-markdown > :last-child {
   margin-bottom: 0;
+}
+
+/* A block of the new issue page that takes typing says so: a row of the outline marked
+   `[data-editable]`, whose node takes typing (`useNodeEditing.ts`'s `nodeEditable`), and the box a
+   row's editor scrolls in, of the cue's one class, `dispatch-edit-cue` (`StagedDocument.tsx`'s
+   `EditorBox`), while the document in it takes typing, its article (`ProofDocument.tsx`'s
+   `.dispatch-doc`) marked `data-read-only="false"`. Under a pointer that hovers it draws the text
+   cursor and the page's faint pane behind it - for a row, behind its card, where its focus is
+   drawn too - and while the editor in it holds the focus, a 1 px rule in the page's ink, the rule
+   the page's own boxes for words draw while they hold the caret (`theme/classes.ts`'s `pageField`
+   and `pageComposer`). Both colours are the palette's, so each follows the scheme. The rule is an
+   outline 1 px inside the box, not a border: it takes no room, so the box keeps the height the row
+   holds it to and its words their width; no ancestor's overflow cuts it; and an outline is painted
+   over the box's content, where an inset shadow is painted under it and a code block scrolled to
+   the box's edge would cover it. Only a pointer that hovers draws the hover's part: a tap on a
+   touch screen would leave the tint on the row it touched. A node that takes no typing - a result,
+   an ask, a comment, a message, any block of a closed issue - carries no mark and draws neither,
+   and neither does the box of a document the editor admits read-only: a closed issue's, or one
+   this build's schema is out of date for. The box's `:has()` is cheap: its subject is the one
+   editor box the page draws, not `html`, so a change of what it matches recalculates the style of
+   that box and what it holds alone, where an `html:has()` ancestor recalculated the whole
+   document's; and what it looks for, one class and one attribute of the article, changes only as
+   the issue closes or the document's admission does. */
+@media (hover: hover) {
+  [data-issue-page] [data-node-row][data-editable]:hover,
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    cursor: text;
+  }
+
+  [data-issue-page] [data-node-row][data-editable]:hover > [data-node-card],
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    background-color: var(--color-page-pane);
+  }
+}
+
+[data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):focus-within {
+  outline: 1px solid var(--color-page-ink);
+  outline-offset: -1px;
+}
+
+/* A control inside a block that takes typing keeps the cursor it had, since it takes none: the
+   text cursor above would reach it by inheritance. The rule is in the base layer, under
+   Tailwind's utilities, so a control's own cursor class (`cursor-pointer`) still wins. */
+@layer base {
+  [data-issue-page]
+    :is(
+      [data-node-row][data-editable],
+      .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"])
+    )
+    :is(button, select, summary, [role="button"]) {
+    cursor: auto;
+  }
 }
 
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the

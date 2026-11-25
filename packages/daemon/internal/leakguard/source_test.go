@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
@@ -537,7 +537,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 // the machine can take it and answer the redirect, as one did a port the test had let go of.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := testport.Refused(t)
-	const download = "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + theTag
+	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
 	for _, tc := range []struct {
 		name, redirect string
 		// transport is what Go's client writes of the credential into the read's own error.

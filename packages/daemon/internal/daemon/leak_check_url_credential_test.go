@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -28,8 +28,9 @@ import (
 const leakCheckRedirectToken = "plantedRedirectToken4k"
 
 // GitHub answers the daemon's read of the shared public leak check with a redirect to its download
-// host, whose URL carries a token in its query. Here that host is a port nothing listens on, so
-// the read fails, and Go's client names the URL, query and all, in its error. The daemon's own
+// host, whose URL carries a token in its query. Here that host is a port the test holds bound and
+// never listening (testport.Refused), so the read's dial is refused, no other program can take the
+// port and answer it, and Go's client names the URL, query and all, in its error. The daemon's own
 // reader (leakCheckSource) refuses with a cause sentence, the start is refused with it as the
 // Sandbox runtime refuses one (runtime.LeakCheckRefusal, launchers.serveLeakCheck), and the
 // claim's launch budget runs out on it. The token is in none of: the stored claim (its
@@ -37,15 +38,13 @@ const leakCheckRedirectToken = "plantedRedirectToken4k"
 // state serves it (api.ClaimViewOf), and the lines the daemon's logger wrote through a JSON handler
 // built as `legion start` builds it (redact.HandlerOptions).
 func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := provisioningStandIn(t, provisioningInstallation{id: "78", owner: leakCheckSetting.Repository.Owner(), granted: leakCheckGrant,
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
-	// A port the test holds bound and never listening (testport.Refused), so the redirect's dial is
-	// refused and no other program on the machine can take the port and answer it.
-	dead := testport.Refused(t)
-	download := "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
+	var download string
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != leakCheckTarballRoute+leakCheckTag {
 			githubtest.Unexpected(t, w, r)
@@ -53,6 +52,8 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		}
 		http.Redirect(w, r, download+"?token="+leakCheckRedirectToken, http.StatusFound)
 	}})
+	dead := testport.Refused(t)
+	download = "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
 	_, readErr := leakCheckSource(github.tokens, repo, leakCheckSetting).Get(ctx, leakCheckTag)
 	if readErr == nil {
 		t.Fatalf("the read redirected to %s was served, want it refused", dead)

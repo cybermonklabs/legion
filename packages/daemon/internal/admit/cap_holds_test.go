@@ -16,11 +16,13 @@ import (
 )
 
 // What the cap can and cannot hold back, now that an issue holds its row from the moment the
-// daemon starts it until its work is past its review (record.KeepsSlot), except while it waits on
-// another issue before then (releaseSlotsForWaits). An issue that holds a row starts its next
-// phase whatever admission_cap says, because its promotion takes no second row (admit's slotFor);
-// an issue that holds none takes one when the daemon starts it, and waits in the line while the
-// project is at its cap.
+// daemon starts it while it stands in a phase that keeps one (record.KeepsSlot), except while it
+// waits on another issue there (releaseSlotsForWaits). Accepting, retro and merging hold none (in
+// the default steps, the phases after the review), and a step after accepting whose phase keeps a
+// slot waits for one again. An issue that holds a row starts its next phase whatever
+// admission_cap says, because its promotion takes no second row (admit's slotFor); an issue that
+// holds none takes one when the daemon starts it, and waits in the line while the project is at
+// its cap.
 
 // capMember records key under root in stands, with the Dispatch status a member in that phase
 // shows. It writes no row: what each case here is about is whether the issue holds one.
@@ -32,10 +34,10 @@ func capMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.
 		Status: status, DispatchStatus: status, Rank: rank, LastDispatchSeq: 2})
 }
 
-// acceptingRoot moves a seeded root to accepting, where a parent whose own phases are behind it
-// waits while its children work. Its work stands past its review there, so the pass's release
-// takes back the row it took at its admission (record.KeepsSlot), and its own first phase is no
-// longer in the waiting line.
+// acceptingRoot moves a seeded root to accepting, where a parent waits while its children work
+// (in the default steps, with its own other phases behind it). Accepting keeps no slot, so the
+// pass's release takes back the row it took at its admission (record.KeepsSlot), and its own
+// first phase is no longer in the waiting line.
 func acceptingRoot(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	root := issue(t, pool, key)
@@ -159,9 +161,11 @@ func TestAReleasedChildWaitsForAFreeRow(t *testing.T) {
 }
 
 // An issue standing in a phase that keeps a row while holding none, which is what every issue
-// this release finds standing past its review becomes the moment its work comes back: no row is
-// written back for it, so it waits in the line once, at its next start, and from then on it
-// keeps the row it was given.
+// this release finds in accepting, retro or merging becomes the moment its work comes back: no
+// row is written back for it, so it waits in the line once, at its next start, and from then on
+// it keeps the row it was given while it stands in a phase that keeps one. A later move into
+// accepting gives the row back, and a step after accepting whose phase keeps a slot waits for one
+// again.
 func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -194,7 +198,8 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	}
 	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
 
-	// From then on it keeps that row: every phase up to its review keeps one.
+	// From then on it keeps that row in each phase that keeps one, as reviewing does
+	// (record.PhaseKeepsSlot).
 	back := issue(t, pool, "LEGION-101")
 	back.Phase, back.Status, back.DispatchStatus = phase.Reviewing, "needs_review", "needs_review"
 	putIssue(t, pool, back)
@@ -208,8 +213,8 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 // which is what ends the phase, so nothing of that phase ever waits on a person. The pass that
 // sends a role the work its phase entry names therefore sends its merger that work, where before
 // this release it passed over a merger whose own READY a closed design gate held (admit's
-// resumeSlottedWorkers, record.AtWork). The merger runs on no row: merging stands past the
-// issue's review, so the repair reaches it holding none (record.KeepsSlot).
+// resumeSlottedWorkers, record.AtWork). The merger runs on no row: merging keeps none, so the
+// repair reaches it holding none (record.KeepsSlot).
 func TestAMergingIssueStartsItsMerger(t *testing.T) {
 	const root, key = "LEGION-820", "LEGION-821"
 	pool := migratedPool(t)
@@ -232,12 +237,12 @@ func TestAMergingIssueStartsItsMerger(t *testing.T) {
 		t.Fatalf("no merger of %s was started; starts = %#v", key, startsOf(t, pool, key))
 	}
 	if holdsSlot(t, pool, key) {
-		t.Fatalf("rows = %#v, want %s holding none: its work stands past its review", slots(t, pool), key)
+		t.Fatalf("rows = %#v, want %s holding none: merging keeps no row", slots(t, pool), key)
 	}
 }
 
-// An issue sent back from its merge holds no row — its work stood past its review, which holds
-// none — so it waits in the line. It waits among the issues whose work came back, oldest
+// An issue sent back from its merge holds no row — merging, where its work stood, holds none —
+// so it waits in the line. It waits among the issues whose work came back, oldest
 // first, which is the line's first part, ahead of an issue whose first phase has yet to start,
 // and it takes the next row that frees. The cap is one row, the second tree holds it, and the
 // root above both members stands in accepting holding none.

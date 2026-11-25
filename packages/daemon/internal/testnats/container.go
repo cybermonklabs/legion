@@ -36,8 +36,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/sjawhar/envoy/testport"
 )
 
 const (
@@ -110,7 +108,7 @@ type startOptions struct {
 //
 // On a Docker daemon of this machine (dockerDaemon.local) the two ports are published on a
 // loopback address of the container's own and ports the kernel chose there
-// (testport.LoopbackPorts), so a client another test left dialing an earlier container's port
+// (loopbackPorts, loopback.go), so a client another test left dialing an earlier container's port
 // cannot reach this one; a publish Docker refuses because a probed port was taken in between is
 // tried again on a fresh address and ports, up to startTries starts, and the error then names
 // every refusal. On another machine's daemon they are published as daemonHost says, on ports
@@ -128,7 +126,7 @@ func start(image string, o startOptions) (*Container, error) {
 	for range startTries {
 		dial, publish := daemon.dial, []string{daemon.publish(clientPort), daemon.publish(monitorPort)}
 		if daemon.local() {
-			host, ports, err := testport.LoopbackPorts(2)
+			host, ports, err := loopbackPorts(2)
 			if err != nil {
 				return nil, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 			}
@@ -136,7 +134,7 @@ func start(image string, o startOptions) (*Container, error) {
 			publish = []string{publishAt(host, ports[0], clientPort), publishAt(host, ports[1], monitorPort)}
 		}
 		c, err := startAt(image, o, label, dial, publish)
-		if err == nil || !daemon.local() || !testport.AddressInUse(err) {
+		if err == nil || !daemon.local() || !addressInUse(err) {
 			return c, errors.Join(append(refused, err)...)
 		}
 		refused = append(refused, err)

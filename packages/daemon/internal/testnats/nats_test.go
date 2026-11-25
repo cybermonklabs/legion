@@ -4,19 +4,25 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -129,6 +135,70 @@ func TestAKilledTestBinaryLeavesNoContainer(t *testing.T) {
 // testcontainers-go (testbinary.LinksNoTestcontainers), so no start of it pays that library's
 // package init (container.go).
 func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
+
+// A start Docker refuses because something took a probed port before the publish is tried again
+// on a fresh address and ports (start), and the server the retry runs is the one its caller
+// configured: an nkey server refuses a client with no credential and admits its user there, as at
+// a first start. Each attempt copies the caller's configuration into the container it created
+// (Container.run), so a retry carries the same configuration as the first; a retry that reused a
+// configuration an earlier attempt had used up started a server that admits anyone, as one did
+// under testcontainers-go, which read a configuration file's reader to its end as it created the
+// container. The row takes the first probe's client port at its address once the probe lets it go,
+// as another program can, and requires the start to have been tried again: a first start Docker
+// did not refuse checks no retry. Docker refuses only where this process can hold the port it
+// publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
+// naming the daemon, rather than fail on a probe count that says nothing of the configuration.
+func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
+	if server, _, err := external(); err == nil && server != "" {
+		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	if daemon, err := reachedDaemon(); err != nil {
+		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
+	} else if !daemon.local() {
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon.dial)
+	}
+	probe := loopbackPorts
+	t.Cleanup(func() { loopbackPorts = probe })
+	probes := 0
+	loopbackPorts = func(n int) (string, []int, error) {
+		host, ports, err := probe(n)
+		probes++
+		if err != nil || probes > 1 {
+			return host, ports, err
+		}
+		taken, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(ports[0])))
+		if err != nil {
+			return "", nil, fmt.Errorf("take the probed client port %s:%d: %w", host, ports[0], err)
+		}
+		t.Cleanup(func() { _ = taken.Close() })
+		t.Logf("took %s, the first probe's client port, once the probe let it go", taken.Addr())
+		return host, ports, nil
+	}
+	user, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatalf("create an nkey user: %v", err)
+	}
+	public, err := user.PublicKey()
+	if err != nil {
+		t.Fatalf("read the nkey user's public key: %v", err)
+	}
+	_, url := StartNkeyAuthorizedUsers(t, Image, NkeyUser{Public: public})
+	if probes < 2 {
+		t.Fatalf("start chose ports %d time(s): Docker did not refuse the publish on the taken port, so no retry was checked", probes)
+	}
+	if conn, err := nats.Connect(url, nats.Timeout(time.Second), nats.NoReconnect()); err == nil {
+		conn.Close()
+		t.Fatalf("the server the retry started at %s admitted a client with no credential", url)
+	} else if !errors.Is(err, nats.ErrAuthorization) {
+		t.Fatalf("the server the retry started at %s refused a client with no credential with %v, not its authorization violation", url, err)
+	}
+	conn, err := nats.Connect(url, nats.Nkey(public, user.Sign), nats.Timeout(time.Second), nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("the server the retry started at %s refused its own nkey user: %v", url, err)
+	}
+	conn.Close()
+	t.Logf("the server the retry started at %s refuses a client with no credential and admits its user", url)
+}
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
 
@@ -249,6 +319,153 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
+// A durable an earlier test created does not reach the next test, even when a stream delete whose
+// rename failed leaves the earlier test's stream directory in place with every consumer's state
+// file (the consumer deletes in URL say how, and name the lines). The first subtest stands in for
+// an earlier delete's removal still running: it makes the .<name> directory the next delete
+// renames onto. The second checks the delete did leave the stream's directory, so the row cannot
+// pass on a delete that moved it aside, and then asks for durables that start at the next
+// message. Two durables, so a reset that deleted only one consumer fails too. The stream's name is
+// the invocation's own, which also makes the first subtest's look at its directory proof that the
+// path is the server's store, and under -count keeps a second invocation's plant out of the
+// .<name> the first one's last delete is still removing, which would remove the plant with it. The
+// second subtest run alone (-run naming it) lays what the first leaves in a subtest of its own
+// before it takes the server, so it still finds an earlier test's durables.
+func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
+	config := jetstream.StreamConfig{Name: "LEFT_DURABLE_" + rand.Text(), Subjects: []string{"left.>"}, Storage: jetstream.FileStorage}
+	var durables []jetstream.ConsumerConfig
+	for _, name := range []string{"left-durable-1", "left-durable-2"} {
+		durables = append(durables, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverNewPolicy})
+	}
+	var streams, plant string
+	var held *server
+	t.Cleanup(func() {
+		if plant != "" {
+			onServersHost(t, held, "rm", "-rf", plant)
+		}
+	})
+	leave := func(t *testing.T) {
+		js := JetStream(t)
+		stream := CreateStream(t, js, config)
+		for _, durable := range durables {
+			if _, err := stream.CreateConsumer(t.Context(), durable); err != nil {
+				t.Fatalf("create durable %s: %v", durable.Durable, err)
+			}
+		}
+		streams, held = streamsDirectory(t), heldBy(t)
+		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
+		plant = filepath.Join(streams, "."+config.Name)
+		onTheServersHost(t, "mkdir", "-p", filepath.Join(plant, "still-being-removed"))
+	}
+	if !t.Run("creates durables while an earlier delete of their stream is still being removed", leave) {
+		return
+	}
+	t.Run("creates the durables again and finds them at the next message", func(t *testing.T) {
+		if plant == "" && !t.Run("an earlier test leaves durables while their stream's removal is held", leave) {
+			t.Fatal("the earlier test's durables and the held removal of their stream could not be laid, so this subtest would prove nothing")
+		}
+		if plant == "" {
+			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
+		}
+		js := JetStream(t)
+		// The pool hands a test the server freed last, and this package's tests run one at a
+		// time, so this is the server the earlier subtest held; a run that hands it another fails
+		// here by name rather than on a store directory that server never had.
+		if heldBy(t) != held {
+			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its durables on, so it would prove nothing")
+		}
+		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
+		stream := CreateStream(t, js, config)
+		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
+		if err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		for _, durable := range durables {
+			consumer, err := stream.CreateConsumer(t.Context(), durable)
+			if err != nil {
+				t.Fatalf("create durable %s: %v", durable.Durable, err)
+			}
+			info, err := consumer.Info(t.Context())
+			if err != nil {
+				t.Fatalf("read durable %s: %v", durable.Durable, err)
+			}
+			if info.NumPending != 0 {
+				t.Errorf("durable %s was created delivering new after the message at stream sequence %d, with %d messages pending, want 0: it took up the earlier test's durable, delivered through stream sequence %d",
+					durable.Durable, published.Sequence, info.NumPending, info.Delivered.Stream)
+			}
+		}
+	})
+}
+
+// streamsDirectory is the directory the server t holds keeps its streams in: its JetStream store,
+// as its monitoring endpoint reports it, and in that the global account's directory, $G, which
+// holds every stream of a server with no accounts configured. The row that reads it acts on that
+// path where the server runs, so an external server's store must be on this host, writable by the
+// tests' user, and named by an absolute path (README.md says so); a relative one, which the
+// server resolves from its own working directory, fails t by name.
+func streamsDirectory(t *testing.T) string {
+	t.Helper()
+	monitorURL := heldServer(t).monitor
+	response, err := monitorClient.Get(monitorURL + "/jsz")
+	if err != nil {
+		t.Fatalf("read the NATS server's JetStream configuration: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s/jsz answered %s", monitorURL, response.Status)
+	}
+	var jsz struct {
+		Config struct {
+			StoreDir string `json:"store_dir"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&jsz); err != nil {
+		t.Fatalf("decode %s/jsz: %v", monitorURL, err)
+	}
+	if jsz.Config.StoreDir == "" {
+		t.Fatalf("%s/jsz names no store directory", monitorURL)
+	}
+	if !filepath.IsAbs(jsz.Config.StoreDir) {
+		t.Fatalf("%s/jsz names the store directory %q, a relative path this test cannot resolve: start the server with an absolute -sd", monitorURL, jsz.Config.StoreDir)
+	}
+	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
+}
+
+// heldServer is the NATS server of the pool t holds, and fails t when it holds none.
+func heldServer(t *testing.T) *server {
+	t.Helper()
+	s := heldBy(t)
+	if s == nil {
+		t.Fatalf("testnats: %s holds no NATS server of the package: take one through URL or JetStream first", t.Name())
+	}
+	return s
+}
+
+// onTheServersHost runs a command where the server t holds keeps its store (onServersHost).
+func onTheServersHost(t *testing.T, name string, args ...string) {
+	t.Helper()
+	onServersHost(t, heldServer(t), name, args...)
+}
+
+// onServersHost runs a command where s keeps its store: in its container (`docker exec`, through
+// the docker CLI the fixture starts it with), or on this host for an external server, which a host
+// with no Docker runs itself (the package comment). It fails t when the command fails, with what
+// the command printed.
+func onServersHost(t *testing.T, s *server, name string, args ...string) {
+	t.Helper()
+	command := strings.Join(append([]string{name}, args...), " ")
+	if s.container == nil {
+		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
+		}
+		return
+	}
+	// docker exec exits with the command's own status, so a command that fails fails it.
+	if out, err := exec.Command("docker", append([]string{"exec", s.container.id, name}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("%s in the NATS container %s: %v: %s", command, s.container.id, err, out)
+	}
+}
+
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
 // work, which URL's purge says how a create can do, fails the test there, naming each message by
 // subject, stream sequence and stored time and each consumer by name, rather than reaching the
@@ -316,10 +533,10 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			config := jetstream.StreamConfig{Name: row.stream, Subjects: []string{"full.>"}}
-			stream, err := js.CreateStream(t.Context(), config)
-			if err != nil {
-				t.Fatalf("create the stream: %v", err)
-			}
+			// The row before this one deleted its stream, the account's last, so this create can
+			// meet the store failure CreateStream retries (its doc says how): a direct create
+			// failed there with "err_code=10049 description=error creating store for stream".
+			stream := CreateStream(t, js, config)
 			t.Cleanup(func() {
 				if err := js.DeleteStream(context.Background(), row.stream); err != nil {
 					t.Errorf("delete the stream: %v", err)
@@ -420,7 +637,7 @@ func TestASecondTakeByTheSameTestFailsAtOnce(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a second take by the same test waited on itself")
 	}
-	if !strings.Contains(again.message, "already holds the shared NATS server") {
+	if !strings.Contains(again.message, "already holds a NATS server of the package") {
 		t.Errorf("a second take by the same test failed with %q, not the re-entry refusal", again.message)
 	}
 }
@@ -475,7 +692,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 	if len(recorder.messages) == 0 {
 		t.Fatalf("the leak check reported nothing for the %d connections %v left open, so this row proves nothing about the closes", len(listed), listed)
 	}
-	open, err := readConnections()
+	open, err := readConnections(heldBy(t))
 	if err != nil {
 		t.Fatalf("read the NATS server's connections after the leak check: %v", err)
 	}
@@ -488,7 +705,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		drained(next)
+		drained(next, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -516,7 +733,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	defer raw.Close()
 	listed := openedSince(t, armed, ownName)
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 	report := recorder.only(t)
 	if !strings.Contains(report, listed[ownName].String()) {
 		t.Errorf("the leak check reported %q, which does not name connection %s by its id and its name", report, listed[ownName])
@@ -527,7 +744,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	started := time.Now()
 	go func() {
 		defer close(done)
-		drained(next)
+		drained(next, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -544,7 +761,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	// The row leaves the server as it found it: the connection closed, and no record for the
 	// test after this one to be failed by.
 	raw.Close()
-	recordLeft(t.Name(), nil)
+	recordLeft(heldBy(t), t.Name(), nil)
 }
 
 // A read of the server that fails after the check has closed the fixture's own clients leaves
@@ -559,30 +776,30 @@ func TestAFailedReadAfterTheCloseKeepsTheRecord(t *testing.T) {
 	armed := armedNow(t)
 	conn := Connect(cleanupDropped{TB: t}, url)
 	listed := openedSince(t, armed, t.Name())
-	server := readConnections
-	t.Cleanup(func() { readConnections = server })
-	readConnections = func() ([]Connection, error) {
+	real := readConnections
+	t.Cleanup(func() { readConnections = real })
+	readConnections = func(s *server) ([]Connection, error) {
 		if conn.IsClosed() {
 			return nil, errors.New("the monitoring endpoint cannot be read")
 		}
-		return server()
+		return real(s)
 	}
 
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 
 	report := strings.Join(recorder.messages, "\n")
 	if !strings.Contains(report, listed[t.Name()].String()) {
 		t.Errorf("the leak check reported %q, which does not name connection %s, the one the read before the close found", report, listed[t.Name()])
 	}
-	leaker, all := leftByTheLastTest([]Connection{listed[t.Name()]})
+	leaker, all := leftByTheLastTest(heldBy(t), []Connection{listed[t.Name()]})
 	if leaker != t.Name() || !all {
 		t.Errorf("after a read that failed once the fixture's clients were closed, the record answers (%q, %t) for connection %s, want (%q, true): that answer is what the next test's drain fails by, at once and in this test's name", leaker, all, listed[t.Name()], t.Name())
 	}
 
 	// The row leaves the server as it found it: the check closed the connection the fixture
 	// held, and no record for the test after this one to be failed by.
-	recordLeft(t.Name(), nil)
+	recordLeft(heldBy(t), t.Name(), nil)
 }
 
 // A check whose every read of the server fails leaves no record at all, the one an earlier
@@ -599,20 +816,20 @@ func TestACheckWhoseEveryReadFailsLeavesNoEarlierTestsName(t *testing.T) {
 	armed := armedNow(t)
 	earlier := "TestATestThatRanBeforeThisOne" + rand.Text()
 	recorded := []Connection{{CID: math.MaxUint64, Name: earlier}}
-	recordLeft(earlier, recorded)
-	server := readConnections
-	t.Cleanup(func() { readConnections = server })
-	readConnections = func() ([]Connection, error) {
+	recordLeft(heldBy(t), earlier, recorded)
+	real := readConnections
+	t.Cleanup(func() { readConnections = real })
+	readConnections = func(*server) ([]Connection, error) {
 		return nil, errors.New("the monitoring endpoint cannot be read")
 	}
 
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 
 	if len(recorder.messages) == 0 {
 		t.Fatalf("the leak check reported nothing although every read of the server failed, so this row drove neither of its reads")
 	}
-	if leaker, _ := leftByTheLastTest(recorded); leaker != "" {
+	if leaker, _ := leftByTheLastTest(heldBy(t), recorded); leaker != "" {
 		t.Errorf("after a check whose every read of the server failed, the record still names %q, the test before it: the next test's drain would fail in that test's name for connections it never left. Want nobody named, whatever else the record answers", leaker)
 	}
 }
@@ -627,7 +844,7 @@ func TestTheCheckRefusesToArmWhenItCannotSeeItsOwnClient(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		armLeakCheck(blind)
+		armLeakCheck(blind, heldBy(t))
 	}()
 	select {
 	case <-done:
@@ -650,14 +867,14 @@ func TestTheFixtureNamesItsClientAfterTheTest(t *testing.T) {
 	var open []Connection
 	var err error
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		open, err = readConnections()
+		open, err = readConnections(heldBy(t))
 		return err == nil && slices.ContainsFunc(open, func(c Connection) bool { return c.Name == t.Name() })
 	}) {
 		t.Fatalf("the NATS server lists %v (%v), none of them named %s", open, err, t.Name())
 	}
 }
 
-// clientsLeftOpen takes the shared server for t, opens two clients of the fixture's and leaves
+// clientsLeftOpen takes a server of the pool for t, opens two clients of the fixture's and leaves
 // both open — one the fixture names after t, one its caller names ownName — and runs the leak
 // check as the end of t would. It answers what the check reported and the two connections the
 // server listed for those clients, by name.
@@ -669,7 +886,7 @@ func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Co
 	Connect(t, url, nats.Name(ownName))
 	listed := openedSince(t, armed, t.Name(), ownName)
 	recorder := &leakRecorder{TB: t}
-	leakCheck(recorder, armed)
+	leakCheck(recorder, heldBy(t), armed)
 	return recorder, listed
 }
 
@@ -678,7 +895,7 @@ func clientsLeftOpen(t *testing.T, ownName string) (*leakRecorder, map[string]Co
 // the real t and that one is what holds the row to its own promise to leave nothing open.
 func armedNow(t *testing.T) map[uint64]bool {
 	t.Helper()
-	open, err := readConnections()
+	open, err := readConnections(heldBy(t))
 	if err != nil {
 		t.Fatalf("read the NATS server's connections to arm the leak check: %v", err)
 	}
@@ -701,7 +918,7 @@ func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string
 		return listed
 	}
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		found, err = opened(armed)
+		found, err = opened(func() ([]Connection, error) { return readConnections(heldBy(t)) }, armed)
 		if err != nil || len(found) != len(want) {
 			return false
 		}

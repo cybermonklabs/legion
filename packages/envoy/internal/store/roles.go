@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -25,6 +26,17 @@ type RoleClaim struct {
 	HolderSessionID   string `json:"holder_session_id"`
 	ClaimedAt         int64  `json:"claimed_at"`
 	PreviousSessionID string `json:"previous_session_id"`
+	// GrantID names the grant that wrote this claim: an id each grant draws at random for the
+	// record it writes (SetRoleWithPrevious), which the holder's renewals, the adoption of a
+	// claim that names no process and the hand-back's mark carry over untouched. It is what
+	// tells a claim granted again from the claim a release read before its write lost - the
+	// delete that frees the claim and the hand-back's mark alike (RoleClaim.sameGrant,
+	// Registry.releaseReadRoleClaim, Registry.markRoleClaimHandedBack) - which ClaimedAt cannot:
+	// a grant stamped in the millisecond of the claim before it carries that claim's moment.
+	// Empty on a claim an earlier build wrote: that build draws no grant id, and its renewal and
+	// its mark write back a claim decoded without the field, so a record it rewrites loses the
+	// id. Such a claim renews, is adopted, released and marked as it was.
+	GrantID string `json:"grant_id,omitempty"`
 	// ClientInstanceID is the client instance of the process that holds the claim, which the
 	// claimant named when it took the role. A session id alone does not name that process: a
 	// second process can resume a live session's id, and it carries a client instance of its
@@ -100,6 +112,24 @@ func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
 }
 
+// sameGrant reports whether c is the grant read is, as the holder's renewals and the adoption
+// leave it: the question a release asks of the claim it reads again after a write of its own lost
+// its compare-and-swap, the delete that frees the claim (Registry.releaseReadRoleClaim) and the
+// mark a hand-back leaves on it (Registry.markRoleClaimHandedBack) alike. Where c carries a grant
+// id, that id decides, so a grant made since read, which drew an id of its own, is never read's,
+// whatever millisecond it was stamped in. Where c carries none, an earlier build wrote it - its
+// grant draws no id, and its renewal drops the one it read - so ClaimedAt decides, as it did in
+// that build. Two grants in read's own millisecond therefore read as read while such a build
+// writes the bucket: one that build wrote, and one this build wrote that such a build renewed
+// before this read, which has lost its id. No code here can tell either apart; both end when no
+// such build writes the bucket.
+func (c RoleClaim) sameGrant(read RoleClaim) bool {
+	if c.GrantID != "" {
+		return c.GrantID == read.GrantID
+	}
+	return c.ClaimedAt == read.ClaimedAt
+}
+
 // ExpiredRoleClaimRelease reports what releaseReadExpiredRoleClaim's conditional delete did to
 // an expired role claim: ExpiredRoleClaimReleased is the delete that landed, the one outcome the
 // sweep counts as reaped (ReapRoleClaims); ExpiredRoleClaimMissing a role whose record was gone
@@ -117,27 +147,474 @@ const (
 )
 
 // roleRevisions reads the revision of every role claim kv holds, for the grace a restored claim's
-// holder gets to register again. It takes them from one scan over the bucket's existing keys
-// (kvwatch.ScanExistingKeys), the way the interest, session and CI caches read theirs, so readiness
-// costs one pass over the bucket rather than a round trip per stored claim. A claim whose key this
-// build cannot read gets a revision here; it still gets no grace, because the grace is read by
-// releaseReadExpiredRoleClaim, the only reader of these revisions, over a claim its caller has
-// read from the bucket, and no caller can read that one.
+// holder gets to register again: one run of the role claim scan Open makes (scanRoleClaims). It
+// takes them from one scan over the bucket's existing keys (kvwatch.ScanExistingKeys), the way the
+// interest, session and CI caches read theirs, so readiness costs one pass over the bucket rather
+// than a round trip per stored claim. Each run starts from an empty result, so a claim an earlier
+// run read reaches the start only if this run reads it too. A claim whose key this build cannot
+// read gets a revision here; it still gets no grace, because the grace is read by
+// releaseReadExpiredRoleClaim, the only reader of these revisions, over a claim its caller has read
+// from the bucket, and no caller can read that one.
 //
 // A snapshot short of the bucket is missing claims that are in it, and each one it misses is a
-// restored holder that loses its grace and is released a session TTL early, so an incomplete scan
-// fails the caller, and only a complete one logs. A scan that delivers nothing for idle is one.
-func roleRevisions(kv bus.KeyValue, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
+// restored holder that loses its grace and is released a session TTL early, so an incomplete run
+// returns an error and no revisions. A run that delivers nothing for idle is one, and so is one
+// whose ctx ended, which is how scanRoleClaims ends a run, and one whose watch could not be made.
+// Every error it returns names the role claim scan (roleClaimScanName): kvwatch.ScanExistingKeys
+// puts that name at the head of each error of a watch it made, and returns the error of a watch it
+// could not make as nats.go gave it, which this names. Beside the revisions it returns what the
+// scan delivered (kvwatch.KeyScan), whose count of delete markers the log line of the run Open
+// keeps carries. handed, which only this package's tests set (roleScanSeams), is called after each
+// claim the run is handed with how many it has been handed so far.
+func roleRevisions(ctx context.Context, kv bus.KeyValue, idle time.Duration, log *slog.Logger, handed func(claims int)) (map[string]uint64, kvwatch.KeyScan, error) {
 	revisions := map[string]uint64{}
-	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
+	claims := 0
+	scan, err := kvwatch.ScanExistingKeys(ctx, kv, jetstream.AllKeys, roleClaimScanName, idle, log, func(entry kvwatch.Entry) error {
 		revisions[entry.Key] = entry.Revision
+		claims++
+		if handed != nil {
+			handed(claims)
+		}
 		return nil
 	}, jetstream.MetaOnly())
 	if err != nil {
-		return nil, err
+		if !strings.HasPrefix(err.Error(), roleClaimScanName+": ") {
+			err = fmt.Errorf("%s: the bucket's watch could not be made: %w", roleClaimScanName, err)
+		}
+		return nil, kvwatch.KeyScan{}, err
 	}
-	log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
-	return revisions, nil
+	return revisions, scan, nil
+}
+
+// roleClaimScanName is the name every error of the role claim scan begins with, so the listener's
+// exit on a failed start says which read of the start failed.
+const roleClaimScanName = "role claim scan"
+
+// roleScanSeams are the role claim scan's test seams (scanRoleClaims), each nil, and so off,
+// unless this package's tests set them through Open's options (withRoleScanSeams, in
+// role_claim_scan_test.go). The listener and every other caller of Open set none.
+type roleScanSeams struct {
+	// watch wraps the role claim bucket's handle every run reads, so a test paces or stalls the
+	// runs' watches.
+	watch func(bus.KeyValue) bus.KeyValue
+	// run is called as each run starts, with the run's number, the first run's 1.
+	run func(n int)
+	// handed is called on a run's own goroutine after each claim the run is handed, with the run's
+	// number and how many claims it has been handed, so a test acts at a point of a run. A run the
+	// scan ended can still call it while its teardown finishes (roleClaimScan.run).
+	handed func(run, claims int)
+	// noticed is called on the scan's goroutine when the scan first takes run n, while it is in
+	// progress, for one the connection left its server or reconnected during.
+	noticed func(run int)
+}
+
+// The role claim scan's bounds (scanRoleClaims). roleClaimScanRuns is the most runs it makes.
+// roleClaimScanDeadline, counted from the first run's start, bounds the path a reconnect takes: a
+// wait for the connection, and a run during which the connection left its server or reconnected.
+// It is 37 times the slowest whole scan of the deployment's bucket measured on 2026-11-22 (1,863 ms
+// for 17,454 entries), so it holds four such runs and the waits between them. roleClaimScanPoll is
+// how often the scan reads the connection (readConn), well inside the second in which it must
+// notice a reconnect while nothing holds the connection's lock; the connection's own notices
+// (followConn) are what it notices one by while a handshake holds it.
+const (
+	roleClaimScanRuns     = 4
+	roleClaimScanDeadline = 70 * time.Second
+	roleClaimScanPoll     = 250 * time.Millisecond
+)
+
+// errRoleClaimScanDeadline is what a start fails with when the role claim scan's deadline
+// (roleClaimScanDeadline) ends it: a wait for the connection still under way there, or a run that
+// the connection left its server or reconnected during and that no run read the whole bucket after
+// by then.
+var errRoleClaimScanDeadline = errors.New("the scan's deadline passed")
+
+// errRoleClaimScanLateReconnect is what a start fails with when the connection left its server or
+// reconnected during a run of the role claim scan after its deadline: the scan ends that run at
+// once and makes no other.
+var errRoleClaimScanLateReconnect = errors.New("the NATS connection reconnected, or began to, after the scan's deadline")
+
+// scanRoleClaims is the role claim scan Open makes once it has opened the buckets: the revision of
+// each role claim, read by runs of roleRevisions over kv through conn, the connection Open was
+// given. The scan that failed the webhook listener's start on 2026-11-22 met a reconnect: the
+// Service in front of the hub switched the connection to another server a second in, and no further
+// entry came before the idle bound. A run that spans a reconnect is not shown to have read the
+// whole bucket, complete or not: either the idle bound fires first, or nats.go's activity check
+// makes the watch's ordered consumer again at the next stream sequence on whatever server the
+// connection now reaches (nats.go v1.55.0 js.go, activityCheck), where that sequence need not name
+// the same entry. So such a run is made again, rather than trusted or failed.
+//
+// A reconnect is a rise in the connection's own count of reconnects (nats.Conn.Stats), which the
+// scan reads with the connection's status before each run, after it, and every roleClaimScanPoll
+// while it is in progress (readConn). Each of those readings waits on the connection's lock, and
+// nats.go holds that lock through a reconnect attempt's dial and handshake (nats.go v1.55.0
+// doReconnect), so behind a server that does not answer the handshake no reading comes for as long
+// as the connection's Timeout, 5 s for a bus client. So the scan also takes the connection's own
+// notices of its status (nats.Conn.StatusChanged, followConn), which nats.go sends without
+// waiting, and which reach the scan whatever holds the lock: a notice that the connection has left
+// its server (RECONNECTING or DISCONNECTED) during a run counts as a reconnect of that run, since
+// the run either ends while the connection is not connected or spans the reconnect that follows,
+// and either makes it again. So the scan notices a reconnect during a run within a second, before
+// nats.go even raises the count. nats.go raises the count once a reconnect's TCP connection
+// succeeds, before its handshake, so a rise is judged together with the status. What ends a run
+// decides what follows, in this order:
+//
+//   - On a closed connection the start fails: a closed connection never reconnects, and the bus
+//     client's replacement of one (bus.Client) is a new *nats.Conn, not a reconnect of this one.
+//   - A run that ended, complete or not, while the connection was not connected makes the scan
+//     wait for it to be connected again (awaitConnected), and then run again.
+//   - A run during which the connection left its server or reconnected, or that began while it
+//     was not connected, is made again.
+//   - A run that ended incomplete, with no reconnect and the connection connected, fails the start
+//     with its own error, as the scan did when it made one run only.
+//   - A run that ended complete, with no reconnect and the connection connected, gives the start
+//     its revisions, and its size is what the restore's log line gives.
+//
+// Each run starts from an empty result (roleRevisions), and the scan makes at most
+// roleClaimScanRuns: a last run it does not keep fails the start. The path a reconnect takes ends
+// roleClaimScanDeadline after the first run started: a wait for the connection ends there, and so
+// does a run in progress during which the connection has already left its server or reconnected,
+// each failing the start (errRoleClaimScanDeadline). A run with no reconnect so far goes on with
+// the idle bound alone, as the scan's one run did before; if the connection leaves its server or
+// reconnects during it after the deadline, the scan ends it at once and the start fails
+// (errRoleClaimScanLateReconnect). So a run that meets no reconnect, on a connection that stays
+// connected, keeps the idle bound and no other however long it lasts, and the reconnect path ends
+// within roleClaimScanDeadline of the first run's start, or within a second of a reconnect after
+// it. Every error it returns names the role claim scan.
+func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *slog.Logger, seams roleScanSeams) (map[string]uint64, error) {
+	if seams.watch != nil {
+		kv = seams.watch(kv)
+	}
+	// The notices are followed before the first reading, so no change between the two is missed.
+	changes, unfollow := followConn(conn)
+	defer unfollow()
+	stop := make(chan struct{})
+	defer close(stop)
+	scan := &roleClaimScan{kv: kv, idle: idle, log: log, seams: seams, readings: readConn(conn, stop), changes: changes}
+	before := <-scan.readings
+	scan.deadline = time.Now().Add(roleClaimScanDeadline)
+	for n := 1; ; n++ {
+		run, err := scan.run(n, before)
+		if err != nil {
+			return nil, err
+		}
+		var again string
+		switch {
+		case run.after.status == nats.CLOSED:
+			return nil, roleClaimScanClosed(n, run.err)
+		case run.after.status != nats.CONNECTED:
+			again = "the run ended while the NATS connection was not connected"
+		case !run.reconnected.IsZero():
+			again = "the NATS connection left its server or reconnected while the run was in progress"
+		case run.err != nil:
+			return nil, run.err
+		default:
+			log.Info("restored role claims", slog.Int("restored", len(run.revisions)), slog.Int("delete_markers", run.scan.Markers))
+			return run.revisions, nil
+		}
+		if n == roleClaimScanRuns {
+			if run.err != nil {
+				return nil, fmt.Errorf("role claim scan: none of its %d runs ended complete with no reconnect of the NATS connection; in the last, %s: %w", roleClaimScanRuns, again, run.err)
+			}
+			return nil, fmt.Errorf("role claim scan: none of its %d runs ended complete with no reconnect of the NATS connection; in the last, %s", roleClaimScanRuns, again)
+		}
+		if !run.reconnected.IsZero() && !run.reconnected.Before(scan.deadline) {
+			return nil, scan.lateReconnect(n)
+		}
+		before = run.after
+		if run.after.status != nats.CONNECTED {
+			if before, err = scan.awaitConnected(n); err != nil {
+				return nil, err
+			}
+		} else if !time.Now().Before(scan.deadline) {
+			return nil, scan.spannedPastDeadline(n)
+		}
+		attrs := []any{slog.Int("run", n), slog.String("reason", again)}
+		if run.err != nil {
+			attrs = append(attrs, slog.String("error", run.err.Error()))
+		}
+		log.Warn("the role claim scan runs again", attrs...)
+	}
+}
+
+// roleClaimScan is one role claim scan across its runs (scanRoleClaims).
+type roleClaimScan struct {
+	kv    bus.KeyValue
+	idle  time.Duration
+	log   *slog.Logger
+	seams roleScanSeams
+	// readings carries the readings of the connection readConn takes, one every roleClaimScanPoll.
+	readings <-chan connReading
+	// changes is what the connection's own notices of its status have said (followConn).
+	changes *connChanges
+	// deadline is roleClaimScanDeadline after the first run's start.
+	deadline time.Time
+}
+
+// roleClaimRun is how one run of the scan ended: the run's own result, the first reading of the
+// connection begun after the run ended, and when the scan first saw the connection leave its server
+// or reconnect while the run was in progress, zero when it saw neither.
+type roleClaimRun struct {
+	revisions   map[string]uint64
+	scan        kvwatch.KeyScan
+	err         error
+	after       connReading
+	reconnected time.Time
+}
+
+// run makes run n of the scan, starting from before, the reading of the connection the run starts
+// from, and returns how it ended (roleClaimRun). The scan ends a run itself in three cases only, and
+// returns the start's error for it: a closed connection, which no run can read through; the
+// deadline, when the connection has already left its server or reconnected during the run; and
+// either of those after the deadline, as soon as a notice or a reading shows it. A run the scan ends
+// returns at once, and its watch's teardown finishes on the run's own goroutine (end). A run that
+// begins while the connection is not connected is taken for one a reconnect spans, since the
+// reconnect that ends that state can raise the count before the run starts.
+func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
+	if s.seams.run != nil {
+		s.seams.run(n)
+	}
+	var handed func(int)
+	if s.seams.handed != nil {
+		handed = func(claims int) { s.seams.handed(n, claims) }
+	}
+	left, _ := s.changes.read()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended := make(chan roleClaimRun, 1)
+	go func() {
+		revisions, scan, err := roleRevisions(ctx, s.kv, s.idle, s.log, handed)
+		ended <- roleClaimRun{revisions: revisions, scan: scan, err: err}
+	}()
+	// end ends the run in progress with err, the start's error, and returns at once. Cancelling ctx
+	// ends the run's scan, which then stops its watch and drains it (kvwatch.ScanExistingKeys), and
+	// the stop unsubscribes through the connection, so it waits on the connection's lock, which
+	// nats.go holds through a reconnect's dial and handshake, each up to the connection's Timeout.
+	// The run's goroutine is left to that teardown and ends with it, handing its result to ended,
+	// which holds one and which nothing reads any more, so the start fails when the scan says it
+	// does, not when a handshake lets the lock go, and the goroutine outlives it by no more than
+	// the attempt that holds the lock.
+	end := func(err error) (roleClaimRun, error) {
+		cancel()
+		return roleClaimRun{}, err
+	}
+	var reconnected time.Time
+	// spanned records that the connection left its server or reconnected during the run, and
+	// reports whether that came after the deadline.
+	spanned := func() bool {
+		reconnected = time.Now()
+		if s.seams.noticed != nil {
+			s.seams.noticed(n)
+		}
+		return !reconnected.Before(s.deadline)
+	}
+	if before.status != nats.CONNECTED {
+		spanned()
+	}
+	deadline := time.NewTimer(time.Until(s.deadline))
+	defer deadline.Stop()
+	for {
+		select {
+		case run := <-ended:
+			run.reconnected = reconnected
+			return s.after(n, before, run)
+		case <-s.changes.changed:
+			now, closed := s.changes.read()
+			if closed {
+				return end(roleClaimScanClosed(n, nil))
+			}
+			if !reconnected.IsZero() || now == left {
+				continue
+			}
+			if spanned() {
+				return end(s.lateReconnect(n))
+			}
+		case reading := <-s.readings:
+			if reading.status == nats.CLOSED {
+				return end(roleClaimScanClosed(n, nil))
+			}
+			if !reconnected.IsZero() || reading.reconnects <= before.reconnects {
+				continue
+			}
+			if spanned() {
+				return end(s.lateReconnect(n))
+			}
+		case <-deadline.C:
+			if !reconnected.IsZero() {
+				return end(s.spannedPastDeadline(n))
+			}
+		}
+	}
+}
+
+// after completes run, which has just ended: it waits for the first reading of the connection
+// begun after the run ended, which decides what follows, and records a reconnect that reading or
+// any before it shows. A run the connection left its server or reconnected during is held to the
+// deadline while it waits, since a reading waits on the connection's lock, which nats.go holds
+// through a dial and a handshake; a notice that the connection closed ends the wait at once.
+func (s *roleClaimScan) after(n int, before connReading, run roleClaimRun) (roleClaimRun, error) {
+	endedAt := time.Now()
+	var deadline <-chan time.Time
+	if !run.reconnected.IsZero() {
+		timer := time.NewTimer(time.Until(s.deadline))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	for {
+		select {
+		case reading := <-s.readings:
+			if run.reconnected.IsZero() && reading.reconnects > before.reconnects {
+				run.reconnected = time.Now()
+			}
+			if reading.at.Before(endedAt) {
+				continue
+			}
+			run.after = reading
+			return run, nil
+		case <-s.changes.changed:
+			if _, closed := s.changes.read(); closed {
+				return roleClaimRun{}, roleClaimScanClosed(n, run.err)
+			}
+		case <-deadline:
+			return roleClaimRun{}, s.spannedPastDeadline(n)
+		}
+	}
+}
+
+// awaitConnected waits, after run n ended while the connection was not connected, for a reading
+// that shows it connected again, which the next run starts from, until the deadline. A notice that
+// the connection closed ends the wait at once.
+func (s *roleClaimScan) awaitConnected(n int) (connReading, error) {
+	notConnected := fmt.Errorf("role claim scan: run %d ended while the NATS connection was not connected, and it was not connected again %s after the first run started: %w", n, roleClaimScanDeadline, errRoleClaimScanDeadline)
+	deadline := time.NewTimer(time.Until(s.deadline))
+	defer deadline.Stop()
+	for {
+		select {
+		case reading := <-s.readings:
+			switch {
+			case reading.status == nats.CLOSED:
+				return connReading{}, roleClaimScanClosed(n, nil)
+			case !time.Now().Before(s.deadline):
+				return connReading{}, notConnected
+			case reading.status == nats.CONNECTED:
+				return reading, nil
+			}
+		case <-s.changes.changed:
+			if _, closed := s.changes.read(); closed {
+				return connReading{}, roleClaimScanClosed(n, nil)
+			}
+		case <-deadline.C:
+			return connReading{}, notConnected
+		}
+	}
+}
+
+// spannedPastDeadline is the error of a start whose run n the connection left its server or
+// reconnected during, and whose deadline came before any run read the whole bucket.
+func (s *roleClaimScan) spannedPastDeadline(n int) error {
+	return fmt.Errorf("role claim scan: the NATS connection left its server or reconnected during run %d, and no run had read the whole bucket %s after the first run started: %w", n, roleClaimScanDeadline, errRoleClaimScanDeadline)
+}
+
+// lateReconnect is the error of a start whose connection left its server or reconnected during run
+// n after the deadline: the scan ends that run at once if it is still in progress, and makes no run
+// after it.
+func (s *roleClaimScan) lateReconnect(n int) error {
+	return fmt.Errorf("role claim scan: the NATS connection left its server or reconnected during run %d, more than %s after the first run started, and no run may follow a reconnect past the deadline: %w", n, roleClaimScanDeadline, errRoleClaimScanLateReconnect)
+}
+
+// roleClaimScanClosed is the error of a start whose connection closed during run n. runErr is the
+// run's own error, when the run ended before the scan saw the close.
+func roleClaimScanClosed(n int, runErr error) error {
+	if runErr != nil {
+		return fmt.Errorf("role claim scan: run %d ended on a closed NATS connection, which never reconnects (the run: %v): %w", n, runErr, nats.ErrConnectionClosed)
+	}
+	return fmt.Errorf("role claim scan: run %d ended on a closed NATS connection, which never reconnects: %w", n, nats.ErrConnectionClosed)
+}
+
+// connReading is one reading of the connection the role claim scan reads through: its status, then
+// its count of reconnects (nats.Conn.Stats), read in that order, and the time the reading began.
+// nats.go raises the count before it marks a reconnected connection connected, so a reading that
+// shows the connection connected shows every reconnect that completed before it.
+type connReading struct {
+	status     nats.Status
+	reconnects uint64
+	at         time.Time
+}
+
+// readConn reads conn every roleClaimScanPoll and hands each reading on, until stop closes. It
+// reads on a goroutine of its own because a reading waits on the connection's lock, which nats.go
+// holds through a reconnect's dial and handshake, each up to the connection's Timeout (5 s for a
+// bus client): read inline, a reading could hold the scan past its deadline. For the same reason no
+// reading comes while a handshake holds the lock, and the connection's own notices (followConn)
+// are what the scan notices a reconnect by then.
+func readConn(conn *nats.Conn, stop <-chan struct{}) <-chan connReading {
+	readings := make(chan connReading)
+	go func() {
+		for {
+			at := time.Now()
+			status := conn.Status()
+			reading := connReading{status: status, reconnects: conn.Stats().Reconnects, at: at}
+			select {
+			case readings <- reading:
+			case <-stop:
+				return
+			}
+			select {
+			case <-time.After(roleClaimScanPoll):
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return readings
+}
+
+// connChanges is what the connection's own notices of its status have said since the role claim
+// scan began to follow them (followConn): how many times it has left its server, and whether it
+// has closed. changed carries a signal after each notice, so a waiter reads the two again.
+type connChanges struct {
+	mu      sync.Mutex
+	left    int
+	closed  bool
+	changed chan struct{}
+}
+
+// read returns how many times the connection has left its server, and whether it has closed.
+func (c *connChanges) read() (left int, closed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.left, c.closed
+}
+
+// followConn follows conn's own notices of its status for the role claim scan
+// (nats.Conn.StatusChanged): that it has left its server (RECONNECTING, DISCONNECTED) and that it
+// has closed (CLOSED), until the func it returns is called. nats.go sends each notice under the
+// connection's lock without waiting, into a channel of ten from which a notice is dropped when it
+// is full, so a notice reaches the scan while a reconnect's handshake holds that lock, which no
+// reading of the connection does (readConn); a goroutine of its own takes each at once, so none
+// is dropped. The listener is the scan's own: the connection's handlers (nats.Options'
+// DisconnectedErrCB and the rest) are the bus client's. Registering it takes the connection's
+// lock, as a reading does. Removing it does too, so that is left to a goroutine of its own: a scan
+// that ends while a handshake holds the lock, as one ended by a reconnect after the deadline can,
+// does not wait for that handshake.
+func followConn(conn *nats.Conn) (*connChanges, func()) {
+	notices := conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
+	c := &connChanges{changed: make(chan struct{}, 1)}
+	go func() {
+		for status := range notices {
+			c.mu.Lock()
+			if status == nats.CLOSED {
+				c.closed = true
+			} else {
+				c.left++
+			}
+			c.mu.Unlock()
+			select {
+			case c.changed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return c, func() { go conn.RemoveStatusListener(notices) }
 }
 
 // scannedRoleClaim is one role claim record as a scan of the role bucket delivered it: the key it
@@ -408,7 +885,7 @@ const (
 	// gone when it arrived.
 	roleClaimWriteMissing
 	// roleClaimWriteRaced is every attempt lost to a write that landed since the read it was
-	// conditional on (nats.ErrKeyExists), the last of them at the attempt bound.
+	// conditional on (bus.IsCASConflict), the last of them at the attempt bound.
 	roleClaimWriteRaced
 )
 
@@ -439,7 +916,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 			return roleClaimWriteLanded, at, nil
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleClaimWriteMissing, claim, nil
-		case !errors.Is(err, nats.ErrKeyExists):
+		case !bus.IsCASConflict(err):
 			return roleClaimWriteFailed, claim, err
 		case attempt == w.attempts:
 			return roleClaimWriteRaced, claim, nil
@@ -587,6 +1064,32 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 		return RoleClaim{}, err
 	}
 	claim.Revision = entry.Revision()
+	return claim, nil
+}
+
+// RoleClaimFromLeader reads role's claim as RoleClaim does, from the role bucket stream's leader
+// (bus.KeyValue.ReadFromLeader) rather than by a direct get, which on a replicated bucket any copy
+// near enough to current answers: a copy that has not applied a takeover answers the previous
+// holder's claim. It is the read for a decision a stale claim would get wrong for good, such as the
+// session relay's judgement of whether a role message still belongs to the session it was stored
+// for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
+// message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
+// decodes from is.
+func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
+	leader, err := r.roles().ReadFromLeader(ctx, role)
+	switch {
+	case err != nil:
+		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
+	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
+		return RoleClaim{}, nil
+	case leader.Kind == bus.LeaderServerWritten:
+		return RoleClaim{}, fmt.Errorf("%w: role %s's key holds a message the server wrote", ErrMalformedRoleClaim, role)
+	}
+	claim, err := DecodeRoleClaim(leader.Value)
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	claim.Revision = leader.Revision
 	return claim, nil
 }
 

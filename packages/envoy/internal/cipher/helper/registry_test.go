@@ -6,6 +6,7 @@ package helper
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,7 @@ import (
 // one: an install that drained, undrained and drained again keeps its second drain for the whole
 // of its own bound, whatever the first bound's timer does when it fires.
 func TestEndDrainEndsOnlyTheDrainItWasStartedFor(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	live, first := reg.Drain()
 	if len(live) != 0 || first == 0 || !reg.Draining() {
@@ -37,6 +39,7 @@ func TestEndDrainEndsOnlyTheDrainItWasStartedFor(t *testing.T) {
 }
 
 func TestRootFindsSelfAndDescendantOnly(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	self := os.Getpid()
 	sess, err := newSession(self, 1, "h:1:1", "", nil, nil)
@@ -92,6 +95,7 @@ func fakeTree(parents map[int]int) func(int) (int, error) {
 // to the one with the lowest pid, which an ancestor usually has: otherwise a root registered high
 // in the tree takes every lower session's sign calls and requests.
 func TestRootIsTheNearestEnclosingSession(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	// 100 (outer root) -> 200 (inner root) -> 300; 150 -> 100 only.
 	reg.parent = fakeTree(map[int]int{300: 200, 200: 100, 150: 100, 100: 1})
@@ -122,6 +126,7 @@ func TestRootIsTheNearestEnclosingSession(t *testing.T) {
 // since its session would hold that session's processes too. A sibling of the live roots is
 // admitted.
 func TestAdmitRootRefusesARootAboveALiveSession(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	// 50 -> 100 (a tmux server, say) -> 201, 202 (live roots) and 300 (in no session).
 	reg.parent = fakeTree(map[int]int{201: 100, 202: 100, 300: 100, 100: 50, 50: 1})
@@ -151,6 +156,7 @@ func TestAdmitRootRefusesARootAboveALiveSession(t *testing.T) {
 }
 
 func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	reg := NewRegistry(path)
 	sess, err := newSession(4242, 99, "h:4242:99", "", nil, nil)
@@ -175,7 +181,7 @@ func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
 	// The boot id is on every saved record: it is what makes the pid and the start ticks name
 	// one process incarnation across a reboot (Registry.SameBoot).
 	want := Record{PID: 4242, StartTicks: 99, BootID: reg.bootID, RuntimeID: "h:4242:99", EnrollmentID: "enr-1"}
-	if err != nil || len(recs) != 1 || recs[0] != want {
+	if err != nil || len(recs) != 1 || !reflect.DeepEqual(recs[0], want) {
 		t.Fatalf("records: %+v %v, want %+v", recs, err, want)
 	}
 	if recs, err := LoadRecords(filepath.Join(t.TempDir(), "none.json")); err != nil || recs != nil {
@@ -187,6 +193,7 @@ func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
 // directory, so the caller that closed the registry can remove that directory while the
 // helper's goroutines are still finishing a retire or an enrollment.
 func TestASaveAfterCloseWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.json")
 	reg := NewRegistry(path)
@@ -211,6 +218,7 @@ func TestASaveAfterCloseWritesNothing(t *testing.T) {
 }
 
 func TestStateFollowsEnrollment(t *testing.T) {
+	t.Parallel()
 	sess, err := newSession(1, 1, "h:1:1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)

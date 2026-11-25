@@ -33,7 +33,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // unknownAuthority is crypto/x509's words for a certificate no root this machine trusts signed,

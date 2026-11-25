@@ -14,8 +14,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // Unreachable's table: every shape the audit found, plus the boundary cases (an authorization or

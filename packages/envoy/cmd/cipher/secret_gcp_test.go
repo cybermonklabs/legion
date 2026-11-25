@@ -421,7 +421,8 @@ func (bearerOf) RequireTransportSecurity() bool { return false }
 // broker reread treats a scheduled deletion as absent the moment it is scheduled, as AWS's
 // DeletedDate does), pending-value for one with no version that carries the create label (a
 // create waiting for its value: the fake makes every secret now, so it is always young enough),
-// no-current-value for any other with no version, served otherwise.
+// no-current-value for any other with no version, and otherwise what its annotations answer
+// (servedAs): refused for a type without the GitHub owners it needs, served as its type if not.
 func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Reread {
 	return func(name string) Reread {
 		slug, err := policy.NameToSlug(name)
@@ -441,7 +442,7 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
+		return servedAs(name, entry.secret.GetAnnotations())
 	}
 }
 
@@ -1281,6 +1282,8 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 // never answers - here a script whose child holds its output open, as the real gcloud's Python does
 // under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
 // refresh cannot outlast the store call it serves; the error names the account and the deadline.
+// The refresh is timed against that deadline, less the time this process was held up
+// (endsByItsDeadline).
 func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
@@ -1291,17 +1294,15 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
 	source := oauth2.ReuseTokenSource(expired, gcloudToken{ctx: context.Background(), gcloud: gcloudCommand{path: gcloud}, account: "ada@example.com"})
 	done := make(chan error, 1)
+	meter := startStallMeter(t)
+	start := time.Now()
 	go func() {
 		_, err := source.Token()
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
-			t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the refresh of an expired token was still waiting on gcloud 10s on, past the 300ms deadline")
+	err := endsByItsDeadline(t, meter, "the refresh of an expired token whose gcloud never answers", start, 300*time.Millisecond, done)
+	if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
+		t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
 	}
 }
 
@@ -1347,7 +1348,9 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 // TestGCPSecretGcloudSettingsReadIsBestEffort: the gcloud source reads gcloud's auth settings only
 // to name whom its token acts as (R2), so a `gcloud config list` that fails, or that does not
 // answer within gcloudSettingsDeadline, never stops the command: the form runs under the login's
-// token, and the using line names the login with the principal unknown.
+// token, and the using line names the login with the principal unknown. The form is timed against
+// gcloudSettingsDeadline where the read hangs, and against no deadline where it fails, less the
+// time this process was held up (requireOnTime).
 func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 	for _, mode := range []string{"fail", "hang"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1355,11 +1358,16 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 			startFakeSecretManager(t, fake)
 			useGcloudThatAnswers(t, "ada@example.com", "", mode)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			waits := time.Duration(0)
+			if mode == "hang" {
+				waits = gcloudSettingsDeadline
+			}
+			meter := startStallMeter(t)
 			started := time.Now()
 			_, stderr, code := runSecret("list")
-			took := time.Since(started)
-			if code != 0 || took > 15*time.Second {
-				t.Fatalf("exit %d after %s, stderr %q; want 0 within 15s", code, took, stderr)
+			took := requireOnTime(t, meter, "the form whose gcloud settings read "+mode+"s", started, waits)
+			if code != 0 {
+				t.Fatalf("exit %d after %s, stderr %q; want 0", code, took, stderr)
 			}
 			if want := "agent-secrets secret list: using the active gcloud account (gcloud configuration default): ada@example.com (principal unknown: gcloud's auth settings could not be read)\n"; !strings.Contains(stderr, want) {
 				t.Fatalf("stderr %q does not say %q", stderr, want)
@@ -1374,18 +1382,19 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 // TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline: `gcloud auth list`, which
 // decides whether the gcloud source is present, runs under storeCallDeadline as the token's
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
-// before any Secret Manager call.
+// before any Secret Manager call, timed against that deadline (requireOnTime).
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGcloudThatAnswers(t, "ada@example.com", "hang", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	meter := startStallMeter(t)
 	started := time.Now()
 	_, stderr, code := runSecret("list")
-	took := time.Since(started)
-	if code != 1 || took > 10*time.Second || !strings.Contains(stderr, "`gcloud auth list` did not answer within 300ms") {
-		t.Fatalf("exit %d after %s, stderr %q; want 1 within 10s naming the 300ms deadline", code, took, stderr)
+	took := requireOnTime(t, meter, "the form whose `gcloud auth list` never answers", started, 300*time.Millisecond)
+	if code != 1 || !strings.Contains(stderr, "`gcloud auth list` did not answer within 300ms") {
+		t.Fatalf("exit %d after %s, stderr %q; want 1 naming the 300ms deadline", code, took, stderr)
 	}
 	if _, calls := fake.calledUnder(); calls != 0 {
 		t.Fatalf("Secret Manager saw %d calls, want none", calls)

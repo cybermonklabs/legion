@@ -29,11 +29,13 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
-import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
+import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
@@ -52,7 +54,7 @@ import { chipWords } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
-import { authorText, pageChrome } from "./page-structure";
+import { authorText, freeze, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
   type AuthorKind,
@@ -118,6 +120,7 @@ export function NodeRow({
   editing,
   expanded,
   focused,
+  foldable = true,
   folded,
   isClosed,
   level,
@@ -127,6 +130,7 @@ export function NodeRow({
   onToggle,
   ownAnswer,
   pinned,
+  placesItself,
   report,
   rowKey,
   tabStop,
@@ -162,6 +166,10 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
+  /** Whether the row draws its fold control where it holds children. The row a tree is zoomed
+   *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
+   *  view passes it. */
+  foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
@@ -175,6 +183,13 @@ export function NodeRow({
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
+  /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
+  placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
   report?: string;
@@ -193,9 +208,12 @@ export function NodeRow({
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
+  // A comment or a message its author deleted keeps its row, and draws the deleted line where
+  // its words stood (INFRA-1523, R3).
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
   // decision is not a turn, so its words are never the reader's here, whoever asked it.
   const own = author.reader && (node.type === "comment" || node.type === "message");
@@ -222,7 +240,7 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused);
+  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = level - 1;
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
@@ -293,6 +311,7 @@ export function NodeRow({
         <Bullet
           collapsed={collapsed}
           expanded={expanded}
+          foldable={foldable}
           onToggle={onToggle}
           tabStops={tabStops}
           tone={tone}
@@ -307,7 +326,7 @@ export function NodeRow({
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
               <span data-node-first-line="" {...authorText}>
-                {drawnLine(first)}
+                {deleted === null ? drawnLine(first) : <DeletedLine deleted={deleted} />}
               </span>
               {count === null ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>{count}</span>
@@ -324,6 +343,10 @@ export function NodeRow({
             >
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+              ) : deleted !== null ? (
+                <p className="break-words" {...authorText}>
+                  <DeletedLine deleted={deleted} />
+                </p>
               ) : node.child === undefined ? (
                 <RowText
                   focused={focused}
@@ -415,6 +438,31 @@ export function NodeRow({
   );
 }
 
+/**
+ * A deleted post's line where its row draws its words, whole or as its one line, and where the
+ * page draws its one line apart from its row - a filter's parent line (`ParentLink`), a crumb
+ * above a zoom (`IssueTree.tsx`'s `CrumbLine`) (INFRA-1523, R3): the line every surface draws in
+ * a deleted post's place (`DeletedBody`), in its italic, with who deleted it and when. The actor
+ * is named as the page names an author (`AgentText.author`), the rule the row's own author and
+ * "Kept by" are named by, by INFRA-1196's decision 342: a session nothing names reads as the
+ * page's word for an agent, and never as its short id. The node's text is the same line as the
+ * model writes it (`tree-drafts.ts`'s `deletedPostLine`), with the actor named as no registry
+ * knows it and the time as stored, so the row draws the line from the delete and never from that
+ * text. The line's words are the page's own, marked as its chrome and declared in
+ * `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name and the time are not
+ * (INFRA-1523, R3).
+ */
+export function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <DeletedBody
+      {...(deleted.by === null ? {} : { actorName: agentText.author(deleted.by) })}
+      deleted={deleted}
+      marks={{ own: pageChrome, theirs: authorText }}
+    />
+  );
+}
+
 /** The bullet's box, as every row draws it: 24 px tall, its dot centred in it. */
 const BULLET_BOX =
   "col-start-1 row-start-1 flex h-6 w-[18px] items-center justify-center self-start";
@@ -480,13 +528,22 @@ export const NODE_ROW_LAYOUT = {
  * filter's body places itself by this one hook. `below` is how far below what stays a row that
  * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
  * as a view whose sticky heads stand taller than the outline's does.
+ *
+ * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
+ * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
+ * focus, so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header. Read when the row is placed rather than as a
+ * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
-  below: number = BELOW_WHAT_STAYS
+  below: number = BELOW_WHAT_STAYS,
+  placesItself = true
 ): () => void {
   const pressed = useRef(false);
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -501,6 +558,7 @@ export function useRowOnScreen(
     const element = row.current;
     if (!focused || element === null) return;
     const place = () => {
+      if (!placing.current) return;
       if (pressed.current) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
@@ -601,12 +659,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
 function Bullet({
   collapsed,
   expanded,
+  foldable,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
+  foldable: boolean;
   onToggle: () => void;
   tabStops: boolean;
   tone: Tone;
@@ -617,6 +677,13 @@ function Bullet({
       className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
     />
   );
+  if (!foldable) {
+    return (
+      <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
+        {dot}
+      </span>
+    );
+  }
   if (expanded === undefined) {
     return (
       <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
@@ -639,6 +706,15 @@ function Bullet({
     </button>
   );
 }
+
+/** What a row's edited mark draws its element with (`EditedMark`): `data-node-edited`, and the
+ *  page's chrome, since ` · edited` is the page's own word. The outline's row draws it in its
+ *  margin (`RowMargin`), and the Verification view's row of a node an address named after its
+ *  kind (`VerificationFilterBody.tsx`'s `OtherRow`). */
+export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
+  "data-node-edited": "",
+  ...pageChrome,
+});
 
 /**
  * What stands at the right end of the row's first line (R9, R34, the prototype's `.mg`): the
@@ -735,6 +811,15 @@ export function RowMargin({
                 </span>
               </>
             )}
+            {/* A post its author edited says so after its time, as its byline does on every
+                surface (`EditedMark`, INFRA-1523, R2): here at the right of the row, which no
+                cut of its words reaches, so a post cut to six lines or folded to one keeps it.
+                The mark is the page's own word (`CONTROL_LABELS.post_edited`). */}
+            <EditedMark
+              at={node.editedAt}
+              className="whitespace-nowrap"
+              marks={NODE_EDITED_MARKS}
+            />
           </span>
         )}
       </div>
@@ -875,7 +960,8 @@ export function NodeOptions({
  * What the reader can do with the focused row, on one quiet line under it (the prototype's
  * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
  * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
- * (R16) - Answer on an open question, and Change answer on a question the
+ * (R16), but never a comment or a message its author deleted, which Dispatch takes no reply to
+ * (`replyItemOf`) - Answer on an open question, and Change answer on a question the
  * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
  * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
  * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
@@ -1078,6 +1164,12 @@ export function NodeEdges({
  * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
  * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
  * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
+ *
+ * A comment's or a message's chip names a post its author deleted by the deleted line without
+ * its time, in the deleted line's italic, as a link to the post does (`RefLink`), the actor named
+ * as the row names it (`DeletedLine`), where the model's name holds it as no registry knows it;
+ * and a post its author edited by its words cut to the chip's length, then ` · edited`
+ * (`EditedMark`), drawn after the cut, so no cut takes the mark (INFRA-1523, R2 and R3).
  */
 function Chip({
   chip,
@@ -1096,7 +1188,39 @@ function Chip({
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
   const word = ambiguous ? undefined : documentWord(target);
-  const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
+  const agentText = useAgentText();
+  const deleted = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
+  // The model names a deleted comment or message by its deleted line, and a block of one by
+  // nothing, as gone.
+  const deletedName = deleted !== null && chip.name !== "";
+  const name = deletedName ? deletedLineText(deleted, { label: agentText.author }) : chip.name;
+  const cut = chipWords(name);
+  const edited = chip.editedAt !== undefined && cut !== "";
+  const words = ambiguous ? chip.ref : (word ?? cut);
+  // A target's name is its author's words, but for the page's own in it: the deleted line's
+  // opening and the edited mark, marked as the page's chrome (INFRA-1523, R3).
+  const opening =
+    deleted === null
+      ? ""
+      : deleted.by === null
+        ? CONTROL_LABELS.post_deleted
+        : CONTROL_LABELS.post_deleted_by;
+  const mark = edited ? <EditedMark at={chip.editedAt} marks={pageChrome} /> : null;
+  const shown =
+    ambiguous || word !== undefined ? (
+      words
+    ) : deletedName ? (
+      <span className="italic" data-post-deleted="" {...pageChrome}>
+        {opening}
+        {cut === opening ? null : <span {...authorText}>{cut.slice(opening.length)}</span>}
+        {mark}
+      </span>
+    ) : (
+      <>
+        {cut}
+        {mark}
+      </>
+    );
   if (!gone && words === "") return null;
   const route = chip.gone ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
@@ -1111,7 +1235,7 @@ function Chip({
       ) : route === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
-          {words}
+          {shown}
         </span>
       ) : (
         // Out of the tab order, as every other control inside a row is, unless `tabStops` holds:
@@ -1124,7 +1248,7 @@ function Chip({
           to={buildReferencePath(route)}
           {...marks}
         >
-          {words}
+          {shown}
         </Link>
       )}
     </span>
@@ -1134,12 +1258,28 @@ function Chip({
 /** The parent's own first line, as the link a reader follows to that node where the model gives
  *  it an address (R18, and R26: a step's row reaches the statement it serves). Out of the tab
  *  order, as every other control inside a row is, unless `tabStops` holds: `f` steps to it and
- *  Enter follows it. */
-function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
+ *  Enter follows it. A parent its author deleted is drawn as the deleted line, as its own row
+ *  draws it (`DeletedLine`), and one its author edited says ` · edited` after its line
+ *  (`EditedMark`), so the line holds both marks wherever the parent's own row is not drawn
+ *  (INFRA-1523, R2 and R3). The outline's row draws it; so does the Verification view's
+ *  parent line (`VerificationFilterBody.tsx`'s `ParentLine`), with `tabStops`, since no tree's
+ *  keys reach a link there; and so does the Decisions view's parent line of a parent with words
+ *  (`DecisionsRow.tsx`), without `tabStops`, since that view's keys reach a link in its row. */
+export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
+  const deleted = postDeletion({ deleted_at: line.deletedAt, deleted_by: line.deletedBy });
+  const words =
+    deleted === null ? (
+      <>
+        {line.line}
+        <EditedMark at={line.editedAt} marks={pageChrome} />
+      </>
+    ) : (
+      <DeletedLine deleted={deleted} />
+    );
   return route === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
-      {line.line}
+      {words}
     </span>
   ) : (
     <Link
@@ -1148,7 +1288,7 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
       to={buildReferencePath(route)}
       {...authorText}
     >
-      {line.line}
+      {words}
     </Link>
   );
 }

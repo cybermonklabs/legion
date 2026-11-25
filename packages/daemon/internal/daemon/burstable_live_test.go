@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -116,6 +118,37 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 // returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
 	t.Helper()
+	return launchLiveRoot(ctx, t, cfg, log, burstableLiveRepository, "master")
+}
+
+// launchLiveRoot is launchBurstableLiveRoot on the public repository repo, whose default branch is
+// defaultBranch (liveRootSpec), with repo the runtime's cache set.
+func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *corev1.Pod {
+	t.Helper()
+	return startLiveRoots(ctx, t, cfg, log, repo, defaultBranch).launch(cfg.Project + "-1")
+}
+
+// liveRoots is the Agent Sandbox runtime a kind proof builds from its legion.yaml
+// (burstableLiveRuntime), with the public repository it launches on as its cache set, on a worker
+// stream at the file's bind that admits the boot token of each root it launches.
+type liveRoots struct {
+	ctx           context.Context
+	t             *testing.T
+	namespace     string
+	project       string
+	repo          ghrepo.Repository
+	defaultBranch string
+	rt            *sandbox.Runtime
+	clients       *kubernetes.Clientset
+	prompt        string
+	mu            sync.Mutex
+	boots         map[string]claim.Token
+}
+
+// startLiveRoots runs the cluster check, creates cfg's providers Secret (putLiveProvidersSecret)
+// and builds the runtime of liveRoots from cfg.
+func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *liveRoots {
+	t.Helper()
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -129,14 +162,17 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 		t.Fatalf("the cluster check: %v", err)
 	}
 	putLiveProvidersSecret(ctx, t, cfg, log)
-	issue := cfg.Project + "-1"
-	token, err := claim.NewToken(project, issue, claim.RoleArchitect)
+	clients, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootToken := "boot-" + string(token)
+	l := &liveRoots{ctx: ctx, t: t, namespace: k.Namespace, project: project, repo: repo, defaultBranch: defaultBranch,
+		clients: clients, boots: map[string]claim.Token{}}
 	resolve := func(presented string) (claim.Token, uint64, bool, bool, error) {
-		if presented != bootToken {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		token, ok := l.boots[presented]
+		if !ok {
 			return "", 0, false, false, nil
 		}
 		return token, 1, false, true, nil
@@ -149,32 +185,42 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 		for range listener.Events() {
 		}
 	}()
-	rt, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), log)
-	if err != nil {
+	if l.rt, _, err = burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), log, repo); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
-	prompt := filepath.Join(t.TempDir(), "role.md")
-	if err := os.WriteFile(prompt, []byte("You are the architect.\n"), 0o600); err != nil {
+	l.prompt = filepath.Join(t.TempDir(), "role.md")
+	if err := os.WriteFile(l.prompt, []byte("You are the architect.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loc, err := rt.Spawn(ctx, burstableLiveSpec(project, issue, token, bootToken, prompt))
+	return l
+}
+
+// launch launches the root architect of issue through the runtime's Spawn and returns the issue
+// pod as the API server holds it once the launch returned.
+func (l *liveRoots) launch(issue string) *corev1.Pod {
+	l.t.Helper()
+	token, err := claim.NewToken(l.project, issue, claim.RoleArchitect)
 	if err != nil {
-		t.Fatalf("Spawn %s: %v", token, err)
+		l.t.Fatal(err)
 	}
-	clients, err := kubernetes.NewForConfig(rc)
+	bootToken := "boot-" + string(token)
+	l.mu.Lock()
+	l.boots[bootToken] = token
+	l.mu.Unlock()
+	loc, err := l.rt.Spawn(l.ctx, liveRootSpec(l.project, issue, token, bootToken, l.prompt, l.repo, l.defaultBranch))
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatalf("Spawn %s: %v", token, err)
 	}
-	pods, err := clients.CoreV1().Pods(k.Namespace).List(ctx, metav1.ListOptions{})
+	pods, err := l.clients.CoreV1().Pods(l.namespace).List(l.ctx, metav1.ListOptions{})
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatal(err)
 	}
 	for i := range pods.Items {
 		if string(pods.Items[i].UID) == loc.Sandbox.PodUID {
 			return &pods.Items[i]
 		}
 	}
-	t.Fatalf("no pod in %s has the launched uid %s", k.Namespace, loc.Sandbox.PodUID)
+	l.t.Fatalf("no pod in %s has the launched uid %s", l.namespace, loc.Sandbox.PodUID)
 	return nil
 }
 
@@ -211,6 +257,27 @@ func putLiveProvidersSecret(ctx context.Context, t *testing.T, cfg config.Config
 		t.Fatalf("put the providers Secret %s/%s: %v", secret.Namespace, secret.Name, err)
 	}
 	fmt.Printf("   providers Secret %s/%s %s: keys %v, each a placeholder\n", secret.Namespace, secret.Name, verb, slices.Sorted(maps.Keys(secret.Data)))
+}
+
+// awaitCache waits, within limit, for the repository cache of the proof's repository to be Ready
+// as the runtime's stores show it, and answers it.
+func (l *liveRoots) awaitCache(limit time.Duration) sandbox.CacheStatus {
+	l.t.Helper()
+	deadline := time.Now().Add(limit)
+	for {
+		status, found := l.rt.RepositoryCache(l.repo)
+		if found && status.Ready {
+			return status
+		}
+		if time.Now().After(deadline) {
+			l.t.Fatalf("the repository cache of %s is not Ready after %s: %+v (found %t)", l.repo, limit, status, found)
+		}
+		select {
+		case <-l.ctx.Done():
+			l.t.Fatalf("waiting for the repository cache of %s: %v", l.repo, l.ctx.Err())
+		case <-time.After(5 * time.Second):
+		}
+	}
 }
 
 func liveContainer(t *testing.T, pod *corev1.Pod, name string) corev1.Container {

@@ -21,17 +21,31 @@ export interface ReviewSeed {
   readonly project: string;
   /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
   readonly machine: string;
+  /** The login whose `/people/:login` page is opened: the person every human write of the
+   *  corpus is made as, so their page lists what they wrote rather than its empty state. */
+  readonly person: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
-  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
-   *  carries work in flight under it and work parked under it, so both pages draw rows rather
-   *  than the sentence a deployment that has written no priority draws. */
+  /** The priority `/priorities/:id` is opened on: the first of the thirteen `e2e/review-seed.ts`
+   *  writes, which carries work in flight under it and work in backlog under it, so both pages
+   *  draw rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
   readonly pipelineAt: string;
+  /** The read marks the seed wrote before any row (`markWhatTheShotPagesRead`), which the visual
+   *  rows' guard lets a page write again only exactly as they stand (`e2e/visual-guard.ts`). */
+  readonly readMarks: SeededReadMarks;
+}
+
+/** The read marks a seed wrote: each session's replies marked read, by session id, and each
+ *  document's read version, by document id. A page's write of a mark is a repeat that moves
+ *  nothing only when it names replies the seed marked and the version the seed wrote. */
+export interface SeededReadMarks {
+  readonly agents: Readonly<Record<string, readonly string[]>>;
+  readonly documents: Readonly<Record<string, number>>;
 }
 
 /** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
@@ -299,45 +313,62 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and `ArtifactHeader.tsx` draws the dot inside that header.
     ready: (page) => [page.getByRole("status", { name: "connected" })],
   },
+  // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
+  // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The
+  // page's own heading is on the screen while the priorities read is still out, over `Loading
+  // priorities`, and a fault's tab stands over its table while that fault list's own issue
+  // listing is still out, so each entry waits for a row the seed wrote: the first priority of
+  // the order, the issue active under no priority, and the issue in backlog that advances one.
+  // Each fault list is the Issues table, named by the label the page passes it with " table"
+  // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
+  // change to that corpus fails these entries rather than a baseline.
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
-    // Three facts, because the page draws three tables and a heading proves none of them: the
-    // page's own heading is on the screen while the priorities read is still out, over `Loading
-    // priorities`, and both fault headings stand over their tables while each fault list's own
-    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
-    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
-    // priorities table and both fault lists have their rows rather than their empty words. Each
-    // fault list is the Issues table, named by the label the page passes it with " table"
-    // after it (`features/project/IssuesTable.tsx`). The three issues are
-    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
     ready: (page) => [
-      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^#1 / }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-in-flight",
+    path: () => "/priorities?tab=none",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Active under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: [...bothLayers, "shoot-phone"],
+    name: "priorities-backlog",
+    path: () => "/priorities?tab=backlog",
+    pattern: "/priorities",
+    ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Priority work in backlog or icebox table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priority",
     path: (seed) => `/priorities/${seed.priority}`,
     pattern: "/priorities/:id",
-    // The title field, which is drawn with the priority itself and not with the skeleton; the
-    // margin's first act, which arrives with the history read beside it rather than with the
-    // page; and the work table's row for the in-flight issue the seed places under this
-    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
-    // alone would be a page whose margin and whose work are both still empty boxes.
+    // The title's heading in the page's header, which is drawn with the priority itself and not
+    // with the skeleton; the margin's first act, which arrives with the history read beside it
+    // rather than with the page; and the work table's row for the in-flight issue the seed places
+    // under this priority, which is a second read again (`advancesIssuesQuery`). A page read on
+    // the title alone would be a page whose margin and whose work are both still empty boxes.
     ready: (page) => [
-      page.getByRole("textbox", { name: "Title" }),
+      page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
       page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
       page
         .getByRole("table", { name: "Priority issues table" })
@@ -410,6 +441,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
     pattern: "/pipeline",
     ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
+  },
+  {
+    kind: "reviewed",
+    // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
+    // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
+    // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
+    // container, the only renderer whose pixels this comparison is ever against.
+    layers: bothLayers,
+    name: "person",
+    path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
+    pattern: "/people/:login",
+    // The page's own region, exact because the empty state draws
+    // `<section aria-label="Person empty state">` inside it and a substring match would then
+    // find two (the agents row reads its region for the same reason). And one row's own words,
+    // which is what says the store answered: until it does, `PersonPage.tsx` draws a loading
+    // skeleton, and an answer holding nothing draws that empty state - both of which a page
+    // read on the region alone would accept. The words are the comment `e2e/workspace.ts`
+    // writes as this person, so a change to that corpus fails this row rather than a scan.
+    ready: (page) => [
+      page.getByRole("region", { exact: true, name: "Person" }),
+      page
+        .getByRole("list", { name: "Person nodes" })
+        .getByText("Thanks - the order the sender ticked is the whole point."),
+    ],
   },
   {
     kind: "reviewed",
@@ -519,8 +574,14 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
- *  no reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
- *  beside the document.
+ *  no reading pane beside it, the Spec's margin becomes a bottom sheet rather than a column
+ *  beside the document, and every page of the priorities draws its table for a phone. The
+ *  Priorities tab's toolbar stacks its search box over its controls, each at the 44 px a phone's
+ *  target takes, and its table draws each priority as its place beside one cell, which names
+ *  the owner, the three counts and the newest event under the title; each fault tab's table
+ *  keeps the key and the title pinned, the title's filter under its words and the title whole,
+ *  and scrolls its other columns sideways under them; and a priority's own page stands its work
+ *  table, drawn the same way, under its description, with the margin's entries below it.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
  *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last
@@ -636,7 +697,9 @@ export function topBarInboxBadge(page: Page): Locator {
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting. */
+ *  page's latest hundred, which holds every request recent enough to still be waiting, and only
+ *  those that can still answer count: the ones the page's current document sent
+ *  (`requestsOfThisDocument`), each until Playwright has heard that it ended (`stillAnswering`). */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
@@ -644,12 +707,12 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
   await expect
     .poll(
       async () => {
-        const waiting = (await page.requests()).some(
-          (request) =>
-            feedsInboxCount(request) &&
-            request.existingResponse() === null &&
-            request.failure() === null
-        );
+        // Every request is asked, not only those up to the first still in flight, so the next
+        // poll has heard of each one that has already ended.
+        let waiting = false;
+        for (const request of await requestsOfThisDocument(page)) {
+          if (feedsInboxCount(request) && stillAnswering(request)) waiting = true;
+        }
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;
@@ -663,4 +726,60 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
       }
     )
     .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);
+}
+
+/** The requests of `page.requests()`'s list, in the order they were sent, that the document
+ *  `page` shows now sent: those after the last navigation request of its main frame. A request
+ *  sent before that belongs to a document that is gone, so it can no longer answer, and nothing
+ *  may say so: Chromium can cancel a request of a document being replaced with neither
+ *  `requestfinished` nor `requestfailed` (e2e/two-builds.multiprocess.e2e.ts met it), and a
+ *  request no one reports ended would hold `stillAnswering`, and this wait, for ever. The app's
+ *  own history navigations send no navigation request and keep their document, so the requests
+ *  sent around them stay this document's. */
+async function requestsOfThisDocument(page: Page): Promise<readonly Request[]> {
+  const requests = await page.requests();
+  const mainFrame = page.mainFrame();
+  let first = 0;
+  for (const [index, request] of requests.entries()) {
+    if (request.isNavigationRequest() && request.frame() === mainFrame) first = index + 1;
+  }
+  return requests.slice(first);
+}
+
+/** Each request `stillAnswering` has asked Playwright's server about: false until the server
+ *  has reported its end, and true after. */
+const endedOnServer = new WeakMap<Request, boolean>();
+
+/** Whether `request` can still answer: neither its response nor its failure has come.
+ *
+ *  Its own `existingResponse()` and `failure()` do not say so on their own. Measured in
+ *  Playwright 1.64.1, a `Request` records its failure only if the test already held that object,
+ *  or something listened for `requestfailed`, when it failed: Playwright's server sends the
+ *  failure of no other request, and `page.requests()` hands a request over with the response it
+ *  has but never with its failure. So a read the page aborted before this wait first listed it
+ *  read as neither answered nor failed for as long as it stayed among the page's latest hundred,
+ *  and the wait never saw its quiet window: 20 of 20 aborted `/api/v1/inbox` reads read back with
+ *  neither, and on `/answers` one read aborted in the page failed this wait after 15,131 ms where
+ *  a `requestfailed` listener let it settle in 935 ms. (A read cut off by a navigation away, which
+ *  `openWithFloats` (e2e/foot-floats.ts) makes two of per route, belongs to a document that is
+ *  gone: `requestsOfThisDocument` leaves it out, and it never reaches this function.) The server
+ *  does hold the end: `request.response()` answers at once with the response of an answered
+ *  request and with null for a failed one. So each request that shows neither is asked once, and
+ *  it counts as in flight until that answer comes. The wait asks every such request of a poll in
+ *  that poll, so however many of them have already ended, they cost it one poll. Asking needs no
+ *  listener installed before the page opens, so every layer that waits here is covered as it
+ *  stands. */
+function stillAnswering(request: Request): boolean {
+  if (request.existingResponse() !== null || request.failure() !== null) return false;
+  const ended = endedOnServer.get(request);
+  if (ended === true) return false;
+  if (ended === undefined) {
+    endedOnServer.set(request, false);
+    const end = () => {
+      endedOnServer.set(request, true);
+    };
+    // Rejected only once the page has closed, which ends the request too.
+    void request.response().then(end, end);
+  }
+  return true;
 }

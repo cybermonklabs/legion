@@ -110,7 +110,7 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /device_authorization", func(w http.ResponseWriter, r *http.Request) {
-		provider.DeviceAuthorize(w, r, func(ctx context.Context, _ url.Values, userCode string) error {
+		provider.DeviceAuthorize(w, r, provider.VerificationURL(), func(ctx context.Context, _ url.Values, userCode string) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			_, f.sawTx = oauthstore.TxFrom(ctx)

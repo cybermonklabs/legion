@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -592,8 +593,12 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // pollLogin polls the token endpoint for a pending machine login until a human decides it, at the
 // interval the broker named. On approval it keeps the login (keepLogin). access_denied records
 // "denied"; expired_token, a device code the broker no longer knows (invalid_grant) and the
-// code's own lifetime passing record "expired". A poll that does not reach the broker, or that it
-// answers with anything else, polls again.
+// code's own lifetime passing record "expired", each error only from a refusal, a 4xx that is no
+// outage (oauthrefusal.Refusal). The status alone decides refused or down: a poll that does not
+// reach the broker, or that it answers a 5xx, a 408 or a 429 (oauthrefusal.Outage) naming one of
+// those errors included, is the broker down and polls again; a refusal naming no error or another
+// one is the broker answering with no decision, and polls again too, until the code's lifetime
+// records "expired".
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	ctx := b.tokenContext(context.Background(), key)
 	settle := func(state string) { b.recordLogin(&loginState{Code: da.UserCode, State: state}) }
@@ -603,16 +608,13 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 			b.keepLogin(key, tok, da.UserCode, operator)
 			return
 		}
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) {
-			switch re.ErrorCode {
-			case "access_denied":
-				settle("denied")
-				return
-			case "expired_token", "invalid_grant":
-				settle("expired")
-				return
-			}
+		switch oauthrefusal.Refusal(err) {
+		case "access_denied":
+			settle("denied")
+			return
+		case "expired_token", "invalid_grant":
+			settle("expired")
+			return
 		}
 		if !da.Expiry.IsZero() && !time.Now().Before(da.Expiry) {
 			settle("expired")
@@ -991,18 +993,19 @@ func (b *Broker) refreshLoop(ctx context.Context, first time.Duration, sched ret
 	}
 }
 
-// retrySchedule is the refresh loop's wait after a refresh that failed (next). A refresh the
-// broker did not answer, or answered 5xx, waits retry (15 s), and sets unknown: the broker may
-// have rotated the token and lost its answer, and the token the helper still holds is redeemable
-// again only inside the broker's five-minute rotation grace, whose start the helper cannot know.
-// While unknown is set, every failure waits retry, an answered 4xx or 429 among them, until a
-// refresh the broker settles (a success or invalid_grant, reset) clears it, so no run of answered
-// refusals after a lost answer backs a retry past the grace. An outage longer than the grace
-// right after a lost answer still ends in a reuse, which revokes the machine. Otherwise a 429
-// waits its Retry-After, at least retry and at most maxRetryAfter, and any other error the broker
-// answered waits backoff, from backoffStart doubling to maxRefreshRetry, until reset. An error
-// that is no answer of the broker's (a token answer the helper cannot keep, a save that failed)
-// waits retry too.
+// retrySchedule is the refresh loop's wait after a refresh that failed (next). The status alone
+// decides whether the broker answered (oauthrefusal.Outage). A refresh the broker did not answer,
+// or answered 5xx or 408, waits retry (15 s), and sets unknown: the broker may have rotated the
+// token and lost its answer, and the token the helper still holds is redeemable again only inside
+// the broker's five-minute rotation grace, whose start the helper cannot know. While unknown is
+// set, every failure waits retry, an answered 4xx or 429 among them, until a refresh the broker
+// settles (a success or invalid_grant, reset) clears it, so no run of answered refusals after a
+// lost answer backs a retry past the grace. An outage longer than the grace right after a lost
+// answer still ends in a reuse, which revokes the machine. Otherwise a 429, the outage that names
+// its own wait, waits its Retry-After, at least retry and at most maxRetryAfter, and any other
+// answer, a refusal with or without an OAuth error that ends no grant (redeem), waits backoff, from
+// backoffStart doubling to maxRefreshRetry, until reset. An error that is no answer of the
+// broker's (a token answer the helper cannot keep, a save that failed) waits retry too.
 type retrySchedule struct {
 	retry, backoffStart, backoff time.Duration
 	unknown                      bool
@@ -1010,7 +1013,7 @@ type retrySchedule struct {
 
 func (s *retrySchedule) next(err error) time.Duration {
 	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || re.Response == nil || re.Response.StatusCode >= http.StatusInternalServerError {
+	if !errors.As(err, &re) || re.Response == nil || (oauthrefusal.Outage(re.Response.StatusCode) && re.Response.StatusCode != http.StatusTooManyRequests) {
 		s.unknown = true
 		return s.retry
 	}
@@ -1050,13 +1053,17 @@ func (s *retrySchedule) after(err error, nextRefresh func() time.Duration) time.
 }
 
 // redeem spends cred's refresh token for the rotated login: the machine file the broker's answer
-// names, or refusal, the broker's invalid_grant code, when it has ended the login (revoked, lapsed
-// or reused), or another error, logged, when the helper did not learn the outcome or cannot keep
-// the answer. The broker's 429 (its token endpoint's rate limit) is one of those: the login is
-// kept and retried after its Retry-After (retryAfter). An answer naming no new refresh token is
-// another: x/oauth2 copies the presented token into an answer without a refresh_token field, and
-// saving that would keep a token the broker may have rotated away, so the presented login is kept
-// and the refresh retried. The caller holds credMu.
+// names, or refusal, the broker's invalid_grant code in a 400 or 401 answer
+// (oauthrefusal.EndsGrant), when it has ended the login (revoked, lapsed or reused), or another
+// error, logged, when the helper did not learn the outcome or cannot keep the answer. A 5xx
+// naming invalid_grant is one of those, and so is the broker's 429 (its token endpoint's rate
+// limit): the login is kept and retried after its Retry-After (retryAfter). A refusal that ends no
+// grant - a 4xx with no OAuth error, another error, or invalid_grant at another status than 400 or
+// 401 - is the broker answering, not down (oauthrefusal.Outage): the login is kept and the
+// refresh backs off (retrySchedule). An answer naming no new refresh token is another: x/oauth2
+// copies the presented token into an answer without a refresh_token field, and saving that would
+// keep a token the broker may have rotated away, so the presented login is kept and the refresh
+// retried. The caller holds credMu.
 func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *MachineFile, refusal string, err error) {
 	tok, err := b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
 		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token()
@@ -1068,8 +1075,8 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 			b.logger().Warn("the broker rate-limited the machine login's refresh; retrying after its Retry-After",
 				"credential_id", cred.id, "retry_after", retryAfter(err), "error", err)
 			return nil, "", err
-		case errors.As(err, &re) && re.ErrorCode == "invalid_grant":
-			return nil, re.ErrorCode, err
+		case oauthrefusal.EndsGrant(err):
+			return nil, "invalid_grant", err
 		}
 		b.logger().Warn("the machine login's refresh did not reach the broker; retrying", "credential_id", cred.id, "error", err)
 		return nil, "", err
@@ -1296,6 +1303,9 @@ type enrollBody struct {
 	Thumbprint string  `json:"thumbprint"`
 	SessionID  *string `json:"session_id"`
 	PodToken   *string `json:"pod_token"`
+	// Projects are the Dispatch projects the session names; omitted for none, so a broker from
+	// before the field reads the body as it always did.
+	Projects []string `json:"projects,omitempty"`
 }
 
 type leaseReply struct {
@@ -1424,7 +1434,7 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 	if cur.SessionID != "" {
 		sessionID = &cur.SessionID
 	}
-	return b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, "host")
+	return b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, cur.Projects, "host")
 }
 
 // EnrollSessionKey registers a key the helper does not hold, one a launcher enrolls for a session
@@ -1432,8 +1442,8 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 // the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is Enroll: the
 // same fail-closed check when there is no machine credential yet, the same launcher proof, the
 // same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
-func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
-	return b.enroll(ctx, runtimeID, thumbprint, sessionID, "box")
+func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
+	return b.enroll(ctx, runtimeID, thumbprint, sessionID, projects, "box")
 }
 
 // enroll enrolls a key as kind session. A broker from before that kind (every release before
@@ -1441,11 +1451,11 @@ func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 // it once more with legacyKind, the kind that broker knew the enrollment by: host for the
 // helper's own sessions, box for a key a launcher brings. That retry goes once the production
 // broker records the session kind.
-func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, legacyKind string) (string, time.Time, error) {
-	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID)
+func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string, legacyKind string) (string, time.Time, error) {
+	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects)
 	var be *BrokerError
 	if errors.As(err, &be) && be.Status == http.StatusBadRequest && be.Code == "INVALID_KIND" {
-		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID)
+		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID, projects)
 	}
 	return id, lease, err
 }
@@ -1509,12 +1519,12 @@ func (b *Broker) enrolAuthority(ctx context.Context) (*cipherclient.Authority, *
 // (SignInAuthority.Refused) and chosen again, which trades afresh and settles on this machine's
 // own credential once the broker refuses the sign-in itself. So one enrolment is one answer,
 // and the session a launcher is waiting on enrols under the authority the box has now.
-func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
+func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
 	authority, cred, err := b.enrolAuthority(ctx)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID)
+	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 	if cred != nil || !isLauncherInvalid(err) {
 		return id, lease, err
 	}
@@ -1527,7 +1537,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
 		return "", time.Time{}, err
 	}
-	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID)
+	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 }
 
 // enrollUnder is that one request, signed with authority. An operator is stated only where the
@@ -1542,7 +1552,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 // too. A refusal the caller retries (a 401 LAUNCHER_INVALID, a 400 INVALID_KIND) is a 4xx and so
 // always known: an unknown outcome ends the op.
 func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Authority, cred *machineCredential,
-	kind, runtimeID, thumbprint string, sessionID *string,
+	kind, runtimeID, thumbprint string, sessionID *string, projects []string,
 ) (string, time.Time, error) {
 	url := b.URL.Raw() + "/v1/enrollments"
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, url, time.Now())
@@ -1553,7 +1563,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Author
 	if authority.Operator != "" {
 		operator = &authority.Operator
 	}
-	body, err := json.Marshal(enrollBody{Kind: kind, RuntimeID: runtimeID, Operator: operator, Thumbprint: thumbprint, SessionID: sessionID})
+	body, err := json.Marshal(enrollBody{Kind: kind, RuntimeID: runtimeID, Operator: operator, Thumbprint: thumbprint, SessionID: sessionID, Projects: projects})
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -1746,11 +1756,14 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
 // it came otherwise.
 //
-// A 4xx answer is known: the broker decides its refusals before it writes anything. Every other
-// failure of a request that was sent is unknown: a transport error after the write (a reset, a
-// timeout, the op's context ending at its bound), a 5xx (a front door's 502 or 504 can come after
-// the broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or
-// one that lacks what the caller needs). A failure of a request that was never sent in full is
+// A 4xx answer is known: the broker decides its refusals before it writes anything. So is the
+// broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode), which it answers when it cannot
+// learn whether Dispatch calls the login's person a restricted member, before it writes anything:
+// nothing was enrolled, and the same request made later is asked afresh. Every other failure of a
+// request that was sent is unknown: a transport error after the write (a reset, a timeout, the
+// op's context ending at its bound), any other 5xx (a front door's 502 or 504 can come after the
+// broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or one
+// that lacks what the caller needs). A failure of a request that was never sent in full is
 // known: a refused dial, a context that ended before the transport held a connection, a failed
 // write. So is a failure before any request: signing a proof, reading the operator file, a
 // sign-in's trade.
@@ -1769,7 +1782,7 @@ func (r *requestReach) settle(err error) error {
 		return nil
 	}
 	var be *BrokerError
-	if errors.As(err, &be) && be.Status >= 400 && be.Status < 500 {
+	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 || be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
 		return err
 	}
 	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
@@ -1778,6 +1791,12 @@ func (r *requestReach) settle(err error) error {
 	}
 	return err
 }
+
+// uncheckableCode is the code of the broker's own 503 for something it would do for a person
+// while it cannot learn whether Dispatch calls that person a restricted member
+// (projectaccess.UncheckableCode, spelled here as the helper reads it off the wire): it answers it
+// before it writes anything, so the outcome is known (settle).
+const uncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 
 // outcomeUnknownError marks the failure of a broker request whose outcome the helper does not
 // know (requestReach.settle). It reads as the failure it wraps and unwraps to it, so every caller

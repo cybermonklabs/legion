@@ -2,7 +2,6 @@ package roles
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -152,8 +151,11 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // Holder reads sessionID's record from the session bucket, whatever state that record is in:
 // judging it is Windows.EntryState's, so a record the bucket still holds past its maximum age is
 // answered here and judged by its own last registration. A key the bucket does not hold, one no
-// read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
-// record stands for the session. Any other error is a read that did not answer.
+// read may name (bus.ErrRefused), a value that does not decode and one that is not sessionID's
+// registration (session.DecodeEntry: another session's record copied under the key, a JetStream
+// answer) are nats.ErrKeyNotFound: no record stands for the session. A record an earlier build
+// wrote, naming no key, is read as sessionID's, as every listener but the edge reads it. Any
+// other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
 	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(ctx, bus.SessionBucket)
@@ -168,9 +170,9 @@ func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.Session
 	if err != nil {
 		return session.SessionEntry{}, err
 	}
-	var holder session.SessionEntry
-	if err := json.Unmarshal(entry.Value(), &holder); err != nil {
-		return session.SessionEntry{}, fmt.Errorf("%w: session %s does not decode: %w", nats.ErrKeyNotFound, sessionID, err)
+	holder, err := session.DecodeEntry(sessionID, entry.Value())
+	if err != nil {
+		return session.SessionEntry{}, fmt.Errorf("%w: session %s's record is not read as its registration: %w", nats.ErrKeyNotFound, sessionID, err)
 	}
 	return holder, nil
 }

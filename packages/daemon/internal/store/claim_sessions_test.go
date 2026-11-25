@@ -866,7 +866,7 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	// of claim_sessions are counted too: at most twice the names the claims record. The planner's
 	// choice is not asserted, since it follows the table's statistics; the plan is logged.
 	var kinds, recordedNamesOf []string
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		current, abandoned, _, err := recordedNames(ctx, tx, "legion")
 		for _, h := range sortedHolds(current, abandoned) {
 			kinds, recordedNamesOf = append(kinds, string(h.Kind)), append(recordedNamesOf, h.Name)

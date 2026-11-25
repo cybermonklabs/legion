@@ -21,8 +21,10 @@ import (
 // launcher container, and no session is on it — every session is a row in the session database the
 // deployment names (Options.SessionStore). The pod's feed is the volume's feedSubPath directory,
 // mounted at FeedDir: read-write in workspace-fetch, which mounts nothing else of the volume, and
-// read-only over the whole volume's mount in every other container. The clone owns its object-store
-// entries, and no agent writes what the token-holding container reads. No volume is ever carried
+// read-only over the whole volume's mount in every other container. The clone borrows the feed's
+// objects through its alternates (workspace's feedClone, `git clone --shared`) and reads them in
+// place on that read-only mount, holding only the objects it writes itself, and no agent writes
+// what the token-holding container reads. No volume is ever carried
 // over from an earlier release: an issue pod's disk is created with the pod and deleted with it
 // (INFRA-80), so every feed is one this pod's own workspace-fetch wrote, and the fetch's own check
 // of it (workspace.Fetch takes a feed only in the shape it writes), run before any git and in an
@@ -110,7 +112,18 @@ const (
 	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
 	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
 	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	// The controller's pod mounts the token at ControllerWorkloadIdentityDir instead where its
+	// launcher runs the single-role form, which has no roles directory.
 	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
+	// ControllerWorkloadIdentityDir is where the project controller's pod, run in a microVM whose
+	// deployment names the metadata endpoint, mounts that same projected token, read-only, at
+	// launcher.WorkloadIdentityTokenFile in it, where its launcher runs the single-role form: that
+	// launcher's fixed path under launcher.FixedRoot, as WorkloadIdentityDir is the roles
+	// launcher's under its roles directory (controllerPod.launcherContainer). That form has no
+	// role namespaces, so its agent can read the token. That gives the agent no identity it lacks:
+	// the endpoint its launcher serves it hands it access tokens of the same Workload Identity
+	// principal.
+	ControllerWorkloadIdentityDir = launcher.FixedRoot + "/" + launcher.WorkloadIdentityDirName
 	// SessionWriterDir is where a pod whose session database names a writer audience
 	// (ompsessions.Database.WriterAudience) mounts, read-only, the projected ServiceAccount token
 	// of that audience (sessionWriterTokenVolume), at launcher.SessionWriterTokenFile in it: the
@@ -357,11 +370,11 @@ const (
 	labelRole    = "legion.dev/role"
 )
 
-// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
-// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
-// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
-// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
-// from the sandbox the launch that builds it decided.
+// labelSandbox marks a microVM pod, an issue's or the project controller's, with the value
+// SandboxMicroVM; a gVisor pod carries none. It is the label a NetworkPolicy selects a microVM pod
+// by. It is on the pod template alone (podTemplate), and so on the pod, never on the Sandbox or its
+// Secrets: a Sandbox is kept across the pods it runs, which may run in either sandbox, while the
+// template is rebuilt for every pod from the sandbox the launch that builds it decided.
 const labelSandbox = "legion.dev/sandbox"
 
 // labelVolume marks the claim template of an issue's kept volume with the one value volumeKept:
@@ -410,15 +423,30 @@ const issueVolume = "issue"
 // it names no repository, which a label value cannot hold (`/`) and a DNS-safe form of it cannot
 // be read back from. The repository is the annotation annotationCacheRepo alone, exactly as GitHub
 // names it, on the Sandbox, its pod template and its Secret (cacheRepository). The sweep marks a
-// cache whose repository left the mapping with annotationCacheUnmappedAt. cacheVolume is a cache
-// Sandbox's one claim template and cacheContainer its pod's one container.
+// cache whose repository left the cache set (Options.CacheRepositories) with
+// annotationCacheUnusedAt. cacheVolume is a cache Sandbox's one claim template and cacheContainer
+// its pod's one container.
+//
+// annotationCacheOldUnusedAt is the annotation the sweep of a release before INFRA-4401 marked such
+// a cache with. The sweep reads it because INFRA-4401's A4 requires its first pass to take it off
+// every cache the sweep judges (sweepOldMarkedCache): a cache in the set loses it with the new one,
+// and one outside the set keeps the time of its first mark, the earlier of its marks that parse as
+// a time, retired at that pass when that mark is one retention old or more and otherwise marked
+// with that time under annotationCacheUnusedAt in the patch that removes it, so it retires one
+// retention after its first mark (one none of whose marks parses is marked with the time of that
+// pass instead). A cache the sweep cannot judge keeps it, and the next boot's census refuses that
+// cache by name, so once that first pass has run no cache a daemon boots beside carries it. The
+// literal goes in dispatch://INFRA-3532's pull request, once A4's first pass has run on every
+// daemon, with sweepOldMarkedCache, the one `if` of sweepCache that calls it, and its key in
+// markUnused's patch: that pass, which reads it, is why A8 keeps it until then.
 const (
-	labelCache                = "legion.dev/cache"
-	cacheMarker               = "true"
-	annotationCacheRepo       = "legion.dev/cache-repo"
-	annotationCacheUnmappedAt = "legion.dev/cache-unmapped-at"
-	cacheVolume               = "cache"
-	cacheContainer            = "cache"
+	labelCache                 = "legion.dev/cache"
+	cacheMarker                = "true"
+	annotationCacheRepo        = "legion.dev/cache-repo"
+	annotationCacheUnusedAt    = "legion.dev/cache-unused-at"
+	annotationCacheOldUnusedAt = "legion.dev/cache-unmapped-at"
+	cacheVolume                = "cache"
+	cacheContainer             = "cache"
 )
 
 // maxNameLength is a DNS-1123 label's length: a Sandbox name is also its pod's and, were one

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,7 +37,7 @@ const claudeSession = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 type claudeRig struct {
 	*rig
 	dsnFile    string
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	configDir  string
 	transcript string
 	record     string
@@ -114,12 +113,14 @@ func (c *claudeRig) row(path string) (string, bool) {
 	return string(content), ok
 }
 
-// awaitRow waits, past a few saves, for the table to hold want at path.
+// awaitRow waits for the table to hold want at path. The keeper saves every saveInterval, and no
+// case reads how many saves that takes, so the wait is for the row under the test's hang guard; a
+// database read a time, at a pace of its own.
 func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
 	var got string
 	var ok bool
-	if !testwait.Holds(4*saveInterval, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(c.t), 20*time.Millisecond, func() bool {
 		got, ok = c.row(path)
 		return ok && got == want
 	}) {
@@ -230,12 +231,11 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, c.transcript, "{\"n\":2}\n")
-	deadline := time.Now().Add(4 * saveInterval)
-	for !strings.Contains(c.stderr.String(), "stops saving "+c.transcript) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The keeper says so at its next save; when that comes is not the claim.
+	if !testwait.Holds(beforeDeadline(t), 20*time.Millisecond, func() bool {
+		return strings.Contains(c.stderr.String(), "stops saving "+c.transcript)
+	}) {
+		t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
 	}
 	c.stop(1)
 	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n"+other {
@@ -309,7 +309,18 @@ func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
 	pid := pidOf(t, pidFile)
 	marker := c.transcript + SavedMarkerSuffix
 	ctx := context.Background()
-	tx, err := c.conn.Begin(ctx)
+	// The lock is the test's own statement, on a connection of its own: the rig's is the package's
+	// Conn, on which no statement but the package's runs.
+	dsn, err := ompsessions.ReadDSN(c.dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locker, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = locker.Close(context.Background()) })
+	tx, err := locker.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +391,7 @@ func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testi
 // Under a session database of the pod's own the launcher keeps the session through its
 // generation's proxy socket, the one the child's URL file names in the agent's spelling.
 func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
-	dsn := testdb.Database(t, "legion_launcher_claude_proxy_test")
+	dsn := testdb.PlainDatabase(t, "legion_launcher_claude_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
 	file := filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")
@@ -401,16 +412,20 @@ func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
 const launcherProcessEnv = "LEGION_LAUNCHER_TEST_PROCESS"
 
 // TestLauncherProcess runs a launcher in a process of its own, so a test can kill it with
-// SIGKILL as a node does a pod's.
+// SIGKILL as a node does a pod's. Its stdin is a pipe only the test binary that started it holds
+// (processRig), so the end of that pipe, whether the binary returned, panicked at its deadline or
+// was killed, ends the launcher too: no launcher outlives its test to redial the next listener on
+// its port with a hello the daemon end takes.
 func TestLauncherProcess(t *testing.T) {
 	if os.Getenv(launcherProcessEnv) != "1" {
 		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer cancel()
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	err := Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 	})
 	if err != nil && ctx.Err() == nil {
 		t.Fatal(err)
@@ -420,19 +435,16 @@ func TestLauncherProcess(t *testing.T) {
 // processRig is a launcher in a process of its own, and kill its SIGKILL.
 func processRig(t *testing.T) (g *rig, kill func()) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(self, "-test.run=^TestLauncherProcess$")
+	command := exec.Command(self, reentry(t, "TestLauncherProcess")...)
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
+		"LEGION_LAUNCHER_TEST_PRIVATE="+private, "LEGION_LAUNCHER_TEST_TOKEN="+token)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe
 	// would hold the launcher's Wait open for as long as the child outlives the launcher.
 	output, err := os.Create(filepath.Join(t.TempDir(), "launcher.log"))
@@ -441,11 +453,19 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	t.Cleanup(func() { _ = output.Close() })
 	command.Stdout, command.Stderr = output, output
+	// The pipe stays open as long as this binary holds it, and Wait closes it (TestLauncherProcess).
+	if _, err := command.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
-	go func() { _ = command.Wait(); close(exited) }()
+	go func() {
+		err := command.Wait()
+		listener.codeReturned(err)
+		close(exited)
+	}()
 	kill = func() {
 		_ = command.Process.Signal(syscall.SIGKILL)
 		<-exited
@@ -539,7 +559,7 @@ const (
 type keeperRig struct {
 	t          *testing.T
 	k          *claudeKeeper
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	log        *lockedBuffer
 	transcript string
 	record     string
@@ -574,7 +594,7 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 
 // faulty is write meeting the rig's fault.
 func (c *keeperRig) faulty(write rowWrite) rowWrite {
-	return func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
+	return func(ctx context.Context, conn *ompsessions.Conn, path string, saved int64, content []byte, mtime time.Time) error {
 		fault := c.fault
 		c.fault = noFault
 		switch fault {
@@ -716,12 +736,12 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 // in the launcher, its container's PID 1, so it never waits on what a role put at their paths and
 // never reads more of them than it needs. A fifo where a resume restores the transcript, where a
 // save opens it, or at the transcript's .legion-saved marker (SavedMarkerSuffix), which a fresh
-// transcript's first save writes, is refused at once in words naming it and left a fifo, where a
-// plain open would wait for a writer (a reader, for the marker's write-only open) for as long as
-// none comes. A file longer than its row, here the row, one more line and a 64 MiB hole, is taken
-// as an extension of the row and left as it is, with no more of it read than one byte past the
-// row: the restore allocates a small fraction of what a read of the whole file would hold in
-// memory.
+// transcript's first save writes, is refused in words naming it and left a fifo (refusesFifo),
+// where a plain open would wait for a writer (a reader, for the marker's write-only open) for as
+// long as none comes. A file longer than its row, here the row, one more line and a 64 MiB hole,
+// is taken as an extension of the row and left as it is, with no more of it read than one byte
+// past the row: the restore allocates a small fraction of what a read of the whole file would
+// hold in memory.
 func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
 	ctx := context.Background()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
@@ -812,11 +832,11 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 }
 
 // refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
-// path (what names it in the failures), refuses it at once in words naming it and leaves it a
-// fifo. A call that has not answered in ten seconds, as a plain open of a fifo waits for a writer
-// (a write-only one for a reader), fails the test rather than hold its binary: the fifo is then
-// opened read-write, which releases either open, and the call is let end before the test's
-// directory is removed.
+// path (what names it in the failures), refuses it in words naming it and leaves it a fifo. The
+// verdict is that refusal, and its wait has no span of its own (testwait.Receive): a call that
+// waits on the fifo, as a plain open of one waits for a writer (a write-only one for a reader),
+// fails the test by name before the test binary's deadline, left blocked in that open, where it
+// touches nothing a later row uses.
 func refusesFifo(t *testing.T, path, what string, call func() error) {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
@@ -824,23 +844,7 @@ func refusesFifo(t *testing.T, path, what string, call func() error) {
 	}
 	answer := make(chan error, 1)
 	go func() { answer <- call() }()
-	var err error
-	select {
-	case err = <-answer:
-	case <-time.After(10 * time.Second):
-		t.Cleanup(func() {
-			// Read-write and without blocking, so this open needs no reader waiting on it.
-			if fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0); err == nil {
-				_ = syscall.Close(fd)
-			}
-			select {
-			case <-answer:
-			case <-time.After(10 * time.Second):
-				t.Errorf("%s still waits on %s after the fifo was opened", what, path)
-			}
-		})
-		t.Fatalf("%s has not answered in 10s: it waits on the fifo %s", what, path)
-	}
+	err := testwait.Receive(t, what+" over the fifo "+path, answer)
 	if want := path + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("%s answered %v, want a refusal saying %q", what, err, want)
 	}

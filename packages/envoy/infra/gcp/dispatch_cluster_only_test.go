@@ -170,6 +170,9 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
+		{"signInPasskey", func(a *gcp.DispatchArgs) { a.SignInPasskey = true }},
+		{"signInWorkspaceDomains", func(a *gcp.DispatchArgs) { a.SignInWorkspaceDomains = []string{"example.net"} }},
+		{"parentStatusRule", func(a *gcp.DispatchArgs) { a.ParentStatusRule = true }},
 		{"publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = dispatchPublicOrigin }},
 		{"iapAudience", func(a *gcp.DispatchArgs) { a.IapAudience = pulumi.String(dispatchIAPAudience) }},
 		{"loadBalancerSourceRanges", func(a *gcp.DispatchArgs) { a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges }},
@@ -184,10 +187,12 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "example-broker-audience" }},
 		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},
 		{"oidcIssuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = dispatchOidcIssuer }},
+		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},
 		{"appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = "private-key.b64" }},
+		{"verdictAppId", func(a *gcp.DispatchArgs) { a.VerdictAppId = pulumi.StringRef("5341240") }},
 		{"databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef("POSTGRES_18") }},
 		{"databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef("db-custom-4-15360") }},
 		{"databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("REGIONAL") }},
@@ -236,13 +241,15 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"chatEndpoint", func(a *gcp.DispatchArgs) { a.ChatEndpoint = pulumi.String(chatEndpointURL) }},
 		{"chatModel", func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }},
 		{"chatTokenSecret", func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }},
+		{"consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh" }},
+		{"replaceUnderHold", func(a *gcp.DispatchArgs) { a.ReplaceUnderHold = true }},
 	})
 }
 
 // Every input that configures Dispatch rather than the cluster is refused by name when it arrives
-// with clusterOnly, so a stack already running Dispatch cannot turn the mode on: such a stack sets
-// these inputs, and the update is refused before anything it would no longer build is deleted. The
-// resolver is what refuses, and it needs no engine.
+// with clusterOnly, as a core.InputError naming it, so a stack already running Dispatch cannot
+// turn the mode on: such a stack sets these inputs, and the update is refused before anything it
+// would no longer build is deleted. The resolver is what refuses, and it needs no engine.
 func TestDispatchClusterOnlyRefusesEveryDispatchInput(t *testing.T) {
 	for _, row := range dispatchClusterOnlyRefusals() {
 		t.Run(row.input, func(t *testing.T) {
@@ -250,6 +257,9 @@ func TestDispatchClusterOnlyRefusesEveryDispatchInput(t *testing.T) {
 			row.set(args)
 			_, err := gcp.ResolveDispatch(args)
 			require.EqualError(t, err, row.input+" configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly")
+			var refused *core.InputError
+			require.ErrorAs(t, err, &refused)
+			require.Equal(t, row.input, refused.Input)
 		})
 	}
 	// The same inputs unset, which is what a cluster-only consumer sends, resolve.

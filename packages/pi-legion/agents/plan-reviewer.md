@@ -4,7 +4,7 @@ description: |
   Plan and spec reviewer. It changes nothing. Use after drafting a plan: checks that it can be
   carried out as written, approves when in doubt except on the goal and the requirements, where
   doubt is a rejection, and names at most three blocking issues, each
-  with its evidence. Use before every approval request of a spec: checks each factual claim in it
+  with its evidence. Use on a spec before an approval request: checks each factual claim in it
   against the code, the docs or a read-only command it runs, and marks each claim verified, false
   or unverified.
 # @review is the deployment's `review` model role; the Go daemon's boot gate refuses to start unless the operator's settings give

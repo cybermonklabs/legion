@@ -11,7 +11,7 @@
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
 // NATS), the App tokens are placeholders, the project's providers Secret holds placeholders
 // (putLiveProvidersSecret), the shared public leak check is read from a stand-in GitHub in this
-// process (serveLiveLeakCheck), and no repository is mapped.
+// process (serveLiveLeakCheck), and no record names a repository.
 package daemon
 
 import (

@@ -35,9 +35,7 @@
   },
   "capabilities": [],
   "repositories": {
-    "owners": [],
-    "mapped": [],
-    "refused": [],
+    "live": [],
     "withoutWebhookApp": [],
     "caches": []
   },
@@ -107,5 +105,9 @@
       }
     ]
   },
-  "consumers": []
+  "consumers": [],
+  "intakeGiveUps": {
+    "consumers": [],
+    "newest": []
+  }
 }

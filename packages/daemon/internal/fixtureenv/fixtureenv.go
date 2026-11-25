@@ -107,18 +107,17 @@ var unguarded []string
 // names in keep, takes every directory of Legion's image wrappers out of its PATH
 // (withoutImageWrappers), and sets GIT_ALLOW_PROTOCOL=file. The PATH is the process's own because
 // exec.Command and exec.LookPath look a bare name up on it, whatever PATH a command's Env holds:
-// a fixture's `git push` under Isolated, and a test's exec.LookPath("jj") for the real jj, find
-// the first git or jj of the process's PATH. Guard then puts first on that PATH a directory of
-// links to the git and jj the PATH's own git and jj run (realTools), so neither a fixture under
-// Isolated nor the code under test, which looks each up by name, meets a machine's wrapper of
-// them. A package whose tests run git or jj — as child processes, with no Env of their own, or
-// in-process through the code under test — calls it in TestMain before m.Run, after the branch
-// where the test binary runs as a helper child: that child keeps the variables its test hands it.
-// Code under test that names its own transport (workspace's GIT_ALLOW_PROTOCOL=https) still does;
-// a git that names none can reach no network remote. Guard does the same in every build, the e2e
-// one included, whose untagged tests are the same fixtures; a live proof of that build, which
-// reaches a real cluster and GitHub on purpose, takes the process's own environment back for its
-// own run with Live.
+// a fixture's `git push` under Isolated, and a test's fixturegit.CompiledJJ for the real jj, read
+// the process's PATH. Guard then puts first on that PATH a directory of links to the git and jj
+// the PATH's own git and jj run (realTools), so neither a fixture under Isolated nor the code under
+// test, which looks each up by name, meets a machine's wrapper of them. A package whose tests run
+// git or jj — as child processes, with no Env of their own, or in-process through the code under
+// test — calls it in TestMain before m.Run, after the branch where the test binary runs as a helper
+// child: that child keeps the variables its test hands it. Code under test that names its own
+// transport (workspace's GIT_ALLOW_PROTOCOL=https) still does; a git that names none can reach no
+// network remote. Guard does the same in every build, the e2e one included, whose untagged tests
+// are the same fixtures; a live proof of that build, which reaches a real cluster and GitHub on
+// purpose, takes the process's own environment back for its own run with Live.
 func Guard(keep ...string) error {
 	first := guardedKeep == nil
 	for _, entry := range os.Environ() {

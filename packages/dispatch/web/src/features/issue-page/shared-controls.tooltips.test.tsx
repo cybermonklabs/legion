@@ -210,7 +210,7 @@ interface Stubs {
   readonly listIssues: Mock<typeof api.listIssues>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
   readonly listProjectArchitectureSources: Mock<typeof api.listProjectArchitectureSources>;
-  readonly listRepoProjects: Mock<typeof api.listRepoProjects>;
+  readonly listProjects: Mock<typeof api.listProjects>;
   readonly listUsers: Mock<typeof api.listUsers>;
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
@@ -235,7 +235,7 @@ beforeEach(() => {
     listIssues: spyOn(api, "listIssues"),
     listPriorities: spyOn(api, "listPriorities"),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources"),
-    listRepoProjects: spyOn(api, "listRepoProjects"),
+    listProjects: spyOn(api, "listProjects"),
     listUsers: spyOn(api, "listUsers"),
     putDocumentRead: spyOn(api, "putDocumentRead"),
     whoAmI: spyOn(api, "whoAmI"),
@@ -313,7 +313,7 @@ function answerDefaults(): void {
   stubs.listIssues.mockResolvedValue([]);
   stubs.listPriorities.mockResolvedValue(priorities);
   stubs.listProjectArchitectureSources.mockResolvedValue([]);
-  stubs.listRepoProjects.mockResolvedValue([]);
+  stubs.listProjects.mockResolvedValue([]);
   stubs.listUsers.mockResolvedValue([]);
   stubs.putDocumentRead.mockImplementation(async (id, version) => ({
     artifact_id: id,
@@ -691,13 +691,7 @@ const MOUNTS: readonly Mount[] = [
         issue={{ advances: [], advances_revision: 1, key: "CORE-1" }}
       />
     ),
-    settle: async (view, user) => {
-      await user.click(
-        within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
-      );
-      await within(view.container).findByRole("combobox", { name: "Priority to advance" });
-      await settleReads();
-    },
+    settle: pressing(CONTROL_LABELS.edit_priorities),
   },
   {
     name: "IssuePriorityLine, in a row of Details",
@@ -1196,23 +1190,24 @@ const priorityLineLoading: Mount = {
   },
   settle: async (view, user) => {
     await user.click(
-      within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
+      within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
     );
-    await within(view.container).findByRole("combobox", { name: "Priority to advance" });
+    await within(view.baseElement).findByText(ANSWER_LINES.loading_priorities);
   },
 };
 
 const repoNothingResolved: Mount = {
-  name: "RepoControl, nothing resolved in a project that maps a repository",
+  name: "RepoControl, nothing resolved in a project with a default repository",
   node: () => {
-    stubs.listRepoProjects.mockResolvedValue([
+    stubs.listProjects.mockResolvedValue([
       {
         created_at: "2026-10-01T00:00:00Z",
-        created_by: { id: "alice", kind: "user" },
-        default: true,
-        project: "CORE",
-        renamed_to: null,
-        repo: "acme/api",
+        default_repo: "acme/api",
+        gated_steps: [],
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+        proven_sessions: false,
       },
     ]);
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
@@ -1464,23 +1459,21 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Add a reason to send Request changes",
     ],
   ],
+  // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
+  // whole title as its `title`, and says so of one inherited from an issue above; while the
+  // picker is open its options carry theirs, as `MultiSelect` draws them.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
     [
-      "P2 Rocq and Lean speed work restarted",
-      "P1 Evals collecting data now",
-      "Add a priority to CORE-1",
+      "Rocq and Lean speed work restarted",
+      "Evals collecting data now, inherited from an issue above",
     ],
   ],
-  [mountNamed("IssuePriorityLine, adding a priority"), []],
   [
-    mountNamed("IssuePriorityLine, in a row of Details"),
-    [
-      "P2 Rocq and Lean speed work restarted",
-      "Add a priority to CORE-1",
-      "Add a priority to CORE-2",
-    ],
+    mountNamed("IssuePriorityLine, adding a priority"),
+    ["#1 Evals collecting data now", "#2 Rocq and Lean speed work restarted"],
   ],
+  [mountNamed("IssuePriorityLine, in a row of Details"), ["Rocq and Lean speed work restarted"]],
   [priorityLineAtCap, PRIORITIES_AT_CAP],
   [priorityLineLoading, []],
   [
@@ -1898,6 +1891,13 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
       />
     ),
     values: [LONG.label],
+  }),
+  // The priorities' picker, open, draws each priority's title in its options, which no mark finds.
+  withLongValues(mountNamed("IssuePriorityLine, adding a priority"), {
+    values: [
+      "Evals collecting data now-under-a-title-that-runs-on-past-its-row",
+      "Rocq and Lean speed work restarted-under-a-title-that-runs-on-past-its-row",
+    ],
   }),
   withLongValues(labelsEmptyAndSaving, {
     node: () => (
@@ -2733,9 +2733,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
         expect(description).toBeNull();
       }
 
-      // The focus starts the mappings' read, which lands before the refusal is read.
       await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-      await settleReads();
       const refusal = scope.getByRole("alert");
       expect(refusal.textContent).toBe("Write the repository as owner/name.");
       if (surface === "inside") {
@@ -2952,45 +2950,38 @@ test("inside NoTooltips the words come from the page's word list and carry their
     (view) => {
       expectMarks(view.container, [
         [PROPERTY_LABELS.advances, "page-chrome"],
-        ["P2 Rocq and Lean speed work restarted", "author-text"],
-        ["P1 Evals collecting data now", "author-text"],
+        ["#2 Rocq and Lean speed work restarted", "author-text"],
+        ["#1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
         ["+", "page-chrome"],
       ]);
-      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
-      // name.
-      const remove = within(view.container).getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
-      });
-      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
     // A row of Details draws the label, so the line draws none of its own.
     expectMarks(view.container, [
       [CONTROL_LABELS.add_priority, "page-chrome"],
-      ["P2 Rocq and Lean speed work restarted", "author-text"],
+      ["#2 Rocq and Lean speed work restarted", "author-text"],
     ]);
     expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toHaveLength(0);
+    // The trigger of an issue that advances none is named by the words it draws, then the word
+    // list's joining word and the issue's key (WCAG 2.5.3).
+    const add = within(view.container).getByRole("button", {
+      name: `${CONTROL_LABELS.add_priority} ${CONTROL_LABELS.control_name_to} CORE-2`,
+    });
+    expect(add.textContent).toBe(CONTROL_LABELS.add_priority);
   });
   await readDrawn(mountNamed("IssuePriorityLine, adding a priority"), "inside", (view) => {
-    expectMarks(view.container, [
-      [CONTROL_LABELS.priority_to_advance, "page-chrome"],
-      [CONTROL_LABELS.add, "page-chrome"],
-      [CONTROL_LABELS.cancel, "page-chrome"],
-    ]);
+    expectMarks(view.container, [["+", "page-chrome"]]);
     expect(
-      within(view.container).getByRole("option", { name: CONTROL_LABELS.choose_priority })
+      within(view.baseElement).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
     ).toBeTruthy();
   });
   await readDrawn(priorityLineLoading, "inside", (view) => {
-    expect(
-      within(view.container).getByRole("option", { name: ANSWER_LINES.loading_priorities })
-    ).toBeTruthy();
+    expect(within(view.baseElement).getByText(ANSWER_LINES.loading_priorities)).toBeTruthy();
   });
   await readDrawn(priorityLineAtCap, "inside", (view) => {
     expectMarks(view.container, [
-      [STATE_LINES.advances_at_cap, "page-chrome"],
       [ANSWER_LINES.priorities_unreadable, "page-chrome"],
       ["priority-1", "author-text"],
     ]);
@@ -3014,7 +3005,13 @@ test("inside NoTooltips the words come from the page's word list and carry their
     },
     settle: async (view, user) => {
       await within(view.container).findByRole("link", { name: /Rocq and Lean/ });
-      await user.click(within(view.container).getByRole("button", { name: /^Remove / }));
+      await user.click(
+        within(view.container).getByRole("button", { name: CONTROL_LABELS.edit_priorities })
+      );
+      await user.click(
+        await within(view.baseElement).findByRole("option", { name: /Rocq and Lean/ })
+      );
+      await user.keyboard("{Escape}");
       await within(view.container).findByRole("alert");
     },
   };

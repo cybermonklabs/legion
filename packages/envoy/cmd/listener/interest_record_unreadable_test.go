@@ -35,6 +35,7 @@ import (
 // builds its row without it. The negative control is a second session with a readable record on
 // the same rig, served 200 with its topics.
 func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.T) {
+	t.Parallel()
 	const (
 		readable   = "ses_interest_record_readable"
 		unreadable = "ses_interest_record_unreadable"
@@ -105,9 +106,9 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 		path    string
 		handler http.HandlerFunc
 	}{
-		{"/v1/sessions", sessionsHandler(registry, sessions)},
+		{"/v1/sessions", sessionsHandler(registry, sessions, nil)},
 		{"/v1/registry/" + unreadable, sessionEntryHandler(state)},
-		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, logging.New("test"))},
+		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))},
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			recorder := get(route.handler, route.path)

@@ -76,8 +76,8 @@ var burstableLiveCases = []struct {
 // writeBurstableLiveConfig writes the case's legion.yaml, and the token files it names, under
 // dir: the worker stream bound at streamHost, the worker image, the cluster as kubeconfig's
 // kubeContext, and extra appended to its runtime.kubernetes block (a `resources` block here, the
-// share proof's `pod` block in share_volumes_kind_test.go). Its project maps no repository in the
-// file, which the loader refuses; the repository the proof launches on is the runtime's mapping
+// share proof's `pod` block in share_volumes_kind_test.go). Its project names no repository in the
+// file, which the loader refuses; the repository the proof launches on is the runtime's cache set
 // (burstableLiveRuntime). The hosts no stub dials are documentation placeholders.
 func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, extra string) string {
 	t.Helper()
@@ -127,14 +127,14 @@ runtime:
 // sandboxOptions over the loaded configuration on the cluster client rc and the worker stream
 // listener, with the proof's stand-ins: the store answers as the daemon's does for an issue's
 // first launch, the provisioning token is one a public repository never needs, every role's gh
-// files hold a placeholder token, the agent is a sleep stub, the mapping names
-// burstableLiveRepository alone, so the repository cache an issue pod's launch makes is that
-// repository's, and the shared public leak check is the stand-in setting's (liveLeakCheckSetting),
-// read by boot's own reader (leakCheckSource) through the stand-in App outboxTokens under
-// leakCheckAPI (serveLiveLeakCheck). It returns the options the runtime was built from, which hold
-// the issue pod's reservation as sandboxOptions translated it and the runtime's reader of the leak
-// check.
-func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, leakCheckAPI string, log *slog.Logger) (*sandbox.Runtime, sandbox.Options, error) {
+// files hold a placeholder token, the agent is a sleep stub, the cache set names cache alone, the
+// public repository the proof launches on, so the repository cache an issue pod's launch makes is
+// that repository's, and the shared public leak check is the stand-in setting's
+// (liveLeakCheckSetting), read by boot's own reader (leakCheckSource) through the stand-in App
+// outboxTokens under leakCheckAPI (serveLiveLeakCheck). It returns the options the runtime was
+// built from, which hold the issue pod's reservation as sandboxOptions translated it and the
+// runtime's reader of the leak check.
+func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, leakCheckAPI string, log *slog.Logger, cache ghrepo.Repository) (*sandbox.Runtime, sandbox.Options, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -143,7 +143,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	if cfg.LeakCheck, err = liveLeakCheckSetting(); err != nil {
 		return nil, sandbox.Options{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
+	opts, err := sandboxOptions(cfg, k, project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), log)
 	if err != nil {
 		return nil, sandbox.Options{}, fmt.Errorf("sandboxOptions: %w", err)
 	}
@@ -156,10 +156,10 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	}
 	// The controller's own bundle, which its launch and its refresh both ask for by owner
 	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the review App's, over
-	// the proof's one owner, since the project serves burstableLiveRepository alone.
+	// the proof's one owner, since the project serves cache alone.
 	opts.ControllerCredential = func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_placeholder", string(appauth.Review), time.Now().Add(time.Hour))
-		owner := strings.ToLower(burstableLiveRepository.Owner())
+		owner := strings.ToLower(cache.Owner())
 		if defaultOwner != "" {
 			owner = defaultOwner
 		}
@@ -169,7 +169,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	// serves none of its own: every pod it makes projects what it was launched with, and no pod
 	// has drifted from a directory the daemon serves (sandbox's movedGhDirs).
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
-	opts.Mapped = func() []ghrepo.Repository { return []ghrepo.Repository{burstableLiveRepository} }
+	opts.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{cache} }
 	opts.Agent = burstableLiveStub
 	// Each pod's launcher is pushed the check before any role of the pod starts, and a launch
 	// whose launcher names the image's pin is refused without a reader (launchers.serveLeakCheck).
@@ -261,7 +261,7 @@ func liveProvidersSecret(cfg config.Config, log *slog.Logger) (*corev1.Secret, e
 	if err != nil {
 		return nil, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
+	opts, err := sandboxOptions(cfg, k, project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), log)
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
@@ -302,10 +302,16 @@ func requireLiveProvidersSecret(t *testing.T, cfg config.Config) {
 // burstableLiveSpec is the root architect's launch of issue as the proof makes it, on
 // burstableLiveRepository, with prompt as its role prompt.
 func burstableLiveSpec(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec {
+	return liveRootSpec(project, issue, token, bootToken, prompt, burstableLiveRepository, "master")
+}
+
+// liveRootSpec is the root architect's launch of issue on repo, whose default branch is
+// defaultBranch, with prompt as its role prompt: burstableLiveSpec on another public repository.
+func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt string, repo ghrepo.Repository, defaultBranch string) runtime.SpawnSpec {
 	return runtime.SpawnSpec{
 		Claim: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1, BootToken: bootToken,
 		Secrets: map[string]string{"ENVOY_TOKEN": "placeholder-envoy-token"},
-		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: burstableLiveRepository, DefaultBranch: "master",
+		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: repo, DefaultBranch: defaultBranch,
 	}
 }
 
@@ -342,6 +348,7 @@ func (publicCloneTokens) Token(context.Context, ghrepo.Repository) (string, erro
 // launcher installs, and each case's root launch passes the spawn-spec checks. Every step is the
 // one the driver takes before it reaches the cluster.
 func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })
@@ -364,7 +371,7 @@ func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger())
+			_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), burstableLiveRepository)
 			if err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}

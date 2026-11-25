@@ -81,6 +81,7 @@ func shareLivePod(claimName, server, exportPath string) config.PodConfig {
 // and the launch passes the spawn-spec checks. Every step is the one the driver takes before it
 // reaches the cluster.
 func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })
@@ -113,7 +114,7 @@ func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger())
+			_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), burstableLiveRepository)
 			if err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}

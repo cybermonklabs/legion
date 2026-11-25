@@ -11,7 +11,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -20,6 +20,9 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
+	// routes are the relays of the members' route ports, member i's at i, which FreezeRoutes
+	// freezes to hold every message between the members.
+	routes []*relay
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -46,12 +49,23 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
+	cluster := startCluster(t, n, config)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay listening on
+// a loopback address of its own (testport.ListenLoopback), and returns without waiting for
+// JetStream.
+func startCluster(t testing.TB, n int, config string) *Cluster {
+	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
 	}
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
+	relays := make([]*relay, n)
 	for i := range n {
 		listener, err := testport.ListenLoopback()
 		if err != nil {
@@ -68,15 +82,15 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 			return server.clusterAddress()
 		}, false)
 		t.Cleanup(routeRelay.Close)
+		relays[i] = routeRelay
 	}
-	cluster := &Cluster{Servers: make([]*Server, n)}
+	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
 		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
@@ -105,6 +119,25 @@ func memberName(i int) string { return fmt.Sprintf("n%d", i+1) }
 // Name is member i's server_name (Server.Name).
 func (c *Cluster) Name(i int) string { return c.Servers[i].Name() }
 
+// FreezeRoutes stops the members' routes moving bytes, in either direction, and returns the func
+// that thaws them, which runs once however often it is called. Every route keeps its connection,
+// as Server.Freeze keeps a client's: no member hears another until the thaw, so a replicated
+// stream's leader takes a publish its own clients send it and cannot store it, since no follower
+// hears the proposal, and a second publish under the same message id meanwhile is refused as
+// still in process (nats-server's JSStreamDuplicateMessageConflict).
+func (c *Cluster) FreezeRoutes(t testing.TB) func() {
+	t.Helper()
+	thaws := make([]func(), len(c.routes))
+	for i, route := range c.routes {
+		thaws[i] = route.freeze()
+	}
+	return func() {
+		for _, thaw := range thaws {
+			thaw()
+		}
+	}
+}
+
 // Member is the index of the member whose server_name is name, or -1 when none has it.
 func (c *Cluster) Member(name string) int {
 	for i := range c.Servers {
@@ -130,13 +163,14 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member. A test calls it
-// after it starts a stopped member again, or after it stops one, before it asks JetStream for
-// anything that needs the meta group.
+// with it, and JetStream answers an account info request on every running member, for as long as
+// the test may run (testDeadline): a cluster's JetStream start on a loaded machine can take longer
+// than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
+// stops one, before it asks JetStream for anything that needs the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
-// most muteRestarts times in one call. Each restart starts the listening, and the connectTimeout
-// wait, over for every member, since a restarted member has heard no one yet.
+// most muteRestarts times in one call. Each restart starts the listening over for every member,
+// since a restarted member has heard no one yet.
 //
 // nats-server 2.10.29, the server these tests linked before v2.15.1, could start a member whose
 // every Raft message is dropped: its setSystemAccount started the Raft send queue's goroutine
@@ -152,13 +186,27 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			Connect(t, server.URL()).Close()
+		}
+	}
+}
+
+// awaitMeta is AwaitReady's wait for the meta group alone, restarting a mute member as AwaitReady
+// says, without the account info request on each member, which a client with no credential
+// cannot send to a member with an auth callout (StartClusterWithCallout).
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
+	bound := boundOf(t)
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -170,15 +218,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 				continue
 			}
 		}
-		if time.Since(listening) >= connectTimeout {
-			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
+		if bound.over() {
+			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
-		time.Sleep(retryInterval)
-	}
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
+		bound.pause()
 	}
 }
 

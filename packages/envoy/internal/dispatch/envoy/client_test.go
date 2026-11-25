@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
-	"github.com/sjawhar/envoy/testport"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -63,7 +63,10 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 // LEGION-271. The listener answers a send JetStream already held with duplicate: true: the stream
 // stored nothing new, and the publish still reached the agent's subject. That flag is the only
 // thing telling Dispatch its retry was a repeat. An older listener omits the field, which reads as
-// false.
+// false. Dispatch names the key-taken answer as one it reads (listenerwire.ReadsHeader), so a
+// copy it cannot prove its own, as every copy that names no session is, is answered with that
+// copy's ids alone and its other string fields empty, which it reads as a duplicate too. The
+// stand-in answers that shape only to a send naming the header.
 func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -72,8 +75,11 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode send: %v", err)
 		}
+		if got := r.Header.Get(listenerwire.ReadsHeader); got != listenerwire.ReadsKeyTaken {
+			t.Errorf("the send named %s %q, want %q", listenerwire.ReadsHeader, got, listenerwire.ReadsKeyTaken)
+		}
 		if request.IdempotencyKey == "already-held:steer" {
-			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","duplicate":true}`))
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","source":"","source_event_id":"","topic":"notifications.agent.s1","dedupe_key":"agent-send:s1:already-held:steer","issued_at":1795000000000,"payload_summary":"","trace_id":"","recipient":"s1","duplicate":true}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"event_id":"envelope-2","recipient":"s1"}`))
@@ -502,9 +508,10 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 }
 
 // A listener that is starting answers every /v1 route 503 with a JSON reason ("service starting",
-// cmd/listener/main.go's startingGate), and a gateway in front of one that is gone answers 502 or
-// 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask again" -
-// whatever body they carry, and the error keeps the listener's reason because a person reads it.
+// cmd/listener/starting_gate.go's startingGate), and a gateway in front of one that is gone answers
+// 502 or 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask
+// again" - whatever body they carry, and the error keeps the listener's reason because a person
+// reads it.
 // A 4xx is the listener's answer, never unavailable: that is the discriminating control.
 func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) error{

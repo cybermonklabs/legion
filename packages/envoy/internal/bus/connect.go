@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -76,9 +78,38 @@ func detectSilentCuts(o *nats.Options) error {
 	return nil
 }
 
-// reconnectJitterImmediate is the jitter WithImmediateReconnect leaves between two clients'
-// retries, in place of the second every other connection waits.
-const reconnectJitterImmediate = 50 * time.Millisecond
+// The waits of WithPromptReconnect (promptRedialWait): the first redial of an outage is at once
+// but for promptRedialJitter, which keeps two replicas from dialling in the same instant; each
+// later wait is drawn anew between half and all of a bound that starts at promptRedialBase and
+// doubles with each redial up to promptRedialCap.
+const (
+	promptRedialJitter = 50 * time.Millisecond
+	promptRedialBase   = 250 * time.Millisecond
+	promptRedialCap    = 2 * time.Second
+)
+
+// promptRedialWait is a connection's wait, made WithPromptReconnect, in the pass'th round of an
+// outage's dials over the servers of its pool. It is the connection's CustomReconnectDelayCB:
+// nats.go calls it once each round, with the round's number counted from 1 again in each outage,
+// so the waits start over at every connect (nats.go v1.55.0 doReconnect, :3413 and :3480-3528).
+// With one server it is the wait before each redial; a pool of n servers is dialled n times for
+// each wait. draw returns a number in [0, n) uniformly: rand.Int64N, or a test's own.
+func promptRedialWait(pass int, draw func(n int64) int64) time.Duration {
+	if pass <= 1 {
+		return time.Duration(draw(int64(promptRedialJitter)))
+	}
+	bound := promptRedialBase
+	for round := 2; round < pass && bound < promptRedialCap; round++ {
+		bound = min(bound*2, promptRedialCap)
+	}
+	return bound/2 + time.Duration(draw(int64(bound/2)))
+}
+
+// promptRedial is the nats.Option WithPromptReconnect adds to every connection of a client.
+func promptRedial(o *nats.Options) error {
+	o.CustomReconnectDelayCB = func(pass int) time.Duration { return promptRedialWait(pass, rand.Int64N) }
+	return nil
+}
 
 // allOf applies each option that is not nil, in order.
 func allOf(options ...nats.Option) nats.Option {
@@ -105,9 +136,10 @@ func allOf(options ...nats.Option) nats.Option {
 //
 // A refusal of the credential (authorizationRefusal) is logged at ERROR, at most once per
 // reconnectErrEvery of refusals: a refusal that lasts is a grant someone has to fix, and nats.go
-// retries it about once a second. Once the connection has connected, nats.go reports each refusal
-// to the async error callback, which takes the line here in place of its own; before then it
-// reports none, and reportRefusalsUntilConnected logs them on the same throttle.
+// retries it about once a second (every 1 to 2 s at WithPromptReconnect's cap, promptRedialWait).
+// Once the connection has connected, nats.go reports each refusal to the async error callback,
+// which takes the line here in place of its own; before then it reports none, and
+// reportRefusalsUntilConnected logs them on the same throttle.
 func connectInBackground(name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
 	return func(o *nats.Options) error {
 		o.RetryOnFailedConnect = true
@@ -224,6 +256,15 @@ func handshaking(nc *nats.Conn) bool {
 	return status == nats.CONNECTING || status == nats.RECONNECTING
 }
 
+// handshakeReadFailed says whether err is how a read of a connection fails: the peer closed it
+// (io.EOF, io.ErrUnexpectedEOF), or the read itself failed (a *net.OpError, which nats.go's read
+// returns for a reset connection and for one that passed its deadline). An error the handshake
+// builds itself, such as a credentials callback's (nats.go's connectProto), is neither.
+func handshakeReadFailed(err error) bool {
+	var readErr *net.OpError
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &readErr)
+}
+
 // serverList is urls as a log line names them: comma-separated, each without its userinfo
 // (natsURLWithoutUserinfo).
 func serverList(urls []string) string {
@@ -243,15 +284,17 @@ func serverList(urls []string) string {
 // watcher never ends on its own and only this callback says its cache stopped following the
 // bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
-// not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
+// not classify. Those two are why onClosed still starts a recovery that dials a replacement. It
+// logs the close and then hands closedCB the connection that closed, so the client can tell which
+// of its connections' closes it has handled (closeHandled). The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
 // while reconnecting waits for the reconnect instead (ensureConnWithContext), and a publish that
 // fails was not sent. AsyncErrorCB logs each error the connection reports on its own and then
 // hands it to asyncErrCB, where the client reads the server's refusal of its core subscription
 // (onAsyncError).
-func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
+func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
-	// options is rebuilt for every dial attempt in connectWithContext's loop and only the attempt
+	// options is rebuilt for every dial attempt in connectTrying's loop and only the attempt
 	// that connects leaves its closures on the *nats.Conn, so one live connection has exactly one
 	// throttle and a second client's first failure is never swallowed by this one's minute.
 	throttle := newReconnectErrThrottle(now)
@@ -284,7 +327,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
 	// URL's userinfo, a token or a user and password, when the URL carries one. The NATS credential
 	// never reaches a line: options never sees it, since credential is applied to the options
-	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer, or a
+	// value afterwards (connect.go, connectTrying) and holds a public key and a signer, or a
 	// token reader, only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
@@ -315,23 +358,24 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// A connection that connects only after failing to (connectInBackground) reports its first
 	// connection here rather than as a reconnect, and that ends its outage as a reconnect does.
 	opts.ConnectedCB = func(*nats.Conn) { throttle.reset() }
-	opts.ClosedCB = func(_ *nats.Conn) {
+	opts.ClosedCB = func(nc *nats.Conn) {
 		slog.Info("envoy nats connection closed", slog.String("name", name))
 		if closedCB != nil {
-			closedCB()
+			closedCB(nc)
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
-		if sub == nil && errors.Is(err, io.EOF) && handshaking(nc) {
-			// A server that closes the connection during a reconnect's CONNECT and PING handshake
-			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
-			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
-			// It is a failed reconnect attempt, so it is logged as one, on the same
-			// throttle. Only that report is: the connection is still in that handshake
-			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
-			// and every other async error, an EOF on a connected connection included, stays an
-			// ERROR.
+		if sub == nil && handshakeReadFailed(err) && handshaking(nc) {
+			// A reconnect's CONNECT and PING handshake whose reply the client cannot read - a
+			// server that closes the connection (a server restarting, or one that accepted the dial
+			// as it shut down), resets it, or does not answer within the handshake's deadline -
+			// makes nats.go's sendConnect report the read's error here, and nowhere else: the
+			// reconnect loop then tries again without calling ReconnectErrCB (nats.go v1.55.0
+			// sendConnect, processConnectInit and doReconnect). It is a failed reconnect attempt,
+			// so it is logged as one, on the same throttle. Only that report is: the connection is
+			// still in that handshake (CONNECTING) or waiting for the next attempt (RECONNECTING)
+			// when the callback runs, and every other async error, the same read error on a
+			// connected connection included, stays an ERROR.
 			reconnectAttemptFailed(err)
 			if asyncErrCB != nil {
 				asyncErrCB(nc, err)
@@ -360,20 +404,34 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	return opts
 }
 
-// connectTimeout bounds each dial of a NATS server and its handshake: nats.go's own for a direct
-// dial (options), the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy). A connect with a
-// deadline cuts either to what remains of it.
+// connectTimeout bounds each dial of a NATS server and its handshake: the bus's direct dialer's for
+// a direct dial, the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy), and nats.go's own
+// for the handshake (options). A connect with a deadline cuts each to what remains of it.
 const connectTimeout = 5 * time.Second
 
-func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+// connectTries is how many times a connect dials before it ends with the last dial's error, and
+// connectRetryWait the wait between two of its dials: a server that is restarting, or a network
+// that dropped a dial, answers within them, and a start that ends after them is restarted by
+// whatever runs the process. A start with WithCredentialWait holds the tries of its own that fail
+// other than by a refusal of the credential to the same two (waitOutCredentialRefusals).
+const (
+	connectTries     = 10
+	connectRetryWait = time.Second
+)
+
+func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectWithContext(context.Background(), name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
 }
 
 // connectWithContext dials urls with envoy's options, then settings when it is not nil: the NATS
 // credential the environment names (credential), and what the client's options add (connectOpts.connectionSettings,
-// connectInBackground). When dialer is not nil it dials through the SOCKS5 proxy it names
-// (socks5Proxy): every connection then, the first and each one nats.go dials to reconnect, goes
-// through the proxy, handed the server's host name as the URL spells it.
+// connectInBackground). Every connection dials through a severableDialer of its own, so Sever can
+// end it. When dialer is not nil it dials through the SOCKS5 proxy it names (socks5Proxy): every
+// connection then, the first and each one nats.go dials to reconnect, goes through the proxy,
+// handed the server's host name as the URL spells it. It dials up to connectTries times, waiting
+// connectRetryWait after each dial that fails, the last one included, whatever each dial failed
+// on, a refusal of the credential included, and returns the first connection that connects
+// (connectTrying).
 //
 // A connect through a proxy that fails names the setting and the proxy, whatever failed: its ten
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
@@ -381,7 +439,17 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
 // or a DNS name.
-func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
+func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+	return connectTrying(ctx, connectTries, connectRetryWait, name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
+}
+
+// connectTrying is connectWithContext dialling up to tries times in place of connectTries, and
+// waiting wait after each dial that fails, the last one included, in place of connectRetryWait:
+// every connect but one dials connectTries times connectRetryWait apart and ends that long after
+// its last failed dial, as it always has. The one is a try of a start that waits out refusals of
+// its credential, which dials once with no wait (tries 1, wait 0) and waits between its tries
+// itself (waitOutCredentialRefusals).
+func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
 			if err != nil {
@@ -390,7 +458,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 		}()
 	}
 	var lastErr error
-	for range 10 {
+	for range tries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -415,12 +483,18 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 				attemptDialer = dialer.bounded(remaining)
 			}
 		}
+		// Every connection dials through a severable dialer, so Client.Sever can end it without
+		// nats.go's lock: through the SOCKS5 proxy when one is set, else directly, bounded by the
+		// attempt's timeout as nats.go's own dialer is. nats.go otherwise resolves the host itself
+		// and hands the dialer an address, which the proxy cannot reach when only its resolver knows
+		// the name; a direct dial resolves it in Go's dialer, which spreads the timeout over the
+		// addresses as nats.go spreads it over the hosts it resolved.
+		dial := (&net.Dialer{Timeout: next.Timeout}).DialContext
 		if attemptDialer != nil {
-			next.CustomDialer = attemptDialer
-			// nats.go otherwise resolves the host itself and hands the dialer an address, which the
-			// proxy cannot reach when only its resolver knows the name.
-			next.SkipHostLookup = true
+			dial = attemptDialer.DialContext
 		}
+		next.CustomDialer = newSeverableDialer(dial)
+		next.SkipHostLookup = true
 		type connectionResult struct {
 			conn *nats.Conn
 			err  error
@@ -445,12 +519,14 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 			}()
 			return nil, ctx.Err()
 		}
-		timer := time.NewTimer(time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {

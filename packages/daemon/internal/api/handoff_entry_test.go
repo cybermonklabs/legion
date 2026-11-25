@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -35,7 +36,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -201,9 +202,9 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 // What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
 // daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
 // description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
-// it after the code. This golden is where the two meet, as version.json is for the contract
-// number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the file,
-// so a word changed on the Go side fails here until the fixture is written again
+// it after the code. This golden is where the two meet, as released-contracts.json is for the
+// numbered contracts: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to
+// the file, so a word changed on the Go side fails here until the fixture is written again
 // (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would
@@ -302,7 +303,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -730,7 +731,7 @@ func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role,
 func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
 			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
@@ -822,7 +823,7 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
 		var issue *record.Issue
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, key)
 			return err

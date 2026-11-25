@@ -1,0 +1,71 @@
+{
+  "contract": 103,
+  "records": [
+    { "contract": 103, "answer": "health", "noBody": false, "keyPaths": ["status"], "domains": {} },
+    {
+      "contract": 103,
+      "answer": "no-content",
+      "noBody": false,
+      "keyPaths": ["accepted"],
+      "domains": {}
+    },
+    {
+      "contract": 103,
+      "answer": "state",
+      "noBody": false,
+      "keyPaths": [
+        "issues",
+        "issues.*.check",
+        "issues.*.phase",
+        "settings",
+        "settings.review_round_cap",
+        "settings.worker_boot_timeout_seconds"
+      ],
+      "domains": { "issues.*.phase": ["done", "held"] }
+    }
+  ],
+  "requests": [
+    {
+      "contract": 103,
+      "route": "POST /legion/v1/claims/exit",
+      "fieldPaths": ["claimToken", "reason"]
+    },
+    { "contract": 103, "route": "POST /legion/v1/issues/note", "fieldPaths": ["issue", "note"] }
+  ],
+  "answers": [
+    {
+      "id": "state",
+      "routes": ["GET /legion/v1/state"],
+      "since": 46,
+      "noBody": false,
+      "typedSettings": [
+        { "key": "review_round_cap", "since": 86 },
+        { "key": "worker_boot_timeout_seconds", "since": 101 }
+      ]
+    },
+    {
+      "id": "health",
+      "routes": ["GET /healthz", "GET /legion/v1/health"],
+      "since": 93,
+      "noBody": false
+    },
+    { "id": "no-content", "routes": ["POST /legion/v1/claims/exit"], "since": 46, "noBody": true },
+    { "id": "note", "routes": ["POST /legion/v1/issues/note"], "since": 102, "noBody": false }
+  ],
+  "enumeratedFields": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.phase",
+      "values": [
+        { "value": "done", "since": 46 },
+        { "value": "held", "since": 101 },
+        { "value": "implementing", "since": 46 }
+      ]
+    },
+    {
+      "answer": "note",
+      "keyPath": "kind",
+      "values": [{ "value": "plain", "since": 102 }, { "value": "urgent", "since": 102 }]
+    }
+  ]
+}

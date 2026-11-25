@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // testAudience is the broker's Google exchange audience in these rows, which a metadata or an

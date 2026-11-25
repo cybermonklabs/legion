@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -36,9 +37,17 @@ import (
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
 // probe's deadline sends one; otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
-// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
-// environment it saw there: PI_CONFIG_FILES, whether the first overlay it names exists, and
-// OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
+// $LEGION_TEST_FALLBACK_FAIL. `--version` prints omp/18.18.6 on its first line, or fails under
+// $LEGION_TEST_VERSION_FAIL, or sleeps (`exec sleep 30`) under $LEGION_TEST_VERSION_SLOW, so only
+// a stop ends it; `--help` prints a flags table that lists --session-id, or, under
+// $LEGION_TEST_NO_SESSION_ID, one that lists no such flag but mentions it in a description, or
+// fails under $LEGION_TEST_HELP_FAIL, or sleeps the same way under $LEGION_TEST_HELP_SLOW. With
+// $LEGION_TEST_WAITING set, each run that waits appends there what it is once it waits, after its
+// trap is set where it has one: `config get <overlay>` for a read under a `slow` or
+// `refuses-late` overlay, `omp --version` and `omp --help` for the slow ones. With
+// $LEGION_TEST_SEEN set, each run appends the environment it saw there: PI_CONFIG_FILES, whether
+// the first overlay it names exists, and OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the
+// provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
@@ -49,6 +58,7 @@ if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
 fi
 [ -z "${LEGION_TEST_KEY_SEEN:-}" ] || printf '%s\n' "${TEST_PROVIDER_KEY:-unset}" >>"$LEGION_TEST_KEY_SEEN"
+waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf '%s\n' "$1" >>"$LEGION_TEST_WAITING"; }
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
   envoy=$(cd "$3" && pwd -P)
@@ -70,8 +80,8 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 30 & wait ;;
-    *slow*) exec sleep 30 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting "config get $overlay"; sleep 30 & wait ;;
+    *slow*) waiting "config get $overlay"; exec sleep 30 ;;
     esac
   done
   unset IFS
@@ -80,6 +90,19 @@ case "$*" in
   fi
   if [ -n "${LEGION_TEST_FALLBACK_ON:-}" ]; then value=true; else value=false; fi
   printf '{"key":"retry.modelFallback","value":%s,"type":"boolean"}\n' "$value" ;;
+"--version")
+  if [ -n "${LEGION_TEST_VERSION_FAIL:-}" ]; then echo "fake omp: --version failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_VERSION_SLOW:-}" ]; then waiting 'omp --version'; exec sleep 30; fi
+  printf 'omp/18.18.6\nthe fake omp of probe_image_test.go\n' ;;
+"--help")
+  if [ -n "${LEGION_TEST_HELP_FAIL:-}" ]; then echo "fake omp: --help failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_HELP_SLOW:-}" ]; then waiting 'omp --help'; exec sleep 30; fi
+  printf 'omp v18.18.6\n\nFLAGS\n  -r, --resume=<value>      Resume a session (by ID prefix, path, or picker if omitted)\n'
+  if [ -n "${LEGION_TEST_NO_SESSION_ID:-}" ]; then
+    printf '      --fork=<value>        Start a session under a new id, as --session-id does\n'
+  else
+    printf '      --session-id=<value>  Start a new session under this id (a lowercase UUID)\n'
+  fi ;;
 *) echo "Invalid $OMP_SESSION_STORAGE for OMP_SESSION_STORAGE" >&2; exit 1 ;;
 esac
 `
@@ -90,7 +113,7 @@ esac
 }
 
 // thisBinarysContract is the daemon API contract this binary speaks, as a manifest writes it.
-var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion)
+var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion())
 
 // image is the worker image's two plugin roots, which every probe-image run is given, the
 // claude-envoy root and Claude Code pin the Claude lane and the claude-code row check, its bin of
@@ -166,34 +189,19 @@ func inImage(t *testing.T, contract, omp string) image {
 	return roots
 }
 
+// ompMarks are the OK line's omp-version and omp-session-id marks under a stubbed image whose omp
+// prints omp/18.18.6 for --version and lists --session-id in its help.
+const ompMarks = " omp-version=omp/18.18.6 omp-session-id=taken"
+
 // capabilityMarks are the OK line's marks after agent-models under a stubbed image whose omp
-// says model fallback is off.
-const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
+// says model fallback is off, with ompMarks after them.
+const capabilityMarks = " capabilities=checked model-fallback=off" + ompMarks + " daemon-api-version="
 
-// probeImage runs `legion probe-image` with args, every TLS client and positive control passing.
+// probeImage runs `legion probe-image` with args and answers its exit code, stdout and stderr.
 func probeImage(args ...string) (int, string, string) {
-	return probeImageWith(passingImageTLSClients, passingTLSPositiveControls, args...)
-}
-
-// probeImageWith runs `legion probe-image` with args, clients in place of the image's TLS clients
-// and controls in place of its positive controls.
-func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string) error, args ...string) (int, string, string) {
-	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
-	newImageTLSClients, newTLSPositiveControls = clients, controls
-	defer func() {
-		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
-	}()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
-}
-
-// passingTLSPositiveControls stands in for positive controls that each accepted their pinned root.
-func passingTLSPositiveControls(context.Context, []string) error { return nil }
-
-// theseTLSClients stands in for the image's TLS clients with clients.
-func theseTLSClients(clients ...tlsClient) func(string, []string, string) []tlsClient {
-	return func(string, []string, string) []tlsClient { return clients }
 }
 
 // With --role-namespaces the probe runs a role generation's namespaces first
@@ -234,8 +242,8 @@ func tableLines(stdout string) []string {
 // As the worker image's build runs it, with no contract named, the command holds the image's plugin
 // to the contract this binary speaks, prints the capability table — one line per row of the
 // declared list, in its order, every image row present, codegraph with the CLI on PATH and the
-// plugin enabled in profile's lock — then prints every TLS client and site decision before the OK
-// line the daemon's probe Sandbox reads, carrying the capabilities and model-fallback marks.
+// plugin enabled in profile's lock — and then the OK line the daemon's probe Sandbox reads,
+// carrying the capabilities and model-fallback marks, with nothing between them.
 func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -262,11 +270,8 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 		t.Errorf("table = %q, want the codegraph line %q", table, codegraph)
 	}
 	okLine := "probe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
-	if !strings.HasPrefix(stdout, strings.Join(table, "\n")+"\n") || !strings.HasSuffix(stdout, okLine) {
-		t.Fatalf("stdout = %q, want the table, TLS decisions, then the OK line %q", stdout, okLine)
-	}
-	if got, want := strings.Count(stdout, "probe-image: TLS client "), len(tlsSites)*len(workerTLSClients); got != want {
-		t.Fatalf("stdout carries %d TLS decisions, want one for each client and site (%d):\n%s", got, want, stdout)
+	if want := strings.Join(table, "\n") + "\n" + okLine; stdout != want {
+		t.Fatalf("stdout = %q, want the table, then the OK line %q, and nothing else", stdout, okLine)
 	}
 }
 
@@ -295,9 +300,9 @@ const lastContractWithoutDefaultBranch = 25
 // pi-legion declaring that older contract, so the daemon's probe Sandbox, asking for this binary's
 // own, refuses it by both numbers before any issue pod runs that image's `workspace-init`.
 func TestProbeImageRefusesAnImageWhoseWorkspaceInitTakesNoDefaultBranch(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutDefaultBranch {
+	if api.DaemonAPIVersion() <= lastContractWithoutDefaultBranch {
 		t.Fatalf("DaemonAPIVersion is %d: the pod's --default-branch needs a contract above %d, or an image whose workspace-init rejects the flag passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutDefaultBranch)
+			api.DaemonAPIVersion(), lastContractWithoutDefaultBranch)
 	}
 	old := strconv.Itoa(lastContractWithoutDefaultBranch)
 	img := inImage(t, old, imageOmp(t))
@@ -318,9 +323,9 @@ const lastContractWithoutGhBundles = 29
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // issue pod runs that image's git.
 func TestProbeImageRefusesAnImageWithoutTheGhWrapper(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutGhBundles {
+	if api.DaemonAPIVersion() <= lastContractWithoutGhBundles {
 		t.Fatalf("DaemonAPIVersion is %d: per-owner gh bundles need a contract above %d, or an image without legion gh and legion git-credential passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutGhBundles)
+			api.DaemonAPIVersion(), lastContractWithoutGhBundles)
 	}
 	old := strconv.Itoa(lastContractWithoutGhBundles)
 	img := inImage(t, old, imageOmp(t))
@@ -338,9 +343,9 @@ const lastContractWithoutRepositoryCache = 31
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // cache pod runs that image's `legion workspace-init cache` and exits 2 on the unknown subcommand.
 func TestProbeImageRefusesAnImageWithoutTheRepositoryCache(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutRepositoryCache {
+	if api.DaemonAPIVersion() <= lastContractWithoutRepositoryCache {
 		t.Fatalf("DaemonAPIVersion is %d: the cache pod's workspace-init cache needs a contract above %d, or an image without it passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutRepositoryCache)
+			api.DaemonAPIVersion(), lastContractWithoutRepositoryCache)
 	}
 	old := strconv.Itoa(lastContractWithoutRepositoryCache)
 	img := inImage(t, old, imageOmp(t))
@@ -359,6 +364,91 @@ func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
 	if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
 		t.Fatalf("probe-image --omp = %d %q %q, want the OK line naming %s", code, stdout, stderr, omp)
 	}
+}
+
+// --omp and LEGION_OMP_PATH name the OMP executable, a path, as LEGION_OMP_PATH does for the
+// daemon: one whose directory's name holds a space, a quote or a glob character is probed as the
+// one file it names, every probe running it as one shell word, and the OK line names it as given.
+// Each glob name has a sibling its pattern also matches, holding an omp that fails, so a probe
+// that let the shell expand the path would run the other file or hand it the first as an argument.
+func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
+	for _, testCase := range []struct{ name, sibling string }{
+		{"x y", ""}, {"sq'x", ""}, {"q?x", "qax"}, {"glob[x]", "globx"},
+	} {
+		for _, how := range []string{"LEGION_OMP_PATH", "--omp"} {
+			t.Run(testCase.name+" by "+how, func(t *testing.T) {
+				dir := t.TempDir()
+				omp := filepath.Join(dir, testCase.name, "omp")
+				if err := os.MkdirAll(filepath.Dir(omp), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(imageOmp(t), omp); err != nil {
+					t.Fatal(err)
+				}
+				if testCase.sibling != "" {
+					other := filepath.Join(dir, testCase.sibling, "omp")
+					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args []string
+				if how == "--omp" {
+					args = inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp)
+				} else {
+					args = inImage(t, thisBinarysContract, omp).flags()
+				}
+
+				code, stdout, stderr := probeImage(args...)
+
+				if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
+					t.Fatalf("probe-image with the omp at %s named by %s = %d %q %q, want the OK line naming it", omp, how, code, stdout, stderr)
+				}
+				if strings.Contains(stderr, "the omp a glob matched ran") {
+					t.Errorf("probe-image ran the omp the glob %s also matches: %q", testCase.name, stderr)
+				}
+			})
+		}
+	}
+
+	// The other boundary that runs the OMP path: the role overlay read (--role-config-files,
+	// capabilities.CheckOverlays), with the omp and the role's overlay under one directory whose
+	// name holds a space, a quote and a '?'.
+	t.Run("the role overlays under x y'q?x", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "x y'q?x")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		omp, overlay := filepath.Join(dir, "omp"), filepath.Join(dir, "implementer.yml")
+		if err := os.Rename(imageOmp(t), omp); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		seen := filepath.Join(t.TempDir(), "seen")
+		t.Setenv("LEGION_TEST_SEEN", seen)
+		// No PI_CONFIG_FILES of the operator's: the caller's own (a dev box's omp config) would be
+		// the role's list's head, and Oh My Pi would read the role's file alone only once.
+		t.Setenv("PI_CONFIG_FILES", "")
+
+		code, stdout, stderr := probeImage(inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp, "--pod-safety", "--role-config-files", "implementer="+overlay)...)
+
+		if code != 0 || !strings.Contains(stdout, "\nprobe-image: OK ("+omp+") ") {
+			t.Fatalf("probe-image with the omp at %s and its overlay = %d %q %q, want the OK line naming it", omp, code, stdout, stderr)
+		}
+		raw, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// With no PI_CONFIG_FILES of the operator's (emptied above), the role's whole list is its
+		// one file, so Oh My Pi reads it twice: alone, and as the whole list.
+		if got := len(regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(overlay)+` written file$`).FindAllString(string(raw), -1)); got != 2 {
+			t.Errorf("Oh My Pi ran %d times on the implementer's overlay %s, want twice (alone and as the whole list): %q", got, overlay, raw)
+		}
+	})
 }
 
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
@@ -390,7 +480,7 @@ func TestProbeImageWithSkipBrowserPassesAnImageWithNoBrowser(t *testing.T) {
 
 	code, stdout, stderr = probeImage(img.flags("--skip-agent-models", "--skip-browser")...)
 
-	want := "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=off daemon-api-version=" + thisBinarysContract + "\n"
+	want := "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=off" + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"
 	if code != 0 || !strings.HasSuffix(stdout, want) {
 		t.Fatalf("probe-image --skip-browser = %d %q %q, want the OK line %q", code, stdout, stderr, want)
 	}
@@ -418,7 +508,7 @@ func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
 
 			code, stdout, stderr := probeImage(img.flags()...)
 
-			if want := " capabilities=checked model-fallback=" + mark + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+			if want := " capabilities=checked model-fallback=" + mark + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
 				t.Fatalf("probe-image = %d %q %q, want the OK line ending %q", code, stdout, stderr, want)
 			}
 		})
@@ -428,13 +518,52 @@ func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
 
 		code, stdout, stderr := probeImage(img.flags()...)
 
-		if want := " capabilities=checked model-fallback=unread daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+		if want := " capabilities=checked model-fallback=unread" + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
 			t.Fatalf("probe-image = %d %q %q, want the OK line ending %q", code, stdout, stderr, want)
 		}
 		if !strings.Contains(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: ") {
 			t.Errorf("stderr = %q, want it to warn that model-fallback was not read", stderr)
 		}
 	})
+}
+
+// The OK line's omp-session-id mark is whether the image's Oh My Pi's own help lists --session-id
+// in its flags table, under the probe's environment, and its omp-version mark the first line that
+// Oh My Pi prints for --version: taken when the help lists the flag; absent when it lists none,
+// though a description mentions it; unread when the help fails, which the probe does not refuse
+// the run for — it warns on stderr and still prints its OK line, exit 0, so the daemon that reads
+// the mark decides. A version it cannot read is unread the same way.
+func TestProbeImageMarksTheOKLineWithWhetherOhMyPiTakesSessionID(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	for _, tc := range []struct {
+		name, env, marks, warning string
+	}{
+		{"taken", "", " omp-version=omp/18.18.6 omp-session-id=taken", ""},
+		{"absent", "LEGION_TEST_NO_SESSION_ID", " omp-version=omp/18.18.6 omp-session-id=absent", ""},
+		{"unread", "LEGION_TEST_HELP_FAIL", " omp-version=omp/18.18.6 omp-session-id=unread",
+			"legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=unread, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: " + omp + " --help exited 1: fake omp: --help failed\n"},
+		{"version unread", "LEGION_TEST_VERSION_FAIL", " omp-version=unread omp-session-id=taken",
+			"legion probe-image: Oh My Pi's version not read; the OK line says omp-version=unread: " + omp + " --version exited 1: fake omp: --version failed\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv(tc.env, "1")
+			}
+
+			code, stdout, stderr := probeImage(img.flags()...)
+
+			if want := " model-fallback=off" + tc.marks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+				t.Fatalf("probe-image = %d %q %q, want exit 0 and the OK line ending %q", code, stdout, stderr, want)
+			}
+			if tc.warning == "" && strings.Contains(stderr, " not read;") {
+				t.Errorf("stderr = %q, want no warning of a mark not read", stderr)
+			}
+			if tc.warning != "" && !strings.Contains(stderr, tc.warning) {
+				t.Errorf("stderr = %q, want the warning %q", stderr, tc.warning)
+			}
+		})
+	}
 }
 
 // A capability the image lacks fails the probe after the launch probes passed: the whole table is
@@ -501,9 +630,10 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 
 	code, stdout, stderr := probeImage(img.flags()...)
 
-	want := ")\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
-	if code != 0 || !strings.HasSuffix(stdout, want) || strings.Contains(stdout+stderr, seed) {
-		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then %q, and no seed", code, stdout, stderr, want)
+	table := tableLines(stdout)
+	want := strings.Join(table, "\n") + "\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+	if code != 0 || len(table) != len(capabilities.Table) || stdout != want || strings.Contains(stdout+stderr, seed) {
+		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then the user and OK lines %q, and no seed", code, stdout, stderr, want)
 	}
 
 	account := testnkeys.Account(t)
@@ -618,12 +748,15 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 			}
 			sessions := map[string]int{}
 			for _, run := range runs {
-				fields := strings.Fields(run)
-				if len(fields) != 3 || !tc.overlays.MatchString(fields[0]+" "+fields[1]) {
+				// The record is PI_CONFIG_FILES, whether its first overlay exists, and
+				// OMP_SESSION_STORAGE, a space apart: the overlays are paths, which hold a space
+				// wherever the test's temporary directory does, so the record is read from its end.
+				last := strings.LastIndexByte(run, ' ')
+				if last < 0 || strings.LastIndexByte(run[:last], ' ') < 0 || !tc.overlays.MatchString(run[:last]) {
 					t.Errorf("a probe ran Oh My Pi with %q, want %s", run, tc.overlays)
 					continue
 				}
-				sessions[fields[2]]++
+				sessions[run[last+1:]]++
 			}
 			if want := map[string]int{tc.sessions: len(runs) - 1, "legion-launch-probe": 1}; !maps.Equal(sessions, want) {
 				t.Errorf("the probes ran Oh My Pi with OMP_SESSION_STORAGE %v, want %v: the session-storage probe's own value once, %q otherwise", sessions, want, tc.sessions)
@@ -701,21 +834,54 @@ func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
 	}
 }
 
-// shortProbeBudget is a --probe-budget that outlasts the steps a stubbed image's probe makes before
-// its role overlays, with room to spare under load, and ends while a step still waits on it.
-const shortProbeBudget = "4s"
+// unreachedProbeBudget is the --probe-budget of a test that cuts a probe: a length no machine's
+// load reaches, so the probe's budget context (context.WithTimeout in runProbeImage) ends only when
+// its parent does, at the moment probeImageCutOnceLogged passes that parent's deadline.
+const unreachedProbeBudget = "1h"
 
-// c-slow-probe-passes case (6): the steps after the TLS check still run, and each answer is judged
-// by the probe's deadline as its step returns. A role's overlay read the deadline cuts with no
-// answer (an overlay whose path holds `slow`) has no verdict, and so has one that answers like a
-// refusal once the deadline's SIGTERM reaches it (`refuses-late`), since that refusal may be the
-// deadline's own doing: each exits 75 naming the role's overlays, never exit 1. An overlay Oh My
-// Pi refuses before the deadline (`malformed`) fails the probe, exit 1, beside a TLS run with no
-// verdict.
-func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
-	omp := imageOmp(t)
-	img := inImage(t, thisBinarysContract, omp)
-	t.Setenv("PI_CONFIG_FILES", "")
+// probeImageCutOnceLogged runs `legion probe-image` with args under a parent context whose deadline
+// passes once the file at log holds line, the line a stand-in writes once it has started and waits
+// (passedDeadline, gh_help_timeout_test.go), and answers its exit code, stdout and stderr. Before
+// that stand-in runs, the probe starts Oh My Pi and the image's commands several times, each a
+// process a loaded machine can start late, so a deadline counted from the probe's start could pass
+// before the stand-in began, and cut a step other than the one the test means to cut. Each
+// stand-in that waits ends on its own within a minute, so a line that never comes ends the run.
+func probeImageCutOnceLogged(log, line string, args ...string) (int, string, string) {
+	deadline := newPassedDeadline()
+	returned, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-returned:
+				return
+			case <-tick.C:
+				if raw, _ := os.ReadFile(log); slices.Contains(strings.Split(string(raw), "\n"), line) {
+					deadline.pass()
+					return
+				}
+			}
+		}
+	}()
+	var stdout, stderr bytes.Buffer
+	code := run(deadline, append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
+	close(returned)
+	<-watched
+	return code, stdout.String(), stderr.String()
+}
+
+// Each step is judged by the probe's deadline as it returns, and what the deadline cut has no
+// verdict, which ends nothing, so the later steps still run. A role's overlay read the deadline
+// cuts with no answer (an overlay whose path holds `slow`) has no verdict, and so has one that
+// answers like a refusal once the deadline's SIGTERM reaches it (`refuses-late`), since that
+// refusal may be the deadline's own doing: each exits 75 naming the role's overlays, never exit 1.
+// A capability row found missing before the deadline (Oh My Pi's Python unavailable) fails the
+// probe, exit 1 with no no-verdict line, beside a later row that the deadline cut (a Chromium that
+// never answers its --version, so the browser row is unanswered). In each row the deadline passes
+// once the step it cuts has logged that it waits, to $LEGION_TEST_WAITING (probeImageCutOnceLogged).
+func TestProbeImageJudgesEachStepByTheDeadlineAsItReturns(t *testing.T) {
 	dir := t.TempDir()
 	overlay := func(name string) string {
 		path := filepath.Join(dir, name)
@@ -724,28 +890,39 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 		}
 		return path
 	}
-	slow, late, malformed := overlay("slow.yml"), overlay("refuses-late.yml"), overlay("malformed.yml")
-	slowTLS := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
-	budget := []string{"--probe-budget", shortProbeBudget}
+	slow, late := overlay("slow.yml"), overlay("refuses-late.yml")
 	for _, tc := range []struct {
-		name, file string
-		args       []string
-		clients    func(string, []string, string) []tlsClient
-		code       int
-		// noVerdict are what the no-verdict line holds, and refusal what the refusal line's reason
-		// holds; each is empty where the line must not be printed.
+		name string
+		args []string
+		// setup readies the image of the row, and waits is the line the step the deadline cuts
+		// writes once it waits.
+		setup func(t *testing.T, img image)
+		waits string
+		code  int
+		// noVerdict are what the no-verdict line holds, empty where the line must not be printed,
+		// and missing the capability stderr must name missing, empty where none is.
 		noVerdict []string
-		refusal   string
+		missing   string
 	}{
-		{name: "a read the deadline cuts with no answer", file: slow, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
-			noVerdict: []string{"role overlays: implementer: ", "signal: terminated"}},
-		{name: "a read that answers like a refusal once the deadline's SIGTERM reaches it", file: late, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
-			noVerdict: []string{"role overlays: implementer: Oh My Pi refuses " + late + ": exited 1: malformed overlay"}},
-		{name: "an overlay refused before the deadline beside a TLS run with no verdict", file: malformed, clients: theseTLSClients(slowTLS), code: 1,
-			refusal: "Oh My Pi refuses " + malformed + ": "},
+		{name: "a read the deadline cuts with no answer", args: []string{"--role-config-files", "implementer=" + slow}, waits: "config get " + slow,
+			code: bootprobe.NoVerdictExit, noVerdict: []string{"role overlays: implementer: ", "signal: terminated"}},
+		{name: "a read that answers like a refusal once the deadline's SIGTERM reaches it", args: []string{"--role-config-files", "implementer=" + late}, waits: "config get " + late,
+			code: bootprobe.NoVerdictExit, noVerdict: []string{"role overlays: implementer: Oh My Pi refuses " + late + ": exited 1: malformed overlay"}},
+		{name: "a capability row missing before the deadline beside a later row the deadline cut", setup: func(t *testing.T, img image) {
+			t.Setenv("LEGION_TEST_NO_PYTHON", "1")
+			img.install(t, "chromium", "#!/bin/sh\nprintf 'chromium --version\\n' >>\"$LEGION_TEST_WAITING\"\nexec sleep 30\n")
+		}, waits: "chromium --version", code: 1, missing: "eval-python"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(append([]string{"--role-config-files", "implementer=" + tc.file}, tc.args...)...)...)
+			img := inImage(t, thisBinarysContract, imageOmp(t))
+			t.Setenv("PI_CONFIG_FILES", "")
+			waiting := filepath.Join(t.TempDir(), "waiting")
+			t.Setenv("LEGION_TEST_WAITING", waiting)
+			if tc.setup != nil {
+				tc.setup(t, img)
+			}
+
+			code, stdout, stderr := probeImageCutOnceLogged(waiting, tc.waits, img.flags(append(tc.args, "--probe-budget", unreachedProbeBudget)...)...)
 
 			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {
 				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, tc.code)
@@ -759,13 +936,63 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 					t.Errorf("the no-verdict line's detail = %q, want it to hold %q", detail, want)
 				}
 			}
-			role, why, refused := bootprobe.RoleOverlaysRefused(stderr)
-			if refused != (tc.refusal != "") || refused && (role != "implementer" || !strings.Contains(why, tc.refusal)) {
-				t.Errorf("the daemon reads the refusal as %q %q %t, want the implementer's refusal holding %q: %t", role, why, refused, tc.refusal, tc.refusal != "")
+			if role, why, refused := bootprobe.RoleOverlaysRefused(stderr); refused {
+				t.Errorf("the daemon reads a refusal of %s's overlays (%q), want none: the deadline cut the read", role, why)
 			}
-			if tc.refusal != "" {
-				if lines := tlsLines(stdout, "node", emSignTLSSite.name); len(lines) != 2 || !strings.HasPrefix(lines[1], "probe-image: TLS client node emSign: no verdict (") {
-					t.Errorf("node's emSign lines = %q, want a run with no verdict after the second run", lines)
+			if tc.missing != "" {
+				if !strings.Contains(stderr, "legion probe-image: capability "+tc.missing+" is missing: ") {
+					t.Errorf("stderr = %q, want it to name capability %s missing", stderr, tc.missing)
+				}
+				if row := "probe-image: capability browser: " + capabilities.StatusUnanswered + " ("; !strings.Contains(stdout, row) {
+					t.Errorf("stdout = %q, want the row the deadline cut, %q…", stdout, row)
+				}
+			}
+		})
+	}
+}
+
+// A read of the OK line's omp-version or omp-session-id mark that the probe's deadline cuts has no
+// verdict, like every other check: the deadline stops the read's process group, so its failure may
+// be the deadline's own doing, and an omp-session-id=unread would be refused for good by a daemon
+// that sets an exchange audience. The probe exits 75 naming the read, prints no OK line, and warns
+// of no unread mark. A help read is cut once it waits; a version read is cut once it waits, and
+// the help read after it is kept from starting, since ctx has ended. In each row the deadline
+// passes once the read it cuts has logged that it waits (probeImageCutOnceLogged). A read that
+// fails before the deadline is still unread on the OK line, exit 0
+// (TestProbeImageMarksTheOKLineWithWhetherOhMyPiTakesSessionID).
+func TestProbeImageJudgesTheOmpMarksReadsByTheDeadline(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	for _, tc := range []struct {
+		name, env, waits string
+		// noVerdict are what the no-verdict line holds.
+		noVerdict []string
+	}{
+		{"a help read the deadline cuts", "LEGION_TEST_HELP_SLOW", "omp --help", []string{"omp-session-id: " + omp + " --help"}},
+		{"a version read the deadline cuts", "LEGION_TEST_VERSION_SLOW", "omp --version", []string{"omp-version: " + omp + " --version", "omp-session-id: "}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, "1")
+			waiting := filepath.Join(t.TempDir(), "waiting")
+			t.Setenv("LEGION_TEST_WAITING", waiting)
+
+			code, stdout, stderr := probeImageCutOnceLogged(waiting, tc.waits, img.flags("--probe-budget", unreachedProbeBudget)...)
+
+			if code != bootprobe.NoVerdictExit || strings.Contains(stdout, bootprobe.OKPrefix) {
+				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, bootprobe.NoVerdictExit)
+			}
+			detail, hasNoVerdict := bootprobe.NoVerdict(stderr)
+			if !hasNoVerdict {
+				t.Fatalf("stderr %q carries no no-verdict line", stderr)
+			}
+			for _, want := range tc.noVerdict {
+				if !strings.Contains(detail, want) {
+					t.Errorf("the no-verdict line's detail = %q, want it to hold %q", detail, want)
+				}
+			}
+			for _, warning := range []string{"legion probe-image: Oh My Pi's version not read;", "legion probe-image: whether Oh My Pi takes --session-id not read;"} {
+				if strings.Contains(stderr, warning) {
+					t.Errorf("stderr = %q, want no warning %q of a mark the deadline cut", stderr, warning)
 				}
 			}
 		})

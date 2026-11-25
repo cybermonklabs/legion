@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The other half of the flap TestAFlapRunsTheSecondDisconnectHookAtOnce makes: the second outage

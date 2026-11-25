@@ -75,7 +75,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // the daemon's one clock, which the wakes' stuck clocks are judged against.
 func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, clock func() time.Time, log *slog.Logger) {
 	var stranded []supervise.Claim
-	if err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err

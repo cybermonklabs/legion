@@ -60,7 +60,12 @@ type crashRig struct {
 
 func newCrashRig(t *testing.T) *crashRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newCrashRigOn(t, testnats.URL(t))
+}
+
+// newCrashRigOn is newCrashRig over the server url names, as the NATS user it carries.
+func newCrashRigOn(t *testing.T, url string) *crashRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
@@ -71,7 +76,7 @@ func newCrashRig(t *testing.T) *crashRig {
 	cfg := &rig.harness.config
 	cfg.now = rig.clock.Now
 	forward := cfg.forwardRole
-	cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		if hold := rig.hold.Load(); hold != nil {
 			(*hold)(item)
 		}
@@ -85,6 +90,8 @@ func newCrashRig(t *testing.T) *crashRig {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
+	// The takeover grant's answer is the session delivery's, as main.go wires it.
+	cfg.consumerGrant.set(delivery.holdsConsumerGrant)
 	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)

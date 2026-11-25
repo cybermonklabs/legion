@@ -110,10 +110,16 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact.
-// repositories are its configured repositories: a GitHub event whose payload names another
-// repository is a nil Fact, whatever subject carried it.
+// project is the daemon's Dispatch project: another project's issue event is a nil Fact, decided
+// from the issue key its subject names before the envelope is read, so a message of another
+// project's that does not decode is no give-up of this daemon's, and no record of it (every daemon
+// hears every project's issue events). A name in neither form goes on to the decode, which refuses
+// it (errIssueNameInNeitherForm). repositories are its configured repositories: a GitHub event
+// whose payload names another repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
+	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
+		return decodedMessage{LegacyName: legacy}, nil
+	}
 	var envelope envoyEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return decodedMessage{}, fmt.Errorf("decode Envoy envelope: %w", err)
@@ -138,11 +144,6 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
-	case strings.HasPrefix(subject, dispatchProjectPrefix):
-		if envelope.Source != "dispatch" {
-			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
-		}
-		fact, err = decodeDispatchProjectFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -274,6 +275,14 @@ func (e dispatchEvent) mark() record.EventMark {
 	return record.EventMark{Seq: e.Seq, At: e.CreatedAt.UTC()}
 }
 
+// daemonActor says whether the daemon made the event: its actor is the session the daemon writes
+// every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
+// one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
+// check (StatusChange.DaemonActor) both read.
+func (e dispatchEvent) daemonActor() bool {
+	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
+}
+
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
 // (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
 // its key in neither form is poison (errIssueNameInNeitherForm).
@@ -293,7 +302,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
 func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
-	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
+	if !projectIssueKey(key, project) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -314,6 +323,13 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 	return fact, unread, nil
 }
 
+// projectIssueKey says whether key is an issue key of project, which the daemon decodes events
+// of; any other key is another daemon's.
+func projectIssueKey(key, project string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return keyProject == project && claim.IsIssueKey(key)
+}
+
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
 // serves it (dispatch.Client.EventsAfter), which is the shape its durable stream carries: the
 // boot catch-up applies what the stream did not deliver through the live decoder, so each event
@@ -323,17 +339,28 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
+// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+func isIssueEvent(typ string) bool {
+	switch typ {
+	case "issue.created", "issue.updated", "issue.closed":
+		return true
+	}
+	return false
+}
+
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
 // to unread each field it took as unknown.
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
-	switch event.Type {
-	case "issue.created", "issue.updated", "issue.closed":
+	if isIssueEvent(event.Type) {
 		var issue struct {
 			Key          string          `json:"key"`
 			Status       string          `json:"status"`
 			Title        string          `json:"title"`
 			Parent       *string         `json:"parent"`
 			Rank         string          `json:"rank"`
+			Priority     json.RawMessage `json:"priority"`
 			Labels       []string        `json:"labels"`
 			ResolvedRepo json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
@@ -369,14 +396,17 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			parent = *issue.Parent
 		}
 		actorSession := ""
-		daemonActor := event.Actor.Kind == "session" && event.Actor.ID == dispatch.DaemonSession(event.IssueKey)
+		daemonActor := event.daemonActor()
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+	}
+	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`
@@ -574,6 +604,24 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
+// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
+// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
+// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
+// making the event poison: the event can carry a status the workflow acts on.
+func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+	if raw == nil {
+		return record.NoPriority
+	}
+	priority, read, err := record.DecodePriority(raw)
+	switch {
+	case err != nil:
+		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+	case !read:
+		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+	}
+	return priority
+}
+
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
 // (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
 // opening, settlement's restored mark, an approval request's document with the version it now
@@ -632,44 +680,6 @@ func askKind(kind string, unread *[]string) string {
 	}
 	*unread = append(*unread, fmt.Sprintf("ask kind %q is not one the daemon knows", kind))
 	return ""
-}
-
-// dispatchProjectPrefix begins every Dispatch event of a project rather than an issue
-// (packages/envoy/internal/dispatch/outbox/publisher.go envelope): notifications.dispatch.project.
-// <KEY>.<type>.
-const dispatchProjectPrefix = "notifications.dispatch.project."
-
-// repoMappingType is the project event Dispatch emits when a repository's mapping to a project
-// changes, on the project it changed for (a move emits on the project left and the one joined).
-const repoMappingType = "settings.repo_project.updated"
-
-// mappingSubject is the subject Dispatch publishes project's mapping changes on, which the
-// Dispatch consumer hears beside every issue event.
-func mappingSubject(project string) string {
-	return dispatchProjectPrefix + project + "." + repoMappingType
-}
-
-// decodeDispatchProjectFact decodes one Dispatch project event: the mapping change of project is a
-// RepoMappingChanged, and any other project's event, or another type, is no fact.
-func decodeDispatchProjectFact(subject, project, payload string) (Fact, error) {
-	subjectProject, eventType, ok := strings.Cut(strings.TrimPrefix(subject, dispatchProjectPrefix), ".")
-	if !ok || subjectProject == "" {
-		return nil, fmt.Errorf("Dispatch project subject has no project key: %s", subject)
-	}
-	if subjectProject != project || eventType != repoMappingType {
-		return nil, nil
-	}
-	var event struct {
-		Project string `json:"project"`
-		Type    string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return nil, fmt.Errorf("decode Dispatch project event: %w", err)
-	}
-	if event.Project != subjectProject || event.Type != eventType {
-		return nil, fmt.Errorf("Dispatch project event %s of %s disagrees with its subject %s", event.Type, event.Project, subject)
-	}
-	return RepoMappingChanged{Project: project}, nil
 }
 
 func deref(value *string) string {
@@ -731,9 +741,9 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 // (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
 // event, so it is acknowledged without a transaction: the workflow records a pull request only on
 // an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// mapped repository whose other pull requests open and move many times a minute would otherwise
-// cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of them
-// changing nothing. Every action carries head_ref.
+// repository the daemon hears whose other pull requests open and move many times a minute would
+// otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
+// them changing nothing. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
@@ -825,7 +835,7 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 // whether each head on a base still merges into it when the base moves and sends no event for the
 // pull request itself, so a head the record holds as clean goes behind or dirty unheard.
 //
-// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a mapped
+// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid
 // because the alternative is a mergeability the record cannot know is stale. The handler's first
 // read is one indexed lookup of the open pull requests recorded on that base

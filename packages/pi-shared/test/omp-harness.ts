@@ -17,7 +17,10 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { loopbackHost } from "@legion/test-fixtures/loopback-host";
+import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
+import { z } from "zod";
 import { linkOmpNatives } from "./omp-natives";
 
 export interface Request {
@@ -67,28 +70,37 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
+ * request up. Returns the recorded requests and the server's base URL.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    request: globalThis.Request
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url);
-      const text = request.method === "POST" ? await request.text() : "";
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request);
+      if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request);
     },
   });
   cleanup.push(async () => {
     await server.stop(true);
   });
-  return { requests, base: `http://127.0.0.1:${server.port}` };
+  return { requests, base: server.url.origin };
 }
 
 /** The stream the stand-in listener's answers and relay frames name, one for every case here. */
@@ -274,6 +286,101 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   }
 }
 
+/** One page of JetStream's `$JS.API.STREAM.NAMES` answer, or its error. */
+const StreamNamesPage = z.object({
+  total: z.number().optional(),
+  streams: z.array(z.string()).nullable().optional(),
+  error: z.object({ code: z.number(), description: z.string() }).optional(),
+});
+
+/** JetStream's `$JS.API.STREAM.DELETE.<name>` answer, or its error. */
+const StreamDeleted = z.object({
+  success: z.boolean().optional(),
+  error: z
+    .object({ code: z.number(), err_code: z.number().optional(), description: z.string() })
+    .optional(),
+});
+
+/** JetStream's error code for a stream it does not hold (`JSStreamNotFoundErr`), which its
+ * answer carries with code 404 and "stream not found". */
+const STREAM_NOT_FOUND = 10059;
+
+/** The streams on the server that capture a session's relay subject, by JetStream's own match. */
+async function relayCapturingStreams(connection: RelayConnection): Promise<string[]> {
+  const subject = deliverSubject("*");
+  const names: string[] = [];
+  for (;;) {
+    let reply: { readonly data: Uint8Array };
+    try {
+      reply = await connection.request(
+        "$JS.API.STREAM.NAMES",
+        new TextEncoder().encode(JSON.stringify({ subject, offset: names.length })),
+        { timeout: 5_000 }
+      );
+    } catch (error) {
+      // nats.js names the server's no-responders status "503": a server without JetStream holds
+      // no stream, so none captures the subject.
+      if (names.length === 0 && error instanceof Error && "code" in error && error.code === "503") {
+        return names;
+      }
+      throw new Error(`list the NATS server's streams on ${subject}: ${String(error)}`);
+    }
+    const page = StreamNamesPage.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (page.error !== undefined) {
+      throw new Error(`list the NATS server's streams on ${subject}: ${page.error.description}`);
+    }
+    const streams = page.streams ?? [];
+    names.push(...streams);
+    if (streams.length === 0 || names.length >= (page.total ?? 0)) return names;
+  }
+}
+
+/**
+ * Deletes every JetStream stream on the server `connection` reaches that captures a session's
+ * relay subject (`deliverSubject`), and answers their names. Every case that sends frames with
+ * `sendRelayFrame` calls it once it holds its connection, before its first frame. The
+ * connection's `request` rejects a request nobody answers with an error whose `code` is "503", as
+ * nats.js does: a server without JetStream holds no stream, and nothing is deleted there.
+ *
+ * A stream whose subjects take a relay subject answers each frame itself, with its publish ack
+ * (`{"stream":"ENVOY_NOTIFICATIONS","seq":2}`), beside the session that holds the subject, and a
+ * request takes whichever answer comes first: that ack reads as "a word the relay protocol does
+ * not hold", and a frame to a subject nobody holds is answered where it should meet no responder.
+ * Envoy's own stream never takes one (`DeliverSubjectPrefix`, packages/envoy/internal/bus/stream.go:
+ * a relay frame travels over core NATS). The daemon's Go tests make ENVOY_NOTIFICATIONS on all of
+ * `notifications.>`, and on a server both suites share (LEGION_TEST_NATS_URL in a pod with no
+ * Docker) a stream a Go test leaves there stays for the Bun tests that run next. Deleting it is
+ * what testnats.URL does to every stream on that server for each Go test; this deletes only the
+ * streams that capture a relay subject, and fails naming any it could not.
+ *
+ * Two cases can call it at once (pi-legion's `bun test --parallel` runs files side by side), both
+ * list the same stream, and the one whose delete comes second is answered "stream not found". A
+ * stream that is gone is what that call wanted, so the answer counts as deleted; the list read
+ * again after the deletes is what proves none is left, and it fails naming any stream it finds.
+ */
+export async function deleteRelayCapturingStreams(
+  connection: RelayConnection
+): Promise<readonly string[]> {
+  const found = await relayCapturingStreams(connection);
+  for (const name of found) {
+    const reply = await connection.request(`$JS.API.STREAM.DELETE.${name}`, new Uint8Array(), {
+      timeout: 5_000,
+    });
+    const deleted = StreamDeleted.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (deleted.success === true || deleted.error?.err_code === STREAM_NOT_FOUND) continue;
+    throw new Error(
+      `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
+    );
+  }
+  const left = await relayCapturingStreams(connection);
+  if (left.length > 0) {
+    throw new Error(
+      `the NATS server still holds streams that capture a relay subject: ${left.join(", ")}`
+    );
+  }
+  return found;
+}
+
 /** One provider the stand-in serves and the models it offers under it. Every provider is the same
  * stand-in at the same base URL, so a case that needs two models tells them apart by the `model`
  * of the Messages request it is answering. */
@@ -377,6 +484,9 @@ export interface Rpc {
    * exited, so a case that expects it alive races it against its own clock.
    */
   readonly exited: Promise<number>;
+  /** The process id of the omp it started: the one process whose own steps a timer record a
+   *  case hands it through the environment is read for. */
+  readonly pid: number;
 }
 
 /**
@@ -445,6 +555,7 @@ export function spawnRpc(
     },
     closed,
     exited: child.exited,
+    pid: child.pid,
   };
 }
 
@@ -659,7 +770,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1820-1854` and `:3228-3238`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -668,7 +779,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3194-3202` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -723,14 +834,66 @@ export function refusalStream(id: string, refusal: Refusal = {}): string {
 }
 
 /**
+ * Oh My Pi's date/cwd reminder (`packages/coding-agent/src/prompts/system/date-cwd-reminder.md` at
+ * the pin) at the start of a text, with the newline or two the host puts between it and the
+ * text it leads. The host sends the reminder in one of two forms (`DateCwdReminderInjector`,
+ * `packages/coding-agent/src/session/date-cwd-reminder.ts`): ahead of a user turn that is new since
+ * the session's previous request, or, when the local date or the working directory has changed
+ * since then and the request holds no such turn, as a message of its own after the request's
+ * newest message, where it stays in every later request.
+ */
+const DATE_CWD_REMINDER = /^<system-reminder>\nToday: [^\n]*\n<\/system-reminder>(\n\n?|$)/;
+
+/** `message` without the host's date/cwd reminder: the reminder taken off the start of its text,
+ *  and undefined when the reminder was the whole message. */
+function withoutDateCwdReminder(message: unknown): unknown {
+  if (typeof message !== "object" || message === null || !("content" in message)) return message;
+  const { content } = message;
+  if (typeof content === "string") {
+    const rest = content.replace(DATE_CWD_REMINDER, "");
+    if (rest === content) return message;
+    return rest === "" ? undefined : { ...message, content: rest };
+  }
+  if (!Array.isArray(content)) return message;
+  const [first, ...others] = content;
+  if (typeof first !== "object" || first === null || !("text" in first)) return message;
+  if (typeof first.text !== "string") return message;
+  const rest = first.text.replace(DATE_CWD_REMINDER, "");
+  if (rest === first.text) return message;
+  const kept = rest === "" ? others : [{ ...first, text: rest }, ...others];
+  return kept.length === 0 ? undefined : { ...message, content: kept };
+}
+
+/**
+ * A Messages request's messages as the session sent them, without the host's date/cwd reminder in
+ * either form (`DATE_CWD_REMINDER`), so a case that reads a request's newest message, or a message
+ * by its place or its exact text, reads the same on a run that crosses midnight as on one that
+ * does not. Measured in the stall watch's live proof
+ * (`pi-legion/extensions/legion-stall-watchdog-omp.test.ts`): with the pane's local date moved on
+ * between two requests, the second ended with the reminder as a message of its own, so a case that
+ * took its last message for the one that started the turn waited for a turn that had already run,
+ * as CI's did on a case that ran across midnight UTC (merge-group run 44963211024, 00:00:14Z on
+ * 2026-11-22).
+ */
+export function ownMessages(body: Record<string, unknown>): unknown[] {
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  return messages.map(withoutDateCwdReminder).filter((message) => message !== undefined);
+}
+
+/** The newest of a Messages request's own messages (`ownMessages`), as JSON: the message the turn
+ *  the request asks for was started on. */
+export function newestMessage(body: Record<string, unknown>): string {
+  return JSON.stringify(ownMessages(body).at(-1) ?? null);
+}
+
+/**
  * Whether a Messages request is a side turn rather than a turn. The host sends one as an
- * ordinary Messages request over a snapshot of the conversation whose last message is the `<btw>`
- * block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the stand-in
- * answers it distinctly and nothing about it reaches the transcript.
+ * ordinary Messages request over a snapshot of the conversation whose newest message is the
+ * `<btw>` block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the
+ * stand-in answers it distinctly and nothing about it reaches the transcript.
  */
 export function isSelfCheck(request: Request): boolean {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
+  return newestMessage(request.body).includes("<btw>");
 }
 
 /** A `tool_result` block as the host sent it back to the gateway. */
@@ -926,8 +1089,22 @@ export interface LegionPane {
   readonly selfChecks: () => Request[];
   /** Every `tool_result` the host sent back to the gateway, in conversation order. */
   readonly toolResults: () => ToolResult[];
+  /** Every entry of the persisted transcript, each life's file in turn, in the order omp wrote
+   * them, each parsed whole: its `type`, its `timestamp` by the omp process's own clock, and the
+   * rest of what omp wrote. */
+  readonly transcript: () => Promise<unknown[]>;
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
+  /**
+   * Replaces the `data` of the newest persisted transcript entry of `customType` with what `edit`
+   * returns for it, and throws when the transcript holds none. Only between lives, while no omp
+   * process holds the file: a case sets a recorded value the next life reads with it, for example
+   * a due time that runs on the omp process's own clock, which no test can move.
+   */
+  readonly editTranscriptEntry: (
+    customType: string,
+    edit: (data: unknown) => unknown
+  ) => Promise<void>;
   /**
    * Runs omp again over this pane's own transcript (`--resume <session>`), in the same scratch
    * root and against the same stand-in, and settles it as the first life settled: what the
@@ -1159,6 +1336,18 @@ export async function runLegionPane(
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
     );
+  // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
+  // so nothing is still appending and a trailing fragment is a defect that must throw rather
+  // than be withheld (dispatch://INFRA-2188).
+  const transcript = async (): Promise<unknown[]> => {
+    const entries: unknown[] = [];
+    for (const file of await transcripts(sessions)) {
+      for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+        entries.push(JSON.parse(line));
+      }
+    }
+    return entries;
+  };
   return {
     requests,
     turns,
@@ -1180,20 +1369,36 @@ export async function runLegionPane(
       }
       return results;
     },
-    // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
-    // so nothing is still appending and a trailing fragment is a defect that must throw rather
-    // than be withheld (dispatch://INFRA-2188).
-    transcriptEntries: async (customType) => {
-      const entries: unknown[] = [];
-      for (const file of await transcripts(sessions)) {
-        for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+    transcript,
+    transcriptEntries: async (customType) =>
+      (await transcript()).flatMap((entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "customType" in entry &&
+        entry.customType === customType
+          ? ["data" in entry ? entry.data : undefined]
+          : []
+      ),
+    editTranscriptEntry: async (customType, edit) => {
+      for (const file of (await transcripts(sessions)).reverse()) {
+        const lines = (await readFile(file, "utf8")).split("\n");
+        const at = lines.findLastIndex((line) => {
+          if (line === "") return false;
           const entry: unknown = JSON.parse(line);
-          if (typeof entry !== "object" || entry === null) continue;
-          if (!("customType" in entry) || entry.customType !== customType) continue;
-          entries.push("data" in entry ? entry.data : undefined);
-        }
+          return (
+            typeof entry === "object" &&
+            entry !== null &&
+            "customType" in entry &&
+            entry.customType === customType
+          );
+        });
+        if (at === -1) continue;
+        const entry: Record<string, unknown> = JSON.parse(lines[at] ?? "");
+        lines[at] = JSON.stringify({ ...entry, data: edit(entry.data) });
+        await writeFile(file, lines.join("\n"));
+        return;
       }
-      return entries;
+      throw new Error(`no transcript entry of ${customType} under ${sessions}`);
     },
     resume: async (more, prompt) => {
       scripted.push(...more);

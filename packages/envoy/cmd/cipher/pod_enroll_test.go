@@ -11,7 +11,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,45 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
-
-const (
-	testPodAccount = "system:serviceaccount:legion:k8s-session"
-	testPodUID     = "11111111-2222-3333-4444-555555555555"
-	testPodService = "k8s-session"
-)
-
-// fakePodToken is a JWT shaped like the projected ServiceAccount token a kubelet mounts for the
-// agent-secrets audience. It is not signed by anything: the client reads its claims and never
-// verifies them, and every broker in this file is a fake.
-func fakePodToken(t *testing.T, subject, podUID string) string {
-	t.Helper()
-	claims := map[string]any{
-		"iss": "https://kubernetes.example/cluster",
-		"aud": []string{"agent-secrets"},
-		"sub": subject,
-		"exp": time.Now().Add(time.Hour).Unix(),
-	}
-	if podUID != "" {
-		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc := base64.RawURLEncoding
-	return enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + enc.EncodeToString(payload) + ".c2ln"
-}
-
-// writePodToken writes token to a file in its own directory and answers the path, as the kubelet's
-// projection mounts one.
-func writePodToken(t *testing.T, token string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
 
 // TestEnrolAPodFromItsProjectedToken: the whole of a pod's enrollment. It logs in with the token
 // its projected file holds, enrols kind pod under the pod UID that token's own claims name,
@@ -356,7 +316,7 @@ func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
 	if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
 	}
-	for _, want := range []string{testPodAccount, testPodUID, "403", "ACCOUNT_NOT_LISTED", "could not log in"} {
+	for _, want := range []string{testPodAccount, testPodUID, "HTTP 403", "ACCOUNT_NOT_LISTED", "could not log in"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}
@@ -448,7 +408,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s after a refused enrolment: %v", enrollmentErrorFile, err)
 	}
-	for _, want := range []string{"POD_SELF_ENROLL_ONLY", "403", testPodUID} {
+	for _, want := range []string{"POD_SELF_ENROLL_ONLY", "HTTP 403", testPodUID} {
 		if !strings.Contains(recorded, want) {
 			t.Fatalf("%s holds %q, which does not name %q", enrollmentErrorFile, recorded, want)
 		}
@@ -458,7 +418,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	}
 
 	// What a later call now says: the broker's refusal, not a missing file.
-	if _, _, err := buildSigner(); err == nil ||
+	if _, _, err := buildSigner(io.Discard); err == nil ||
 		!strings.Contains(err.Error(), enrollmentErrorFile) || !strings.Contains(err.Error(), "POD_SELF_ENROLL_ONLY") {
 		t.Fatalf("a later call after a refused enrolment = %v; want it to name %s and what the broker said", err, enrollmentErrorFile)
 	}
@@ -472,7 +432,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, enrollmentErrorFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("%s after a run that succeeded: %v; want it gone", enrollmentErrorFile, err)
 	}
-	if _, _, err := buildSigner(); err != nil {
+	if _, _, err := buildSigner(io.Discard); err != nil {
 		t.Fatalf("a later call after the run that succeeded: %v", err)
 	}
 }
@@ -500,7 +460,7 @@ func TestTwoRunsOnOneDirectoryTakeTurns(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			codes[i] = cmdEnrollPod(testPodService, tokenFile, out, &outs[i], &errs[i])
+			codes[i] = cmdEnrollPod(testPodService, tokenFile, out, podProjects{}, &outs[i], &errs[i])
 		}()
 	}
 	close(start)

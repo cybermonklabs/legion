@@ -44,6 +44,11 @@ type Session struct {
 	PID          int
 	StartTicks   uint64
 	RegisteredAt time.Time
+	// projects are the Dispatch projects the session names (AGENT_SECRETS_PROJECTS at its first
+	// register, or its record's after a restart), sorted, nil for none. They are fixed for the
+	// session's life: set once before the session is shared and never written again, so a
+	// reader needs no lock, and every enrollment of the session states them.
+	projects []string
 
 	mu sync.Mutex
 	// The four identity fields are mutable: Rename replaces all four at once when a launcher
@@ -106,7 +111,13 @@ type Session struct {
 	// ready closes when the session enrolls. A lapse (markLapsed) puts an open one in its place,
 	// which the next enrollment closes, so `register --wait` waits for the re-enrollment too.
 	ready chan struct{}
-	stop  chan struct{} // closed when the session is removed
+	// refused closes when the broker answers an enroll of this session with a refusal no retry
+	// can mend (refuse): 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, the machine login's person being
+	// one Dispatch calls a restricted member. enrollLoop then asks no more, the session reads
+	// "refused", and a `register --wait` waiting on ready wakes on this instead of waiting out its
+	// whole wait for an enrollment that cannot come.
+	refused chan struct{}
+	stop    chan struct{} // closed when the session is removed
 	// wake ends the renew wait at once when something OUTSIDE the loops lapses the enrollment —
 	// today only a rename. markLapsed alone does not reach renewLoop, which otherwise waits a
 	// third of the lease and acts only on a refused renew, so without this a renamed session
@@ -136,13 +147,15 @@ type identity struct {
 	// it in its own field, never folded into the live one, so a restart can tell the
 	// enrollment the recorded key holds from one it only has to end.
 	LapsedID string
+	// Projects are the session's projects (Session.projects), which its every enrollment states.
+	Projects []string
 }
 
 func (s *Session) identity() identity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return identity{RuntimeID: s.runtimeID, SessionID: s.sessionID, Key: s.key, Thumbprint: s.thumbprint,
-		Generation: s.generation, EnrollmentID: s.enrollmentID, Confirmed: s.confirmed, LapsedID: s.lapsedID}
+		Generation: s.generation, EnrollmentID: s.enrollmentID, Confirmed: s.confirmed, LapsedID: s.lapsedID, Projects: s.projects}
 }
 
 // confirmationInFlight is the channel a `register --wait` waits on beside the ready channel,
@@ -163,8 +176,8 @@ func (s *Session) identity() identity {
 // for it. With neither, no revoke can land, no renew is ever sent, and nothing can answer a
 // wait taken for one.
 //
-// Reading the channel never blocks, and neither does waiting on the nil this answers with:
-// a nil channel blocks for ever, which in registerReply's select is exactly "nothing here".
+// Reading the channel never blocks. The nil this answers with is a case of waitForRegister's
+// select that never fires, which is exactly "nothing here".
 func (s *Session) confirmationInFlight() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,7 +220,7 @@ func newSession(pid int, ticks uint64, runtimeID, sessionID string, key *ecdsa.P
 	close(settled)
 	return &Session{
 		PID: pid, StartTicks: ticks, runtimeID: runtimeID, sessionID: sessionID, key: key, thumbprint: tp,
-		RegisteredAt: time.Now(), ready: make(chan struct{}), stop: make(chan struct{}),
+		RegisteredAt: time.Now(), ready: make(chan struct{}), refused: make(chan struct{}), stop: make(chan struct{}),
 		confirmSettled: settled, wake: make(chan struct{}, 1), peer: peer,
 	}, nil
 }
@@ -284,13 +297,19 @@ type enrollmentState struct {
 // one moment's id with another's state or error, however a lapse or an enrollment interleaves.
 // The state is "enrolled" only for an id the broker itself answered with (confirmed); an id
 // inherited from a record reads "enrolling" until confirmInherited's renew confirms it, since
-// nothing has shown the broker still honours it.
+// nothing has shown the broker still honours it. A session the broker refused for good (refuse)
+// and that holds no confirmed enrollment reads "refused".
 func (s *Session) snapshot() enrollmentState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := "enrolled"
 	if s.enrollmentID == "" || !s.confirmed {
 		state = "enrolling"
+		select {
+		case <-s.refused:
+			state = "refused"
+		default:
+		}
 	}
 	return enrollmentState{EnrollmentID: s.enrollmentID, State: state, LastError: s.lastError}
 }
@@ -382,6 +401,19 @@ func (s *Session) setError(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastError = msg
+}
+
+// refuse records a refusal of this session's enrollment no retry can mend, with reason as its last
+// error, and closes the refused channel, which a `register --wait` waits on beside ready.
+func (s *Session) refuse(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = reason
+	select {
+	case <-s.refused:
+	default:
+		close(s.refused)
+	}
 }
 
 // markLapsed is what a refused renew does: the broker no longer honours this enrollment (its lease
@@ -516,6 +548,9 @@ type Record struct {
 	SessionID          string     `json:"session_id,omitempty"`
 	Key                string     `json:"key,omitempty"`
 	GoneAt             *time.Time `json:"gone_at,omitempty"`
+	// Projects are the session's projects (Session.projects), which the enrollment this record
+	// names was made under; none for a session naming none, or a record from before the field.
+	Projects []string `json:"projects,omitempty"`
 }
 
 // enrollments is every enrollment the record names that is still the helper's to end: the live
@@ -1029,7 +1064,7 @@ func (r *Registry) Draining() bool {
 // rather than dropping it.
 func (r *Registry) record(s *Session, cur identity) (Record, error) {
 	rec := Record{PID: s.PID, StartTicks: s.StartTicks, BootID: r.bootID, RuntimeID: cur.RuntimeID,
-		EnrollmentID: cur.EnrollmentID, LapsedEnrollmentID: cur.LapsedID, SessionID: cur.SessionID}
+		EnrollmentID: cur.EnrollmentID, LapsedEnrollmentID: cur.LapsedID, SessionID: cur.SessionID, Projects: cur.Projects}
 	if cur.SessionID == "" {
 		return rec, nil
 	}

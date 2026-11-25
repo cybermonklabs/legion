@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// refusedProjectRepos is the project's mapping for the tests below: the repository every test
-// spec works, under the owner its roles write to, and one repository of a second owner, which a
-// bundle holds that owner's own directory for.
+// refusedProjectRepos is the repositories the project serves in the tests below: the repository
+// every test spec works, under the owner its roles write to, and one repository of a second
+// owner, which a bundle holds that owner's own directory for.
 func refusedProjectRepos() []ghrepo.Repository {
 	return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke"), ghrepo.MustParse("acme/widgets")}
 }
@@ -76,11 +76,12 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-		apps := sourceOf(tokens, installedOnMapped{served: refusedProjectRepos})
-		o.GitHubCredential = appauth.GitHubCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
-		o.ControllerCredential = appauth.ControllerCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
+		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
+		served := servesOneOf(refusedProjectRepos)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
+		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, installed, left, roles, repo)
+			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
 		}
 	})
 }
@@ -91,7 +92,7 @@ func ghDriftReasons(t *testing.T, g *rig, loc runtime.Locator, role claim.Role) 
 	t.Helper()
 	name := roleVolume(ghVolume, role)
 	var named []string
-	for _, reason := range driftOf(t, g.ctx, g.r, loc) {
+	for _, reason := range driftOf(t, g, g.r, loc) {
 		if strings.Contains(reason, name) {
 			named = append(named, reason)
 		}
@@ -155,8 +156,8 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	refuse.Store(true)
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnMapped{served: refusedProjectRepos}),
-			refusedProjectRepos, ghrepo.Renames{}, nil, nil, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnServed{repos: refusedProjectRepos}),
+			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))

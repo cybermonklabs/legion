@@ -188,21 +188,30 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 
 // TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
 // as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
-// that read the new tags from one that read them stale. It carries nothing else of the tags.
+// that read the new tags from one that read them stale. It carries nothing else of the tags. A
+// profile of another name uses the secret, as a profile must for the broker to serve it as a
+// github-app one, and a reread answers the secret as the store holds it.
 func TestARereadNamesTheTypeItServes(t *testing.T) {
-	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(`{"name": "PLAIN_READ", "source": "PLAIN_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`),
+		func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
 	_, body := ts.sessionReread(t, "PLAIN_KEY")
 	if r := decode[wireReread](t, body); !r.Served || r.Type != "" || strings.Contains(string(body), `"type"`) {
 		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
 	}
 	for _, secretType := range policy.Types {
-		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, policy.TierAgent, secretType, policytest.TypeValue(secretType)))
+		// An anthropic-federation secret is served at human tier alone (policy.ReasonTypeHumanTier);
+		// every other type at agent tier, as before.
+		tier := policy.TierAgent
+		if secretType == policy.TypeAnthropicFederation {
+			tier = policy.TierHuman
+		}
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, tier, secretType, policytest.TypeValue(secretType)))
 		_, body = ts.sessionReread(t, "PLAIN_KEY")
 		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
 			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
 		}
-		for _, private := range []string{testApprover, policy.TierAgent, "github-owners", "owner"} {
+		for _, private := range []string{testApprover, tier, "github-owners", "owner"} {
 			if strings.Contains(string(body), private) {
 				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
 			}
@@ -490,7 +499,7 @@ type recordingNotifier struct {
 	names []string
 }
 
-func (n *recordingNotifier) notify(ctx context.Context, name string) {
+func (n *recordingNotifier) notify(ctx context.Context, name string, _ []string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := ctx.Err(); err != nil {

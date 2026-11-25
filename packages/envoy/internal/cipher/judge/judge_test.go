@@ -153,6 +153,16 @@ func TestTheChecksBeforeTheModel(t *testing.T) {
 			machine:    func(f *fakeRequests) { f.admin, f.withheld = true, true },
 		},
 		{
+			name: "a private project's key", want: checkProject,
+			wantDetail: "belongs to a private project",
+			machine:    func(f *fakeRequests) { f.private = true },
+		},
+		{
+			name: "a project that could not be read", want: checkProject,
+			wantDetail: "could not be read",
+			machine:    func(f *fakeRequests) { f.projectErr = errors.New("dispatch answered 503") },
+		},
+		{
 			name: "an issue read that failed", want: checkDispatch, readsDispatch: true,
 			wantDetail: "issue " + testIssue + " could not be read",
 			dispatch:   func(d *dispatchStandIn) { d.issueStatus = http.StatusInternalServerError },
@@ -437,12 +447,13 @@ func TestAGrantTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) {
 }
 
 // TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes: the person decided the request after a
-// hand-over, its hold ended, or its operator withheld the name, so the judge's own grant lands on
-// a request the decision transaction refuses. That is the ordinary end of a race the judge is
-// built to lose, and the deployment's alarms read the broker's ERROR lines, so it leaves none, and
-// the row it writes carries no error either — "error" is the model call's own failure, and
-// nothing failed here. A refusal of any other kind is a judge that reached a request it should not
-// have, and that does raise one, naming the record a person has to look at.
+// hand-over, its hold ended, its operator withheld the name, or a profiles roll took the request's
+// target out of its profile, so the judge's own grant lands on a request the decision transaction
+// refuses. That is the ordinary end of a race the judge is built to lose, and the deployment's
+// alarms read the broker's ERROR lines, so it leaves none and is logged at INFO, and the row it
+// writes carries no error either — "error" is the model call's own failure, and nothing failed
+// here. A refusal of any other kind is a judge that reached a request it should not have, and that
+// does raise one, naming the record a person has to look at.
 func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 	for _, c := range []struct {
 		refusal   error
@@ -454,6 +465,9 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 		// The withheld guard currentPolicyAdmits makes for the judge alone: the
 		// operator took the name back from the session while the model was answering.
 		{fmt.Errorf("%w: AIRLOCK_JUDGED_TOKEN is withheld from this session", record.ErrNotApprover), false},
+		// The target check an approval makes again (requests.checkTarget): the profiles file
+		// rolled while the model was answering, and the target is no longer in the profile.
+		{fmt.Errorf("%w: APP_KEY: the target ada/site is outside the profile, which names the account ada", requests.ErrTargetRefused), false},
 		{errors.New("the grant could not be written"), true},
 	} {
 		t.Run(c.refusal.Error(), func(t *testing.T) {
@@ -464,13 +478,20 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 
 			var errorLines []string
+			lostRace := false
 			for _, r := range records.Records() {
 				if r.Level >= slog.LevelError {
 					errorLines = append(errorLines, r.Message)
 				}
+				if r.Level == slog.LevelInfo && strings.Contains(r.Message, "before the judge's grant landed") {
+					lostRace = true
+				}
 			}
 			if got := len(errorLines) > 0; got != c.wantError {
 				t.Errorf("the run wrote the ERROR lines %q; want any: %v", errorLines, c.wantError)
+			}
+			if !c.wantError && !lostRace {
+				t.Errorf("the run wrote no INFO line saying the judge's grant lost the race; want one")
 			}
 			_, logged := machine.rows()
 			if len(logged) != 1 {
@@ -522,7 +543,7 @@ func TestAnIssueWithNoSpecIsShownOnItsKeyTitleAndStatus(t *testing.T) {
 }
 
 // TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped is the negative control of the
-// five checks: with the switch on, a request that fails one still reaches the model, and the row
+// six checks: with the switch on, a request that fails one still reaches the model, and the row
 // still records which check failed.
 func TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
@@ -558,7 +579,7 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 }
 
 // TestTheWorstCaseStillWritesItsJudgedRow is the run the three bounds are arithmetic for: the
-// issue read spends what its dispatchBound gives it, the ask read its own, the model call then
+// Dispatch phase spends what its dispatchBound gives it, the ask read its own, the model call then
 // runs out its own modelBound, and the transaction that records the verdict takes two seconds of
 // its own. That is the longest a run can be, and its row is still written, because the bounds
 // leave the write its seconds. Were they to fill runBudget between them, this run would write
@@ -567,10 +588,13 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	// Each Dispatch answer takes half of a bound, less a twentieth of a second for its round
-	// trip: the issue phase's two GETs spend the first bound together and the ask read half
-	// of its own, and each still answers.
-	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
+	// The phase's three reads — the project check's and the issue's two GETs — each take a
+	// third of its bound, less a twentieth of a second for the round trips themselves: the
+	// phase has to spend its bound and still answer, since a read the bound cut short would
+	// hand the request over and the model would never be asked. The ask read, under a bound
+	// of its own, takes a third of it.
+	machine.projectTakes = dispatchBound/3 - 50*time.Millisecond
+	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
@@ -594,6 +618,41 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	}
 	if failed := failedCheck(t, row); failed != "" {
 		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)
+	}
+}
+
+// TestASlowProjectReadStillWritesItsJudgedRow: the project check reads Dispatch too, so it is
+// part of the Dispatch phase and shares dispatchBound with the issue read's two GETs. A read that
+// would answer after 9 seconds, inside the project-access client's own 10 s per call, is cut at
+// the bound: the project check fails, the request is handed over, the model is never asked and
+// the row is written. Were the read on the run's own context, a request citing an ask would spend
+// its 9 seconds, the issue read's 5, the ask read's 5 and the model's 20, past runBudget, and the
+// run would write nothing at all.
+func TestASlowProjectReadStillWritesItsJudgedRow(t *testing.T) {
+	t.Parallel()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+	machine.projectTakes = 9 * time.Second
+	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
+	model.delay = runBudget
+	started := time.Now()
+	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(citedPending())
+
+	waitFor(t, "the run whose project read was slow to write its row", runBudget+5*time.Second, func() bool {
+		_, logged := machine.rows()
+		return len(logged) == 1
+	})
+	if took := time.Since(started); took >= machine.projectTakes {
+		t.Errorf("the run wrote its row after %s; want the phase's bound, %s, to have cut the read short", took, dispatchBound)
+	}
+	row := theOneRow(t, machine)
+	if failed := failedCheck(t, row); failed != checkProject {
+		t.Fatalf("the row names %q as the check that failed; want %q, the read the bound cut short", failed, checkProject)
+	}
+	if detail := failedDetail(t, row); !strings.Contains(detail, context.DeadlineExceeded.Error()) {
+		t.Errorf("the project check reads %q; want it to say the read ran out of time", detail)
+	}
+	if row["asked"] != false || model.asked() != 0 || len(dispatch.got()) != 0 {
+		t.Errorf("the row reads asked %v, the model got %d requests and Dispatch %d; want a hand-over that asked nothing more", row["asked"], model.asked(), len(dispatch.got()))
 	}
 }
 

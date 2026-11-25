@@ -26,7 +26,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/testport"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // printedSecret stands for a credential in a place it does not belong. No printed text holds it.
@@ -179,6 +179,19 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	}
 }
 
+// TestADeviceLoginIsRefusedByName: device-login is the TypeScript client's own identity, which a
+// laptop sets for its sessions, and no Go tool trades it. A Go tool started on that laptop says
+// so by name, rather than calling it a kind it does not know.
+func TestADeviceLoginIsRefusedByName(t *testing.T) {
+	env := map[string]string{IdentityVar: "device-login"}
+	source, err := MachineIdentity(func(name string) string { return env[name] })
+	if err == nil || source != nil {
+		t.Fatalf("MachineIdentity = %#v, %v; want device-login refused", source, err)
+	}
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, "device-login", "TypeScript",
+		IdentityKubernetes, IdentityMetadata, IdentityPool)
+}
+
 // TestAnIssuerThatCarriesACredentialIsNotPrinted: AGENT_SECRETS_SIGNIN_ISSUER is a URL, and every
 // refusal of the sign-in prints it only as internal/redact's allow-list does - whole when it is a
 // plain URL, not at all when it carries a user name, a password or a query - beside the setting's
@@ -249,7 +262,7 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start read a discovery document the issuer did not serve")
 	} else {
 		holdsNoSecret(t, "the failed discovery", err.Error())
-		namesAll(t, "the failed discovery", err.Error(), "500")
+		namesAll(t, "the failed discovery", err.Error(), "HTTP 500")
 	}
 	discoveryFails = false
 	flow = exampleFlow(base)
@@ -257,13 +270,13 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start took a device code the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused device code", err.Error())
-		namesAll(t, "the refused device code", err.Error(), "502")
+		namesAll(t, "the refused device code", err.Error(), "HTTP 502")
 	}
 	if _, err := flow.Refresh(context.Background(), "a-refresh-token"); err == nil {
 		t.Fatal("Refresh took a refresh the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused refresh", err.Error())
-		namesAll(t, "the refused refresh", err.Error(), "400", "invalid_client")
+		namesAll(t, "the refused refresh", err.Error(), "HTTP 400", "invalid_client")
 	}
 }
 
@@ -310,7 +323,9 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 // TestARedirectedDiscoveryPrintsWhereItEnded: the status a failed discovery prints is the last
 // request's, so a 302 whose target refuses the connection prints as the refused connection it
 // ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
-// 404 prints that status, and its error still unwraps to go-oidc's own: the control.
+// 404 prints that status, and its error still unwraps to go-oidc's own: the control. Each status is
+// looked for as the error prints one ("HTTP 302"), never as its digits alone, which the issuer's
+// own address in the same error can hold (port 33025 did).
 func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	// A port held refused for the whole test (testport.Refused), not one a closed listener freed.
 	closed := testport.Refused(t)
@@ -322,7 +337,7 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 		t.Fatal("Start read a discovery document from a port that is closed")
 	}
 	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
+	if strings.Contains(err.Error(), "HTTP 302") || !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
 	}
 

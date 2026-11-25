@@ -25,9 +25,15 @@ import type {
   IssueCoverage,
   IssueDetails,
   Project,
+  StatusChangeAnswer,
   UserIssueState,
 } from "../../api/types";
 import { subsetRanges } from "../../fonts/inter/subset-script";
+import {
+  answerStatusChanges,
+  fixtureAnswer,
+  fixtureRefusal,
+} from "../issue/parent-status/status-change-fixtures";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -431,6 +437,7 @@ test("the header draws a gated root issue's steps where the header's one chip sa
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -463,6 +470,37 @@ test("the header draws a gated root issue's steps where the header's one chip sa
   }
 });
 
+test("the header draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubHeader({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+    proven_sessions: false,
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderHeader("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("the header keeps the primary document's chip when no gated step reviews it", async () => {
   const restore = stubHeader({
     ...issue,
@@ -482,6 +520,7 @@ test("the header keeps the primary document's chip when no gated step reviews it
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -933,6 +972,103 @@ test("the approval chip's keys press its own actions, and only while those take 
     answered.reject(new Error("the connection dropped"));
     view.unmount();
     createArtifactReview.mockRestore();
+    restore();
+  }
+});
+
+/** Whether the header's key `id` applies now, as the key card reads it (`appKeymap.describe`). */
+function keyApplies(id: string): boolean | undefined {
+  return appKeymap.describe().find((key) => key.scope === "issue" && key.id === id)?.enabled;
+}
+
+// The pin stands in the actions group, which is drawn hidden while the menu is shut, and
+// `Shift+P` presses it there: the key reads the pin up to that group (`useHeaderKeys.ts`), so it
+// is offered and pins with the menu shut, and the menu stays shut.
+test("Shift+P is offered with the actions menu shut, and pins the issue", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const putIssueState = spyOn(api, "putIssueState").mockResolvedValue({
+    dismissed: [],
+    last_read_seq: 0,
+    pinned: true,
+    seq: 1,
+  });
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const control = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    expect(keyApplies("pin"), "Shift+P is off while the actions menu is shut").toBe(true);
+    act(() => heading.focus());
+    await user.keyboard("{Shift>}P{/Shift}");
+    await waitFor(() =>
+      expect(putIssueState, "Shift+P with the actions menu shut sent no pin").toHaveBeenCalledWith(
+        "CORE-1",
+        { pinned: true },
+        keyedAttempt
+      )
+    );
+    expect(control, "Shift+P opened the actions menu").toHaveAttribute("aria-expanded", "false");
+  } finally {
+    view.unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// The pin is disabled while its write is out, and the menu it was pressed from is shut again by
+// then: read up to that shut group, a disabled pin still takes no press, so `Shift+P` is off. A
+// key press is not read here: a disabled button takes no click whatever the key rule says.
+test("Shift+P is off while the pin's write is out", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const saved = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockImplementation(() => saved.promise);
+  const view = renderHeader();
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = screen.getByRole("button", { name: CONTROL_LABELS.pin_issue });
+    await user.click(pin);
+    await waitFor(() =>
+      expect(pin, "the pin is not disabled while its write is out").toBeDisabled()
+    );
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(keyApplies("pin"), "Shift+P is offered while the pin is disabled").toBe(false);
+  } finally {
+    saved.resolve({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
+    view.unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// The header's keys read the page's one rule (`usable-control.ts`), which refuses a control that
+// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status select is
+// `aria-disabled`, and focuses nothing.
+test("s is off while the status select is aria-disabled", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
+      name: "Status",
+    });
+    expect(keyApplies("status"), "s is off while the status select takes a press").toBe(true);
+    act(() => status.setAttribute("aria-disabled", "true"));
+    expect(keyApplies("status"), "s is offered while the status select is busy").toBe(false);
+    act(() => heading.focus());
+    await user.keyboard("s");
+    expect(status, "s focused a busy status select").not.toHaveFocus();
+  } finally {
+    view.unmount();
     restore();
   }
 });
@@ -2703,6 +2839,128 @@ test("the actions group closes once a focus moved by code goes to a control outs
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// The rule's question on the new page's header (INFRA-4731): the header draws what the dry run of a
+// status write answers, so a write the rule would refuse never leaves the status pending with
+// nothing on the screen and every later pick refused as one too many.
+
+/** The issue under a parent, so the rule judges each write of its status. */
+const issueUnderAParent: IssueDetails = { ...issue, parent: "CORE-9" };
+
+test("a status pick the rule would refuse asks the question, and Keep as it is puts the status back for the next pick", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) => {
+    // Each choice's own dry run is held: the question is about to be closed unanswered.
+    if (input.include_children === true || input.unlink_children === true) {
+      return new Promise<StatusChangeAnswer>(() => {});
+    }
+    if (input.status === "in_progress") throw fixtureRefusal("conflict");
+    return fixtureAnswer("dry-run");
+  });
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issueUnderAParent,
+    status: "backlog",
+  });
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+    expect(status).toHaveValue("in_progress");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.click(within(question).getByRole("button", { name: "Keep as it is" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // The next pick is taken: its dry run asks nothing, and its PATCH goes.
+    await user.selectOptions(status, "backlog");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
+    );
+    expect(statusChanges).toHaveBeenCalledWith(
+      "CORE-1",
+      { dry_run: true, status: "backlog" },
+      expect.anything()
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a status pick whose dry run is refused for another reason says why, and the status goes back", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const refusal = fixtureRefusal("stale");
+  answerStatusChanges().mockRejectedValue(refusal);
+  const patchIssue = answerIssuePatches();
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    expect(
+      await screen.findByText(`Couldn't change the status of CORE-1 — ${refusal.message}`)
+    ).toHaveAttribute("role", "alert");
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The page takes a pick while an earlier one is out (its select is never disabled), and writes
+// each in the order they came. A pick of an issue under a parent sends the rule's dry run first:
+// a second pick made while that dry run is out shows at once and goes once the first has made its
+// write, as a pick made while a write is out waits behind it in the issue's line.
+test("a second status pick while the first one's dry run is out shows at once, and both are written in order", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const firstCheck = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) =>
+    input.status === "testing" ? firstCheck.promise : fixtureAnswer("dry-run")
+  );
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => ({
+    ...issueUnderAParent,
+    status: input.status ?? issueUnderAParent.status,
+  }));
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "testing");
+    expect(status).toHaveValue("testing");
+    await user.selectOptions(status, "needs_review");
+    expect(status).toHaveValue("needs_review");
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      firstCheck.resolve(fixtureAnswer("dry-run"));
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue.mock.calls.map(([, input]) => input)).toEqual([
+      { status: "testing" },
+      { status: "needs_review" },
+    ]);
+    expect(statusChanges.mock.calls.map(([, input]) => input.status)).toEqual([
+      "testing",
+      "needs_review",
+    ]);
+    await waitFor(() => expect(status).toHaveValue("needs_review"));
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });
