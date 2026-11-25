@@ -336,20 +336,40 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 
 // applyAndFix is the fact's handler (apply), then the fix rule over the issue the fact names
 // (fixRule), in the fact's own transaction: whatever the handler wrote of the issue's check
-// states, its head or where its task stands, the rule reads it as the fact leaves it. A fact the
-// handler refused, left unspent or answered as a duplicate wrote nothing, and the rule writes
-// nothing beside it.
+// states, its head or where its task stands, the rule reads it as the fact leaves it. A review
+// names its issue only through its pull request, so its handler hands the issue it resolved to
+// this one call (resolvedIssue): an approval that moves a task into its retro is followed by the
+// rule's read of that task's end in the review's own transaction. A fact the handler refused, left
+// unspent or answered as a duplicate wrote nothing, and the rule writes nothing beside it.
 func (e *Engine) applyAndFix(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	result, err := e.apply(ctx, tx, fact)
+	resolved := new(string)
+	result, err := e.apply(context.WithValue(ctx, resolvedIssueKey{}, resolved), tx, fact)
 	if err != nil || result.Refusal != nil || result.Unspent || result.Duplicate || e.noFixRule {
 		return result, err
 	}
-	if key, ok := intake.IssueOf(fact); ok {
+	key, ok := intake.IssueOf(fact)
+	if !ok && *resolved != "" {
+		key, ok = *resolved, true
+	}
+	if ok {
 		if err := e.fixRule(ctx, tx, key); err != nil {
 			return intake.Result{}, err
 		}
 	}
 	return result, nil
+}
+
+// resolvedIssueKey is the context key of the issue a fact that names none was resolved to by its
+// handler (resolvedIssue), which applyAndFix reads for the fix rule.
+type resolvedIssueKey struct{}
+
+// resolvedIssue tells applyAndFix that the fact being applied, which names no issue itself
+// (intake.IssueOf), is of key: a review, resolved through its pull request. Outside applyAndFix it
+// does nothing.
+func resolvedIssue(ctx context.Context, key string) {
+	if holder, ok := ctx.Value(resolvedIssueKey{}).(*string); ok {
+		*holder = key
+	}
 }
 
 // apply is the handler of each fact the workflow takes, one case for each fact type, which a test
