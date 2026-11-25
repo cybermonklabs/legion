@@ -37,18 +37,7 @@ func TestAnAskOpenedBesideARepairIsCausedByItsOwnEvent(t *testing.T) {
 		t.Fatalf("the reconciliation's events are %+v, want the block.repaired and then the ask.opened", reconciled.events)
 	}
 
-	appended := []model.Event{{ID: 41, Type: "artifact.version"}}
-	appended = append(appended, reconciled.events...)
-	caused, err := reconciled.causedByEvent(appended)
-	if err != nil {
-		t.Fatalf("match the follows to their events: %v", err)
-	}
-	if stated := caused[2]; len(caused) != 1 || len(stated) != 2 || stated[0] != &node || stated[1] != &followed {
-		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, 2", caused, opened.ID)
-	}
-	if _, err := reconciled.causedByEvent(appended[:2]); err == nil || !strings.Contains(err.Error(), opened.ID) {
-		t.Fatalf("matching a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, opened.ID)
-	}
+	requireFollowCausedAt(t, &reconciled, opened.ID, &node, &followed, 2)
 }
 
 // TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent: one settlement, while another build
@@ -102,16 +91,25 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 			reconciled.events)
 	}
 
+	requireFollowCausedAt(t, &reconciled, opened.ID, &node, &followed, 1)
+}
+
+// requireFollowCausedAt holds what causedByEvent makes of the follow of ask, whose node and follow
+// are node and followed, over the version's own event and then reconciled's events: it states the
+// two under the ask.opened at place, and over the events before place, which leave that
+// ask.opened out, it answers an error that names the ask.
+func requireFollowCausedAt(t *testing.T, reconciled *settlementReconciliation, ask string, node, followed *graphstore.Uncaused, place int) {
+	t.Helper()
 	appended := []model.Event{{ID: 41, Type: "artifact.version"}}
 	appended = append(appended, reconciled.events...)
 	caused, err := reconciled.causedByEvent(appended)
 	if err != nil {
 		t.Fatalf("match the follows to their events: %v", err)
 	}
-	if stated := caused[1]; len(caused) != 1 || len(stated) != 2 || stated[0] != &node || stated[1] != &followed {
-		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, 1", caused, opened.ID)
+	if stated := caused[place]; len(caused) != 1 || len(stated) != 2 || stated[0] != node || stated[1] != followed {
+		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, %d", caused, ask, place)
 	}
-	if _, err := reconciled.causedByEvent(appended[:1]); err == nil || !strings.Contains(err.Error(), opened.ID) {
-		t.Fatalf("matching a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, opened.ID)
+	if _, err := reconciled.causedByEvent(appended[:place]); err == nil || !strings.Contains(err.Error(), ask) {
+		t.Fatalf("matching a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, ask)
 	}
 }

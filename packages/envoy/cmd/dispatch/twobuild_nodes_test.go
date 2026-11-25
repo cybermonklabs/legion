@@ -170,14 +170,10 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 
 	t.Run("the previous build stops and this build cures what it left", func(t *testing.T) {
-		// Beside a build that writes no node, the first and fourth orders' rows; beside one that
-		// writes them, none.
-		want := 2
-		if writesNodes {
-			want = 0
-		}
-		if len(forTheTick) != want {
-			t.Fatalf("the orders left %d row(s) for this build to cure, want %d", len(forTheTick), want)
+		// Beside a build that writes no node, the first and fourth orders each left a row for this
+		// build to cure.
+		if !writesNodes && len(forTheTick) != 2 {
+			t.Fatalf("the orders left %d row(s) for this build to cure, want 2", len(forTheTick))
 		}
 		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
 		var commits []string

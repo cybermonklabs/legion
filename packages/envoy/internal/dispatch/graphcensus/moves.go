@@ -286,24 +286,14 @@ var danglingRead = `
 	) cited
 	order by d.counted, d.address, cited.kind, cited.id`
 
-// DanglingCitations is the dangling-citation counter: the citations
-// of the moved set and of the returning set (DanglingMoved, DanglingReturning), read in q over the
-// restore's work as ReadRestoreWork finds it, its returns judged by declined (ReturnDeclined).
-// Both sets answer before the restore moves anything.
-func DanglingCitations(ctx context.Context, q graphstore.Queryer, declined ReturnDeclined) (DanglingReport, error) {
-	work, err := ReadRestoreWork(ctx, q)
-	if err != nil {
-		return DanglingReport{}, err
-	}
-	return danglingCitationsOver(ctx, q, work, declined)
-}
-
-// danglingCitationsOver is DanglingCitations over work already read, so the census reads the
-// restore's work once for the counter and the collision lines. A return the restore declines
-// (declined) is no return it makes, and its old address no target: a person took the block out,
-// and the address stays empty after the restore as before it. A return it cannot judge, since
-// declined is nil, is ErrNoReturnDeclined, naming the ask.
-func danglingCitationsOver(ctx context.Context, q graphstore.Queryer, work []RestoreWork, declined ReturnDeclined) (DanglingReport, error) {
+// danglingCitations is the dangling-citation counter: the citations of the moved set and of the
+// returning set (DanglingMoved, DanglingReturning), read in q over work, the restore's work as the
+// caller read it (ReadRestoreWork), so the census reads that work once for the counter and the
+// collision lines. Both sets answer before the restore moves anything. A return the restore
+// declines (declined, a ReturnDeclined) is no return it makes, and its old address no target: a
+// person took the block out, and the address stays empty after the restore as before it. A return
+// it cannot judge, since declined is nil, is ErrNoReturnDeclined, naming the ask.
+func danglingCitations(ctx context.Context, q graphstore.Queryer, work []RestoreWork, declined ReturnDeclined) (DanglingReport, error) {
 	returning, moving := []string{}, []string{}
 	for _, ask := range work {
 		switch ask.Shape {
