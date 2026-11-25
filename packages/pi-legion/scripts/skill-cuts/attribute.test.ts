@@ -2438,7 +2438,7 @@ test("the command writes a renamed copy's reads under its former name beside its
   );
 });
 
-test("session context row 4: one count row can read different copies in two profiles of one store", () => {
+test("one count row can read different copies in two profiles of one store", () => {
   const root = path.join(dir, "profile-roots");
   const countDir = tree(path.join(root, "count"), {
     "store_a/2026-11-20.txt": queryText("store_a", "2026-11-20", [

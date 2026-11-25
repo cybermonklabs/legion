@@ -1064,11 +1064,14 @@ function listedChange(full: string, listed: Listed): string | undefined {
  *  cache restored from a save that kept only files newer than a cutoff held checkouts without
  *  their plugins' package.json, which installed those plugins as `skills only`, with nothing to
  *  say so. A file the entry holds beyond its list is no change (a compose writes its Go test into
- *  a checkout while it runs). An entry with no list was made before lists were kept: a tree is
- *  made again, since only a tree's files keep their source's file times (the tarball's), so only a
- *  tree can be partly kept by a save that cuts by file time; any other entry, written by the
- *  runner at build time, is taken unchecked, since making each again would cost a GitHub read per
- *  file of thousands of entries. */
+ *  a checkout while it runs). A plugin's build (`buildPlugin`) runs inside its cached checkout:
+ *  measured on real plugins, a build adds files and rewrites no listed one (a capture on a fresh
+ *  cache, then a second capture that hit every checkout with its list checked), and a build that
+ *  did rewrite one is refused here with its path, never taken in silence. An entry with no list
+ *  was made before lists were kept: a tree is made again, since only a tree's files keep their
+ *  source's file times (the tarball's), so only a tree can be partly kept by a save that cuts by
+ *  file time; any other entry, written by the runner at build time, is taken unchecked, since
+ *  making each again would cost a GitHub read per file of thousands of entries. */
 class Builds {
   readonly list: Build[] = [];
   constructor(readonly cacheDir: string) {}

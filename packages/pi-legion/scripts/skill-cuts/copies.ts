@@ -52,9 +52,11 @@
  * and `--at`, which name one commit), each level a truncated tree's walk finishes (keyed by
  * repository, root tree, fork flag, KEEP_RULES_VERSION and level: a tree's id fixes its content,
  * so a walk stopped midway goes on from its next level), each code search run whole, keyed by
- * its query, each prepack script's history, and each read of what git did to a directory a
- * prepack script staged from (step 6, `readFormerSource`). A cached read makes no GitHub call; a
- * read that failed is not cached, so it is tried again.
+ * its query, each prepack script's and each target repository's marketplace manifest's history,
+ * each read of what git did to a directory a prepack script staged from (step 6,
+ * `readFormerSource`), and the files of each commit that changed such a marketplace manifest
+ * (`readCommitFiles`). A cached read makes no GitHub call; a read that failed is not cached, so
+ * it is tried again.
  * Without `--cache-dir` the same files go to a temporary directory, removed when the run ends.
  * stderr gets one line per repository done (`copies: tree <n>/<total> <owner/repo>: <entries>
  * entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25 searches with the calls
@@ -2966,20 +2968,27 @@ export interface PrefixRow {
  *  repository. */
 export const IMAGE_ROOT = "/opt/legion/";
 
-/** A row of former-stages.tsv (`formerStagePrefixes`): one location of a path a prepack script
- *  staged a skill at during the count's window and stages no longer. */
+/** A row of former-stages.tsv (`formerStagePrefixes`, `formerMarketplacePrefixes`): one location
+ *  of a path a prepack script staged a skill at during the count's window and stages no longer, or
+ *  one cache location of a skill a target repository's marketplace gave it during the window and
+ *  gives no more. */
 export interface FormerStageRow {
-  /** The prefix pattern of the path at one location of the package's unit; empty when the
-   *  package is no unit of the script's repository. */
+  /** The prefix pattern of the path at one location of the package's unit, or of the plugin's
+   *  cache; empty when the package is no unit of the script's repository. */
   readonly prefix: string;
+  /** The prepack script's repository and path, or the marketplace manifest's. */
   readonly scriptRepository: string;
   readonly scriptPath: string;
+  /** The script's package, or the former plugin as `plugin:<plugin>@<marketplace>`. */
   readonly package: string;
-  /** The name the script staged. */
+  /** The name the script staged, or the name of the directory the plugin held. */
   readonly skill: string;
-  /** The commit of the script's version from which it stages the skill there no longer. */
+  /** The commit of the script's version from which it stages the skill there no longer; or the
+   *  commit from which the plugin holds it there no longer: the first commit that moved it, else
+   *  the manifest's first version that names the plugin no more. */
   readonly until: string;
-  /** The directory git renamed the staged directory's SKILL.md to (`readFormerSource`), or `""`. */
+  /** The directory git renamed the SKILL.md to (the staged directory's, `readFormerSource`; the
+   *  plugin's, at the last move `formerMarketplacePrefixes` follows), or `""`. */
   readonly renamedTo: string;
   /** The copy the prefix row of `prefix` maps it to, or `""` when no row maps it. */
   readonly repository: string;
@@ -4193,13 +4202,16 @@ export interface MarketplaceHistory {
  *   under a plugin's `skills/` that the plugin's marketplace named before that commit, and the
  *   directory it went to, or one a later such commit moved it to, holds a copy now. A move is seen
  *   only in a commit that changed the manifest. A skill git removed has a former-stages.tsv row
- *   with no copy.
+ *   with no copy. A commit whose file list holds COMMIT_PAGE_FILES files may be cut, since GitHub
+ *   lists a commit's files a page at a time: its moves are read as listed, and a note and a
+ *   failure (in `failures`) say that a move past them may be missed.
  * The row's `name` is the directory's name where the plugin held the skill, its former name when
  * the move changed it.
  */
 export async function formerMarketplacePrefixes(
   histories: readonly MarketplaceHistory[],
-  index: CopyIndex
+  index: CopyIndex,
+  failures: string[]
 ): Promise<{ prefixes: PrefixRow[]; notes: ManifestNote[]; stages: FormerStageRow[] }> {
   const prefixes = new Map<string, PrefixRow>();
   const notes: ManifestNote[] = [];
@@ -4244,6 +4256,13 @@ export async function formerMarketplacePrefixes(
       if (changed.kind === "failed") {
         note(`the files of its version at ${version.commit} could not be read (${changed.error})`);
         continue;
+      }
+      if (changed.files.length >= COMMIT_PAGE_FILES) {
+        const cut = `${version.commit} lists ${changed.files.length} files, the most GitHub lists on one page, so its list may be cut`;
+        note(`the files of its version at ${version.commit} may miss a move: ${cut}`);
+        failures.push(
+          `the SKILL.md moves of ${repository}:${manifest.path} at ${version.commit} may be missed: ${cut}`
+        );
       }
       for (const [filename, status, previous] of changed.files) {
         const renamed =
@@ -5257,8 +5276,8 @@ export interface CopiesResult {
   readonly notes: ManifestNote[];
   readonly prefixes: PrefixRow[];
   readonly offTargets: PrefixRow[];
-  /** former-stages.tsv's rows (`formerStagePrefixes`), each copy held to the targets as the prefix
-   *  table's rows are. */
+  /** former-stages.tsv's rows (`formerStagePrefixes`, `formerMarketplacePrefixes`), each copy held
+   *  to the targets as the prefix table's rows are. */
   readonly formerStages: FormerStageRow[];
   readonly targetsUnused: string[];
   readonly loaders: LoaderRow[];
@@ -5447,7 +5466,7 @@ function markdown(result: CopiesResult): string {
     "## Prefix table",
     "",
     `${result.prefixes.length} rows in prefix-table.tsv, each to a repository the configuration's targets name. ` +
-      `${result.formerStages.length} rows in former-stages.tsv, one for each path a prepack script staged a skill at during the window and stages no longer, at each place its package is installed (each manifest's notes above say why its rows map it where they do, or why no row maps it).`
+      `${result.formerStages.length} rows in former-stages.tsv, one for each path a prepack script staged a skill at during the window and stages no longer, at each place its package is installed, and one for each cache location a target repository's marketplace gave a skill of its own during the window and gives no more (each manifest's notes above say why its rows map it where they do, or why no row maps it).`
   );
   if (result.offTargets.length > 0) {
     const repositories = [...new Set(result.offTargets.map((row) => row.repository))].sort();
@@ -6463,7 +6482,7 @@ async function readAll(
     });
   }
   const formerScripts = await formerStagePrefixes(scripts, resolved, index);
-  const formerPlugins = await formerMarketplacePrefixes(marketplaces, index);
+  const formerPlugins = await formerMarketplacePrefixes(marketplaces, index, failures);
   const former = {
     prefixes: [...formerScripts.prefixes, ...formerPlugins.prefixes],
     notes: [...formerScripts.notes, ...formerPlugins.notes],

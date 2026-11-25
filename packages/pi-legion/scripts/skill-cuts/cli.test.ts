@@ -18,7 +18,7 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { postedSpan, startCollector } from "../skill-scenarios/collector-standin";
-import { createSpendRecorder, FLUSH_MS } from "../skill-scenarios/spend-record";
+import { createSpendRecorder, FLUSH_MS, POST_TIMEOUT_MS } from "../skill-scenarios/spend-record";
 import {
   SessionEntry,
   type SessionMessage,
@@ -3318,14 +3318,14 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       "You are a made-up subagent.\n<skills>\n- alpha: Use for the alpha steps.\n- beta: Use for the beta greeting.\n</skills>\n",
     ];
     // c06's session recorded its system prompt, which its capture sends whole; its profile adds 20
-    // names to the 9 it lists. c01 to c05's captures build their listings from the profile.
+    // names to the 2 it lists. c01 to c05's captures build their listings from the profile.
     withEvidence(s, {
       ...Object.fromEntries(
         SIX.slice(0, 5).map((id) => [id, listingEvidence("subagent listing", 10, [], ["beta"])])
       ),
       c06: listingEvidence(
         "session listing",
-        9,
+        2,
         [],
         Array.from({ length: 20 }, (_, n) => `extra-${n + 1}`)
       ),
@@ -3669,7 +3669,7 @@ describe("refusals before any model call", () => {
   // FLUSH_MS where README.md ("Usage records") says 2 s.
   test("build-cases and build-tasks wait for the usage spans queued once: a collector that hangs holds the exit FLUSH_MS at most", async () => {
     const hanging = startCollector();
-    hanging.delayMs = 60_000;
+    hanging.delayMs = POST_TIMEOUT_MS + 1_000;
     try {
       for (const command of ["build-cases", "build-tasks"]) {
         const spendRecorder = createSpendRecorder({
@@ -6061,6 +6061,29 @@ describe("behaviour: the runner of each run", () => {
       `runners: screen: ${OTHER} (2 case stages, 40 runs), ${RUNNER} (1 case stage, 20 runs); confirm: none; control: none; 2 runners, each allowed by --allow-runners, so their results are reported together`
     );
   }, 120_000);
+
+  // Catches: a refusal whose advice named only the runners not yet allowed, so the run that took
+  // it, its --allow-runners replaced, refused the stages the first value allowed.
+  test("screen's refusal of a saved screen another runner made gives, as its --allow-runners advice, the runners already allowed and the others", async () => {
+    const s = scenario("runner-union", LOSS_SKILL(), [{ id: "c04" }, { id: "c05" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    plantResult(s, "c04", { stages: { screen: plantedStage(s, "c04", "screen", FLAGGED, OTHER) } });
+    plantResult(s, "c05", {
+      stages: { screen: plantedStage(s, "c05", "screen", FLAGGED, ANOTHER) },
+    });
+    const from = recorder.requests.length;
+    const refused = await cli(behaviour("screen", s, "--allow-runners", OTHER));
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain(
+      `case c05's screen in ${caseResultFile(s.out, "c05")} was made by runner ${ANOTHER}, and this runner is ${RUNNER}: `
+    );
+    expect(refused.stderr).toContain(
+      `Give --allow-runners ${OTHER},${ANOTHER} to take those stages as they are, or use another --out`
+    );
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 60_000);
 });
 
 // The report's spend (the same tree found a report whose spend matched neither its

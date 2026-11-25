@@ -184,14 +184,16 @@
  *   text reaches the screen unchecked against it, and every case reaches it unchecked against
  *   ours.
  * - Each stage and each run records the runner that made it (`runnerDigest`, the digest of this
- *   directory's code: the commit is not knowable in a copy with no git): a run made before runs
- *   recorded it takes its stage's runner, and a stage made before stages did is the runner
- *   `unrecorded` (UNRECORDED_RUNNER). `screen`, `confirm` and `control` take a saved stage of their
- *   kind as done, or go on with one still running, only when each of its runs (or, with no run,
- *   the stage) is this runner's or that of a runner `--allow-runners <digest>[,<digest>...]` names;
- *   a saved stage of another runner is refused before any model call (exit 2), naming the case,
- *   its runner and this runner (`checkRunners`), never skipped and never made again. `confirm`
- *   pools confirms on one runner at one set of texts as before (score.ts's `confirmScore`).
+ *   directory's code and of the ../skill-scenarios modules it imports: the commit is not knowable
+ *   in a copy with no git): a run made before runs recorded it takes its stage's runner, and a
+ *   stage made before stages did is the runner `unrecorded` (UNRECORDED_RUNNER). `screen`,
+ *   `confirm` and `control` take a saved stage of their kind as done, or go on with one still
+ *   running, only when each of its runs (or, with no run, the stage) is this runner's or that of
+ *   a runner `--allow-runners <digest>[,<digest>...]` names; a saved stage of another runner is
+ *   refused before any model call (exit 2), naming the case, its runner and this runner, and the
+ *   `--allow-runners` that takes it with the runners already named (`checkRunners`), never
+ *   skipped and never made again. `confirm` pools confirms on one runner at one set of texts as
+ *   its rule says (score.ts's `confirmScore`).
  * - `report` (no model call) prints, for each stage kind, each runner with its case stages and
  *   runs (a stage whose runs two runners made counts under each, `runnerCounts`), and refuses
  *   (exit 2), naming each runner with its counts, results whose runs more than one runner made,
@@ -339,7 +341,7 @@
  * answer under `--out`.
  *
  * **`count-sql`** prints count.sql (or, with `--query models`, models.sql) filled for one store
- * and day.
+ * and day, or, with `--query roots` and no day, roots.sql filled for one store.
  *
  * **`load`** is load.ts's load test: per task, the host's first request captured once
  * and sent `--runs` times (LOAD_RUNS by default), the runs of a profile's tasks in one seeded
@@ -2236,21 +2238,26 @@ export function caseResultFile(out: string, caseId: string): string {
   return path.join(out, "cases", `${encodeURIComponent(caseId)}.json`);
 }
 
+/** A digest of `files`, each its name and its path: each name and its bytes, in name order. */
+function filesDigest(files: readonly (readonly [name: string, file: string])[]): string {
+  const hash = createHash("sha256");
+  for (const [name, file] of [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    hash.update(name).update("\0").update(readFileSync(file)).update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
+}
+
+/** The files of the directory `dir` that `keep` keeps, each its path inside `dir` and its path. */
+function directoryFiles(dir: string, keep: (file: string) => boolean): [string, string][] {
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((file) => keep(file) && statSync(path.join(dir, file)).isFile())
+    .map((file) => [file, path.join(dir, file)]);
+}
+
 /** A digest of the directory `dir`: each file's path inside it and its bytes, in path order, of
  *  the files `keep` keeps (every file by default). */
 export function textDigest(dir: string, keep: (file: string) => boolean = () => true): string {
-  const hash = createHash("sha256");
-  const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
-    .filter((file) => keep(file) && statSync(path.join(dir, file)).isFile())
-    .sort();
-  for (const file of files) {
-    hash
-      .update(file)
-      .update("\0")
-      .update(readFileSync(path.join(dir, file)))
-      .update("\0");
-  }
-  return hash.digest("hex").slice(0, 16);
+  return filesDigest(directoryFiles(dir, keep));
 }
 
 /** `texts` as score.ts's MadeConfirm holds them: the old text's digest and the compared arm's in
@@ -2259,18 +2266,40 @@ function textsKey(texts: Texts): string {
   return `${texts.old} ${texts.new ?? texts.ours ?? "none"}`;
 }
 
-/** The runner's own code, as each stage it starts and each run it makes records it: textDigest of
- *  this directory less its tests (`*.test.ts`), its test data and README.md. Two confirms of one
- *  case are pooled only when one runner made both (score.ts's `confirmScore`), so a confirm made
- *  before a fix of the runner is not pooled with one made after it; a stage command takes no
- *  saved stage of another runner as its own (`checkRunners`), and report reports no results of
- *  more than one runner unless told to (`runnerCounts`). */
+/** The modules of ../skill-scenarios that the TypeScript files `files` of this directory import,
+ *  and those modules' own imports of that directory, followed until none is new: each by its path
+ *  from this directory, and its path. */
+function scenarioImports(files: readonly string[]): [string, string][] {
+  const scenarios = path.join(import.meta.dir, "..", "skill-scenarios");
+  const found = new Map<string, string>();
+  const follow = (file: string) => {
+    for (const [, spec = ""] of readFileSync(file, "utf8").matchAll(/\bfrom\s+"(\.\.?\/[^"]+)"/g)) {
+      const resolved = path.resolve(path.dirname(file), spec);
+      const module = resolved.endsWith(".ts") ? resolved : `${resolved}.ts`;
+      if (!module.startsWith(`${scenarios}${path.sep}`) || found.has(module)) continue;
+      found.set(module, path.relative(import.meta.dir, module));
+      follow(module);
+    }
+  };
+  for (const file of files) if (file.endsWith(".ts")) follow(file);
+  return [...found].map(([module, name]) => [name, module]);
+}
+
+/** The runner's own code, as each stage it starts and each run it makes records it: a digest of
+ *  this directory less its tests (`*.test.ts`), its test data and README.md, and of each module of
+ *  ../skill-scenarios its files import (`scenarioImports`, those modules' own imports of that
+ *  directory too). Two confirms of one case are pooled only when one runner made both
+ *  (score.ts's `confirmScore`), so a confirm made before a fix of the runner is not pooled with
+ *  one made after it; a stage command takes no saved stage of another runner as its own
+ *  (`checkRunners`), and report reports no results of more than one runner unless told to
+ *  (`runnerCounts`). */
 export function runnerDigest(): string {
-  return textDigest(
+  const own = directoryFiles(
     import.meta.dir,
     (file) =>
       !file.endsWith(".test.ts") && file !== "README.md" && file.split(path.sep)[0] !== "testdata"
   );
+  return filesDigest([...own, ...scenarioImports(own.map(([, file]) => file))]);
 }
 
 /** The runner of a stage made before stages recorded theirs, and of its runs, as the report and
@@ -2855,7 +2884,8 @@ function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boo
  *  `--allow-runners` names (`stageRunners`): a stage command takes a saved stage as done, or goes
  *  on with one still running, only when this runner made it or the user named its runner, so a
  *  stage of another runner is never skipped and never made again with no word. The refusal names
- *  each such case, its runners, and this runner. */
+ *  each such case, its runners, and this runner, and advises an `--allow-runners` that names the
+ *  runners it names already and those, since a new value replaces the old one. */
 function checkRunners(r: Runner, results: Iterable<CaseResult>, stage: Stage): void {
   const others = new Set<string>();
   const foreign = [...results].flatMap((result) => {
@@ -2871,8 +2901,9 @@ function checkRunners(r: Runner, results: Iterable<CaseResult>, stage: Stage): v
         ];
   });
   if (foreign.length === 0) return;
+  const allow = new Set([...r.allowRunners, ...others]);
   throw new Refused(
-    `${foreign.join("; ")}, and this runner is ${r.runner}: a stage command takes a saved stage as done, or goes on with it, only when this runner made it or --allow-runners names its runner. Give --allow-runners ${[...others].join(",")} to take those stages as they are, or use another --out`
+    `${foreign.join("; ")}, and this runner is ${r.runner}: a stage command takes a saved stage as done, or goes on with it, only when this runner made it or --allow-runners names its runner. Give --allow-runners ${[...allow].join(",")} to take those stages as they are, or use another --out`
   );
 }
 

@@ -47,6 +47,8 @@ import type {
   IssueAskThreadRow,
   IssueReferencesAnswer,
   NewIssueSettings,
+  ParentStatusConflictIssue,
+  StatusChangeEntry,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -80,6 +82,30 @@ export interface UploadProgress {
 const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
 
+/** Whether the page is going: from its `pagehide` until the browser shows it again (`pageshow`,
+ *  a page it kept and brings back). A small write that starts then, its body under
+ *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
+ *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
+ *  reload after it to make it again. A larger one is not, and one that waits then behind a write
+ *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
+ *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
+ *  a field's write finds the page going. */
+let pageGoing = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    pageGoing = true;
+  });
+  window.addEventListener("pageshow", () => {
+    pageGoing = false;
+  });
+}
+
+/** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
+ *  page. */
+export function resetPageGoing(): void {
+  pageGoing = false;
+}
+
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
  *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
@@ -90,6 +116,8 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  issues?: readonly ParentStatusConflictIssue[] | null;
+  changed?: readonly StatusChangeEntry[] | null;
 }
 
 export class ApiError extends Error {
@@ -100,6 +128,14 @@ export class ApiError extends Error {
    *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
    *  that listed nothing, which is almost all of them. */
   readonly candidates: readonly ErrorCandidate[] | undefined;
+  /** The issues a `409 PARENT_STATUS_CONFLICT` names: each one whose status the write would put
+   *  out of line with its parent's or its children's, with its status and whether it is the
+   *  parent or a child. Undefined for every other refusal. */
+  readonly issues: readonly ParentStatusConflictIssue[] | undefined;
+  /** What a refused `POST /api/v1/issues/{key}/status-change` changed before the refusal: the
+   *  entry of each step that committed, in the order the steps ran. Empty when no step did, and
+   *  undefined for a refusal of any other route. */
+  readonly changed: readonly StatusChangeEntry[] | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -112,6 +148,8 @@ export class ApiError extends Error {
     this.status = status;
     this.state = payload.state;
     this.candidates = payload.candidates;
+    this.issues = payload.issues ?? undefined;
+    this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -552,6 +590,28 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
+ *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
+ *  own drag names them). Each field left out is left alone. `expected` names the title or
+ *  description the write goes over: the newest of the page's own writes of it still out or not
+ *  yet drawn by a read, and else the text the field took in from a read (`usePriorityWrites`).
+ *  One the priority no longer stores refuses the write `409 PRIORITY_CHANGED`, and nothing is
+ *  written. */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
+/** `POST /api/v1/issues/{key}/status-change`: an issue's status with what happens to the issues
+ *  under it or above it (`include_children`, `unlink_children`, `include_parent`), so that each
+ *  parent's status stays in line with its children's. With `dry_run` it writes nothing and
+ *  answers what the call would change, or the refusal the call would get. */
+export function statusChangeRequest(
+  key: string,
+  input: Body<"/api/v1/issues/{key}/status-change", "post">
+) {
+  return writeRequest("post", "/api/v1/issues/{key}/status-change", { key }, input);
+}
+
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
@@ -929,15 +989,19 @@ export class DispatchApiClient {
    * The one path every write to Dispatch takes. A `POST` or a `PATCH` goes under `bounds.key`, the
    * `Idempotency-Key` that names the person's action, so a repeat of it - a retry after a dropped
    * answer, a reload resuming it - is answered with what the first did rather than done twice; a
-   * `PUT` or a `DELETE` is the same however often it is made, so it carries none, and one with a
-   * small body is let finish as the page goes (`keepalive`). The key is the caller's, minted when
-   * the person acts (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the
-   * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
-   * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
-   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
-   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
-   * keep with `AnswerNotKeptError`.
+   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
+   * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
+   * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
+   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
+   * start before the page is gone. A keyed write the page did not let finish is made again under
+   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
+   * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
+   * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
+   * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
+   * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
+   * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
+   * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -948,7 +1012,8 @@ export class DispatchApiClient {
     const form = body instanceof FormData ? body : undefined;
     const json = body === undefined || form !== undefined ? undefined : JSON.stringify(body);
     const keepalive =
-      !keyed && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
+      (!keyed || pageGoing) &&
+      (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
     const init: RequestInit = {
       ...(form !== undefined ? { body: form } : json !== undefined ? { body: json } : {}),
       headers: {
@@ -1277,16 +1342,14 @@ export class DispatchApiClient {
   }
 
   /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
-   *  id defaults to its title as a slug. */
+   *  id defaults to its title as a slug, cut to `PRIORITY_ID_MAX` (200) characters at the end of
+   *  a word when it is longer, so a long title is written whole under a cut id. A title the slug
+   *  cannot name - one with no ASCII letter or digit, or one whose cut is `none` or `any`, which
+   *  the issue listing reads as the work under no priority and under any - takes `priority-` and
+   *  the first 12 hex characters of the title's SHA-256 instead (`priority-<12 hex>`), so every
+   *  title gives an id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
-  }
-
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each

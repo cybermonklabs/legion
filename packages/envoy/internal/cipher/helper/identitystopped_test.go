@@ -129,6 +129,7 @@ const stoppedLine = "the helper stopped trading this machine's identity: nothing
 // whose answer carries identity_stopped. None names a login, which would not list the machine
 // either. Its log gives the reason, the broker's own refusal.
 func TestAStoppedTradeLoopSaysNothingTradesAgain(t *testing.T) {
+	t.Parallel()
 	const refusal = "The subject token was refused: no entry lists the Google account box@fleet.iam.gserviceaccount.com, which the actor token names as the machine."
 	r := newStoppedLoopRig(t, &stopAnswer{status: http.StatusBadRequest,
 		body: map[string]string{"error": "invalid_request", "error_description": refusal}})
@@ -167,6 +168,7 @@ func TestAStoppedTradeLoopSaysNothingTradesAgain(t *testing.T) {
 // are the stopped state. The stopping trade is the one token request made from the moment the
 // test triggers it, at the stop and through the expiry.
 func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
+	t.Parallel()
 	r := newStoppedLoopRig(t, nil)
 	first := r.helper.cred.Load()
 	if first == nil {
@@ -215,6 +217,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 // TestAStoppedFlagIsNotSetByAShutdown: a helper whose context ends stops trading because it was
 // told to, which is no fault of the deployment's, so nothing says the loop stopped.
 func TestAStoppedFlagIsNotSetByAShutdown(t *testing.T) {
+	t.Parallel()
 	r := newStoppedLoopRig(t, nil)
 	if r.helper.identityStopped.Load() {
 		t.Fatal("a helper that traded a credential already reports its loop stopped")

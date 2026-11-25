@@ -63,8 +63,7 @@
 #
 #   2. Each row agrees with the pin that decides which version a job installs.
 #      Every `bun-*` row's `version` is the content of .bun-version.
-#      The `mise` row's `version` is `ARG MISE_VERSION` of
-#      packages/daemon/docker/worker.Dockerfile without its leading `v`, and its `digest` is that
+#      The `mise` row's `version` is `packages/daemon/docker/worker.Dockerfile#ARG MISE_VERSION` without its leading `v`, and its `digest` is that
 #      file's `ARG MISE_SHA256`, so the copy this repository fills and the mise the worker image
 #      builds with are one set of bytes.
 #      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`.
@@ -72,8 +71,7 @@
 #      file's `ARG UV_SHA256`, the same pair the mise row answers to and for the same reason:
 #      the image's own toolchain stage builds uv from those two ARGs, so the row and the image
 #      install one tool and check one archive.
-#      The `pulumi-docker` row's `version` is `const DockerPluginVersion` of
-#      packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs
+#      The `pulumi-docker` row's `version` is `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, the constant the live programs
 #      pin the plugin at.
 #      The `helm` row's `version` is the version of the last
 #      `HELM=helm.sh/helm/v<major>/cmd/helm@v<version>` line of
@@ -130,8 +128,7 @@
 #      written in a shell script under .github/scripts/ is invisible to this gate.
 #      The narrower reach is deliberate: the class this rule closes is GitHub release assets,
 #      and this repository writes the npm registry's address outside those two directories for
-#      reasons that fetch nothing (.github/scripts/check-bun-version.sh:137 lists
-#      `registry.npmjs.org/@oven/bun` as a string to detect).
+#      reasons that fetch nothing (`.github/scripts/check-bun-version.sh#registry.npmjs.org/@oven/bun` is a string it detects).
 #
 #      A URL ON A DOWNLOAD HOST A ROW NAMES is refused unless its text is exactly a row's
 #      `primary`, `mirror_from` or `second_url`, in the release-asset half's reach and not the
@@ -175,8 +172,8 @@
 #        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
 #          text, and that digest occurs in it, each refused in its own words, so one source
 #          never means no checksum;
-#        * where its `pinned_in` is a Dockerfile (a file named `Dockerfile`, `Dockerfile.<x>` or
-#          `<x>.Dockerfile`), it carries `pinned_as: ARG <NAME>`, and its `digest` is the value
+#        * where its `pinned_in` is a Dockerfile (a file named `<x>.Dockerfile`, `Dockerfile.<x>`
+#          or plain `Dockerfile`), it carries `pinned_as: ARG <NAME>`, and its `digest` is the value
 #          of the last `ARG <NAME>=` line of that file, exactly. A Dockerfile checks a digest it
 #          holds as a build argument, and an occurrence alone is met by a comment that kept an
 #          old digest after the ARG moved; an entry with no `pinned_as` is refused naming the
@@ -827,8 +824,8 @@ def last_arg(pattern: re.Pattern[str], text: str) -> str:
 
 
 def is_dockerfile(path: Path) -> bool:
-    """Whether <path> is named as Docker names a build file: `Dockerfile`, `Dockerfile.<x>` or
-    `<x>.Dockerfile`, the three forms this repository's Dockerfiles take."""
+    """Whether <path> is named as Docker names a build file: `<x>.Dockerfile`, `Dockerfile.<x>` or
+    plain `Dockerfile`, the three forms this repository's Dockerfiles take."""
     name = path.name
     return name == "Dockerfile" or name.startswith("Dockerfile.") or name.endswith(".Dockerfile")
 

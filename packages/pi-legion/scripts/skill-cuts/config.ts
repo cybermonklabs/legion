@@ -68,7 +68,8 @@
  *                  image of a host not listed is read with the anonymous token GHCR gives): `host`
  *                  the registry's host (with its port, if any), `tokenCommand` the argv of a
  *                  program whose standard output, trimmed, is the registry's Bearer token. The
- *                  program runs once per process, and the token is kept in memory alone, never
+ *                  program runs once per process, ended past a minute
+ *                  (REGISTRY_TOKEN_TIMEOUT_MS), and the token is kept in memory alone, never
  *                  printed.
  *   deploymentImages  (optional) `{repository, dockerfile}`: an image the deployment repository
  *                  builds on a worker image: `repository` the image's reference without tag or
@@ -87,16 +88,21 @@ import { z } from "zod";
 const Repository = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/, {
   error: "a repository as owner/name",
 });
+/** Whether `value` is a path in a repository: not absolute, not from `~`, no empty, `.` or `..`
+ *  part, so no `/` at its end. */
+const inRepository = (value: string) =>
+  !value.startsWith("~") &&
+  value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 /** A directory of a repository's checkout, as a path in the repository: `.secrets`,
- *  `vendor/pack`; not absolute, no `.` or `..` part, no `/` at its end. */
-const CheckoutDirectory = z
-  .string()
-  .refine(
-    (value) =>
-      !value.startsWith("~") &&
-      value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
-    { error: "a directory of the checkout as a path in the repository, such as .secrets" }
-  );
+ *  `vendor/pack` (`inRepository`). */
+const CheckoutDirectory = z.string().refine(inRepository, {
+  error: "a directory of the checkout as a path in the repository, such as .secrets",
+});
+/** A file of a repository, as a path in the repository: `mise.toml`, `pods/Dockerfile`
+ *  (`inRepository`). */
+const RepositoryFile = z.string().refine(inRepository, {
+  error: "a file of the repository as a path in the repository, such as mise.toml",
+});
 /** An instant in UTC, as the window's ends are written: `2026-10-23T00:00:00Z`. */
 const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
 /** A skill set's name: a directory name under set-count's `--out` and a `<name>:` skill prefix. */
@@ -144,7 +150,7 @@ export const DeploymentImage = z.strictObject({
   repository: z.string().regex(/^[a-z0-9.-]+(?::\d+)?(?:\/[a-z0-9._-]+)+$/, {
     error: "an image reference without tag or digest, such as registry.example.test/acme/worker",
   }),
-  dockerfile: CheckoutDirectory,
+  dockerfile: RepositoryFile,
 });
 export type DeploymentImage = z.infer<typeof DeploymentImage>;
 
@@ -182,16 +188,16 @@ export const SkillCutsConfig = z
     sessionPod: z
       .strictObject({
         repository: Repository,
-        pinFile: CheckoutDirectory,
+        pinFile: RepositoryFile,
         pinKey: z.string().regex(/^[A-Za-z0-9_.:-]+$/),
-        dockerfile: CheckoutDirectory,
+        dockerfile: RepositoryFile,
         workerRepository: Repository,
-        workerDockerfile: CheckoutDirectory,
+        workerDockerfile: RepositoryFile,
       })
       .optional(),
     ompPin: z
       .strictObject({
-        file: CheckoutDirectory,
+        file: RepositoryFile,
         key: z.array(z.string().min(1)).min(1),
         firstPoolVersion: z.string().regex(OMP_VERSION, {
           error: "a version, such as 18.16.0 or 18.16.0-fork.1",

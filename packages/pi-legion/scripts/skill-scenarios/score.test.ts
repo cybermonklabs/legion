@@ -309,6 +309,13 @@ recordRun("tester-proof-rec-6", {
     body: JSON.stringify({ ...testBody(head), schemaVersion: 1 }),
   }),
 });
+// Completed naming its own record, whose body counts 2 failed checks and lists no failures.
+recordRun("tester-proof-rec-7", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({ head, implementerProof: testBody(head).implementerProof, failed: 2 }),
+  }),
+});
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -3142,7 +3149,7 @@ test("a tester passes when its completion names the test record its own session 
   expect(out).toMatch(
     /tester-proof-rec-1\tpass=true\tref=false\tran=true record=v1 proof=true pushes=0 complete=true refusedCompletions=1 ordered=true testerLine=true ownHead=true editBeforeRecord=false /
   );
-  expect(out).toContain("tester-proof\trec\t1/6\t0/6\t0\t0\n");
+  expect(out).toContain("tester-proof\trec\t1/7\t0/7\t0\t0\n");
 });
 
 test("a record another session wrote fails the proof, even when the stand-in accepted it", () => {
@@ -3181,6 +3188,15 @@ test("a test record whose body keeps schemaVersion fails the proof, naming the k
   expect(out).toMatch(/tester-proof-rec-6\tpass=false\t.* proof=false .* ordered=true /);
   expect(proofProblems("tester-proof-rec-6")).toEqual([
     expect.stringContaining("a test handoff holds no schemaVersion"),
+  ]);
+});
+
+// Catches: a proof that read only the body's `failures`, so a body whose `failed` count is above 0
+// and that lists no failures passed it.
+test("a test record whose body counts failed checks fails the proof, though it lists no failures", () => {
+  expect(out).toMatch(/tester-proof-rec-7\tpass=false\t.* proof=false .* ordered=true /);
+  expect(proofProblems("tester-proof-rec-7")).toEqual([
+    "failed is 2, and the body lists no failures",
   ]);
 });
 

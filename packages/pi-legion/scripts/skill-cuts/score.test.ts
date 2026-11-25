@@ -765,7 +765,7 @@ const rows: [string, () => unknown, unknown][] = [
           runs: [
             [
               { skill: "gamma", from: "copy" },
-              { skill: "alpha", from: "arm" },
+              { skill: "epsilon", from: "arm" },
             ],
             [
               { skill: "gamma", from: "copy" },

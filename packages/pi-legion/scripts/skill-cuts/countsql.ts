@@ -1,28 +1,29 @@
 /**
  * Fills the runner's SQL with the values of one query: count.sql (the read count, for one store and
  * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
- * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
- * sessions.sql (the paths of the files a count row names by hash), session-head.sql (the head
- * of each session a case or a load task names by its path's SHA-256), session-paths.sql (the
- * path of each session a load task names by its path's SHA-256), subagents.sql (a subagent with a
- * recorded skill listing of each top-level session a path hash names, started between two times)
- * and digest-times.sql (the prompt builds of each session's root). Each placeholder is the name of
- * a value inside double braces, and each is filled with one whole SQL value: a number, a string
- * literal with its quotes (`sqlString`), a text array of such literals (`sqlTextArray`: tasks.sql's
- * terms, and the hashes of sessions.sql, session-head.sql, session-paths.sql and
- * digest-times.sql), or a string literal of a JSON array cast to jsonb (subagents.sql's sessions),
- * so no value can end the literal it is in. The filled text goes into the store's read command
- * unchanged.
+ * roots.sql (the count hash and Oh My Pi profile of each file of a store), pull.sql (a transcript,
+ * by path), tasks.sql (first user messages that hold some terms), sessions.sql (the paths of the
+ * files a count row names by hash), session-head.sql (the head of each session a case or a load
+ * task names by its path's SHA-256), session-paths.sql (the path of each session a load task
+ * names by its path's SHA-256), subagents.sql (a subagent with a recorded skill listing of each
+ * top-level session a path hash names, started between two times) and digest-times.sql (the
+ * prompt builds of each session's root). Each placeholder is the name of a value inside double
+ * braces, and each is filled with one whole SQL value: a number, a string literal with its quotes
+ * (`sqlString`), a text array of such literals (`sqlTextArray`: tasks.sql's terms, and the hashes
+ * of sessions.sql, session-head.sql, session-paths.sql and digest-times.sql), or a string literal
+ * of a JSON array cast to jsonb (subagents.sql's sessions), so no value can end the literal it is
+ * in. The filled text goes into the store's read command unchanged.
  *
  *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
  *     [--hour <0-23>] [--query count|models]
+ *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --query roots
  *
  * prints count.sql (or, with `--query models`, models.sql) filled for that store and day (or for
  * the one hour of that day, which is how a day whose query times out is split), count.sql with the
  * window of the configuration. A store the configuration does not name is refused. Exit 0 prints
  * the query; exit 2 is a refusal before anything is printed.
- * With `--query roots`, omit `--day` and `--hour`. The query reads only the paths in the
- * store's file table and emits each file's count hash and Oh My Pi profile, never its path.
+ * With `--query roots`, omit `--day` and `--hour`: it prints roots.sql, which reads only the paths
+ * in the store's file table and emits each file's count hash and Oh My Pi profile, never its path.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -319,7 +320,7 @@ export function main(argv: readonly string[], io: Output): number {
   }
   const query = values.query ?? "count";
   if (query !== "count" && query !== "models") {
-    return refuse(`--query ${JSON.stringify(query)} is neither count nor models`);
+    return refuse(`--query ${JSON.stringify(query)} is none of count, models and roots`);
   }
   try {
     const config = loadConfig(values.config);

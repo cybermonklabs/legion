@@ -368,7 +368,11 @@
  *   up a try after 60 s (NPM_TIMEOUT_MS), its body included, and a try that failed for a
  *   transient reason (that limit, a connection refused or reset, a name not resolved, an HTTP 429
  *   or 5xx) is sent again by the same rule, counted with the GitHub reads' (`githubRetries`); a
- *   404 is no tarball, and any other failure fails at once.
+ *   404 is no tarball, and any other failure fails at once. An image's config read
+ *   (`GithubReads.imageConfig`, pod-image.ts's `registryImageConfig`) gives up each request (the
+ *   token GHCR gives, a manifest, the config blob) after 30 s, its body included, and sends one
+ *   that failed so again by the same rule, counted with them; a configured registry's 401 or 403
+ *   is a refusal of its token and fails the read at once, naming the host, and a 404 is no image.
  * - Skills: what each unit ships at that commit, not what installers.tsv lists, which is what it
  *   ships at the later commit the copies output read. Each repository of a unit (its manifest's,
  *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
@@ -716,8 +720,10 @@ import {
   bytesAt,
   commandRetries,
   configFrom,
+  fetchFailure,
   firstLine,
   type GhRetries,
+  httpFailure,
   installationRateWait,
   json,
   lastTryError,
@@ -1078,7 +1084,7 @@ export interface BuildIo {
    *  absent (cli.ts's `skill-cuts build-cases`, whose io already samples it). */
   peakRssBytes?(): number;
   /** Reads an image's config from its registry (`registryImageConfig` with the configuration's
-   *  `registries` when absent). */
+   *  `registries`, each request sent again by the GitHub reads' rule, when absent). */
   readonly imageConfig?: ReadImageConfig;
   /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
    *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
@@ -2669,17 +2675,6 @@ const tarballUrl = (name: string, version: string) =>
 // that made it. A try still running at this limit is given up and sent again.
 const NPM_TIMEOUT_MS = 60_000;
 
-/** The reason, in the words of common.ts's TRANSIENT_FAILURES, of each error code with which Bun's
- *  fetch fails a connection that a later try may make (Bun 1.4.4: a connection refused, or reset
- *  or closed before the answer ended; a name getaddrinfo did not resolve, or did not resolve yet),
- *  so a registry read that fails so is sent again as a gh read that fails so is. */
-const CONNECTION_FAILURES: Readonly<Record<string, string>> = {
-  ECONNREFUSED: "connection refused",
-  ECONNRESET: "connection reset",
-  ENOTFOUND: "no such host",
-  EAI_AGAIN: "temporary failure",
-};
-
 /** A registry read that failed: the message names the URL and the failure; `failure` is the
  *  failure alone, in the words of common.ts's TRANSIENT_FAILURES when it is transient, so that it
  *  is read from those words alone (a package named connect-timeout makes no failure transient). */
@@ -2694,9 +2689,9 @@ class NpmFailed extends Error {
 
 /** The registry's tarball of a package version, one GET (`get`: fetch, or a test's stand-in) given
  *  up after `timeoutMs`, its body included: undefined for a 404. It throws an NpmFailed for an
- *  answer that is not OK, for a try past the limit and for a connection that failed
- *  (CONNECTION_FAILURES), and any other failure as fetch threw it. A 429, the registry's "too many
- *  requests", is sent again as a 5xx is (TRANSIENT_FAILURES' `HTTP 429`). */
+ *  answer that is not OK, for a try past the limit and for a connection that failed, each in
+ *  common.ts's words (`httpFailure`, `fetchFailure`), and any other failure as fetch threw it. A
+ *  429, the registry's "too many requests", is sent again as a 5xx is. */
 export async function registryTarball(
   name: string,
   version: string,
@@ -2708,17 +2703,13 @@ export async function registryTarball(
   try {
     const response = await get(url, { signal });
     if (response.status === 404) return undefined;
-    if (response.status === 429) {
-      throw new NpmFailed(url, "HTTP 429 (too many requests)");
-    }
-    if (!response.ok) throw new NpmFailed(url, `HTTP ${response.status}`);
+    if (!response.ok) throw new NpmFailed(url, httpFailure(response.status));
     return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
     if (error instanceof NpmFailed) throw error;
-    if (signal.aborted) throw new NpmFailed(url, `timed out after ${timeoutMs} ms`);
-    const code = error instanceof Error && "code" in error ? error.code : undefined;
-    if (typeof code !== "string" || !Object.hasOwn(CONNECTION_FAILURES, code)) throw error;
-    throw new NpmFailed(url, `${CONNECTION_FAILURES[code]} (${messageFor(error)})`);
+    const failure = fetchFailure(error, signal, timeoutMs);
+    if (failure === undefined) throw error;
+    throw new NpmFailed(url, failure);
   }
 }
 /** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
@@ -2778,11 +2769,24 @@ export class GithubReads {
     /** One try of a read of the registry's tarball of a package version (`registryTarball` in a
      *  real run). */
     private readonly npm: NpmTarball = registryTarball,
-    private readonly readImageConfig: ReadImageConfig = registryImageConfig
+    /** A read of an image's config from its registry (`registryImageConfig` of a public GHCR
+     *  image alone, each request sent again as `retries` says, when absent). */
+    private readonly readImageConfig: ReadImageConfig = (image) =>
+      registryImageConfig(image, { retries })
   ) {}
 
-  imageConfig(image: string) {
-    return readOnce(this.images, image, () => this.readImageConfig(image));
+  /** The OCI config of `image` from its registry (`readImageConfig`), kept for each image; a read
+   *  that fails (a request that failed for a transient reason on every try, or a configured
+   *  registry's refusal of its token) is not kept, so a later caller reads the registry again. */
+  imageConfig(image: string): Promise<ImageConfig | undefined> {
+    const held = this.images.get(image);
+    if (held !== undefined) return held;
+    const made = this.readImageConfig(image);
+    this.images.set(image, made);
+    made.catch(() => {
+      if (this.images.get(image) === made) this.images.delete(image);
+    });
+    return made;
   }
 
   /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
@@ -3286,17 +3290,19 @@ export class GithubReads {
 
 /** The profile's GitHub reads with `io`'s gh: a read that failed for a transient reason waits with
  *  `io.sleep` before it is sent again, and is said on `io.err` as `who`'s. An image's config is
- *  read with `io.imageConfig`, else from its registry with the registries `config` names. */
+ *  read with `io.imageConfig`, else from its registry with the registries `config` names, each
+ *  request sent again by the same rule and counted with the GitHub reads' retries. */
 function githubReads(
   io: BuildIo,
   config: SkillCutsConfig,
   branches: ReadonlyMap<string, string>,
   who: "build-cases" | "build-tasks"
 ): GithubReads {
+  const retries = commandRetries(io, who);
   const registries = config.registries ?? [];
   const imageConfig =
-    io.imageConfig ?? ((image: string) => registryImageConfig(image, { registries }));
-  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm, imageConfig);
+    io.imageConfig ?? ((image: string) => registryImageConfig(image, { registries, retries }));
+  return new GithubReads(io.gh, branches, retries, io.npm, imageConfig);
 }
 
 /** Which skills a package pinned by an exact npm version ships, and where its source says so. */
@@ -8218,7 +8224,15 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
         ];
     const reading = reads.get(c.id);
     const transcriptPath = transcriptPaths.get(store.name)?.get(c.source.pathHash);
-    const savedProfile = old.find((each) => each.item === OMP_PROFILE_ITEM)?.source;
+    // The Oh My Pi profile: its transcript's path, else (the store holds the session no longer)
+    // the one its case saved, else, for a case built before cases saved one, the one the store
+    // gave such a case then: the Legion worker's `legion` in a Legion store, `default` in a
+    // devbox store.
+    const ompProfile =
+      transcriptPath !== undefined
+        ? sessionProfileName(transcriptPath)
+        : (old.find((each) => each.item === OMP_PROFILE_ITEM)?.source ??
+          (legion ? "legion" : "default"));
     // The listing its measure sets it against, which decides its pools (POOL_LISTING_RULE): its
     // own recorded prompt's, else that of its subagent the store's query above found. Every case
     // of a store the configuration names has its reading, a window with no recorded prompt and
@@ -8240,10 +8254,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
     const input: ProfileInput = {
       store: store.name,
       context: store.context,
-      ompProfile:
-        transcriptPath === undefined && savedProfile !== undefined
-          ? savedProfile
-          : sessionProfileName(transcriptPath),
+      ompProfile,
       project: legion ? store.context.slice("legion:".length) : undefined,
       reads:
         contextReads(old) ??

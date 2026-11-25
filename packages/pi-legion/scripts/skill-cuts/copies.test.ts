@@ -2540,6 +2540,35 @@ describe("the cache locations a marketplace gave a skill of its repository durin
     );
   }, 60_000);
 
+  // Catches: a commit whose file list GitHub cut at one page read as whole, so a SKILL.md it moved
+  // past that page got no prefix row, with no note and no failure.
+  test("a commit that changed the manifest and lists 300 files, the most GitHub lists on one page, gets a note and a failure that a move may be missed, and the moves it lists still get their rows", async () => {
+    const w = moved();
+    const listed = w.commitFiles.get(`acme/skills ${MOVED}`);
+    if (!Array.isArray(listed)) throw new Error(`moved() lists the files of ${MOVED}`);
+    w.commitFiles.set(`acme/skills ${MOVED}`, [
+      ...listed,
+      ...Array.from({ length: 300 - listed.length }, (_, n) => ({
+        filename: `docs/page-${n}.md`,
+        status: "modified",
+      })),
+    ]);
+    const r = await run(w, only);
+    const cut = `${MOVED} lists 300 files, the most GitHub lists on one page, so its list may be cut`;
+    const notes = r.text("skill-copies.md");
+    expect(notes).toContain(`\n  - the files of its version at ${MOVED} may miss a move: ${cut}\n`);
+    expect(notes.slice(notes.indexOf("\n## Failures\n"))).toContain(
+      `\n- the SKILL.md moves of acme/skills:${MANIFEST} at ${MOVED} may be missed: ${cut}\n`
+    );
+    expect(
+      r
+        .table("prefix-table.tsv")
+        .filter((row) => row.via === via(KIT))
+        .map((row) => row.name)
+        .sort()
+    ).toEqual(["alpha", "alpha", "tool-loop-alpha", "tool-loop-alpha"]);
+  }, 60_000);
+
   test("a run started again on the same cache reads neither the manifest's versions nor a commit's files from GitHub", async () => {
     const cacheDir = newCache();
     const args = [...only, "--cache-dir", cacheDir];
@@ -2548,7 +2577,10 @@ describe("the cache locations a marketplace gave a skill of its repository durin
     const again = world();
     const second = await run(again, args);
     expect(
-      again.calls.filter((call) => /history\(path:|\/commits\/[0-9a-f]{40}$/.test(call.join(" ")))
+      again.calls.filter(
+        (call) =>
+          call.join(" ").includes("history(path:") || /\/commits\/[0-9a-f]{40}$/.test(call[1] ?? "")
+      )
     ).toEqual([]);
     for (const name of ["prefix-table.tsv", "former-stages.tsv"])
       expect(second.text(name)).toBe(first.text(name));

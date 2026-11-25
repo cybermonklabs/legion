@@ -116,6 +116,9 @@ func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *f
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
 	o.catchUpRetry = time.Millisecond
+	// A start row that waited for a slot, or for its issue's branch row, runs at the outbox's next
+	// sweep once that slot or row frees, which at outboxLease is up to 30 s of the wall clock.
+	o.outboxSweep = time.Second
 	return pool, cfg, o, rt
 }
 

@@ -1,15 +1,35 @@
 import { z } from "zod";
 import type { GithubReads } from "./build";
+import {
+  fetchFailure,
+  type GhRetries,
+  type GhTry,
+  httpFailure,
+  lastTryError,
+  pastLimit,
+  textOf,
+  timeLimit,
+} from "./common";
 import type { Registry, SkillCutsConfig } from "./config";
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const REVISION = "org.opencontainers.image.revision";
 const SOURCE = "org.opencontainers.image.source";
-const IMAGE = /^(?:[\w.-]+\/)+[\w.-]+(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
-/** A digest-pinned reference: its host (with its port, if any), its path and its digest. */
+/** A digest-pinned reference: its host (with its port, if any), its path and its digest (group
+ *  3). The path is held to lower case, as an image reference's path is, so a pinned image or a
+ *  base with an upper-case letter in its path is refused as unpinned. */
 const REFERENCE =
   /^([A-Za-z0-9.-]+(?::\d+)?)\/([a-z0-9._/-]+?)(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
+/** The longest a registry's tokenCommand may run before it is ended: the command prints a token it
+ *  holds or asks its issuer for, so a minute is room for a slow issuer, and a command that hangs
+ *  holds no read, and no later read of that registry, past it. */
+export const REGISTRY_TOKEN_TIMEOUT_MS = 60_000;
+/** The longest one HTTP request of an image's read (the token GHCR gives, a manifest, the config
+ *  blob) may take, its body included, before it is given up and sent again: a fetch has no time
+ *  limit of its own, and a read of one image under load on the pod took 23.6 s in all (measured),
+ *  so each request has room for a slow answer. The token command's limit is its own, not in it. */
+const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
 
 export class PodNotMeasurable extends Error {
   constructor(why: string) {
@@ -38,11 +58,26 @@ export type RegistryFetch = (
   init: { readonly headers?: Record<string, string>; readonly signal: AbortSignal }
 ) => Promise<Response>;
 
-/** What `registryImageConfig` reads a registry with: the registries the configuration names
- *  (`registries`), and the fetch it sends (`fetch` when absent). */
+/** What `registryImageConfig` reads a registry with: the rule by which a request that failed for
+ *  a transient reason is sent again, which counts and says each retry (`retries`: the profile's
+ *  GitHub reads' own in a real run, build.ts's `githubReads`), the registries the configuration
+ *  names (`registries`), the fetch it sends (`fetch` when absent), the time limit of a registry's
+ *  tokenCommand (REGISTRY_TOKEN_TIMEOUT_MS when absent) and that of each request
+ *  (REGISTRY_REQUEST_TIMEOUT_MS when absent). */
 export interface RegistryAccess {
+  readonly retries: GhRetries;
   readonly registries?: readonly Registry[];
   readonly fetch?: RegistryFetch;
+  readonly tokenTimeoutMs?: number;
+  readonly requestTimeoutMs?: number;
+}
+
+/** One try of a registry's request, as `GhRetries.send` reads it: code 0 with the answer's JSON
+ *  (none for an answer that names no image), else code 1 with its failure in common.ts's words
+ *  (`httpFailure`, `fetchFailure`); `status` is the answer's HTTP status, none when none came. */
+interface RegistryTry extends GhTry {
+  readonly status?: number;
+  readonly json?: unknown;
 }
 
 const Manifest = z.object({
@@ -67,9 +102,10 @@ const ConfigBlob = z.object({
 /** The token of each registry's tokenCommand, by its argv: the command runs once per process. */
 const tokens = new Map<string, Promise<string>>();
 
-/** The trimmed standard output of `registry`'s tokenCommand, run once per process. Its failure
- *  names the host and the exit status, never what the command printed. */
-function registryToken(registry: Registry): Promise<string> {
+/** The trimmed standard output of `registry`'s tokenCommand, run once per process, and ended once
+ *  it runs past `timeoutMs` (common.ts's `timeLimit`). Its failure names the host and the exit
+ *  status or the limit, never the command or what it printed. */
+function registryToken(registry: Registry, timeoutMs: number): Promise<string> {
   const key = JSON.stringify(registry.tokenCommand);
   const known = tokens.get(key);
   if (known !== undefined) return known;
@@ -79,10 +115,14 @@ function registryToken(registry: Registry): Promise<string> {
       stdout: "pipe",
       stderr: "ignore",
     });
-    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    if (code !== 0) throw new Error(`the token command of ${registry.host} exited ${code}`);
+    const limit = timeLimit(child, timeoutMs);
+    const [out, code] = await Promise.all([textOf(child.stdout, limit), child.exited]);
+    limit.clear();
+    const command = `the token command of ${registry.host}`;
+    if (limit.timedOut()) throw new Error(pastLimit(command, timeoutMs));
+    if (code !== 0) throw new Error(`${command} exited ${code}`);
     const trimmed = out.trim();
-    if (trimmed === "") throw new Error(`the token command of ${registry.host} printed no token`);
+    if (trimmed === "") throw new Error(`${command} printed no token`);
     return trimmed;
   })();
   tokens.set(key, token);
@@ -91,11 +131,18 @@ function registryToken(registry: Registry): Promise<string> {
 
 /** Read an image's config, not its layers, from its registry: a registry the configuration names
  *  (`access.registries`) with the Bearer token its tokenCommand prints, else a public GHCR image
- *  with the anonymous pull token GHCR gives; undefined for any other host. The reference must pin
- *  a digest. No message names the token. */
+ *  with the anonymous pull token GHCR gives; undefined for any other host, and for an image the
+ *  registry does not have (a 404; on GHCR's anonymous read a 401 or 403 too: no public image). The
+ *  reference must pin a digest. Each request is given up after its own time limit, its body
+ *  included, and one that failed for a transient reason (that limit, a connection that failed, an
+ *  HTTP 429 or 5xx) is sent again by the runner's one rule (`access.retries`, common.ts's
+ *  `GhRetries`); after its last try the read fails naming the image and that try's failure. A
+ *  configured registry's 401 or 403 is a refusal of its token: the read fails at once, naming the
+ *  host, the image and the status. The token command runs outside every request's limit. No
+ *  message names the token. */
 export async function registryImageConfig(
   image: string,
-  access: RegistryAccess = {}
+  access: RegistryAccess
 ): Promise<ImageConfig | undefined> {
   const [, host, repository, digest] = REFERENCE.exec(image) ?? [];
   if (host === undefined || repository === undefined || digest === undefined) return undefined;
@@ -104,12 +151,38 @@ export async function registryImageConfig(
   const registry = access.registries?.find((each) => each.host === host);
   if (registry === undefined && host !== "ghcr.io") return undefined;
   const send = access.fetch ?? ((url, init) => fetch(url, init));
-  const signal = AbortSignal.timeout(30_000);
+  const limitMs = access.requestTimeoutMs ?? REGISTRY_REQUEST_TIMEOUT_MS;
   const get = async (url: string, headers?: Record<string, string>): Promise<unknown> => {
-    const response = await send(url, { headers, signal });
-    if ([401, 403, 404].includes(response.status)) return undefined;
-    if (!response.ok) throw new Error(`reading ${image}: registry HTTP ${response.status}`);
-    return response.json();
+    let tries = 0;
+    const read = await access.retries.send(
+      async (): Promise<RegistryTry> => {
+        tries++;
+        const signal = AbortSignal.timeout(limitMs);
+        try {
+          const response = await send(url, { headers, signal });
+          const { status } = response;
+          if (status === 404 || (registry === undefined && (status === 401 || status === 403)))
+            return { code: 0, stderr: "", status };
+          if (!response.ok) return { code: 1, stderr: httpFailure(status), status };
+          return { code: 0, stderr: "", status, json: await response.json() };
+        } catch (error) {
+          const failure = fetchFailure(error, signal, limitMs);
+          if (failure === undefined) throw error;
+          return { code: 1, stderr: failure };
+        }
+      },
+      { read: `the registry read of ${url}` }
+    );
+    if (read.code === 0) return read.json;
+    if (read.status === 401 || read.status === 403) {
+      throw new Error(
+        `reading ${image}: ${host} refused the token of its tokenCommand (HTTP ${read.status})`
+      );
+    }
+    const last = lastTryError(read);
+    throw new Error(
+      `reading ${image}: registry ${last}${tries > 1 ? ` on the last of ${tries} tries` : ""}`
+    );
   };
   let token: string;
   if (registry === undefined) {
@@ -119,7 +192,7 @@ export async function registryImageConfig(
     if (!anonymous.success) return undefined;
     token = anonymous.data.token;
   } else {
-    token = await registryToken(registry);
+    token = await registryToken(registry, access.tokenTimeoutMs ?? REGISTRY_TOKEN_TIMEOUT_MS);
   }
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -260,20 +333,22 @@ export async function sessionPodImage(
     .safeParse(Bun.YAML.parse(pin));
   const image = stack.data?.config[pinKey];
   const pinned = typeof image === "string" ? image : "";
-  const digest = IMAGE.exec(pinned)?.[1]?.slice("sha256:".length);
+  const digest = REFERENCE.exec(pinned)?.[3]?.slice("sha256:".length);
   if (digest === undefined)
     throw new PodNotMeasurable(`${pinAt} has no pinned digest at ${pinKey}`);
   const pinLines = pin.split(/\r?\n/);
   const pinLine = pinLines.findIndex((line) => line.trimStart().startsWith(`${pinKey}:`));
+  // A key the YAML reads that no line starts with (a quoted key, say) has no line to cite, and no
+  // comment above it (commentAbove of -1 is empty).
+  const pinPlace =
+    pinLine === -1 ? `${pinAt} (no line of it starts with ${pinKey}:)` : `${pinAt}:${pinLine + 1}`;
   const comment = commentAbove(pinLines, pinLine);
   const attested = await github.attestedCommit(repository, digest);
   // The pin can move back to an older build. Read that build's Dockerfile, not the pin commit's.
   const ref =
     attested?.commit ?? /\b(?:built commit|push of commit) ([a-f0-9]{7,40})\b/.exec(comment)?.[1];
   if (ref === undefined)
-    throw new PodNotMeasurable(
-      `${pinAt}:${pinLine + 1} names no build commit for sha256:${digest}`
-    );
+    throw new PodNotMeasurable(`${pinPlace} names no build commit for sha256:${digest}`);
   const build = ref.length === 40 ? ref : await github.commitAt(repository, ref, at);
   if (!build.startsWith(ref))
     throw new PodNotMeasurable(`${pinAt} names an unresolved build commit ${ref}`);
@@ -281,7 +356,7 @@ export async function sessionPodImage(
   if (recipe === undefined) throw new PodNotMeasurable(`${dockerfile} at ${build} is missing`);
   const stage = finalStage(recipe);
   const base = stage.base;
-  if (base === undefined || !IMAGE.test(base))
+  if (base === undefined || !REFERENCE.test(base))
     throw new PodNotMeasurable(`${dockerfile} at ${build} has no digest-pinned final FROM`);
   const oci = await github.imageConfig(base);
   if (oci === undefined)
@@ -330,6 +405,6 @@ export async function sessionPodImage(
   const baseLinks = linksIn(profile, [], worker);
   const podLinks = linksIn(profile, oci.env.length ? oci.env : baseLinks.env, stage);
   const directories = [...new Set([...baseLinks.found, ...podLinks.found])];
-  const why = `Inference: ${pinAt}:${pinLine + 1} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
+  const why = `Inference: ${pinPlace} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
   return { repo: workerRepository, sha, directories, why };
 }

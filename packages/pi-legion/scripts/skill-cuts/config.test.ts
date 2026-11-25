@@ -78,7 +78,9 @@ test("sessionPod accepts a deployment pin and two repository-relative Dockerfile
   expect(parseConfig({ ...valid(), sessionPod }).sessionPod).toEqual(sessionPod);
   expect(
     refusal({ ...valid(), sessionPod: { ...sessionPod, dockerfile: "../Dockerfile" } })
-  ).toContain("sessionPod.dockerfile:");
+  ).toContain(
+    "sessionPod.dockerfile: a file of the repository as a path in the repository, such as mise.toml"
+  );
 });
 
 // Catches: a registry the runner reads with a token, or an image a deployment builds, stated in a
@@ -128,7 +130,7 @@ test("ompPin is optional; a repository file, a key path and a first pool-loading
   const fork = { ...ompPin, firstPoolVersion: "18.16.0-fork.20261104-021732" };
   expect(parseConfig({ ...valid(), ompPin: fork }).ompPin).toEqual(fork);
   expect(refusal({ ...valid(), ompPin: { ...ompPin, file: "../mise.toml" } })).toContain(
-    "ompPin.file:"
+    "ompPin.file: a file of the repository as a path in the repository, such as mise.toml"
   );
   expect(refusal({ ...valid(), ompPin: { ...ompPin, key: [] } })).toContain("ompPin.key:");
   expect(refusal({ ...valid(), ompPin: { ...ompPin, firstPoolVersion: "18.16" } })).toContain(

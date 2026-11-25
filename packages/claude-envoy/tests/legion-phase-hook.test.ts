@@ -754,7 +754,7 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(inbox[0]).toContain("it holds what was pushed to legion/LEGION-208")
+    expect(inbox[0]).toContain("from what was pushed to legion/LEGION-208")
     // Recorded in the record the phase and count live in, so a server Claude Code restarts inside
     // the same process does not repeat it.
     expect(await record()).toEqual({

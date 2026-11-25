@@ -124,6 +124,7 @@ func assertRef(t *testing.T, database *store.Store, fromKind, fromID, toKind, to
 // comment writes, each stored as an edge dated the time that source's text was written, and the
 // document mention keeping the excerpt its block is cut to. The queue is empty after it.
 func TestTheDrainIndexesTextStoredWithoutTheWholeGrammar(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := createRawSpec(t, database, ":::ask{#q1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
@@ -207,6 +208,7 @@ func TestTheDrainIndexesTextStoredWithoutTheWholeGrammar(t *testing.T) {
 // document, so the comment, the message and the document itself list under that question from then
 // on, with no edit of their text.
 func TestTheDrainResolvesAnIDWrittenBeforeItsQuestionSettles(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createRawSpec(t, database, ":::ask{#q1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nAnd see #q1.\n")
 	comment := createRawComment(t, database, "Answered by #q1.")
@@ -243,6 +245,7 @@ func TestTheDrainResolvesAnIDWrittenBeforeItsQuestionSettles(t *testing.T) {
 // is the re-index of its whole text, and the batch that owns a document's index writes it on the
 // next tick, with the bare key its text writes and the excerpt the block holding it is cut to.
 func TestTheDrainOwesADocumentIndexedByAnEarlierGrammar(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	var notes string
