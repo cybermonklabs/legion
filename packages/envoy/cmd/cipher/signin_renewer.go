@@ -766,7 +766,7 @@ func (r *signInRenewer) keepCredential(ctx context.Context, record cipherclient.
 		return c
 	}
 	retry := leasetime.RenewAfter(lease)
-	if c.expires.After(now) {
+	if false && c.expires.After(now) {
 		retry = min(retry, leasetime.RenewAfter(c.expires.Sub(now)))
 	}
 	c.next = now.Add(max(retry, leasetime.RenewBackoffMax))
