@@ -31,6 +31,7 @@
     "extensions/legion-commit-trailers-omp.test.ts",
     "extensions/legion-session-activity-omp.test.ts",
     "extensions/legion-stall-watchdog-omp.test.ts",
+    "extensions/capability-host-omp.test.ts",
     "test/*.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
