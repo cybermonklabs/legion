@@ -83,7 +83,7 @@ func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, 
 		basis := headBasis(head, issueRepo)
 		bases = append(bases, basis)
 		switch {
-		case open && head.Open:
+		case open:
 			subjects = append(subjects, headSubject{basis: basis, repo: head.Repo})
 		case !open && (newestMerged < 0 || mergedAfter(head, heads[newestMerged])):
 			newestMerged = index
