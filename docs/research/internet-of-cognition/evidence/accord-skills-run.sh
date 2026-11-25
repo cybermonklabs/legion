@@ -16,8 +16,8 @@
 # --max-cost is required and is omp's own flag of that name, the one `omp --help` prints:
 # omp stops sending model requests once the session's spend, its subagents' included,
 # reaches the value, and the script writes no cap of its own. The script ends cannot run
-# when the omp it finds prints no such flag, so a renamed flag is never read as a model that
-# did not answer.
+# when the omp it finds prints no such flag, or none of any other flag the session passes, so
+# a renamed flag is never read as a model that did not answer.
 #
 # omp runs under env -i, with PATH, the new HOME and a new TMPDIR, both under the run's
 # TMPDIR, the two ACCORD variables below and any proxy or CA variable the caller set, so
@@ -138,7 +138,11 @@ for v in HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy NODE_EX
 done
 
 (cd "$WORK" && env -i "$@" omp --help) >"$RUN/help.txt" 2>&1
-grep -q -e '--max-cost' "$RUN/help.txt" || cannot_run 'omp --help prints no --max-cost flag'
+for flag in --max-cost --max-time --mode --no-session --no-title --no-lsp --no-context-files \
+    --approval-mode --thinking --model; do
+    grep -q -E -- "(^|[^a-z-])$flag([^a-z-]|\$)" "$RUN/help.txt" ||
+        cannot_run "omp --help prints no $flag flag"
+done
 
 PROMPT=$(cat <<'EOF'
 You are the orchestrator for the task below, and you work with two specialists. Each specialist is a subagent you start with the task tool.
@@ -166,9 +170,8 @@ done
 printf 'installed in ~/.omp/agent/skills of the new HOME:%s\n' "$INSTALLED"
 (cd "$WORK" && env -i "$@" omp skill list --json 2>/dev/null) >"$RUN/skills.json"
 
-# omp's bash tool cuts a line of output at 768 bytes, so the orchestrator reads each message
-# of the script through a file, which is why the prompt above lets it write one inside the
-# working directory.
+# The prompt has the orchestrator write any file it needs inside the working directory, never
+# under /tmp, so that whatever the session writes is under the run's own TMPDIR.
 (cd "$WORK" && env -i "$@" timeout -k 30 1500 omp -p --mode json --no-session --no-title --no-lsp \
     --no-context-files --approval-mode yolo --thinking low --model "$MODEL" \
     --max-cost "$MAX_COST" --max-time 20m "$PROMPT") >"$RUN/events.jsonl" 2>"$RUN/omp.err"
@@ -193,7 +196,17 @@ def load_json(path, default):
         return default
 
 
+TOKENS = {"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0}
+
+
+# cost_of(usage): the cost omp billed for one model call, the figure --max-cost reads; it also
+# adds the call's tokens, by kind, into TOKENS, so that the report shows whether the gateway
+# read the session's cache: the session's prompts cost about four times as much unread.
 def cost_of(usage):
+    if isinstance(usage, dict):
+        for kind in TOKENS:
+            n = usage.get(kind)
+            TOKENS[kind] += n if isinstance(n, int) else 0
     cost = (usage or {}).get("cost") if isinstance(usage, dict) else None
     if isinstance(cost, dict):
         cost = cost.get("total")
@@ -323,6 +336,9 @@ else:
     print(f"unverified replies recorded: {unverified}")
 
 print(f"cost: {parent_cost + sub_cost:.4f} USD")
+print(f"prompt tokens: {TOKENS['cacheRead'] + TOKENS['cacheWrite'] + TOKENS['input']}, of them "
+      f"{TOKENS['cacheRead']} read from the cache, {TOKENS['cacheWrite']} written to it and "
+      f"{TOKENS['input']} uncached; output tokens: {TOKENS['output']}")
 print(f"omp exit status: {omp_status}")
 
 

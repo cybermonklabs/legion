@@ -6,7 +6,7 @@ which names no provider, as IOC_OMP_MODELS, so that check.test.sh plays the row 
 without a model, a credential or a gateway; it holds no secret and names no host.
 
 It answers the four calls the script makes, in the shapes omp 18.18.6 gives them:
-`omp --help`, whose text holds the line of the flag that caps a session's cost,
+`omp --help`, whose text holds the line of each flag the script's session passes,
 `omp --version`, `omp skill list --json`, which lists the SKILL.md folders under
 $HOME/.omp/agent/skills as omp's native user provider does, and one print-mode session
 (`-p --mode json ...`), whose JSON event stream carries the events the script reads: the
@@ -138,7 +138,18 @@ if ARGS[:1] == ["--version"]:
     print("omp/0.0.0-stub")
 elif ARGS[:1] == ["--help"]:
     print("omp stub, a stand-in for omp that plays a session on canned replies\n\nFLAGS")
-    print("      --max-cost=<value>                Stop sending model requests once the session's spend reaches this many USD")
+    for flag, text in (
+            ("--model=<value>", "Model to use"),
+            ("--thinking=<value>", "Thinking level"),
+            ("--mode=<value>", "Output mode: text, json or rpc"),
+            ("--no-session", "Do not save the session"),
+            ("--no-title", "Do not generate a session title"),
+            ("--no-lsp", "Disable the language servers"),
+            ("--no-context-files", "Do not load context files"),
+            ("--approval-mode=<value>", "Override tools.approvalMode for this session"),
+            ("--max-time=<value>", "Stop the session after this duration"),
+            ("--max-cost=<value>", "Stop sending model requests once the session's spend reaches this many USD")):
+        print(f"      {flag:<34}{text}")
 elif ARGS[:2] == ["skill", "list"]:
     found = sorted(d for d in (os.listdir(SKILLS) if os.path.isdir(SKILLS) else [])
                    if os.path.isfile(os.path.join(SKILLS, d, "SKILL.md")))
