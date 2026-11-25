@@ -1154,9 +1154,11 @@ To stand it up:
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
 `slow`, and the rest the example names).
-The daemon refuses to boot when an agent's role has no model, or its model's key does not work.
+The task agents Legion's prompts dispatch take the models of `review`, `oracle`, `deep`,
+`smol` and `slow`.
+The daemon refuses to boot when one of those roles has no model, or its model's key does not work.
 `smol` and `slow` left unset take the `default` role's model, which the daemon accepts.
-Nothing refuses a missing `default`: an Oh My Pi session whose role names no model then starts,
+Nothing refuses a missing `default`. An Oh My Pi session whose role names no model then starts,
 silently, on one of Oh My Pi's built-in models.
 Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
