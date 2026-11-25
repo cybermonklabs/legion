@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,41 @@ func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observa
 		t.Fatal("no observation before the test binary's deadline")
 	}
 	return runtime.Observation{}
+}
+
+// nextChange is the next observation that is not an Alive of loc: Observe evaluates a claim again
+// whenever anything about its Sandbox or pod reaches the runtime (Observe's doc), so a claim a
+// test has seen Alive may be reported Alive again, at its recorded locator, before the change the
+// test then makes reaches the runtime. A loaded machine makes that more likely, never wrong.
+func nextChange(t *testing.T, observations <-chan runtime.Observation, loc runtime.Locator) runtime.Observation {
+	t.Helper()
+	for {
+		obs := next(t, observations)
+		if obs.Kind != runtime.Alive || obs.Locator != loc {
+			return obs
+		}
+	}
+}
+
+// firstOfEach is the first observation of each of claims, in the order the runtime emitted them,
+// read until every claim has one. An observation of a claim that already has one is skipped when
+// both are Alive at one locator, the same report again (nextChange), and fails the test otherwise,
+// since a second verdict about a claim is not what a first observation reads.
+func firstOfEach(t *testing.T, observations <-chan runtime.Observation, claims ...claim.Token) []runtime.Observation {
+	t.Helper()
+	var seen []runtime.Observation
+	for len(seen) < len(claims) {
+		obs := next(t, observations)
+		i := slices.IndexFunc(seen, func(earlier runtime.Observation) bool { return earlier.Locator.Claim == obs.Locator.Claim })
+		switch {
+		case i < 0 && slices.Contains(claims, obs.Locator.Claim):
+			seen = append(seen, obs)
+		case i >= 0 && seen[i].Kind == runtime.Alive && obs.Kind == runtime.Alive && seen[i].Locator == obs.Locator:
+		default:
+			t.Fatalf("%s of %s at %+v after %+v, want one first observation of each of %v", obs.Kind, obs.Locator.Claim, obs.Locator, seen, claims)
+		}
+	}
+	return seen
 }
 
 // quiet fails the test when an observation arrives within the window.
@@ -75,7 +111,7 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")}}
 		})
-		if obs := next(t, observations); obs.Kind != runtime.Gone || obs.Locator != loc {
+		if obs := nextChange(t, observations, loc); obs.Kind != runtime.Gone || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want Gone at the recorded locator", obs.Kind, obs.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Labels["touched"] = "yes" })
@@ -99,7 +135,7 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		if err := g.kube.Tracker().Update(podsGVR, runningPod(workerToken, "uid-pod-recreated", claim.RoleTester), testNamespace); err != nil {
 			t.Fatal(err)
 		}
-		obs := next(t, observations)
+		obs := nextChange(t, observations, loc)
 		if obs.Kind != runtime.NotRecordedProcess || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want NotRecordedProcess at the recorded locator", obs.Kind, obs.Locator)
 		}
@@ -127,15 +163,11 @@ func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
 	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: childToken, Locator: &child}, {Claim: rootToken, Locator: &root}}, 0); err != nil {
 		t.Fatal(err)
 	}
-	seen := map[claim.Token]runtime.Observation{}
-	for range 2 {
-		obs := next(t, observations)
-		seen[obs.Locator.Claim] = obs
-	}
-	if obs := seen[childToken]; obs.Kind != runtime.Gone || obs.Locator != child {
+	seen := firstOfEach(t, observations, childToken, rootToken)
+	if obs := observationOf(t, seen, child); obs.Kind != runtime.Gone || obs.Locator != child {
 		t.Errorf("the killed child issue's role: %s at %+v, want Gone at %s", obs.Kind, obs.Locator, child.Incarnation)
 	}
-	if obs := seen[rootToken]; obs.Kind != runtime.Alive || obs.Locator != root {
+	if obs := observationOf(t, seen, root); obs.Kind != runtime.Alive || obs.Locator != root {
 		t.Errorf("the living root: %s at %+v, want Alive at %s", obs.Kind, obs.Locator, root.Incarnation)
 	}
 	if writes := g.writes(); len(writes) > 0 {

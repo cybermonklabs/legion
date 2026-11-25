@@ -74,11 +74,11 @@ func readopt(t *testing.T, ctx context.Context, r *Runtime, locs ...runtime.Loca
 	if err != nil {
 		t.Fatal(err)
 	}
-	var seen []runtime.Observation
-	for range locs {
-		seen = append(seen, next(t, observations))
+	claims := make([]claim.Token, 0, len(locs))
+	for _, loc := range locs {
+		claims = append(claims, loc.Claim)
 	}
-	return seen
+	return firstOfEach(t, observations, claims...)
 }
 
 // observationOf is the one observation of seen about loc's claim.
@@ -796,7 +796,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 		t.Fatal(err)
 	}
 	drift := (movedAddress{agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
-	seen := []runtime.Observation{next(t, observations), next(t, observations)}
+	seen := firstOfEach(t, observations, testerLoc.Claim, reviewerLoc.Claim)
 	for _, loc := range []runtime.Locator{testerLoc, reviewerLoc} {
 		obs := observationOf(t, seen, loc)
 		if obs.Kind != runtime.Alive || obs.Locator != loc {
