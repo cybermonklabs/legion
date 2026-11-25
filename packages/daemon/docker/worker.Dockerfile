@@ -99,12 +99,14 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
-# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
-# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
-# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
-# on a large pack fills an issue pod again.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
+# The jj fork sjawhar/jj, at a release built from sjawhar/jj#4 on top of sjawhar/jj#3. sjawhar/jj#3
+# gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB chunks and keeps
+# the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget): under gVisor a
+# whole mapping counts as the pod's memory once one page of it is read. sjawhar/jj#4 starts from
+# jj-vcs/jj#10100 and keeps, in a merge of two commits with several merge bases, what both sides
+# hold (jj-vcs/jj#6369). A later pin must carry both patches, or one jj command on a large pack
+# fills an issue pod again, or a role's merge silently reverts work.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261125-112159
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
 # pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
@@ -120,8 +122,8 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-22 at
-# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-001804 pin, jj's on 2026-11-25 at
+# its 0.46.0-sami.20261125-112159 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
 # stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
@@ -131,7 +133,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
 ARG OMP_SHA256=bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632
-ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG JJ_SHA256=2e47fd34fc59a50c0db0a231db018dcf672e9640b494bdc57fe01d6b9560167e
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
 # ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API
@@ -284,7 +286,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdeb
 # such layer waited for the workspace install and the packs before BuildKit could reuse it.
 FROM bun AS plugin-deps
 WORKDIR /repo
-# jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
+# jq: the same version, contract number and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
@@ -376,15 +378,20 @@ COPY skills skills
 # skills/ into dist/skills, and writes its dist/THIRD_PARTY_NOTICES with scripts/third-party-notices.ts.
 COPY scripts/pi-plugin-prepack.sh scripts/pi-plugin-prepack.sh
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
+# The contract number pi-legion's manifest declares, which its committed manifest does not:
+# scripts/daemon-contract.sh counts it from packages/contracts' fixtures, as release.yaml's
+# pi_legion_build does, and reads no history, which this context has not got (.dockerignore
+# leaves out .git).
+COPY scripts/daemon-contract.sh scripts/daemon-contract.sh
 
 # Each plugin ships from this checkout with the steps release.yaml's pi_envoy_build and
 # pi_legion_build jobs run before `bun pm pack`: the release version set (PI_ENVOY_VERSION and
 # PI_LEGION_VERSION, the pair a release resolved for this commit and links into `legion`; empty
-# outside a release, which keeps the manifest's own version) and the manifest pointed at the one
-# packed bundle (the prepack refuses to pack with the source manifest). So an image built from a
-# commit carries that commit's plugin code, labelled with the version its release links into
-# `legion`, never a registry's build. Each tarball is unpacked into a directory: `omp plugin
-# install` links a directory and rejects a tarball path (ENOTDIR).
+# outside a release, which keeps the manifest's own version), pi-legion's contract number written,
+# and the manifest pointed at the one packed bundle (the prepack refuses to pack with the source
+# manifest). So an image built from a commit carries that commit's plugin code, labelled with the
+# version its release links into `legion`, never a registry's build. Each tarball is unpacked into
+# a directory: `omp plugin install` links a directory and rejects a tarball path (ENOTDIR).
 ARG PI_ENVOY_VERSION
 WORKDIR /repo/packages/pi-envoy
 RUN jq --arg v "$PI_ENVOY_VERSION" '(if $v != "" then .version = $v else . end) | .omp.extensions = ["dist/envoy.js"]' package.json > tmp.json \
@@ -394,7 +401,8 @@ RUN jq --arg v "$PI_ENVOY_VERSION" '(if $v != "" then .version = $v else . end) 
     && tar xzf ./*.tgz -C /out/pi-envoy --strip-components=1
 WORKDIR /repo/packages/pi-legion
 ARG PI_LEGION_VERSION
-RUN jq --arg v "$PI_LEGION_VERSION" '(if $v != "" then .version = $v else . end) | .omp.extensions = ["dist/legion.js"]' package.json > tmp.json \
+RUN contract="$(bash /repo/scripts/daemon-contract.sh)" \
+    && jq --arg v "$PI_LEGION_VERSION" --argjson c "$contract" '(if $v != "" then .version = $v else . end) | .legion.daemonApiVersion = $c | .omp.extensions = ["dist/legion.js"]' package.json > tmp.json \
     && mv tmp.json package.json \
     && rm -f ./*.tgz && bun pm pack \
     && mkdir -p /out/pi-legion \
@@ -623,14 +631,21 @@ RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
 # packages/daemon under go.work, whose other module (packages/envoy) contributes its go.mod and go.sum
 # to dependency selection and its listenfd package to `legion start` — static, so it runs on any
 # base. LEGION_REVISION is the commit the workflow builds; it is linked in so `legion version` names
-# it, and the build refuses without it.
+# it, and the build refuses without it. LEGION_CONTRACT_ORDER is that commit's contract entries in
+# main's merge order, the stamp worker-image.yaml reads with scripts/daemon-contract-order.sh from
+# the history this context leaves out; it is linked in as api.contractOrder, from which the daemon
+# numbers each entry by its rank, and the build refuses without it too: an unstamped `legion`
+# numbers its entries by id instead, and the stamp of a commit of no entry is `v1:`, never an empty
+# value.
 FROM go-source AS go
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
+ARG LEGION_CONTRACT_ORDER
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
 RUN test -n "$LEGION_REVISION" \
-    && ldflags="-X main.revision=${LEGION_REVISION}" \
+    && test -n "$LEGION_CONTRACT_ORDER" \
+    && ldflags="-X main.revision=${LEGION_REVISION} -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=${LEGION_CONTRACT_ORDER}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
     && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
     && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
@@ -1627,7 +1642,10 @@ COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
 # the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
 # default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
-# and refuses a push whose configuration names another git, rather than pushing unchecked:
+# and refuses a push whose configuration names another git, rather than pushing unchecked. It
+# hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, whose push step sets the author of
+# a commit the push sends from that commit's Legion-Role trailer, where its rules let it, and which
+# then runs the real jj:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
@@ -1663,7 +1681,13 @@ ARG GH_STACK_TOOL
 # prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
 # any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
-# commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
+# commit the workflow built. Its `legion version --contracts` is held line by line to
+# LEGION_CONTRACT_ORDER, the stamp the go stage linked: `contract` L plus the stamp's count of
+# ids, L the greatest number of packages/contracts/fixtures/daemon-api/released-contracts.json
+# (bind-mounted from the build context); `order stamped`, for the stamp `v1:` of no entry too;
+# and each id of the stamp in its order, the k-th numbered L + k and followed by its slug. A
+# `legion` linked with no stamp prints `order id`, so it fails here even where its ids fall in
+# the stamp's order. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
 # and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. The real gh runs
 # `gh stack` from a data directory laid out as the shim lays a role's out (a link to
@@ -1739,6 +1763,7 @@ ARG GH_STACK_TOOL
 # (PI_ENVOY_VERSION, PI_LEGION_VERSION): an image whose plugin roots name any other version, or no
 # version, fails here.
 ARG LEGION_REVISION
+ARG LEGION_CONTRACT_ORDER
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
 # Each client plugin's build-commit stamp: the commit this image is built from, written beside the
@@ -1759,6 +1784,7 @@ RUN if printf '%s\n' "$LEGION_REVISION" | grep -Eqx '[0-9a-f]{40}'; then \
 USER 1000:1000
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
+    --mount=type=bind,source=packages/contracts/fixtures/daemon-api/released-contracts.json,target=/tmp/source/released-contracts.json \
     set -eu; \
     for plugin in pi-envoy pi-legion; do \
       case "$plugin" in pi-envoy) want="${PI_ENVOY_VERSION:-}" ;; *) want="${PI_LEGION_VERSION:-}" ;; esac; \
@@ -1818,6 +1844,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
       expected="$(printf '%s\nplugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s' "$expected" "$PI_LEGION_VERSION" "$PI_ENVOY_VERSION")"; \
     fi; \
     test "$version" = "$expected"; \
+    contracts="$(legion version --contracts)"; echo "$contracts"; \
+    last="$(jq -e max /tmp/source/released-contracts.json)"; \
+    expected="$(printf '%s\n' "${LEGION_CONTRACT_ORDER:-}" | awk -F, -v l="$last" 'sub(/^v1:/, "") { print "contract", l + NF; print "order stamped"; for (k = 1; k <= NF; k++) print $k, l + k }')"; \
+    test "$(printf '%s\n' "$contracts" | awk 'NR > 2 && NF == 3 { print $1, $2; next } 1')" = "$expected"; \
     legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models; \
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go

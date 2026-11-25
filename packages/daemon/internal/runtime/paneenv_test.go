@@ -11,9 +11,9 @@ import (
 )
 
 // A pane variable that would move the session a resume reads, override what the runtime sets on a
-// Claude Code pane or a resumed Oh My Pi pane, take a launch secret's pointer, or put a password on
-// tmux's command line is refused with its reason, which never holds the value; any other variable
-// is the operator's.
+// Claude Code pane or a resumed Oh My Pi pane, take a launch secret's pointer, forge the table of
+// every role's identity each launch sets, or put a password on tmux's command line is refused with
+// its reason, which never holds the value; any other variable is the operator's.
 func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 	const (
 		password   = "hunter2-pane"
@@ -37,6 +37,9 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 		// off for every pane, nor set it on the fresh ones.
 		{"OMP_SESSION_EXCLUSIVE", "0", resumed},
 		{"OMP_SESSION_EXCLUSIVE", "1", resumed},
+		// Every workflow launch sets the identities of the issue's roles for the push step of
+		// `legion jj`; an operator's value on every pane would forge another role's author.
+		{"LEGION_ROLE_IDENTITIES", `{"implementer":{"name":"x","email":"x@example.invalid"}}`, "every launch sets it (the identities of the issue's roles, which the push step reads)"},
 		// Claude Code's background tasks are the operator's to set, as its other variables are: the
 		// runtime sets nothing that turns them off, so no value of the operator's is overridden.
 		{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0", ""},

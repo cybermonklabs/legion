@@ -48,6 +48,14 @@
 #     TOML. Each must refuse every one of `git push` and `jj git push` as a setup failure
 #     (`LEAK CHECK SETUP ERROR`) and name the failure it met.
 #
+#   - the push step of `legion jj`, as the case `jj-push-author-from-trailer`, in a repository of
+#     its own, on the head's image alone: one identity makes a commit with `jj new`, the
+#     implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer`
+#     trailer, and `jj git push --bookmark` sends it with LEGION_ROLE_IDENTITIES set for that push
+#     alone. The remote commit's author must be the implementer's identity, which the step sets.
+#     The control is the base branch's image from before the rule-file change, which holds the
+#     push step or not according to when it was built, so a verdict there would prove nothing.
+#
 #   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
 #     on the head's image alone, which jj would upload through that git, with no wrapper and so no
 #     pre-push hook: the image's jj wrapper refuses it before the upload starts, with exit 2 and its
@@ -104,12 +112,13 @@
 #   0  every check of every arm held: on the head's image the four refusable cases were refused
 #      under the Job's rule file, each naming its class and what matched, the clean case landed,
 #      the refusable push landed with no rule file named and no command printed a `LEAK CHECK`
-#      line, all four setup failures refused under both commands, the gerrit upload was refused
-#      and the push outside the guard landed; on the control's image, if one was given, the
-#      refusable cases were refused under the Job's file and under none, each naming its class
-#      alone, the clean case landed under the Job's file and under a missing or an unparseable
-#      one, both shared-check failures refused under both commands, and the push outside the
-#      guard landed.
+#      line, all four setup failures refused under both commands, the gerrit upload was refused,
+#      the remote commit of `jj-push-author-from-trailer` had the implementer's identity as its
+#      author, and the push outside the guard landed; on the control's image, if one was given,
+#      the refusable cases were refused under the Job's file and under none, each naming its
+#      class alone, the clean case landed under the Job's file and under a missing or an
+#      unparseable one, both shared-check failures refused under both commands, and the push
+#      outside the guard landed.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a

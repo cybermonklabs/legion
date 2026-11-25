@@ -1,6 +1,6 @@
 //go:build !race
 
-// A ninth static check beside the eight source guards, under the tag they carry and for the same
+// A tenth static check beside the nine source guards, under the tag they carry and for the same
 // saving: it reads text - the api package's parsed declarations, and the bytes of every non-test
 // .go file of the module - and opens no database and starts no goroutine, so the race detector
 // has nothing here to watch. Behind the tag the race build neither compiles it nor walks

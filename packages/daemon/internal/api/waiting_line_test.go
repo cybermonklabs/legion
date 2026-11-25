@@ -117,7 +117,7 @@ func issueKeyServed(t *testing.T, body []byte, name string) map[string]json.RawM
 // holding a slot and an issue the line does not name are served no `waitingLine` key at all.
 func TestTheWaitingLinePlaceIsServedOnEachIssue(t *testing.T) {
 	state := waitingLineState()
-	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	line, served := state.Admission.Waiting, waitingLinesServed(t, body)
 
 	if blocked := state.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != "LEGION-30" ||
@@ -178,9 +178,9 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)
 	}
-	if waitingLineContract > DaemonAPIVersion {
+	if waitingLineContract > DaemonAPIVersion() {
 		t.Fatalf("waitingLineContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
-			waitingLineContract, DaemonAPIVersion)
+			waitingLineContract, DaemonAPIVersion())
 	}
 }
 
@@ -288,9 +288,9 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)
 	}
-	if mergeWaitContract > DaemonAPIVersion {
+	if mergeWaitContract > DaemonAPIVersion() {
 		t.Fatalf("mergeWaitContract = %d, above DaemonAPIVersion %d: no caller could be served the object",
-			mergeWaitContract, DaemonAPIVersion)
+			mergeWaitContract, DaemonAPIVersion())
 	}
 }
 
