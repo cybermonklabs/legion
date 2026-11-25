@@ -3930,6 +3930,187 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/internal/dispatch/githubapi/proxy_answer_ok_test.go"],
         "capture": "githubapi.answer-tokens/workflow-runs"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-not-whole",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-not-whole"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-no-status-line",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-no-status-line"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-status",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-status"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-exit",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-exit"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-no-repository",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-no-repository"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-errors",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-errors"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-repository-name",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-repository-name"
+      },
+      {
+        "row": "leakguard-visibility-words-graphql-visibility",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/graphql-visibility"
+      },
+      {
+        "row": "leakguard-visibility-words-rest-exit",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/rest-exit"
+      },
+      {
+        "row": "leakguard-visibility-words-curl-unreached",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/curl-unreached"
+      },
+      {
+        "row": "leakguard-visibility-words-curl-exit",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/curl-exit"
+      },
+      {
+        "row": "leakguard-visibility-words-curl-status",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/curl-status"
+      },
+      {
+        "row": "leakguard-visibility-words-curl-caller-unreached",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/visibility_words_test.go"],
+        "capture": "leakguard.visibility-words/curl-caller-unreached"
+      },
+      {
+        "row": "githubrest-api-url-get",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
+      },
+      {
+        "row": "githubrest-api-url-post",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
+      },
+      {
+        "row": "githubrest-api-url-pages",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
+      },
+      {
+        "row": "githubrest-api-url-pages-own-query",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
+      },
+      {
+        "row": "githubrest-api-address-no-base",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
+      },
+      {
+        "row": "githubrest-api-address-get",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"],
+        "capture": "githubrest.api-address/get"
+      },
+      {
+        "row": "githubrest-api-address-post",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"],
+        "capture": "githubrest.api-address/post"
+      },
+      {
+        "row": "githubrest-api-address-pages",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/githubrest/url_join_test.go"],
+        "capture": "githubrest.api-address/pages"
+      },
+      {
+        "row": "leakguard-tarball-api-url",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/source_url_join_test.go"]
+      },
+      {
+        "row": "leakguard-tarball-api-address",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/leakguard/source_url_join_test.go"],
+        "capture": "leakguard.api-address/tarball"
+      },
+      {
+        "row": "appauth-base-url-app-slug",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
+      },
+      {
+        "row": "appauth-base-url-installed-on",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
+      },
+      {
+        "row": "appauth-base-url-installations",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
+      },
+      {
+        "row": "appauth-base-url-mint",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
+      },
+      {
+        "row": "appauth-base-url-viewer",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
+      },
+      {
+        "row": "appauth-base-url-refused-app-slug",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"],
+        "capture": "appauth.base-url/app-slug"
+      },
+      {
+        "row": "appauth-base-url-refused-installed-on",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"],
+        "capture": "appauth.base-url/installed-on"
+      },
+      {
+        "row": "appauth-base-url-refused-installations",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"],
+        "capture": "appauth.base-url/installations"
+      },
+      {
+        "row": "appauth-base-url-refused-viewer",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"],
+        "capture": "appauth.base-url/viewer"
       }
     ],
     "boundary_fields": {
@@ -15316,6 +15497,447 @@
         "preimage": "redact.Tokens(run.Event, -1, token), redact.Tokens(run.Name, -1, token)",
         "replacement": "run.Event+redact.Tokens(\"\", -1, token), run.Name"
       }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-not-whole",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-not-whole",
+      "production": "leakguard graphQLAnswer: a GraphQL answer that is not one whole JSON document is quoted as the rule reads it, every run of the tokens the read carried redacted (said, shownSaid: oauth2call.Tokens then oauth2call.Field)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-not-whole",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "exited %d without one whole GraphQL answer: %s\", maskPath(slug), status, said(body, stderr, slug, tokens...))",
+        "replacement": "exited %d without one whole GraphQL answer: %s\", maskPath(slug), status, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-no-status-line",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-no-status-line",
+      "production": "leakguard graphQLAnswer: a GraphQL read that printed no status line quotes what gh printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-no-status-line",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "printed no status line this reads: %s\", maskPath(slug), said(body, stderr, slug, tokens...))",
+        "replacement": "printed no status line this reads: %s\", maskPath(slug), body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-status",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-status",
+      "production": "leakguard graphQLAnswer: a GraphQL read answered a status other than 200 quotes what gh printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-status",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "answered the status %d: %s\", maskPath(slug), httpStatus, said(body, stderr, slug, tokens...))",
+        "replacement": "answered the status %d: %s\", maskPath(slug), httpStatus, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-exit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-exit",
+      "production": "leakguard graphQLAnswer: a gh that exited non-zero after a 200 quotes what it printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-exit",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "exited %d: %s\", maskPath(slug), status, said(body, stderr, slug, tokens...))",
+        "replacement": "exited %d: %s\", maskPath(slug), status, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-no-repository",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-no-repository",
+      "production": "leakguard graphQLAnswer: a GraphQL answer naming no repository quotes what gh printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-no-repository",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "GraphQL answered no repository for %s: %s\", maskPath(slug), said(body, stderr, slug, tokens...))",
+        "replacement": "GraphQL answered no repository for %s: %s\", maskPath(slug), body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-errors",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-errors",
+      "production": "leakguard graphQLAnswer: the message of each error GraphQL named prints as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-errors",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "errs[i] = shownSaid(strings.ReplaceAll(e.Message, slug, maskPath(slug)), tokens...)",
+        "replacement": "errs[i] = strings.ReplaceAll(e.Message, slug, maskPath(slug))"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-repository-name",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-repository-name",
+      "production": "leakguard graphQLAnswer: the nameWithOwner GraphQL answered for prints as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-repository-name",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "not %s\", shownSaid(maskPath(answered), tokens...), maskPath(slug))",
+        "replacement": "not %s\", maskPath(answered), maskPath(slug))"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-graphql-visibility",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-visibility",
+      "production": "leakguard graphQLAnswer: a visibility GraphQL answered that is none GitHub defines prints as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-visibility",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "which is none GitHub defines\", shownSaid(answer.Data.Repository.Visibility, tokens...), maskPath(slug))",
+        "replacement": "which is none GitHub defines\", answer.Data.Repository.Visibility, maskPath(slug))"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-rest-exit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/rest-exit",
+      "production": "leakguard Guard.ghVisibility: a gh REST read that exited non-zero quotes everything it printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/rest-exit",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "exited %d: %s\", maskPath(slug), status, said(printed, \"\", slug, tokens...))",
+        "replacement": "exited %d: %s\", maskPath(slug), status, strings.TrimSpace(printed))"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-curl-unreached",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-unreached",
+      "production": "leakguard curlAnswer: a curl that reached GitHub not at all quotes what it printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/curl-unreached",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility_transport.go",
+        "preimage": "said: fmt.Sprintf(\"exit %d: %s\", status, said(body, stderr, slug, token))",
+        "replacement": "said: fmt.Sprintf(\"exit %d: %s\", status, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-curl-exit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-exit",
+      "production": "leakguard curlAnswer: a curl that exited non-zero after GitHub answered quotes what it printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/curl-exit",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility_transport.go",
+        "preimage": "exited %d: %s\", masked, status, said(body, stderr, slug, token))",
+        "replacement": "exited %d: %s\", masked, status, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-curl-status",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-status",
+      "production": "leakguard curlAnswer: a curl read GitHub answered a status other than 200 quotes what it printed as the rule reads it",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/curl-status",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility_transport.go",
+        "preimage": "answered the status %d: %s\", masked, httpStatus, said(body, stderr, slug, token))",
+        "replacement": "answered the status %d: %s\", masked, httpStatus, body+\" \"+stderr)"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-curl-caller-unreached",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-caller-unreached",
+      "production": "leakguard CurlResponse.Unreached: the curl answer a caller of its own reads quotes what curl printed as the rule reads it, the read's token kept for that alone",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/curl-caller-unreached",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility_transport.go",
+        "preimage": "quoted := shownSaid(strings.TrimSpace(strings.TrimSpace(r.Body())+\" \"+strings.TrimSpace(r.Stderr)), r.token)",
+        "replacement": "quoted := strings.TrimSpace(strings.TrimSpace(r.Body()) + \" \" + strings.TrimSpace(r.Stderr))"
+      }
+    },
+    {
+      "id": "githubrest-api-url-get",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/get/query",
+      "production": "githubrest Client.Get: a configured API endpoint with a path and a query (http://host/api/v3?key=...) is asked that path with the repository's and the read's under it, the query kept (urljoin.Join through RepositoryAPI and callURL), where the read's path appended to the endpoint's text sat inside the query's last value and GitHub was asked /api/v3"
+    },
+    {
+      "id": "githubrest-api-url-get-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/get/twin",
+      "production": "the twin of githubrest-api-url-get: an endpoint with a path and no query reaches the same path either way"
+    },
+    {
+      "id": "githubrest-api-url-post",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/post/query",
+      "production": "githubrest Client.Post through send: the same join for a write"
+    },
+    {
+      "id": "githubrest-api-url-post-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/post/twin",
+      "production": "the twin of githubrest-api-url-post"
+    },
+    {
+      "id": "githubrest-api-url-pages",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/pages/query",
+      "production": "githubrest GetPages: the first page's URL keeps the configured query and asks per_page=100 after it"
+    },
+    {
+      "id": "githubrest-api-url-pages-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/pages/twin",
+      "production": "the twin of githubrest-api-url-pages"
+    },
+    {
+      "id": "githubrest-api-url-pages-own-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/pages_with_the_read's_own_query/query",
+      "production": "githubrest GetPages: the configured query, then the read's own, then per_page=100"
+    },
+    {
+      "id": "githubrest-api-url-pages-own-query-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadGoesToThePathJoinedOntoTheConfiguredAPI/pages_with_the_read's_own_query/twin",
+      "production": "the twin of githubrest-api-url-pages-own-query"
+    },
+    {
+      "id": "githubrest-api-address-no-base",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/no-base",
+      "production": "githubrest RepositoryAPI: an endpoint that is no absolute URL with a host is no REST base at all"
+    },
+    {
+      "id": "githubrest-api-address-get",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/get",
+      "production": "githubrest Client.Get: a read under an endpoint that is no absolute URL with a host is refused in urljoin's fixed words, which print neither the endpoint nor url.Parse's error",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "capture": "githubrest.api-address/get",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "joined, err := urljoin.Join(c.API, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub REST base of %s: %w\", cmp.Or(shown, path), err)",
+        "replacement": "joined, err := url.Parse(c.API + path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub REST base %q: %w\", c.API, err)"
+      }
+    },
+    {
+      "id": "githubrest-api-address-post",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/post",
+      "production": "githubrest Client.Post through send: the same refusal for a write",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "capture": "githubrest.api-address/post",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "joined, err := urljoin.Join(c.API, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub REST base of %s: %w\", cmp.Or(shown, path), err)",
+        "replacement": "joined, err := url.Parse(c.API + path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub REST base %q: %w\", c.API, err)"
+      }
+    },
+    {
+      "id": "githubrest-api-address-pages",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/pages",
+      "production": "githubrest GetPages: a paged read under such an endpoint is refused in urljoin's fixed words, where its own parse of the REST base quoted the whole configured URL, user information and query included",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "capture": "githubrest.api-address/pages",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "joined, err := urljoin.Join(c.API, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub REST base of %s: %w\", cmp.Or(shown, path), err)",
+        "replacement": "joined, err := url.Parse(c.API + path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"parse the REST base %q: %w\", c.API, err)"
+      }
+    },
+    {
+      "id": "leakguard-tarball-api-url",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadGoesToThePathJoinedOntoTheAPIAddress/query",
+      "production": "leakguard Source.read: a configured API address with a path and a query asks that path with /repos/<owner>/<name>/tarball/<tag> under it, the query kept (urljoin.Join), where the tarball's path appended to the address's text sat inside the query's last value"
+    },
+    {
+      "id": "leakguard-tarball-api-url-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadGoesToThePathJoinedOntoTheAPIAddress/twin",
+      "production": "the twin of leakguard-tarball-api-url: an address with a path and no query reaches the same path either way"
+    },
+    {
+      "id": "leakguard-tarball-api-address",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestATarballReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt",
+      "production": "leakguard Source.read: a tarball read under an API address that is no absolute URL with a host is refused in urljoin's fixed words, which print neither the address nor url.Parse's error",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.Source.read",
+      "capture": "leakguard.api-address/tarball",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/source.go",
+        "preimage": "target, err := urljoin.Join(githubrest.RepositoryAPI(s.API, s.Repository), \"/tarball/\"+tag)",
+        "replacement": "target, err := url.Parse(githubrest.RepositoryAPI(s.API, s.Repository) + \"/tarball/\" + tag)"
+      }
+    },
+    {
+      "id": "appauth-base-url-app-slug",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/app-slug/query",
+      "production": "appauth Manager.appSlug through newRequest: a configured base URL with a path and a query asks that path with /app under it, the query kept (urljoin.Join), where /app appended to the base's text sat inside the query's last value"
+    },
+    {
+      "id": "appauth-base-url-app-slug-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/app-slug/twin",
+      "production": "the twin of appauth-base-url-app-slug"
+    },
+    {
+      "id": "appauth-base-url-installed-on",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/installed-on/query",
+      "production": "appauth Manager.installedOn through newRequest: the same join for GET /repos/<owner>/<name>/installation"
+    },
+    {
+      "id": "appauth-base-url-installed-on-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/installed-on/twin",
+      "production": "the twin of appauth-base-url-installed-on"
+    },
+    {
+      "id": "appauth-base-url-installations",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/installations/query",
+      "production": "appauth Manager.discoverInstallations through newRequest: the page query follows the configured one rather than being written into it"
+    },
+    {
+      "id": "appauth-base-url-installations-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/installations/twin",
+      "production": "the twin of appauth-base-url-installations: a base with no query is asked the URL it was asked before, character for character"
+    },
+    {
+      "id": "appauth-base-url-mint",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/mint/query",
+      "production": "appauth Manager.Token: the mint's first read under the configured base URL"
+    },
+    {
+      "id": "appauth-base-url-mint-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/mint/twin",
+      "production": "the twin of appauth-base-url-mint"
+    },
+    {
+      "id": "appauth-base-url-viewer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/viewer/query",
+      "production": "appauth Manager.viewerLogin through newRequest: token mode's GraphQL read under the configured base URL"
+    },
+    {
+      "id": "appauth-base-url-viewer-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallGoesToThePathJoinedOntoTheConfiguredBaseURL/viewer/twin",
+      "production": "the twin of appauth-base-url-viewer"
+    },
+    {
+      "id": "appauth-base-url-refused-app-slug",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallUnderABaseURLThatIsNoURLRefusesWithoutPrintingIt/app-slug",
+      "production": "appauth Manager.newRequest: a call under a base URL that is no absolute URL with a host is refused in urljoin's fixed words, where net/http's parse error quoted the whole base URL, its user information and its query",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).newRequest",
+      "capture": "appauth.base-url/app-slug",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "target, err := urljoin.Join(m.baseURL, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub API base URL the daemon is configured with: %w\", err)\n\t}\n\treturn http.NewRequestWithContext(ctx, method, target.String(), body)",
+        "replacement": "return http.NewRequestWithContext(ctx, method, m.baseURL+path, body)"
+      }
+    },
+    {
+      "id": "appauth-base-url-refused-installed-on",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallUnderABaseURLThatIsNoURLRefusesWithoutPrintingIt/installed-on",
+      "production": "appauth Manager.newRequest: the same refusal for the installation read of a repository",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).newRequest",
+      "capture": "appauth.base-url/installed-on",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "target, err := urljoin.Join(m.baseURL, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub API base URL the daemon is configured with: %w\", err)\n\t}\n\treturn http.NewRequestWithContext(ctx, method, target.String(), body)",
+        "replacement": "return http.NewRequestWithContext(ctx, method, m.baseURL+path, body)"
+      }
+    },
+    {
+      "id": "appauth-base-url-refused-installations",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallUnderABaseURLThatIsNoURLRefusesWithoutPrintingIt/installations",
+      "production": "appauth Manager.newRequest: the same refusal for the installation discovery, whose own url.Parse of the base quoted it whole",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).newRequest",
+      "capture": "appauth.base-url/installations",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "target, err := urljoin.Join(m.baseURL, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub API base URL the daemon is configured with: %w\", err)\n\t}\n\treturn http.NewRequestWithContext(ctx, method, target.String(), body)",
+        "replacement": "return http.NewRequestWithContext(ctx, method, m.baseURL+path, body)"
+      }
+    },
+    {
+      "id": "appauth-base-url-refused-viewer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestACallUnderABaseURLThatIsNoURLRefusesWithoutPrintingIt/viewer",
+      "production": "appauth Manager.newRequest: the same refusal for token mode's GraphQL viewer read",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).newRequest",
+      "capture": "appauth.base-url/viewer",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "target, err := urljoin.Join(m.baseURL, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub API base URL the daemon is configured with: %w\", err)\n\t}\n\treturn http.NewRequestWithContext(ctx, method, target.String(), body)",
+        "replacement": "return http.NewRequestWithContext(ctx, method, m.baseURL+path, body)"
+      }
     }
   ],
   "bun": [
@@ -18435,6 +19057,31 @@
       "site": "internal/dispatch/envoy/client.go:395, :589, :847, :936 of the report (c.baseURL + route + query)",
       "source": "the round-9 decisions of #4368",
       "guard": "envoy-listener-url-query"
+    },
+    {
+      "site": "packages/daemon/internal/leakguard/visibility.go graphQLAnswer and Guard.ghVisibility",
+      "source": "the round-9 decisions of #4368",
+      "guard": "leakguard-visibility-words-graphql-status"
+    },
+    {
+      "site": "packages/daemon/internal/leakguard/visibility_transport.go curlAnswer and CurlResponse.Unreached",
+      "source": "the round-9 decisions of #4368",
+      "guard": "leakguard-visibility-words-curl-status"
+    },
+    {
+      "site": "packages/daemon/internal/githubrest/githubrest.go RepositoryAPI, Client.callURL and GetPages",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubrest-api-url-get"
+    },
+    {
+      "site": "packages/daemon/internal/leakguard/source.go Source.read",
+      "source": "the round-9 decisions of #4368",
+      "guard": "leakguard-tarball-api-url"
+    },
+    {
+      "site": "packages/daemon/internal/appauth Manager.newRequest",
+      "source": "the round-9 decisions of #4368",
+      "guard": "appauth-base-url-app-slug"
     }
   ]
 }
