@@ -6,9 +6,9 @@ import "testing"
 // from it by id, and the round records name a control by its id, so each list's controls are in
 // it, in order, and no two controls share an id.
 func TestEveryControlIsListedOnceUnderItsOwnID(t *testing.T) {
-	want := len(coreControls) + len(censusControls) + len(judgesControls)
+	want := len(coreControls) + len(censusControls)
 	if len(controls) != want {
-		t.Fatalf("controls holds %d controls, want the %d of coreControls, censusControls and judgesControls", len(controls), want)
+		t.Fatalf("controls holds %d controls, want the %d of coreControls and censusControls", len(controls), want)
 	}
 	seen := map[string]string{}
 	for _, ctl := range controls {

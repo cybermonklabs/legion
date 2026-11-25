@@ -31,12 +31,12 @@
 //     answers_reach.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
-//     normal verification between stage 3 and this one);
+//     normal verification, -verify, between stage 3 and this one);
 //  5. mutation: each row's mutation, applied alone, makes its test fail at its designated
 //     assertion with a marker in the output the test captured there.
 //
 // Each run of stages 4 and 5 has a bound derived in the same run: row_timeout, the row's own
-// budget, plus four times its start-up run (runTest). A run past its bound is UNKNOWN, neither a
+// budget, plus four times its start-up run (runBound). A run past its bound is UNKNOWN, neither a
 // pass nor a failure: its stage stops, the gate prints the timeout's panic and the goroutine
 // running the test, and it exits 3 when nothing failed. So is a run that skipped the row's test
 // or a subtest of it (go test's skip action, a Bun testcase's <skipped>), which the gate names:
@@ -44,7 +44,9 @@
 //
 // -stage plan runs stages 1-3; -stage mutate runs 1-3 again and then 4 and 5. -report prints
 // the censuses' findings without judging them against rows. -controls runs the check's negative
-// controls (controls.go).
+// controls (controls.go). -verify runs the check's normal verification of the rows instead, in the
+// working tree: each Go package's inventory tests under a bound derived in the run, each Bun test
+// file, and one verdict line for each package, row, Bun file and the print test (verify.go).
 package main
 
 import (
@@ -351,6 +353,8 @@ func main() {
 	report := flag.Bool("report", false, "print the censuses' findings without judging them against rows")
 	controlsFlag := flag.Bool("controls", false, "run the check's negative controls")
 	only := flag.String("only", "", "with -controls, the comma-separated controls to run")
+	verifyFlag := flag.Bool("verify", false, "run the check's normal verification of the rows, in the working tree")
+	keep := flag.String("keep", "", "with -verify, the directory to keep each run's events, stderr, JUnit report and output in")
 	flag.Parse()
 	if *repo == "" {
 		top, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
@@ -369,6 +373,9 @@ func main() {
 	}
 	if *controlsFlag {
 		os.Exit(runControls(*repo, *only))
+	}
+	if *verifyFlag {
+		os.Exit(verify(*repo, *inventoryPath, *keep, os.Stdout))
 	}
 	o := options{rows: *rowsFlag, stage: *stage, head: *head, base: *base, report: *report}
 	os.Exit(run(*repo, *inventoryPath, o, os.Stdout))
