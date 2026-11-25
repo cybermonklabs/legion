@@ -501,7 +501,11 @@ RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && retu
 # whose waits double from a second, the last starting 127 s after the first, each transfer bounded
 # at 120 s for a release archive of a few tens of megabytes, and -f so a persistent 504 fails the
 # build instead of writing the error body into the file the checksum then reads. The checksum, the
-# unpack and the install are local and stay bare.
+# unpack and the install are local and stay bare. `mise --version` asks https://mise.jdx.dev/VERSION
+# for a newer release unless its environment names CI: mise's show_latest (src/cli/version.rs at
+# v2026.8.12) returns before that read when ci_info's is_ci() is true, and ci_info 0.14.15 reads any
+# CI, CONTINUOUS_INTEGRATION, BUILD_NUMBER or RUN_ID variable as CI. So CI=true keeps the version
+# print local and the RUN fetches nothing past the curl (dispatch://INFRA-1545, round 68).
 RUN set -eu; \
     t=/tmp/mise; mkdir -p "$t"; \
     curl -fsSL --retry 7 --retry-all-errors --max-time 120 -o "$t/mise.tar.gz" \
@@ -510,7 +514,7 @@ RUN set -eu; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/mise.tar.gz" -C "$t" --no-same-owner; \
     install -m 0755 "$t/mise/bin/mise" /usr/local/bin/mise; \
-    mise --version; \
+    CI=true mise --version; \
     rm -rf "$t"
 COPY .omp-pin /omp-pin
 # The Oh My Pi build, jj and gh are each one archive of the release its pin names, and gh-stack one
@@ -1609,10 +1613,13 @@ WORKDIR /home/legion
 # on: a pin older than that, such as 18.18.6-sami.20261117-013345, fails here. Nothing of Legion's
 # passes the flag yet; the check is a floor on the pin and does not prove the session leases that
 # OMP_SESSION_EXCLUSIVE relies on, which come with 18.18.6-sami.20261118-101239.
+# Its `mise --version` runs on empty cache and data directories, and CI=true keeps it local, for
+# the reason the tools stage's own `mise --version` gives: without it, mise asks mise.jdx.dev for a
+# newer release (dispatch://INFRA-1545, round 68).
 RUN set -eu; \
     bun --version; omp --version; omp --help | grep -q -e '--session-id'; jj --version; gh --version; git --version; codegraph --version; \
     scratch="$(mktemp -d)"; \
-    MISE_CACHE_DIR="$scratch/mise-cache" MISE_DATA_DIR="$scratch/mise-data" mise --version; \
+    MISE_CACHE_DIR="$scratch/mise-cache" MISE_DATA_DIR="$scratch/mise-data" CI=true mise --version; \
     git init --quiet --bare "$scratch/origin.git"; \
     jj git clone "$scratch/origin.git" "$scratch/clone"; \
     rm -rf "$scratch"; \

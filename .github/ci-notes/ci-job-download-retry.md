@@ -206,7 +206,8 @@ not a price: the budgets count retried calls.
 
 - The worker image, 64 hosts: deb.debian.org; registry.npmjs.org; github.com,
   objects.githubusercontent.com, release-assets.githubusercontent.com and
-  raw.githubusercontent.com; mise.jdx.dev; nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
+  raw.githubusercontent.com; mise.jdx.dev (until round 68: THE STATED LIMIT says why no RUN line
+  reaches it now); nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
   and dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
   and files.pythonhosted.org; www.postgresql.org and apt.postgresql.org; cdn.playwright.dev and
   playwright.download.prss.microsoft.com; azcliprod.blob.core.windows.net; proxy.golang.org,
@@ -340,14 +341,14 @@ request comes in a clean no-cache build:
   Dockerfile says why). Run 5 first reached azcliprod.blob.core.windows.net at 313.9 s in job
   138996340699, within 230 s after its outage, so it did not fault it.
 
-THE STATED LIMIT. Five RUN lines met no faulted request in any run at c7939327bc14, read from its
-run 45590427437 (dispatch://INFRA-1545/artifact/r67-image-run-coverage-md). Four of them are the
-worker image's, and no run can fault them: plugin-deps 23/26 and 26/26 (the second and third
+THE STATED LIMIT. Six RUN lines met no faulted request in any run at c7939327bc14, read from its
+run 45590427437 (dispatch://INFRA-1545/artifact/r67-image-run-coverage-md). Five of them stay this
+limit, and the sixth fetches nothing since round 68 (below). Four of the five are the worker
+image's, and no run can fault them: plugin-deps 23/26 and 26/26 (the second and third
 `bun install`; registry.npmjs.org is always first reached, so decided, by 19/26), toolchain 5/7
 (the Cloud SDK; dl.google.com is decided by 4/7's Go tarball through go.dev's redirect) and tools
-5/5 (its omp, jj and gh fetches and `mise --version`; github.com and
-release-assets.githubusercontent.com are decided by 3/5's mise curl or 4/7's uv, and mise.jdx.dev
-by 5/5 itself after that outage). Each is a later RUN line on a host an earlier RUN line of the
+5/5 (its omp, jj and gh fetches; github.com and release-assets.githubusercontent.com are decided
+by 3/5's mise curl or 4/7's uv). Each is a later RUN line on a host an earlier RUN line of the
 same build already met in its outage, so a fault keyed to a host cannot single it out, and each
 uses the same inline `retry()` that other lines prove under fault. The fifth is the Envoy image's
 build 6/12, its `go mod download`, and unlike those four it is coverable. Build 4/12's
@@ -364,6 +365,20 @@ run in which this line met a fault is round 63's run 45383555145 (job 1384095971
 whose window per host faulted each Envoy host from its own first request: build 6/12 failed
 three attempts, go's fall-through lines at 9.1, 19.2 and 39.3 s into the step, and passed on the
 fourth, done at 84.9 s.
+
+The sixth is runtime 24/40, which this note's count missed until review round 40 found it. Its
+`mise --version` runs on empty cache and data directories, and mise then asks
+https://mise.jdx.dev/VERSION for a newer release (`show_latest` in mise's src/cli/version.rs at
+v2026.8.12), and jdx.dev is in run 1's `--hosts`. In job 139124852335 of
+run 45590427437, runtime 24/40 printed `mise WARN  mise version 2026.11.14 available` 1.7 s into
+its RUN, tools 3/5's own `mise --version` printed the same, and the proxy saw two requests to
+mise.jdx.dev, the first at 134.0 s, `not faulted: after outage 1, within 230 s`. Run 45690695366
+at f59ee06091f2 shows the same. Neither read is a retried call, and a failed read fails nothing:
+`fetch_latest_version` logs the error at debug level and returns no version. Round 68 sets
+`CI=true` on both `mise --version` calls. `show_latest` returns before the read when ci_info's
+`is_ci()` is true, and ci_info 0.14.15 takes any CI, CONTINUOUS_INTEGRATION, BUILD_NUMBER or
+RUN_ID variable for CI, so no RUN line of the worker image asks mise.jdx.dev for anything, and
+runtime 24/40 is no longer a fetching line (INFRA-1310's architect's direction for round 68).
 
 Two more RUN lines of the worker image meet a fault in run 1 or not, as BuildKit's stage timing
 falls: runtime 26/40, whose bare `az version` reaches azcliprod.blob.core.windows.net, and runtime
