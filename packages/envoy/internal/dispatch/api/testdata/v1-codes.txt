@@ -277,6 +277,8 @@ UNKNOWN_CHECK 400
 WAIT_INPUT 400
 
 # Added on main after c8a44f97.
+AS_OF_TOKEN_NOT_SERVED 403 # #4557, a read at a cut is not served by this build
+BROWSER_SIGN_IN_REQUIRED 403 # #4631, closing descendants needs a browser sign-in
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements
 DELETE_CONTENDED 409 # #3512, the author of a comment or an issue message can correct or delete it
 FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
@@ -287,6 +289,7 @@ LEGION_SETTING_INPUT 400 # #2731, the Legion daemon a project's state is read fr
 NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
 NOT_AN_ISSUE_MESSAGE 409 # #3512, the author of a comment or an issue message can correct or delete it
+PARENT_STATUS_CONFLICT 409 # #4631, a parent and child would break the status rule
 PLAN_INPUT 400 # #4488, each retro rates the plan its issue ran
 PLAN_OTHER_ISSUE 409 # #4488, each retro rates the plan its issue ran
 POST_DELETED 409 # #3512, the author of a comment or an issue message can correct or delete it
@@ -296,6 +299,7 @@ REFERENCES_TIMEOUT 503 # #4554, an issue's reference closure walk runs under a 2
 REPLACE_FIELDS 400 # #4610, a doc-edit replace with no with, or a member it does not take, is refused
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue
 SEARCH_COVERAGE_TIMEOUT 503 # #4378, the search coverage route reads two indexes under a 10 s bound
+STATUS_CHANGE_INPUT 400 # #4631, an invalid status-change request
 STEP_INPUT 400 # #4400, record each phase of an issue as a step
 STEP_OTHER_ISSUE 409 # #4400, record each phase of an issue as a step
 STEP_WRITER 403 # #4400, record each phase of an issue as a step

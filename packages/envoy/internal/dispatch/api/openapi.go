@@ -979,7 +979,8 @@ var callerCodes = []apicode.Code{
 //   - every route: the query decoder's (QUERY_KEY_UNKNOWN, INVALID_QUERY, and INVALID_LIMIT and
 //     INVALID_OFFSET where the query pages), the parameter check's (NUL_CHARACTER, INVALID_UTF8,
 //     refuseUnstorableParameters), and the server's own fault (INTERNAL);
-//   - a route the read list does not name: the read-only gate's READ_ONLY_TOKEN;
+//   - a route outside the read class: READ_ONLY_TOKEN; a read that does not report the cut:
+//     AS_OF_TOKEN_NOT_SERVED;
 //   - a route that is not public, and one whose scope gate or authority gate resolves the caller:
 //     every code that resolution answers (callerCodes);
 //   - a route that needs a scope, or a value of whose request needs one: OAUTH_SCOPE_REQUIRED;
@@ -1010,8 +1011,10 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	for _, refusal := range route.Refusals {
 		codes = append(codes, refusal.Code)
 	}
-	if !route.ReadScope {
+	if route.Read.Writes != readWritesNothing {
 		codes = append(codes, apicode.ReadOnlyToken)
+	} else if !readAnswersCut(route.Method + " " + route.Pattern) {
+		codes = append(codes, apicode.AsOfTokenNotServed)
 	}
 	gated := len(route.OAuthScopes) > 0 || len(route.Authorities) > 0
 	if route.Auth != authPublic || gated {

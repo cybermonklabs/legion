@@ -322,14 +322,17 @@ var (
 	// (packages/daemon/internal/dispatch/types.go, ParentContended, which PermanentRefusal
 	// reads), so the two spellings change together: no mechanism shares a value between the two
 	// Go modules.
-	ParentContended      = both("PARENT_CONTENDED", http.StatusConflict)
-	PauseArmed           = both("PAUSE_ARMED", http.StatusConflict)
-	PauseNotArmed        = both("PAUSE_NOT_ARMED", http.StatusNotFound)
-	PausePointInput      = both("PAUSE_POINT_INPUT", http.StatusBadRequest)
-	PlanApprovedByReview = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
-	PossibleDuplicate    = both("POSSIBLE_DUPLICATE", http.StatusConflict)
-	PostDeleted          = both("POST_DELETED", http.StatusConflict)
-	PreconditionFailed   = both("PRECONDITION_FAILED", http.StatusConflict)
+	ParentContended       = both("PARENT_CONTENDED", http.StatusConflict)
+	ParentStatusConflict  = both("PARENT_STATUS_CONFLICT", http.StatusConflict)
+	StatusChangeInput     = both("STATUS_CHANGE_INPUT", http.StatusBadRequest)
+	BrowserSignInRequired = both("BROWSER_SIGN_IN_REQUIRED", http.StatusForbidden)
+	PauseArmed            = both("PAUSE_ARMED", http.StatusConflict)
+	PauseNotArmed         = both("PAUSE_NOT_ARMED", http.StatusNotFound)
+	PausePointInput       = both("PAUSE_POINT_INPUT", http.StatusBadRequest)
+	PlanApprovedByReview  = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
+	PossibleDuplicate     = both("POSSIBLE_DUPLICATE", http.StatusConflict)
+	PostDeleted           = both("POST_DELETED", http.StatusConflict)
+	PreconditionFailed    = both("PRECONDITION_FAILED", http.StatusConflict)
 	// PriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (ProjectExists): a second create would write its own history over
 	// the first write's.
@@ -422,9 +425,10 @@ var (
 	IDAmbiguous    = both(contracts.IDAmbiguous, http.StatusConflict)
 	SignInRequired = both(contracts.DispatchSignInRequired, http.StatusForbidden)
 	LoginChanged   = both(contracts.DispatchLoginChanged, http.StatusConflict)
-	// ReadOnlyToken is a read-only token's call of a route the read list does not name
+	// ReadOnlyToken is a read-only token's call of a route outside the read class
 	// (refuseReadOnlyToken).
-	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
+	ReadOnlyToken      = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
+	AsOfTokenNotServed = both(contracts.DispatchAsOfTokenNotServed, http.StatusForbidden)
 	// The refusals of a write of a step record (steps.go), which the Legion daemon reads to end a
 	// row on.
 	StepInput      = both(contracts.StepInputCode, http.StatusBadRequest)

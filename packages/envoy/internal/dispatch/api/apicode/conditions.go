@@ -374,10 +374,13 @@ var (
 	ExternalLinkHeld           = Condition{"external link held by another issue"}
 	// IssueStatusInvalid is an issue status a patch or a search names that is none of the
 	// statuses.
-	IssueStatusInvalid  = Condition{"issue status invalid"}
-	ExternalURLInvalid  = Condition{"external url invalid"}
-	IssueSequenceMoved  = Condition{"issue sequence moved"}
-	ParentLockContended = Condition{"parent lock contended"}
+	IssueStatusInvalid         = Condition{"issue status invalid"}
+	ExternalURLInvalid         = Condition{"external url invalid"}
+	IssueSequenceMoved         = Condition{"issue sequence moved"}
+	ParentLockContended        = Condition{"parent lock contended"}
+	ParentStatusRuleBroken     = Condition{"parent status would be out of line with child status"}
+	StatusChangeOptionsInvalid = Condition{"status change options or fields invalid"}
+	StatusCascadeNeedsBrowser  = Condition{"closing descendants requires a signed-in browser"}
 	// RankInvalid is a rank a write refuses: an issue's rank, or a priority's, naming no neighbour
 	// or one it cannot land beside.
 	RankInvalid           = Condition{"rank invalid"}

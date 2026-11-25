@@ -128,9 +128,9 @@ func holdsConnection(ctx context.Context) bool {
 // the pool still refuses each worker a second connection of its own. A goroutine that runs beside
 // others and reaches this pool takes one. A caller that takes none is one the guard cannot see,
 // since a context nothing marked holds no connection as far as the pool can tell
-// (holdsConnection): the sandbox launcher's frame loop is such a caller, deleting a restored
-// workspace bundle on a context made from context.Background() (runtime/sandbox/launcher.go,
-// restoreReported), and the pool refuses it nothing.
+// (holdsConnection): the sandbox launcher's frame loop is such a caller, applying a launcher's
+// memory-kill report on a context made from context.Background() (runtime/sandbox/launcher.go,
+// memoryKilled), and the pool refuses it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and

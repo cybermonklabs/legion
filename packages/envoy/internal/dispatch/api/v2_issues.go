@@ -164,6 +164,8 @@ const issueClaimText = "The status does not move. Answers the issue with legion_
 	"the status and a status another writer sets is undone. 409 CLAIM_CONTENDED means the holder changed twice while " +
 	"the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry."
 
+var parentStatusConflictRefusal = apicode.Refusal{Condition: apicode.ParentStatusRuleBroken, Code: apicode.ParentStatusConflict}
+
 // v2IssueRows are the issue routes: rows 80 and 82; 81; the project's
 // list R1.3 adds; 83 and 115; 84 and 102; 95; 96; 97; 100; 101; 17; 110; 111; 112; 113; 114; and
 // 173 of the route map; and five rows of /api/v1 the map predates (testdata/v1-only-routes.txt):
@@ -210,6 +212,7 @@ func (s *server) v2IssueRows() []routeRow {
 				"most like the new issue with each ask item's answer state, words to search with by hand (search_query), and "+
 				"under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on "+
 				"itself through its parent is 409 ISSUE_CYCLE.", contracts.IssueTitleMax),
+			// A new child is checked against its parent's status under the same lock as /api/v1.
 			Handler:  s.createIssueV2,
 			Resource: "issues", Kind: kindCollection, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: createIssueInput{}},
@@ -222,12 +225,16 @@ func (s *server) v2IssueRows() []routeRow {
 					Status: http.StatusOK, Body: model.Issue{},
 					Advice: writeAdvice{}, OtherAdvice: []any{suggestionsOnlyAdvice{}},
 				}},
-				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
+				Refusals: []routeAnswer{
+					{Status: http.StatusConflict, Body: issueDuplicateError{}},
+					{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+				},
 			},
 			Scope: scopeProjectInBody,
 			// The spec is seeded straight into the store (docs.SeedText), which opens no room.
 			Refusals: issueFieldRefusals(
 				dependencyLoopRefusal, issueRefInvalidRefusal,
+				parentStatusConflictRefusal,
 				markdownRefusedRefusal, askBlockRefusedRefusal, ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal,
 				apicode.Refusal{Condition: apicode.IssueRefAmbiguous, Code: apicode.AmbiguousIssueRef},
 				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
@@ -301,16 +308,34 @@ func (s *server) v2IssueRows() []routeRow {
 				"kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. "+
 				"expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer "+
 				"that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would "+
-				"make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes "+
-				"nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
+				"make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is "+
+				"409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that "+
+				"changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run, "+
+				"send status and optionally expected_sequence and actor, with no other issue fields. The server checks "+
+				"the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and "+
+				"the progress of a keyed attempt. A dry run returns the plan without writing. This form answers "+
+				"{issue, changed}; a refusal carries the changes that committed before it. Closing with include_children "+
+				"requires a browser sign-in. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
 			Shape: routeShape{
 				Status: http.StatusOK, Response: model.Issue{}, Advice: writeAdvice{},
-				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+				Also: []routeAnswer{{Status: http.StatusOK, Body: statusChangeAnswer{}}},
+				Refusals: []routeAnswer{
+					{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+					{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+					{Status: http.StatusConflict, Body: statusChangeConflict{}},
+					{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+					{Status: http.StatusBadRequest, Body: statusChangeRefusal{}},
+					{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+					{Status: http.StatusNotFound, Body: statusChangeRefusal{}},
+					{Status: http.StatusUnprocessableEntity, Body: statusChangeRefusal{}},
+					{Status: http.StatusInternalServerError, Body: statusChangeRefusal{}},
+				},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
+			KeyedFor: s.patchIssueKeyedRoute,
 			// A close or a reopen writes the state of its asks into their blocks (docs.WriteIssueAskStates).
 			Refusals: documentRefusals(issueFieldRefusals(
 				issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal, issueClosedRefusal,
@@ -318,6 +343,9 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.AdvancesRevisionMoved, Code: apicode.AdvancesRevision},
 				apicode.Refusal{Condition: apicode.ExternalLinkHeld, Code: apicode.ExternalLinkTaken},
 				issueStatusInvalidRefusal,
+				parentStatusConflictRefusal,
+				apicode.Refusal{Condition: apicode.StatusChangeOptionsInvalid, Code: apicode.StatusChangeInput},
+				apicode.Refusal{Condition: apicode.StatusCascadeNeedsBrowser, Code: apicode.BrowserSignInRequired},
 				apicode.Refusal{Condition: apicode.ExternalURLInvalid, Code: apicode.InvalidURL},
 				apicode.Refusal{Condition: apicode.IssueSequenceMoved, Code: apicode.IssueChanged},
 				apicode.Refusal{Condition: apicode.ParentLockContended, Code: apicode.ParentContended},
@@ -800,6 +828,44 @@ type patchIssueV2Input struct {
 	// none; absent leaves the set as it stands. Each entry is the one PUT
 	// /api/v1/issues/{key}/design-gates takes, holds left out or null stored as null.
 	DesignGates *[]issueDesignGateInput `json:"design_gates"`
+	// The presence of any status option selects the multi-issue status-change form.
+	IncludeChildren *bool `json:"include_children,omitempty"`
+	UnlinkChildren  *bool `json:"unlink_children,omitempty"`
+	IncludeParent   *bool `json:"include_parent,omitempty"`
+	DryRun          *bool `json:"dry_run,omitempty"`
+}
+
+func (body patchIssueV2Input) isStatusChange() bool {
+	return body.IncludeChildren != nil || body.UnlinkChildren != nil || body.IncludeParent != nil || body.DryRun != nil
+}
+
+func (s *server) patchIssueKeyedRoute(r *http.Request) (keyedRoute, bool) {
+	if !v2Body[patchIssueV2Input](r).isStatusChange() {
+		return keyedRoute{}, false
+	}
+	return s.statusChangeKeyedRoute(), true
+}
+
+// statusChangeInput rejects other PATCH fields before any step runs; they would otherwise
+// disappear from a write whose plan governs status and parent moves alone.
+func (body patchIssueV2Input) statusChangeInput() (statusChangeInput, error) {
+	fields := body.updateIssueInput
+	if body.DesignGates != nil || fields.Title != nil || fields.Rank != nil || fields.Labels != nil ||
+		fields.LabelsAdd != nil || fields.Priority != nil || fields.Route != nil ||
+		fields.ExternalLinks != nil || fields.Assignee != nil || fields.Parent != nil ||
+		fields.BlockedBy != nil || fields.Advances != nil || fields.AdvancesRevision != nil ||
+		fields.Components != nil || fields.Repo != nil || fields.RefuseOpenForeignChildren {
+		return statusChangeInput{}, errorf(apicode.StatusChangeInput, "send status-change options with status, expected_sequence and actor only; send other fields separately")
+	}
+	input := statusChangeInput{ExpectedSeq: fields.ExpectedSeq, Actor: fields.Actor}
+	if fields.Status != nil {
+		input.Status = *fields.Status
+	}
+	input.IncludeChildren = body.IncludeChildren != nil && *body.IncludeChildren
+	input.UnlinkChildren = body.UnlinkChildren != nil && *body.UnlinkChildren
+	input.IncludeParent = body.IncludeParent != nil && *body.IncludeParent
+	input.DryRun = body.DryRun != nil && *body.DryRun
+	return input, nil
 }
 
 // issueCollaboratorsV2Query is GET /api/v2/issues/{key}/collaborators's query: one page.
@@ -1243,6 +1309,15 @@ func (s *server) patchIssueV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := v2Body[patchIssueV2Input](r)
+	if body.isStatusChange() {
+		input, err := body.statusChangeInput()
+		if err != nil {
+			s.writeStatusChangeRefusal(w, r, err, nil)
+			return
+		}
+		s.changeIssueStatusFrom(w, r, input)
+		return
+	}
 	var gates []issueDesignGate
 	if body.DesignGates != nil {
 		valid, err := validDesignGates(*body.DesignGates)

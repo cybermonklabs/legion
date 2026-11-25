@@ -265,7 +265,9 @@ describe("sending pictures", () => {
     const server = dispatch();
     const RIFF = [0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00];
     const gif = file("moving.gif", [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00]);
-    const webp = file("photo.webp", [...RIFF, 0x57, 0x45, 0x42, 0x50]);
+    // A WebP's first chunk follows its `WEBP`: `VP8 `, `VP8L` or `VP8X`, which is what Go's
+    // sniffer, and so Dispatch, reads it by.
+    const webp = file("photo.webp", [...RIFF, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20]);
     const wave = file("sound.webp", [...RIFF, 0x57, 0x41, 0x56, 0x45]);
 
     await run(

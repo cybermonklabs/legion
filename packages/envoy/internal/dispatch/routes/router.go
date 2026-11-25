@@ -204,6 +204,9 @@ type AppContextOptions struct {
 	// While it is ahead each /api/v1 answer carries a Sunset header naming it, and once it has
 	// passed every path under /api/v1 answers 410 API_V1_ENDED (endAPIV1).
 	APIV1End time.Time
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -269,6 +272,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

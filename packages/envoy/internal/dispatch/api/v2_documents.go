@@ -84,17 +84,18 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
 	"that artifact's next version."
 
-// artifactUploadPreconditionText is what the descriptions of the two uploads that store documents,
-// an issue's and a project's, say of the token an upload names.
-const artifactUploadPreconditionText = "An upload that replaces a document the owner already holds names the token " +
-	"of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
-	"upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that " +
-	"names none is taken for now without a check, since older dispatch commands cannot name one, and counted " +
-	"(envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release " +
-	"refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, " +
-	"writing nothing and naming in current the live token and the number of the version the document stands at, " +
-	"and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on " +
-	"an upload stored as a file, is 400 INVALID_PRECONDITION."
+// fileUploadPreconditionText is the same file and picture guard on all three upload routes.
+const fileUploadPreconditionText = "To replace a file or a picture, precondition {document} names the latest " +
+	"version's token from GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1. A stale token is 409 PRECONDITION_FAILED " +
+	"with the version and token that stand; a first upload or a version with no token also refuses a named token. " +
+	"A replacement naming none is taken unchecked. A precondition naming blocks is 400 INVALID_PRECONDITION."
+
+// artifactUploadPreconditionText adds the guard for a replacement of live document text.
+const artifactUploadPreconditionText = "To replace a document, precondition {document} names the token " +
+	"include=text answers (multipart takes the same JSON in the precondition field). Dispatch checks it under " +
+	"the write lock. A stale token is 409 PRECONDITION_FAILED with the live token and version. A replacement " +
+	"naming none is taken for now and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics). " +
+	fileUploadPreconditionText
 
 // artifactUploadRoleText is what the description of an issue's upload says of the documents that
 // play a role on an issue.
@@ -196,7 +197,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed " +
 				"dispatch://agent/<session_id>/artifact/<slug>. " + artifactUploadText + " A conversation holds files and " +
-				"images only, which have no version token, so a precondition is 400 INVALID_PRECONDITION. " +
+				"images only. " + fileUploadPreconditionText + " " +
 				artifactUploadAnswerText + " " +
 				artifactUploadRefusals(", a markdown document, as JSON content or a text/markdown file") +
 				" No event is appended. A caller whose credential proves a session of its own uploads only into that " +
@@ -204,10 +205,13 @@ func (s *server) v2DocumentRows() []routeRow {
 				"INVALID_SESSION_ID.",
 			Handler:  s.uploadAgentArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
-			Body:  requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}},
+			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: artifactUploadV2{},
+				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
+			},
 			Scope: scopeSession, SessionPath: "session_id",
-			Refusals: uploadBodyRefusals(sessionIDMalformedRefusal),
+			Refusals: uploadBodyRefusals(sessionIDMalformedRefusal, documentPreconditionRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/artifacts/{id}", Auth: authAny, Versions: onlyV2,
@@ -661,7 +665,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: writeAdvice{},
 				OtherAdvice: []any{documentWriteAdvice{}},
-				// A token behind the live document (writeUploadDocumentError).
+				// A stale document or file token names the current version.
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
@@ -698,7 +702,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			// half alone (storeArtifact, the withRawAdvice arm).
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{},
-				// A token behind the live document (writeUploadDocumentError).
+				// A stale document or file token names the current version.
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: editPreconditionError{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathProject,

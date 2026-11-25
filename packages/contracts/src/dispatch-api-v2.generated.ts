@@ -285,7 +285,7 @@ export interface paths {
     /** @description List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or <>"'`[]| is 400 INVALID_SESSION_ID. */
     get: operations["getApiV2AgentsBySessionIdArtifacts"];
     put?: never;
-    /** @description Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. A conversation holds files and images only, which have no version token, so a precondition is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name, a markdown document, as JSON content or a text/markdown file), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID. */
+    /** @description Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. A conversation holds files and images only. To replace a file or a picture, precondition {document} names the latest version's token from GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1. A stale token is 409 PRECONDITION_FAILED with the version and token that stand; a first upload or a version with no token also refuses a named token. A replacement naming none is taken unchecked. A precondition naming blocks is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name, a markdown document, as JSON content or a text/markdown file), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID. */
     post: operations["postApiV2AgentsBySessionIdArtifacts"];
     delete?: never;
     options?: never;
@@ -1102,7 +1102,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
+    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none, which appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming each such child in issues [{key, project, status}] in key order. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run, send status and optionally expected_sequence and actor, with no other issue fields. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal carries the changes that committed before it. Closing with include_children requires a browser sign-in. 404 ISSUE_NOT_FOUND. */
     patch: operations["patchApiV2IssuesByKey"];
     trace?: never;
   };
@@ -1116,7 +1116,7 @@ export interface paths {
     /** @description List an issue's documents, files and images, its spec among them, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is another's slug or documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=text or include=blocks, and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. An upload that replaces a document the owner already holds names the token of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that names none is taken for now without a check, since older dispatch commands cannot name one, and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming in current the live token and the number of the version the document stands at, and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is 400 INVALID_PRECONDITION. An issue's plan, Verification document and decisions document are always documents: a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored a file or an image makes it that document as its next version, its earlier versions still served as the files they are. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one that does not exist, both answered before the body is read. */
+    /** @description Upload an issue document or file. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. To replace a document, precondition {document} names the token include=text answers (multipart takes the same JSON in the precondition field). Dispatch checks it under the write lock. A stale token is 409 PRECONDITION_FAILED with the live token and version. A replacement naming none is taken for now and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics). To replace a file or a picture, precondition {document} names the latest version's token from GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1. A stale token is 409 PRECONDITION_FAILED with the version and token that stand; a first upload or a version with no token also refuses a named token. A replacement naming none is taken unchecked. A precondition naming blocks is 400 INVALID_PRECONDITION. An issue's plan, Verification document and decisions document are always documents: a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored a file or an image makes it that document as its next version, its earlier versions still served as the files they are. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one that does not exist, both answered before the body is read. */
     post: operations["postApiV2IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1579,7 +1579,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, scopes, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token and for a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other; project is the one project key the credential lets the caller write, null where it names none. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account among them. */
+    /** @description Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token and for a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other; project is the one project key the credential lets the caller write, null where it names none. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than reading Dispatch at that time. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, including an exchange entry's token naming its account and every read-only credential. */
     get: operations["getApiV2Me"];
     put?: never;
     post?: never;
@@ -1596,10 +1596,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's personal agent tokens, newest first, each {id, name, prefix, scopes, created_at, last_used_at, revoked_at}: a revoked token stays listed with its revoked_at. Needs the person scope. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
+    /** @description The caller's personal agent tokens, newest first, each {id, name, prefix, scopes, created_at, last_used_at, revoked_at}: a revoked token stays listed with its revoked_at; a read-only token lists read. Needs the person scope. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
     get: operations["getApiV2MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds, and [] is a token that holds none. A blank name is 400 AGENT_TOKEN_INPUT; a scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the token with its plaintext in token, the one time it is shown, so an Idempotency-Key never keeps the answer: a repeat under the key is 409 KEY_COMMITTED and mints no second token. Needs the person and approve scopes. */
+    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds, and [] is a token that holds none. A blank name is 400 AGENT_TOKEN_INPUT. Read alone or with person mints a read-only token. An unknown scope, approve without person, or read with approve is 400 TOKEN_SCOPES_INPUT. Except for read, a scope the caller does not hold is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the token with its plaintext in token, the one time it is shown, so an Idempotency-Key never keeps the answer: a repeat under the key is 409 KEY_COMMITTED and mints no second token. Needs the person and approve scopes. */
     post: operations["postApiV2MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -1621,7 +1621,7 @@ export interface paths {
     delete: operations["deleteApiV2MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals (400 TOKEN_SCOPES_INPUT, 403 OAUTH_SCOPE_REQUIRED), a revoked token included. Answers the token, with no plaintext. Needs the person and approve scopes. 404 AGENT_TOKEN_NOT_FOUND for an id that is no token of the caller's, another person's among them. */
+    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals. A change to or from read only is always 400 TOKEN_SCOPES_INPUT; mint a new token instead. Answers the token, with no plaintext. Needs the person and approve scopes. 404 AGENT_TOKEN_NOT_FOUND for an id that is no token of the caller's, another person's among them. */
     patch: operations["patchApiV2MeAgentTokensById"];
     trace?: never;
   };
@@ -2017,7 +2017,7 @@ export interface paths {
     /** @description List a project's documents, files and images, oldest first: its own and every one of its issues' but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is another's slug or documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=text or include=blocks, and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. An upload that replaces a document the owner already holds names the token of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that names none is taken for now without a check, since older dispatch commands cannot name one, and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming in current the live token and the number of the version the document stands at, and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. To replace a document, precondition {document} names the token include=text answers (multipart takes the same JSON in the precondition field). Dispatch checks it under the write lock. A stale token is 409 PRECONDITION_FAILED with the live token and version. A replacement naming none is taken for now and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics). To replace a file or a picture, precondition {document} names the latest version's token from GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1. A stale token is 409 PRECONDITION_FAILED with the version and token that stand; a first upload or a version with no token also refuses a named token. A replacement naming none is taken unchecked. A precondition naming blocks is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     post: operations["postApiV2ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2897,6 +2897,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     AskAnchorArtifact: {
       name: string;
@@ -3707,7 +3708,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
-      scopes?: null | string[];
+      scopes?: null | ("person" | "approve" | "read")[];
     };
     CreateAskInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -5183,6 +5184,7 @@ export interface components {
       set?: components["schemas"]["MarkSetV2"] | null;
     };
     MeV2: {
+      cut: null | string;
       /** @enum {string} */
       kind: "user" | "agent";
       person: null | string;
@@ -5724,6 +5726,17 @@ export interface components {
       offset: number;
       total: number;
     };
+    ParentStatusConflictBody: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    ParentStatusConflictIssue: {
+      key: string;
+      relation: string;
+      status: string;
+      title: string;
+    };
     PassCounts: {
       graphql_points: number;
       graphql_queries: number;
@@ -5763,8 +5776,11 @@ export interface components {
       blocked_by?: null | string[];
       components?: unknown;
       design_gates?: null | components["schemas"]["IssueDesignGateInput"][];
+      dry_run?: boolean;
       expected_sequence?: null | number;
       external_links?: null | components["schemas"]["ExternalLink"][];
+      include_children?: boolean;
+      include_parent?: boolean;
       labels?: null | string[];
       labels_add?: null | string[];
       parent?: unknown;
@@ -5775,6 +5791,7 @@ export interface components {
       route?: null | string;
       status?: null | string;
       title?: null | string;
+      unlink_children?: boolean;
     };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6405,6 +6422,28 @@ export interface components {
       state: string;
       version: number;
     };
+    StatusChangeAnswer: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      issue: components["schemas"]["Issue"];
+    };
+    StatusChangeConflict: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    StatusChangeEntry: {
+      issue?: components["schemas"]["Issue"];
+      key: string;
+      parent: null | string;
+      previous_last_seq: number;
+      status: string;
+    };
+    StatusChangeRefusal: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+    };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
@@ -6568,7 +6607,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
-      scopes: null | string[];
+      scopes: null | ("person" | "approve")[];
     };
     UpdateDeliverySessionGroupInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6586,6 +6625,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     WorkUnderNoPriorityV2: {
       by_project?: {
@@ -7377,6 +7417,17 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -10293,7 +10344,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["IssueDuplicateError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10387,7 +10439,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueWithWriteAdvice"];
+          "application/json":
+            | components["schemas"]["IssueWithWriteAdvice"]
+            | components["schemas"]["StatusChangeAnswer"];
         };
       };
       /** @description Bad Request */
@@ -10397,7 +10451,30 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["StatusChangeRefusal"]
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["QueryKeyUnknownBody"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -10409,6 +10486,31 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ForeignChildOpenError"]
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"]
+            | components["schemas"]["StatusChangeConflict"]
+            | components["schemas"]["StatusChangeRefusal"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Internal Server Error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
             | components["schemas"]["ErrorBody"];
         };
       };
@@ -15437,6 +15539,8 @@ export type PageOfShapedComment = components["schemas"]["PageOfShapedComment"];
 export type PageOfStepRecord = components["schemas"]["PageOfStepRecord"];
 export type PageOfSubscriber = components["schemas"]["PageOfSubscriber"];
 export type PageOfVersion = components["schemas"]["PageOfVersion"];
+export type ParentStatusConflictBody = components["schemas"]["ParentStatusConflictBody"];
+export type ParentStatusConflictIssue = components["schemas"]["ParentStatusConflictIssue"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
@@ -15511,6 +15615,10 @@ export type SessionAnswersV2 = components["schemas"]["SessionAnswersV2"];
 export type SignInRevokedV2 = components["schemas"]["SignInRevokedV2"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
+export type StatusChangeAnswer = components["schemas"]["StatusChangeAnswer"];
+export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"];
+export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
+export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];

@@ -159,6 +159,22 @@ func issuesTourSteps() []tourStep {
 			Missing: issueMissing,
 		},
 		{
+			Method: http.MethodPatch, Pattern: "/issues/{key}", Name: "move open descendants", Status: http.StatusOK,
+			Setup: onIssue(nil, func(t *testing.T, tour *routeTour, issue tourIssue) any {
+				tourStatusChild(t, tour, issue)
+				return map[string]any{"status": "in_progress", "include_children": true}
+			}),
+			Missing: issueMissing,
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/issues/{key}", Name: "preview open descendant moves", Status: http.StatusOK,
+			Setup: onIssue(nil, func(t *testing.T, tour *routeTour, issue tourIssue) any {
+				tourStatusChild(t, tour, issue)
+				return map[string]any{"status": "in_progress", "include_children": true, "dry_run": true}
+			}),
+			Missing: issueMissing,
+		},
+		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/claim", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				issue := tour.issue(t)
@@ -304,6 +320,18 @@ func (tour *routeTour) legionState(t *testing.T, issue tourIssue) {
 		issue.Key+`"], "waiting": ["`+project+`-7", "`+issue.Key+`"], "blocked": [{"issue": "`+issue.Key+`", "blockedBy": ["`+
 		project+`-9"]}]}`, at)
 	seedLegionRead(t, tour.database, project, at, "")
+}
+
+func tourStatusChild(t *testing.T, tour *routeTour, parent tourIssue) {
+	t.Helper()
+	response := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": tour.projectOf(t, parent), "parent": parent.Key, "title": "A descendant to move with its parent",
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create a child of %s: %d %s", parent.Key, response.Code, response.Body.String())
+	}
+	// The child, like tour.issue, creates a primary document with a deferred settlement.
+	awaitSettled(t, tour.database, decodeBody[tourIssue](t, response).Document)
 }
 
 // claim claims issue for alice through /api/v1.

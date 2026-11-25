@@ -37,13 +37,22 @@ export async function readUploadedFile(
   const number = requested ?? latest;
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
+  const stated = versions.find((version) => version.number === number);
+  // Keep the token in the header so the file's text can be copied back byte for byte.
+  const hashLine =
+    requested === undefined
+      ? stated?.token === undefined
+        ? ""
+        : `\nDocument token: ${stated.token}`
+      : stated?.sha256 === undefined
+        ? ""
+        : `\nContent: sha256:${stated.sha256}`;
   const tooLarge = (mime: string, bytes: number): DispatchToolResult => ({
     text:
       `${oversizePictureText(artifact.name, bytes)}, so dispatch doc-read cannot show this ` +
-      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}`,
+      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${hashLine}`,
     details,
   });
-  const stated = versions.find((version) => version.number === number);
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -60,7 +69,7 @@ export async function readUploadedFile(
       shown?.add(address);
       return {
         text:
-          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
+          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.${hashLine}\n` +
           shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
         details,
         images: [image],
@@ -70,17 +79,17 @@ export async function readUploadedFile(
   }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(file.bytes);
   } catch {
     return {
       text:
         `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
-        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}`,
+        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${hashLine}`,
       details,
     };
   }
   return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}`,
+    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.${hashLine}\n\n${text}`,
     details,
   };
 }

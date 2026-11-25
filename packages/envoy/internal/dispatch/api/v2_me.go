@@ -118,7 +118,7 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/me", Auth: authAny, Versions: onlyV2,
 			Description: "Who the server takes the caller for, one shape for every credential: {kind, person, session, " +
-				"service, project, scopes, sign_in_required}. kind is user for a person at a browser and agent for every " +
+				"service, project, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every " +
 				"other credential, a personal token holding the person scope included, since the kind names the " +
 				"credential and not the act. person is the lowercase email of the person the credential acts for: the " +
 				"person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared " +
@@ -128,10 +128,12 @@ func (s *server) v2MeRows() []routeRow {
 				"its machine belongs to or the Kubernetes account an exchange entry lists, null for every other; project " +
 				"is the one project key the credential lets the caller write, null where it names none. scopes is the " +
 				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
-				"reaches, and approve settles what a person settles. sign_in_required is true where Dispatch refuses " +
+				"reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. " +
+				"cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than " +
+				"reading Dispatch at that time. sign_in_required is true where Dispatch refuses " +
 				"every write of the credential with a 403 until a person signs in on its machine, which " +
 				"is a broker-issued token of a machine nobody has signed in on, and false for every other credential, " +
-				"an exchange entry's token naming its account among them.",
+				"including an exchange entry's token naming its account and every read-only credential.",
 			Handler:  s.getMeV2,
 			Resource: "me", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: meV2{}},
@@ -140,7 +142,7 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/me/agent-tokens", Auth: authAny, Versions: onlyV2,
 			Description: "The caller's personal agent tokens, newest first, each {id, name, prefix, scopes, created_at, " +
-				"last_used_at, revoked_at}: a revoked token stays listed with its revoked_at. Needs the person scope. " +
+				"last_used_at, revoked_at}: a revoked token stays listed with its revoked_at; a read-only token lists read. Needs the person scope. " +
 				"limit 1 to 200 (default 50) and offset; {items, total, limit, offset}.",
 			Handler:  s.listAgentTokensV2,
 			Resource: "agent-tokens", Kind: kindCollection, Key: "{id}",
@@ -153,8 +155,9 @@ func (s *server) v2MeRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/me/agent-tokens", Auth: authAny, Versions: onlyV2,
 			Description: "Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting " +
 				"to the scopes the caller's own credential holds, and [] is a token that holds none. A blank name is 400 " +
-				"AGENT_TOKEN_INPUT; a scope this deployment does not know, or approve without person, is 400 " +
-				"TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the " +
+				"AGENT_TOKEN_INPUT. Read alone or with person mints a read-only token. An unknown scope, approve without " +
+				"person, or read with approve is 400 TOKEN_SCOPES_INPUT. Except for read, a scope the caller does not " +
+				"hold is 403 OAUTH_SCOPE_REQUIRED. Answers 201 the " +
 				"token with its plaintext in token, the one time it is shown, so an Idempotency-Key never keeps the " +
 				"answer: a repeat under the key is 409 KEY_COMMITTED and mints no second token. Needs the person and " +
 				"approve scopes.",
@@ -187,9 +190,9 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodPatch, Pattern: "/me/agent-tokens/{id}", Auth: authAny, Versions: onlyV2,
 			Description: "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to " +
-				"hold, with the mint's refusals (400 TOKEN_SCOPES_INPUT, 403 OAUTH_SCOPE_REQUIRED), a revoked token " +
-				"included. Answers the token, with no plaintext. Needs the person and approve scopes. 404 " +
-				"AGENT_TOKEN_NOT_FOUND for an id that is no token of the caller's, another person's among them.",
+				"hold, with the mint's refusals. A change to or from read only is always 400 TOKEN_SCOPES_INPUT; mint " +
+				"a new token instead. Answers the token, with no plaintext. Needs the person and approve scopes. " +
+				"404 AGENT_TOKEN_NOT_FOUND for an id that is no token of the caller's, another person's among them.",
 			Handler:  s.updateAgentTokenV2,
 			Resource: "agent-tokens", Kind: kindItem, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: updateAgentTokenScopesInput{}},
@@ -310,6 +313,7 @@ type meV2 struct {
 	Service *string  `json:"service"`
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`
+	Cut     *string  `json:"cut"`
 	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
 	// signs in on its machine (403 SIGN_IN_REQUIRED), the decision writeNeedsASignedInPerson acts
 	// on (signInRequired), as GET /api/v1/whoami answers it; false for a person at a browser.
@@ -332,6 +336,9 @@ func (s *server) getMeV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if !human && actor.Kind == "session" && actor.ID != "" {
 		me.Session = new(actor.ID)
+	}
+	if actor.Credential != nil && !actor.Credential.Cut.IsZero() {
+		me.Cut = new(cutText(actor.Credential.Cut))
 	}
 	_, me.SignInRequired = s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, me)
@@ -371,7 +378,11 @@ func (s *server) createAgentTokenV2(w http.ResponseWriter, r *http.Request) {
 // where it is not writes 404 AGENT_TOKEN_NOT_FOUND (requireHeldV2): another person's token is no
 // token of the caller's.
 func (s *server) requireAgentTokenV2(w http.ResponseWriter, r *http.Request, owner, id string) bool {
-	return s.requireHeldV2(w, r, id, "agent token", `select exists (select 1 from agent_tokens where id = $1 and owner = $2)`,
+	return s.requireHeldV2(w, r, id, "agent token", `select exists (
+		select 1 from agent_tokens where id = $1 and owner = $2
+		union all
+		select 1 from agent_read_tokens where id = $1 and owner = $2
+	)`,
 		apicode.AgentTokenNotFound, "you hold no agent token "+id, owner)
 }
 

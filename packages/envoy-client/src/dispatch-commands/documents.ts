@@ -20,6 +20,7 @@ import {
   issueTopic,
   parseDispatchRef,
 } from "../dispatch-owner";
+import { PICTURE_SNIFF_BYTES, readPictureHead } from "../dispatch-pictures";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
@@ -50,6 +51,7 @@ import {
   artifactUnderName,
   roundTripRouteAbsent,
   storedTextCheckFailed,
+  uploadKindOf,
 } from "./upload-checks";
 import { readUploadedFile } from "./uploaded-file";
 
@@ -708,10 +710,22 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       name
     );
     if (held !== undefined) {
+      // The kind Dispatch would store this upload as decides what the refusal may advise: an
+      // upload of another kind than the name holds is refused under that name whatever it
+      // carries, so it is told to take another name. Only a path that is not Markdown has bytes
+      // to read, and only their first PICTURE_SNIFF_BYTES decide.
+      const kind = await uploadKindOf(name, path, input.cwd, (named) =>
+        input.uploadBytes === undefined
+          ? readPictureHead(resolvePath(input.cwd, named))
+          : Promise.resolve(input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES))
+      );
       throw new ToolInputError(input.tool, [
         artifactNameExistsProblem(
           held,
-          artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`
+          artifactOwner.kind === "project"
+            ? `project ${artifactOwner.project}`
+            : `issue ${issue()}`,
+          kind
         ),
       ]);
     }

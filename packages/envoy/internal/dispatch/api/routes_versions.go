@@ -29,6 +29,7 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -477,6 +478,11 @@ type routeRow struct {
 	// message is answered (keyedReread): the post read again as it stands now, so an edit or a
 	// delete since is in the answer. Nil for every other route.
 	Reread keyedReread
+	// Resumes and RefuseKey describe a keyed write with individually committed steps.
+	Resumes   bool
+	RefuseKey func(http.ResponseWriter, *http.Request, error, json.RawMessage)
+	// KeyedFor selects recovery for a decoded body variant without changing the default write.
+	KeyedFor func(*http.Request) (keyedRoute, bool)
 	// AnswerHoldsSecret is a route whose answer carries a credential, which an Idempotency-Key
 	// never keeps (keyedWrites).
 	AnswerHoldsSecret bool
@@ -512,11 +518,8 @@ type apiRoute struct {
 	// header names (linkSuccessor): a v1Row's Successor, the /api/v2 mount of a routeRow served in
 	// both versions, a test hook's /api/v2/_test path. Zero on every /api/v2 route.
 	Successor successor
-	// ReadScope is whether a read-only token may call the route: true on every route the read
-	// list names (readScopeRoutes) by the method and pattern it is mounted at, which routes()
-	// stamps once the table is whole, and on no other. Only the read-only gate reads it
-	// (refuseReadOnlyToken), never the route index or the OpenAPI document.
-	ReadScope bool
+	// Read is the read class of a mounted GET row, or the zero entry on other methods.
+	Read readEntry
 	// columns marks the mount of a routeRow, whose facts are its own columns. A route of the v1
 	// table - and a route a test builds by hand - carries false, and the mount guards read its
 	// facts where the side maps hold them (sideMapName), so a side-map entry stays held to the
@@ -558,7 +561,7 @@ func (route apiRoute) shape() routeShape {
 // five columns, and every fact the side maps and the pattern constants hold for it copied into
 // the columns a routeRow declares them in. For a v1 route these are the facts register has always
 // read, so every /api/v1 behaviour stays what it was.
-func v1Route(row routeRow, replays map[string]keyedReplay) apiRoute {
+func v1Route(row routeRow, replays map[string]keyedRoute) apiRoute {
 	name := row.Method + " " + row.Pattern
 	row.Scope = writeClasses[name]
 	row.OAuthScopes = routeScopes[name]
@@ -573,7 +576,8 @@ func v1Route(row routeRow, replays map[string]keyedReplay) apiRoute {
 	limit, tooLarge := routeBody(row.Method, row.Pattern)
 	row.BodyLimit = routeBodyLimit{limit, tooLarge}
 	row.RefusesClosedOwner = name == issueUploadRoute
-	row.Replay = replays[name]
+	keyed := replays[name]
+	row.Replay, row.Resumes, row.RefuseKey = keyed.replay, keyed.resumes, keyed.refuse
 	row.Reread = keyedRereads[name]
 	row.AnswerHoldsSecret = answerHoldsSecret[name]
 	row.DocumentOwner = documentOwnerOf(row.Pattern)

@@ -617,7 +617,19 @@ func (s *server) readIssueChecks(ctx context.Context, issueKey, at string, trees
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(ctx, issueKey, checks); err != nil {
+	// The reader learns the heads GitHub names before any check CI proves is derived
+	// (deriveCIResults). A derived result is read at the issue's newest pull request head, which
+	// may be a head this read's read-through learns: derived first, a first read would answer
+	// that Dispatch holds no head while it names the head it learned as another check's basis. A
+	// derived result is at that newest head, which the learned heads already hold, so it leaves
+	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
+	// answered, and where the learn stored or learned any head every check's bases are read again,
+	// so each check of the answer is answered on the heads as they stand after this read's
+	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
+	// (comparisonReader.learn).
+	reader := newComparisonReader(ctx, s, at)
+	reader.learn(ctx, checks)
+	if err := s.deriveCIResults(ctx, reader, issueKey, checks); err != nil {
 		return issueCheckResults{}, nil, err
 	}
 	// Each result's observed text is registered for its tree once no check's results are replaced
@@ -627,11 +639,6 @@ func (s *server) readIssueChecks(ctx context.Context, issueKey, at string, trees
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.learn(ctx, checks)
 	for index := range checks {
 		reader.answer(ctx, &checks[index])
 	}

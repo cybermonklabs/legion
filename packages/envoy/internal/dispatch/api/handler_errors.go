@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -79,8 +80,13 @@ type editPreconditionError struct {
 // beside its write and adds the sentence saying where a current token is printed
 // (writeUploadDocumentError).
 func editPreconditionBody(r *http.Request, failed *docs.ErrPreconditionFailed) (editPreconditionError, int) {
+	return preconditionBody(r, failed.CurrentDocument, failed.Mismatches, failed.Error())
+}
+
+// preconditionBody is the versioned answer shared by document edits and file uploads.
+func preconditionBody(r *http.Request, currentDocument string, mismatches []model.EditPreconditionMismatch, message string) (editPreconditionError, int) {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
-	for _, mismatch := range failed.Mismatches {
+	for _, mismatch := range mismatches {
 		if mismatch.Scope == "block" && mismatch.Current != nil {
 			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
 				ID: mismatch.BlockID, Token: *mismatch.Current,
@@ -90,9 +96,9 @@ func editPreconditionBody(r *http.Request, failed *docs.ErrPreconditionFailed) (
 	code, status := refusalPair(r, apicode.PreconditionFailed)
 	return editPreconditionError{
 		Code:       code,
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: currentDocument},
+		Error:      message,
+		Mismatches: mismatches,
 	}, status
 }
 
@@ -129,11 +135,30 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 		if apiErr.scope != "" {
 			w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(apiErr.scope))
 		}
+		if apiErr.statusOverride != 0 {
+			writeErrorAt(w, r, apiErr.code, apiErr.statusOverride, apiErr.message)
+			return
+		}
 		writeError(w, r, apiErr.code, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
 		if name, status, _ := codePair(requestAPIVersion(r), apiErr.code); status == http.StatusInternalServerError {
 			slog.Error("dispatch: API handler failed", "code", name, "error", err)
 		}
+		return
+	}
+	// A write that R24 refuses names each issue that holds the rule (parent_status_rule.go).
+	var conflict *parentStatusConflict
+	if errors.As(err, &conflict) {
+		code, status := refusalPair(r, apicode.ParentStatusConflict)
+		WriteJSON(w, status, conflict.body(code))
+		return
+	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		code, status := refusalPair(r, apicode.ForeignChildOpen)
+		WriteJSON(w, status, open.body(code))
 		return
 	}
 	documentCode, documentError := documentErrorCode(err)
@@ -284,6 +309,20 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 	writeError(w, r, apicode.InternalError, "internal server error")
 	slog.Error("dispatch: API handler failed", "error", err)
 }
+
+// errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
+// its status, its headers and its body, for a caller that answers it in a form of its own. A test
+// hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
+// it with the entries of the steps that committed (writeStatusChangeRefusal).
+type errorAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *errorAnswer) Header() http.Header         { return a.header }
+func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
+func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.

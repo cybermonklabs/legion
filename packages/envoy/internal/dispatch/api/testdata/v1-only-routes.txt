@@ -130,6 +130,7 @@ POST /api/v1/issues/{key}/results
 POST /api/v1/issues/{key}/results/dry-run # #4517, the pull-request body line a result prints keeps only plain words, with no issue key or private host
 GET /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
 PUT /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
+POST /api/v1/issues/{key}/status-change # #4631, change a status with related issue moves that keep the parent-status rule
 GET /api/v1/issues/{key}/steps # #4400, record each phase of an issue as a step
 PUT /api/v1/issues/{key}/steps/{id} # #4400, record each phase of an issue as a step
 PUT /api/v1/issues/{key}/steps/{id}/rating # #4488, each retro rates the plan its issue ran

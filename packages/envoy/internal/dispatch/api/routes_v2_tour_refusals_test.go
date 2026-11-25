@@ -110,6 +110,17 @@ var tourRefusals = map[string][]tourRefusal{
 		{Name: "a quote the spec holds in several places", Change: refusalBody("anchor", map[string]any{"artifact": "spec", "quote": "a"}), Code: apicode.TargetAmbiguous},
 		{Name: "an anchor naming no document of the issue", Change: refusalBody("anchor", map[string]any{"artifact": "no-such-document", "quote": "a"}), Code: apicode.NotFound},
 	},
+	"PATCH /api/v2/issues/{key}": {
+		{Name: "a status-change option beside ordinary patch fields",
+			Change: refusalBody("include_children", true), Code: apicode.StatusChangeInput},
+		{Name: "a preview blocked by an open child",
+			Change: func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+				key := request.Path["key"]
+				tourStatusChild(t, tour, tourIssue{Key: key})
+				request.Body = map[string]any{"status": "done", "dry_run": true}
+				return request
+			}, Code: apicode.ParentStatusConflict},
+	},
 	"POST /api/v2/issues": {
 		{Name: "a spec that is no Proof document", Change: refusalBody("spec", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
 		{Name: "a spec whose ask breaks its content rule", Change: refusalBody("spec", tourAskBlockBroken), Code: apicode.InvalidAskBlock},

@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`Version` carries `token`, a file''s or an image''s version token, in `schemas/dispatch-openapi.json`, `src/dispatch-api.generated.ts` and `versionFields`. `fileNameExistsRule` and `artifactKindConflictRule` are the words `dispatch artifact` refuses a held name with for a file or a picture and for an upload of another kind. The `dispatch_doc_read` and `dispatch_artifact` descriptions, and the upload precondition''s, say that a read of a file prints its version''s token in its header and that an upload replacing a file names it, as one replacing a document does.'
+time: 2026-11-22T15:07:19.17031954Z
+custom:
+    Issue: pr5013

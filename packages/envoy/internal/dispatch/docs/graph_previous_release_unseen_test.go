@@ -30,6 +30,7 @@ import (
 // tick taken out from between the previous release's writes and its leaving: the tick this build
 // does not get while that release holds the lease.
 func TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -104,6 +105,7 @@ func TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore(t *
 // documents whose rows it names, so a document that release creates after the backfill holds no
 // mark, its rows name no node, and the census refuses until someone runs the backfill again.
 func TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, seeder := blockIndexService(t)
 	ctx := context.Background()
 
