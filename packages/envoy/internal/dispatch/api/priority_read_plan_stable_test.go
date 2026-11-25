@@ -73,6 +73,8 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 				onCustom.buffers(), onCustom.hit, onCustom.read, onCustom.milliseconds,
 				ratio, prioritiesReadPlanRatio, onGeneric.walk(), onCustom.walk(),
 				indentPlan(onGeneric.text), indentPlan(onCustom.text))
+			t.Logf("c-plan-stable: parts: %s of %s with project %s: on the generic plan %s; on the plan made for its values %s",
+				statement.name, form.called, project, onGeneric.partsRead(), onCustom.partsRead())
 			if ratio > prioritiesReadPlanRatio {
 				t.Errorf("%s of %s with project %s: %.0f shared buffers on the generic plan, %.2f times the %.0f on the plan made for its values, want at most %.0f times",
 					statement.name, form.called, project, onGeneric.buffers(), ratio, onCustom.buffers(), prioritiesReadPlanRatio)

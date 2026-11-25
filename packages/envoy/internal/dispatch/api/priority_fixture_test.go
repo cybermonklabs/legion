@@ -103,7 +103,7 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 // seededIssuePayload is the payload of an issue event: the status the issue stands in after it,
 // and the fields the write changed, where it names any. A status write's `issue.updated` names
 // `status` in `changed`, which is what the parked fault's lateral reads to say when an issue was
-// moved into `backlog` or `icebox` and by whom (priorityParkedQuery).
+// moved into `backlog` or `icebox` and by whom (parkedMoveLateral).
 func seededIssuePayload(t testing.TB, status string, changed ...string) string {
 	t.Helper()
 	fields := map[string]any{"status": status}

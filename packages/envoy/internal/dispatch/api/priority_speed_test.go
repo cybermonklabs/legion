@@ -100,15 +100,15 @@ const (
 )
 
 // The statements each priorities read is written as and the round trips they go in
-// (readPriorities): the live priorities (prioritystore.List), then their relations
-// (priorityRelationsQuery), then one batch of the statements that rest on them, which for the
-// whole body is the counts, the newest event under each priority and the two faults, and for the
-// summary the two faults alone. The corpus holds twenty priorities and 400 relations, so a read
-// that sent a statement for each priority or each relation would send dozens more.
+// (readPriorities): the live priorities (prioritystore.List), then the one statement of the form,
+// which reads their relations, walks the member issues once and answers every part of the form
+// (priorityReadQuery for the whole body, prioritySummaryQuery for the summary). The corpus holds
+// twenty priorities and 400 relations, so a read that sent a statement for each priority or each
+// relation would send dozens more.
 const (
-	priorityBodyStatements    = 6
-	prioritySummaryStatements = 4
-	priorityReadRoundTrips    = 3
+	priorityBodyStatements    = 2
+	prioritySummaryStatements = 2
+	priorityReadRoundTrips    = 2
 )
 
 // speedGenericBuffersRatio is the most buffer accesses the page with the relation may make under
@@ -185,11 +185,13 @@ const (
 // store holds more (speedPriorityGrowth): the objects one read allocates once the store holds
 // speedCorpusMoreRelations relations more, beyond the same read over the corpus's
 // speedCorpusRelations, for each relation added. It is the read's own growth, which only the
-// relations make: the read scans each relation once (readPriorityRelations) and sends the pair of
-// arrays they make with every statement of its batch, so a read that allocated for each relation
-// more than it does reads one object a relation more here. Whatever the read allocates the same
-// at both sizes (the priorities, the counts' rows, the faults' fifty rows, the batch, the trace)
-// is in neither reading's difference: a fixed cost is held by no bound here.
+// relations make. The read below INFRA-5791 scanned each relation once and sent the pair of
+// arrays they made with every statement of its batch, so a read that allocated for each relation
+// more than it did read one object a relation more here; the read now sends the live priority ids
+// alone and its one statement reads the relations itself, so no relation reaches Go but through
+// the rows of the answer. Whatever the read allocates the same at both sizes (the priorities, the
+// counts' rows, the faults' fifty rows, the trace) is in neither reading's difference: a fixed
+// cost is held by no bound here.
 //
 // The read's whole count is not held, because it is mostly such fixed costs and moves with the
 // build: correct code allocates 10,876 to 10,878 objects for the body over the corpus in the
@@ -275,11 +277,11 @@ func TestAdvancesListingSpeed(t *testing.T) {
 }
 
 // TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can afford, in
-// the work it costs rather than the time it takes (speedRequestWork): the whole body in the six
-// statements and three round trips it is written as, over a store of twenty priorities and 400
+// the work it costs rather than the time it takes (speedRequestWork): the whole body in the two
+// statements and two round trips it is written as, over a store of twenty priorities and 400
 // relations, and in no more than five times the buffer accesses of the paged listing of every
 // open issue, the read it stands beside and the one a reader already waits for; and the summary
-// the navigation rail reads on every page in its four statements and three round trips, in no
+// the navigation rail reads on every page in its two statements and two round trips, in no
 // more than that listing's buffer accesses. Hit plus read is every page a statement asked for,
 // cached or not, so the count is the read's work and not the cache's state.
 //
@@ -473,10 +475,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	growth.body[0], growth.summary[0] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
 
 	copySeededRows(t, corpus.database, "priority_tuples", seededTupleColumns, corpus.moreRelations)
-	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities)
-	if err != nil {
-		t.Fatalf("read the advances relations: %v", err)
-	}
+	keys, _ := priorityCorpusSeed(t, corpus.database, corpus.priorities)
 	if len(keys) != speedCorpusRelations+speedCorpusMoreRelations {
 		t.Fatalf("the store answers %d advances relations once %d more are written, want %d",
 			len(keys), speedCorpusMoreRelations, speedCorpusRelations+speedCorpusMoreRelations)

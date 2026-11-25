@@ -41,8 +41,9 @@ const (
 //
 // where db is the database's time a read, executing and planning, summed over the read's
 // statements, and beside it each statement's database time, its EXPLAIN time and shared buffers,
-// the walk's share of both (prioritiesStatementPlan.walk), and its plan. It fails on a wrong
-// answer, on JIT not off, on a database time it cannot read and on a read under another plan.
+// the walk's share of both (prioritiesStatementPlan.walk), each part's time and shared buffers
+// (prioritiesStatementPlan.partsRead), and its plan. It fails on a wrong answer, on JIT not off,
+// on a database time it cannot read and on a read under another plan.
 func TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan(t *testing.T) {
 	// Not parallel: it times reads with a wall clock and reads shared-buffer counts, and the
 	// clock, the cores and Postgres's shared buffers are the whole process's and server's, which
@@ -121,5 +122,6 @@ func measurePrioritiesRead(t *testing.T, corpus readCorpus, served prioritiesRea
 			form.name, served.plan.name, statement.name,
 			(counted.executing+counted.planned)/float64(counted.calls), counted.executing/float64(counted.calls), counted.planned/float64(counted.calls), counted.calls,
 			plan.milliseconds, plan.planning, plan.buffers(), plan.hit, plan.read, plan.walk(), indentPlan(plan.text))
+		t.Logf("c-both-forms: parts: form=%s plan=%s %s: %s", form.name, served.plan.name, statement.name, plan.partsRead())
 	}
 }

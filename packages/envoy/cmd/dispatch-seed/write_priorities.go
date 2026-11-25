@@ -64,11 +64,12 @@ func sqlStatusList(statuses []string) string {
 // parentChainCap, the deepest chain this command writes, rather than by the server's
 // parentDepthCap: a descendant below that bound is one the seeded corpus does not hold.
 //
-// `stated` is the route's own reading of the log (priorityRelationsQuery): the newest tuple of
-// each (issue, priority) pair, read by prioritystore.AdvancesTupleRead, kept when it asserts the
-// relation and its priority is live. Taking every asserted tuple instead would count a relation
-// a later tuple retracted, and a relation to a deleted priority, both of which the route answers
-// as none, so the report and the route would disagree on any corpus that holds either.
+// `stated` is the route's own reading of the log (members_seed of priorityMemberTerms): the
+// newest tuple of each (issue, priority) pair, read by prioritystore.AdvancesTupleRead, kept when
+// it asserts the relation and its priority is live. Taking every asserted tuple instead would
+// count a relation a later tuple retracted, and a relation to a deleted priority, both of which
+// the route answers as none, so the report and the route would disagree on any corpus that holds
+// either.
 //
 // It is the terms of a `with recursive`, so a reading of it begins `with recursive ` and ends
 // with its own select.

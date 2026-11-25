@@ -6,15 +6,15 @@
 // the `advances` relation, and joins it to the issues it counts. The parked rows carry their
 // `advances` entries through issueAdvancesTerms, the inheritance walk every issue read climbs.
 //
-// The body is six statements. The priorities are prioritystore.List; the relations are the
-// `advances` tuples every live priority holds now (priorityRelationsQuery), read once and then
-// sent as the seed of each statement that follows, so the tuple log is read one time however many
-// counts rest on it; the counts, the newest event under each priority and the two fault lists are
-// four statements over that seed, sent as one batch, which is one round trip (readPriorities).
+// The body is two statements in two round trips. The priorities are prioritystore.List; then one
+// statement (priorityReadQuery) reads the `advances` relations of those priorities, walks the
+// issues that advance each of them once (priorityMemberTerms), and answers the counts, the newest
+// event under each priority and the two fault lists from that one walk, as four jsonb columns of
+// one row.
 //
-// `?summary=true` answers the two fault counts alone, so it runs the two fault statements in the
-// shape that counts and lists nothing (priorityUnplacedQuery, priorityParkedQuery) and neither of
-// the two reads that fill a priority's row.
+// `?summary=true` answers the two fault counts alone, so its one statement (prioritySummaryQuery)
+// counts both faults from one scan of the open issues that stand in flight or parked, and reads
+// nothing that fills a priority's row.
 package api
 
 import (
@@ -25,8 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -70,132 +68,88 @@ func sqlStringList(values []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// priorityRelationsQuery reads the `advances` relation of every live priority as it stands now,
-// one row per (issue, priority): the newest tuple of each pair, kept when it asserts the
-// relation. $1 is the live priority ids, so a priority whose state is `gone` is no priority and
-// the work under it advances none. It bounds the read by them rather than its answer: to_id is
-// part of the `distinct on` key, so the two are the same rows and the narrowing cuts what the
-// read sorts.
+// priorityMemberTerms are the issues that advance each live priority ($1, the live priority ids),
+// the terms of a `with recursive` that both statements of the read open with.
 //
-// Its answer is the seed every statement below takes, rather than each of them reading the log
-// again: the relations are hundreds of rows where the issues under them are thousands.
-var priorityRelationsQuery = `select newest.from_id, newest.to_id
-	from (
-		` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and t.to_id = any($1::text[])`) + `
-	) newest
-	where newest.asserted
-	order by newest.from_id, newest.to_id`
-
-// priorityMemberTerms are the issues that advance each priority: the relations the request read
-// ($1 the issue keys, $2 the priority ids, one pair per row) and every issue below one of them.
-// An issue advances a priority when its own row names it or when any issue on its parent chain
-// does, so the walk descends from each stated issue — written as one descent per request rather
-// than one climb per issue, which is the shape issueAdvancesFilterTerms gives the same rule for
-// the listing. A relation on a child places nothing above it, so nothing climbs.
+// `members_seed` is the `advances` relation of every live priority as it stands now, one row per
+// (issue, priority): the newest tuple of each pair, kept when it asserts the relation. It is
+// bounded by the live ids rather than its answer: to_id is part of the `distinct on` key, so the
+// two are the same rows and the narrowing cuts what the read sorts. A priority whose state is
+// `gone` is no priority, and the work under it advances none.
 //
-// The descent is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so a
-// descendant the cap cuts off is one no chain could have reached anyway, and a raced reparent
-// that ever committed a cycle still terminates. `members` is distinct because an issue inherits
-// the same priority from every issue above it that states it.
+// `members_spread` descends from each stated issue down the parent links: an issue advances a
+// priority when its own row names it or when any issue on its parent chain does, written as one
+// descent per request rather than one climb per issue, which is the shape issueAdvancesFilterTerms
+// gives the same rule for the listing. A relation on a child places nothing above it, so nothing
+// climbs. The descent is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so
+// a descendant the cap cuts off is one no chain could have reached anyway, and a raced reparent
+// that ever committed a cycle still terminates. Each step joins issues on parent_key, which the
+// planner hashes from one read of the table.
 //
-// The seed reads the two arrays by their subscripts (generate_subscripts) rather than through
-// unnest, so the rows Postgres plans for are the same whatever the arrays hold. pgx prepares
-// every statement, and from a connection's sixth run of one Postgres may run the generic plan it
-// makes once, with no argument known. unnest sizes its rows from its array, which such a plan
-// cannot see, so it planned 10 seed rows for the corpus's 400: the walk then hashed each step's
-// few rows and scanned all of issues for every step, and the four statements over the seed
-// touched 6.7 to 45.8 times the shared buffers of the plans made for their arguments
-// (TestPrioritiesReadKeepsItsPlans, PostgreSQL 18.6, 2026-11-22). generate_subscripts has no
-// such estimate: every plan, made for the arguments or not, plans its 1,000 rows, so the generic
-// plan walks as the others do, by hashing issues once.
+// `members` is distinct because an issue inherits the same priority from every issue above it
+// that states it. It is materialized: every part of the full read takes its rows, so the walk runs
+// once for the whole read.
 var priorityMemberTerms = `members_seed as (
-		select ($1::text[])[i] as key, ($2::text[])[i] as priority
-		from generate_subscripts($1::text[], 1) as seed(i)
+		select newest.from_id as key, newest.to_id as priority
+		from (
+			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and t.to_id = any($1::text[])`) + `
+		) newest
+		where newest.asserted
 	), members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
 		select c.key, m.priority, m.depth + 1
 		from members_spread m join issues c on c.parent_key = m.key
 		where m.depth < ` + parentDepthCapSQL + `
-	), members as (
+	), members as materialized (
 		select distinct key, priority from members_spread
 	)`
 
-// priorityProjectFilter narrows a read to the projects the request named, over the issue aliased
-// `i`; a request that named none ($3 empty) reads every project. It narrows the counts and the
-// two fault lists and never the list of priorities, which belongs to no project.
-const priorityProjectFilter = `(cardinality($3::text[]) = 0 or i.project_key = any($3::text[]))`
+// priorityProjectFilter narrows a read to the projects the request named ($2), over the issue
+// aliased `i`; a request that named none ($2 empty) reads every project. It narrows the counts and
+// the two fault lists and never the list of priorities, which belongs to no project.
+const priorityProjectFilter = `(cardinality($2::text[]) = 0 or i.project_key = any($2::text[]))`
 
-// priorityCountsQuery counts the work under each priority, one row per (priority, status) over
-// the issues that advance it: the open issues standing in that status, how many of those a
-// session holds, the open asks on them, and the ones that closed inside priorityClosedWindow. The
-// closed count rides the same grouping rather than a statement of its own, since it is a filter
-// over rows this read already has in hand; a closed issue counts in nothing else, so a status
-// whose issues are all closed answers 0 open and its closed count.
+// priorityFaultRowColumns are the columns of a fault row, as the jsonb object pairs that
+// priorityFaultRow decodes, over the issue aliased `i`.
+const priorityFaultRowColumns = `'key', i.key, 'title', i.title, 'project', i.project_key, 'status', i.status,
+			'assignee', i.assignee, 'claimed_by', i.claimed_by, 'claimed_at', i.claimed_at, 'changed_at', i.updated_at`
+
+// The names EXPLAIN gives the parts of priorityReadQuery that a test holds on their own: the
+// newest event's read of one event of each member issue, and the parked list's read of each
+// listed issue's move.
+const (
+	priorityNewestEventCTE = "CTE member_event"
+	priorityParkedListCTE  = "CTE parked_listed"
+)
+
+// priorityReadQuery is the whole body of the full read but the priorities themselves, as one
+// statement over one walk of the member issues (priorityMemberTerms). Its one row holds four jsonb
+// columns, one for each part of the body, which priorityReadAnswer decodes: the counts, the newest
+// event under each priority, the first fault and the second. Every part reads one snapshot, so two
+// parts cannot disagree about a table a write is moving.
 //
-// The open-ask read keeps its state filter in its own where clause, so it matches the partial
-// asks_open(issue_key) where state = 'open' index rather than scanning asks, as the listing's own
-// open-ask read does (issueSummaryJoins).
-var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
-	select m.priority, i.status,
-	       count(*) filter (where i.closed_at is null) as open,
-	       count(*) filter (where i.closed_at is null and i.claimed_by is not null) as claimed,
-	       coalesce(sum(open_asks.total) filter (where i.closed_at is null), 0)::bigint as asks,
-	       count(*) filter (where i.closed_at >= now() - interval '` + priorityClosedWindow + `') as closed
-	from members m
-	join issues i on i.key = m.key
-	left join (
-		select a.issue_key, count(*) as total
-		from asks a
-		where a.state = 'open' and a.issue_key in (select key from members)
-		group by a.issue_key
-	) open_asks on open_asks.issue_key = i.key
-	where ` + priorityProjectFilter + `
-	group by m.priority, i.status`
-
-// priorityNewestEventQuery reads the newest event under each priority. For each member issue, an
-// issue that advances at least one priority, it reads the issue's event of issues.last_seq
-// through the unique (issue_key, seq) of events (events_issue_key_seq_key), and it answers, for
-// each priority, the newest created_at of those events over the issues that advance it. Each
-// append sets last_seq to the seq it took, in the statement that inserts the event
+// `member_issue` is the issues row of each member issue that the project filter keeps, read once
+// and taken by the counts, the newest event and the parked work. It is the join of `members` to
+// issues grouped by the key, which the planner hashes from one read of issues rather than probe
+// issues_pkey for each member issue; the group by makes one row of each issue, whatever number of
+// priorities it advances.
+//
+// `member_event` is the newest event of each member issue: its event of issues.last_seq, read by a
+// lateral probe of the unique (issue_key, seq) of events (events_issue_key_seq_key) with `limit 1`.
+// Each append sets last_seq to the seq it took, in the statement that inserts the event
 // (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest by seq. The
 // statement reads that one event of each member issue and no other, and it reads no event of an
 // issue that advances no priority. An issue with no event has last_seq 0, which no event of it
 // carries, so it matches no row; a priority none of whose issues has an event answers no row and
-// keeps its null (scanPriorityNewestEvents).
-//
-// The read of the event is a lateral probe with `limit 1`. The key is unique, so the limit
-// changes no answer. It keeps the planner from flattening the subquery into a join, which the
-// planner may hash: for a plain join on (issue_key, seq) over a table of a million events, it
-// hashed all of them under both plans.
-//
-// The probe runs once for each distinct member issue, inside a materialized CTE (member_event).
-// The CTE reads the distinct keys of `members` (member_issue), reads the issues row of each, and
-// probes with that key (member_issue.key) as well as the issue (i.last_seq), so the probe can run
-// only on a key the dedupe answered; member_issue.key is i.key by that read. It answers the one
-// time of each member issue, which is then joined back to `members`, and the time of a priority
-// is the newest over its member issues. `materialized` is a fence: the planner plans the CTE on
-// its own, so the join to `members` cannot move below the probe, whatever join order it prefers.
-// Without the fence, the planner joined the members before the probe on the database
-// cmd/dispatch-seed fills at --scale 1, and probed each member row, an (issue, priority) pair,
-// which reads an issue's event once for every priority the issue advances: 14,712 probes for
-// 6,362 member issues, and the statement's top plan node read 79,933 shared buffers under both
-// plans, against the 56,798 and 58,533 that main's text, which hashes every event of the table,
-// read under its two plans (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
-//
-// The issues row of each member issue is read by a lateral probe of issues_pkey on the key, which
-// `offset 0` keeps the planner from flattening into a join. As a join, under its default
-// settings the planner read every row of issues and joined each to a hash of the member keys,
-// since it plans 200 distinct keys of `members` whatever the walk answers, and 200 probes cost
-// more by its estimate than one read of the table: on the corpus of
-// TestPriorityNewestEventReadsOneEventOfEachMember it read all 1,029 issues in a Seq Scan for 29
-// member issues, under the generic plan and the plan made for the values alike, and priced the
-// join at 431 against 2,036 for the probes under the plan made for the values with no project
-// named (PostgreSQL 18.7, 2026-11-25). Such a read grows with every issue the deployment holds,
-// where the probes grow with the members alone. So every read of issues and of events beside the
-// walk over the members (priorityMemberTerms) is through an index. The walk is main's, which
-// hashes issues from one read of the table, and the plan test holds it to that one read and to
-// main's shared buffers (TestPriorityNewestEventReadsOneEventOfEachMember).
+// keeps its null. The key is unique, so the limit changes no answer; it keeps the planner from
+// flattening the subquery into a join, which it may hash: for a plain join on (issue_key, seq)
+// over a table of a million events, it hashed all of them under both plans. `materialized` is a
+// fence: the planner plans the CTE on its own, so the join to `members` cannot move below the
+// probe, and the probe runs once for each member issue rather than once for each (issue, priority)
+// pair: without it, on the database cmd/dispatch-seed fills at --scale 1, the planner probed
+// each member row, 14,712 probes for 6,362 member issues (TestStatementTimings, PostgreSQL 18.6,
+// 2026-11-24).
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
@@ -206,124 +160,141 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 // write that committed last. Its time is earlier than the time of another event of the issue only
 // when its transaction began before that other write committed, and then it is earlier by less
 // than the time from that start to that commit. Over the members of a priority, the difference is
-// less than the longest such time.
+// less than the longest such time. It reads the event and not issues.updated_at: the broker moves
+// updated_at on every append, to the later of its value and the event's created_at, but a patch
+// moves it too, to the clock time of its own statement (issueUpdatedNow), so updated_at is not the
+// time of an event.
 //
-// It reads the event and not issues.updated_at. The broker moves updated_at on every append, to
-// the later of its value and the event's created_at (events/broker.go, QueueAppendWithLogins),
-// but a patch moves it too, to the clock time of its own statement (issueUpdatedNow), so
-// updated_at is not the time of an event.
-var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `, member_event as materialized (
+// `unplaced` is the first fault: an open issue in flight that advances no live priority, by its
+// own relation or by one above it. `parked` is the second: a member issue that stands in `backlog`
+// or `icebox`. `parked_listed` is the newest priorityFaultRows of them by the time each was moved
+// there, with the time and the actor of that move (parkedMoveLateral), which is the one read the
+// body makes over the events of the parked members alone. An issue whose events do not reach back
+// to the move answers both cells null and stays in the list, since the fault is the work standing
+// there and not the record of how it arrived. Each listed parked row carries its `advances`
+// relations as every issue read answers them: the listed rows are the subjects of
+// issueAdvancesTerms, the inheritance walk the issue read and the listing climb, and the row
+// answers issueAdvancesColumns, which advancesScan turns into the entries, own and inherited.
+//
+// The counts are one row per (priority, status) over the issues that advance it: the open issues
+// standing in that status, how many of those a session holds, the open asks on them, and the ones
+// that closed inside priorityClosedWindow. A closed issue counts in nothing else, so a status
+// whose issues are all closed answers 0 open and its closed count. The open-ask read keeps its
+// state filter in its own where clause, so it matches the partial asks_open(issue_key) where
+// state = 'open' index rather than scanning asks, as the listing's own open-ask read does
+// (issueSummaryJoins).
+//
+// Each fault answers its whole count, its counts by project or by priority, and its newest
+// priorityFaultRows rows; the rows are cut by their order with the key's bytes breaking a tie
+// (`collate "C"`), which is the order priorityFault.resolve sorts them in again.
+var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issue as materialized (
+		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at,
+		       i.closed_at, i.last_seq
+		from members m
+		join issues i on i.key = m.key
+		where ` + priorityProjectFilter + `
+		group by i.key
+	), member_event as materialized (
 		select member_issue.key, last_seq_event.created_at
-		from (select distinct key from members) member_issue
-		cross join lateral (
-			select i.last_seq, i.project_key from issues i where i.key = member_issue.key offset 0
-		) i
+		from member_issue
 		cross join lateral (
 			select last_seq_event.created_at
 			from events last_seq_event
-			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = i.last_seq
+			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = member_issue.last_seq
 			limit 1
 		) last_seq_event
-		where ` + priorityProjectFilter + `
-	)
-	select m.priority, max(member_event.created_at)
-	from members m
-	join member_event on member_event.key = m.key
-	group by m.priority`
-
-// priorityUnplacedQuery is the first fault: an open issue in flight that advances no live
-// priority, by its own relation or by one above it. `summary` answers the count alone, which is
-// what the navigation rail reads; the full text answers the count, the count per project and the
-// newest priorityFaultRows rows by the time each issue last changed, all three from one scan of
-// one snapshot, since two statements read two snapshots and can disagree about a table a write is
-// moving.
-//
-// The count and the per-project counts ride every row because a statement answers one shape: the
-// rows are the left side's single row joined to the page, so an empty fault still answers its
-// count with every row column null, which scanPriorityFault drops.
-func priorityUnplacedQuery(summary bool) string {
-	faulted := `with recursive ` + priorityMemberTerms + `, unplaced as (
+	), unplaced as (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from issues i
 		where i.closed_at is null
 			and i.status in (` + sqlStringList(priorityInFlightStatuses) + `)
 			and ` + priorityProjectFilter + `
 			and not exists (select 1 from members m where m.key = i.key)
-	)`
-	if summary {
-		return faulted + `
-	select count(*) from unplaced`
-	}
-	return faulted + `
-	select (select count(*) from unplaced) as total,
-	       (select coalesce(jsonb_object_agg(counted.project_key, counted.total), '{}'::jsonb)
-	        from (select project_key, count(*) as total from unplaced group by project_key) counted) as by_project,
-	       listed.key, listed.title, listed.project_key, listed.status, listed.assignee,
-	       listed.claimed_by, listed.claimed_at, listed.updated_at
-	from (select 1 as one) seed
-	left join (
-		select * from unplaced
-		order by updated_at desc, key collate "C" asc
-		limit ` + strconv.Itoa(priorityFaultRows) + `
-	) listed on true`
-}
-
-// priorityParkedQuery is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Beside the row's own columns it carries the time the issue was moved
-// there and the actor who moved it (parkedMoveLateral), which is the one read this body makes
-// over the events of the parked members alone. An issue whose events do not reach back to the
-// move answers both cells null and stays in the list, since the fault is the work standing there
-// and not the record of how it arrived.
-//
-// Each listed row carries its `advances` relations as every issue read answers them: the listed
-// rows are the subjects of issueAdvancesTerms, the inheritance walk the issue read and the
-// listing climb, and the row answers issueAdvancesColumns, which advancesScan turns into the
-// entries, own and inherited. The walk climbs from the fifty listed rows alone, so the parked
-// count and the counts by priority still rest on the seed's descent (priorityMemberTerms).
-func priorityParkedQuery(summary bool) string {
-	parked := `with recursive ` + priorityMemberTerms + `, parked as (
-		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
-		from members m
-		join issues i on i.key = m.key
-		where i.closed_at is null
-			and i.status in (` + sqlStringList(priorityParkedStatuses) + `)
-			and ` + priorityProjectFilter + `
-		group by i.key
-	)`
-	if summary {
-		return parked + `
-	select count(*) from parked`
-	}
-	return parked + `, listed as (
+	), parked as (
+		select p.key, p.title, p.project_key, p.status, p.assignee, p.claimed_by, p.claimed_at, p.updated_at
+		from member_issue p
+		where p.closed_at is null
+			and p.status in (` + sqlStringList(priorityParkedStatuses) + `)
+	), parked_listed as (
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
 		from parked p
 		` + parkedMoveLateral("p", "") + `
 		order by moved.created_at desc nulls last, p.key collate "C" asc
 		limit ` + strconv.Itoa(priorityFaultRows) + `
 	), subjects as (
-		select key from listed
+		select key from parked_listed
 	), ` + issueAdvancesTerms + `
-	select (select count(*) from parked) as total,
-	       (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
-	        from (
-	          select m.priority, count(*) as total
-	          from members m join parked p on p.key = m.key
-	          group by m.priority
-	        ) counted) as by_priority,
-	       i.key, i.title, i.project_key, i.status, i.assignee,
-	       i.claimed_by, i.claimed_at, i.updated_at,
-	       ` + issueAdvancesColumns + `, i.moved_at, i.moved_by
-	from (select 1 as one) seed
-	left join listed i on true
-	` + issueAdvancesJoin
-}
+	select
+		(select coalesce(jsonb_agg(jsonb_build_object(
+		        'priority', counted.priority, 'status', counted.status, 'open', counted.open,
+		        'claimed', counted.claimed, 'asks', counted.asks, 'closed', counted.closed)), '[]'::jsonb)
+		 from (
+			select m.priority, i.status,
+			       count(*) filter (where i.closed_at is null) as open,
+			       count(*) filter (where i.closed_at is null and i.claimed_by is not null) as claimed,
+			       coalesce(sum(open_asks.total) filter (where i.closed_at is null), 0)::bigint as asks,
+			       count(*) filter (where i.closed_at >= now() - interval '` + priorityClosedWindow + `') as closed
+			from members m
+			join member_issue i on i.key = m.key
+			left join (
+				select a.issue_key, count(*) as total
+				from asks a
+				where a.state = 'open' and a.issue_key in (select key from member_issue)
+				group by a.issue_key
+			) open_asks on open_asks.issue_key = i.key
+			group by m.priority, i.status
+		 ) counted) as counts,
+		(select coalesce(jsonb_agg(jsonb_build_object('priority', newest.priority, 'at', newest.newest_at)), '[]'::jsonb)
+		 from (
+			select m.priority, max(member_event.created_at) as newest_at
+			from members m
+			join member_event on member_event.key = m.key
+			group by m.priority
+		 ) newest) as newest_events,
+		jsonb_build_object(
+			'total', (select count(*) from unplaced),
+			'counts', (select coalesce(jsonb_object_agg(counted.project_key, counted.total), '{}'::jsonb)
+			           from (select project_key, count(*) as total from unplaced group by project_key) counted),
+			'rows', (select coalesce(jsonb_agg(jsonb_build_object(` + priorityFaultRowColumns + `)), '[]'::jsonb)
+			         from (
+			           select * from unplaced
+			           order by updated_at desc, key collate "C" asc
+			           limit ` + strconv.Itoa(priorityFaultRows) + `
+			         ) i)) as unplaced,
+		jsonb_build_object(
+			'total', (select count(*) from parked),
+			'counts', (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
+			           from (
+			             select m.priority, count(*) as total
+			             from members m join parked p on p.key = m.key
+			             group by m.priority
+			           ) counted),
+			'rows', (select coalesce(jsonb_agg(jsonb_build_object(` + priorityFaultRowColumns + `,
+			           'advances', jsonb_build_array(` + issueAdvancesColumns + `),
+			           'moved_at', i.moved_at, 'moved_by', i.moved_by)), '[]'::jsonb)
+			         from parked_listed i
+			         ` + issueAdvancesJoin + `)) as parked`
+
+// prioritySummaryQuery is the whole summary: the two fault counts the navigation rail reads, from
+// one scan of the open issues that stand in flight or parked, each joined to the member issues of
+// the one walk (priorityMemberTerms). An issue in flight that no member is counts under the first
+// fault, and a parked issue that a member is under the second. The keys of `members` are distinct
+// before the join, so an issue that advances several priorities counts once.
+var prioritySummaryQuery = `with recursive ` + priorityMemberTerms + `
+	select count(*) filter (where i.status in (` + sqlStringList(priorityInFlightStatuses) + `) and member_key.key is null),
+	       count(*) filter (where i.status in (` + sqlStringList(priorityParkedStatuses) + `) and member_key.key is not null)
+	from issues i
+	left join (select distinct key from members) member_key on member_key.key = i.key
+	where i.closed_at is null
+		and i.status in (` + sqlStringList(slices.Concat(priorityInFlightStatuses, priorityParkedStatuses)) + `)
+		and ` + priorityProjectFilter
 
 // parkedMoveLateral reads when the issue aliased `issue` was moved into `backlog` or `icebox` and
 // who moved it, as `moved.created_at` and `moved.actor`: that issue's own newest `issue.updated`
 // event whose payload names `status` in `changed` and whose status is one of the two. It is the
-// one reading of the move, which the second fault (priorityParkedQuery) and the listing's
-// `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for one issue.
-// An issue whose events do not reach back to the move answers both null.
+// one reading of the move, which the second fault (priorityReadQuery's parked_listed) and the
+// listing's `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for
+// one issue. An issue whose events do not reach back to the move answers both null.
 //
 // The lateral walks the partial index events_parked_moves (migration 20261124005151), whose
 // predicate is the lateral's own conditions on the event, backwards from the issue's newest move
@@ -347,24 +318,14 @@ func parkedMoveLateral(issue, gate string) string {
 		) moved on true`
 }
 
-// The four texts the two faults run, built once at start: pgx caches a prepared plan per
-// statement text, so the summary call and the full call never replan each other's.
-var (
-	unplacedQuery        = priorityUnplacedQuery(false)
-	unplacedSummaryQuery = priorityUnplacedQuery(true)
-	parkedQuery          = priorityParkedQuery(false)
-	parkedSummaryQuery   = priorityParkedQuery(true)
-)
-
 // readPriorities answers the whole body of GET /api/v1/priorities: the priorities in rank order,
 // the work under each, and the two faults, narrowed to `projects` where it is narrowed at all.
 //
-// It is two round trips plus the relations' own: prioritystore.List, then the relations, then one
-// batch of the statements that rest on them. A summary sends the two fault counts in that batch
-// and neither read that fills a priority's row, so it reads no issue of a priority that has no
-// fault under it. A deployment that has written no priority holds no relation of one either, so
-// the relations are not read at all there — which is what the navigation rail asks of every page
-// of such a deployment.
+// It is two round trips: prioritystore.List, then the one statement of the form asked for, which
+// takes the live priority ids and reads their relations itself. A summary reads no issue of a
+// priority that has no fault under it beyond the walk, and fills no priority's row. A deployment
+// that has written no priority sends an empty list of ids, so the walk starts from no relation and
+// every open issue in flight is work under no priority.
 func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
 	nodes, err := prioritystore.List(ctx, s.deps.Store.Pool)
 	if err != nil {
@@ -382,79 +343,30 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 	for _, node := range nodes {
 		ids = append(ids, node.ID)
 	}
-	seedKeys, seedIDs := []string{}, []string{}
-	if len(nodes) > 0 {
-		seedKeys, seedIDs, err = s.readPriorityRelations(ctx, ids)
-		if err != nil {
-			return model.Priorities{}, err
-		}
-	}
-	arguments := []any{seedKeys, seedIDs, projects}
 
-	batch := &pgx.Batch{}
-	if !summary {
-		// Each priority is placed by its index in the answer's own slice rather than by a
-		// pointer into it, which the appends below would leave behind the moment the slice grew.
-		at := make(map[string]int, len(nodes))
-		for _, node := range nodes {
-			at[node.ID] = len(body.Priorities)
-			body.Priorities = append(body.Priorities, model.PriorityRow{
-				Priority: priorityFrom(node),
-				Work:     model.PriorityWork{ByStatus: zeroPriorityStatusCounts()},
-			})
+	if summary {
+		if err := s.deps.Store.Pool.QueryRow(ctx, prioritySummaryQuery, ids, projects).
+			Scan(&body.WorkUnderNoPriority.Count, &body.PriorityWorkParked.Count); err != nil {
+			return model.Priorities{}, fmt.Errorf("count the work under no priority and the parked work: %w", err)
 		}
-		batch.Queue(priorityCountsQuery, arguments...).Query(func(scanned pgx.Rows) error {
-			return scanPriorityCounts(scanned, body.Priorities, at)
-		})
-		batch.Queue(priorityNewestEventQuery, arguments...).Query(func(scanned pgx.Rows) error {
-			return scanPriorityNewestEvents(scanned, body.Priorities, at)
-		})
+		return body, nil
 	}
-	queuePriorityFault(batch, unplacedQuery, unplacedSummaryQuery, summary, arguments, false,
-		func(count int, counts map[string]int, issues []model.PriorityIssue) {
-			body.WorkUnderNoPriority.Count = count
-			if counts != nil {
-				body.WorkUnderNoPriority.ByProject = counts
-			}
-			body.WorkUnderNoPriority.Issues = issues
-		})
-	queuePriorityFault(batch, parkedQuery, parkedSummaryQuery, summary, arguments, true,
-		func(count int, counts map[string]int, issues []model.PriorityIssue) {
-			body.PriorityWorkParked.Count = count
-			if counts != nil {
-				body.PriorityWorkParked.ByPriority = counts
-			}
-			body.PriorityWorkParked.Issues = issues
-		})
-	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
+	var answer priorityReadAnswer
+	if err := s.deps.Store.Pool.QueryRow(ctx, priorityReadQuery, ids, projects).Scan(answer.targets()...); err != nil {
 		return model.Priorities{}, fmt.Errorf("read the work under the priorities: %w", err)
 	}
+	// Each priority is placed by its index in the answer's own slice rather than by a pointer
+	// into it, which the appends below would leave behind the moment the slice grew.
+	at := make(map[string]int, len(nodes))
+	for _, node := range nodes {
+		at[node.ID] = len(body.Priorities)
+		body.Priorities = append(body.Priorities, model.PriorityRow{
+			Priority: priorityFrom(node),
+			Work:     model.PriorityWork{ByStatus: zeroPriorityStatusCounts()},
+		})
+	}
+	answer.fill(&body, at)
 	return body, nil
-}
-
-// readPriorityRelations reads the `advances` relations of every live priority as two lists in one
-// order, the issue key and the priority id of each: the pair of arrays the statements below take
-// as their seed, which priorityMemberTerms reads back as rows by their subscripts.
-func (s *server) readPriorityRelations(ctx context.Context, ids []string) ([]string, []string, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, priorityRelationsQuery, ids)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the advances relations: %w", err)
-	}
-	defer rows.Close()
-	keys := []string{}
-	priorities := []string{}
-	for rows.Next() {
-		var key, priority string
-		if err := rows.Scan(&key, &priority); err != nil {
-			return nil, nil, fmt.Errorf("read an advances relation: %w", err)
-		}
-		keys = append(keys, key)
-		priorities = append(priorities, priority)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read the advances relations: %w", err)
-	}
-	return keys, priorities, nil
 }
 
 // zeroPriorityStatusCounts is a priority's status counts before any row is read: every status of
@@ -468,174 +380,156 @@ func zeroPriorityStatusCounts() map[string]int {
 	return counts
 }
 
-// scanPriorityCounts reads priorityCountsQuery's rows onto the priorities they count, which `at`
-// places in `into` by their id. A row naming a priority the list does not hold is dropped: the
-// two reads are one snapshot each, and a priority deleted between them is one this answer no
-// longer lists.
-func scanPriorityCounts(rows pgx.Rows, into []model.PriorityRow, at map[string]int) error {
-	for rows.Next() {
-		var id, status string
-		var open, claimed, asks, closed int
-		if err := rows.Scan(&id, &status, &open, &claimed, &asks, &closed); err != nil {
-			return fmt.Errorf("read the counts of a priority: %w", err)
-		}
-		index, listed := at[id]
+// priorityReadAnswer is priorityReadQuery's one row: its four jsonb columns, each decoded as the
+// statement wrote it.
+type priorityReadAnswer struct {
+	counts   []priorityStatusCount
+	newest   []priorityNewestEvent
+	unplaced priorityFault
+	parked   priorityFault
+}
+
+// targets are the row's scan targets, in the statement's column order.
+func (a *priorityReadAnswer) targets() []any {
+	return []any{&a.counts, &a.newest, &a.unplaced, &a.parked}
+}
+
+// priorityStatusCount is one row of the counts: the work under one priority that stands in one
+// status.
+type priorityStatusCount struct {
+	Priority string `json:"priority"`
+	Status   string `json:"status"`
+	Open     int    `json:"open"`
+	Claimed  int    `json:"claimed"`
+	Asks     int    `json:"asks"`
+	Closed   int    `json:"closed"`
+}
+
+// priorityNewestEvent is the newest event under one priority. A priority no issue advances
+// answers no row and keeps its null.
+type priorityNewestEvent struct {
+	Priority string     `json:"priority"`
+	At       *time.Time `json:"at"`
+}
+
+// fill places the answer on body, whose priorities `at` places by their id. A row naming a
+// priority the list does not hold is dropped: the list and the statement are one snapshot each,
+// and a priority deleted between them is one this answer no longer lists. Every time comes back
+// in UTC, as the pool scans every timestamptz (store.scanTimestampsInUTC), whatever zone the
+// session wrote it in.
+func (a priorityReadAnswer) fill(body *model.Priorities, at map[string]int) {
+	for _, counted := range a.counts {
+		index, listed := at[counted.Priority]
 		if !listed {
 			continue
 		}
-		row := &into[index]
-		row.Work.ByStatus[status] += open
-		row.Work.Claimed += claimed
-		row.Work.OpenAsks += asks
-		row.Work.ClosedLast7Days += closed
+		row := &body.Priorities[index]
+		row.Work.ByStatus[counted.Status] += counted.Open
+		row.Work.Claimed += counted.Claimed
+		row.Work.OpenAsks += counted.Asks
+		row.Work.ClosedLast7Days += counted.Closed
 	}
-	return rows.Err()
-}
-
-// scanPriorityNewestEvents reads priorityNewestEventQuery's rows onto the priorities they belong
-// to. A priority no issue advances answers no row and keeps its null.
-func scanPriorityNewestEvents(rows pgx.Rows, into []model.PriorityRow, at map[string]int) error {
-	for rows.Next() {
-		var id string
-		var newest *time.Time
-		if err := rows.Scan(&id, &newest); err != nil {
-			return fmt.Errorf("read the newest event under a priority: %w", err)
-		}
-		if index, listed := at[id]; listed {
-			into[index].Work.NewestEventAt = newest
+	for _, newest := range a.newest {
+		if index, listed := at[newest.Priority]; listed {
+			body.Priorities[index].Work.NewestEventAt = inUTC(newest.At)
 		}
 	}
-	return rows.Err()
+	count, counts, issues := a.unplaced.resolve(false)
+	body.WorkUnderNoPriority = model.WorkUnderNoPriority{Count: count, ByProject: counts, Issues: issues}
+	count, counts, issues = a.parked.resolve(true)
+	body.PriorityWorkParked = model.PriorityWorkParked{Count: count, ByPriority: counts, Issues: issues}
 }
 
-// queuePriorityFault queues one fault's statement and hands its answer to `apply`: the whole
-// count, the counts by project or by priority, and the rows, which a summary answers as the count
-// alone with a nil map and no row.
-func queuePriorityFault(
-	batch *pgx.Batch,
-	query, summaryQuery string,
-	summary bool,
-	arguments []any,
-	parked bool,
-	apply func(count int, counts map[string]int, issues []model.PriorityIssue),
-) {
-	if summary {
-		batch.Queue(summaryQuery, arguments...).QueryRow(func(row pgx.Row) error {
-			count := 0
-			if err := row.Scan(&count); err != nil {
-				return fmt.Errorf("count a fault: %w", err)
-			}
-			apply(count, nil, []model.PriorityIssue{})
-			return nil
-		})
-		return
+// inUTC is the time t names, in UTC, and nil for none.
+func inUTC(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
 	}
-	batch.Queue(query, arguments...).Query(func(rows pgx.Rows) error {
-		count, counts, issues, err := scanPriorityFault(rows, parked)
-		if err != nil {
+	utc := t.UTC()
+	return &utc
+}
+
+// priorityFault is one fault as the statement answers it: the whole count, the counts by project
+// or by priority, and the newest rows.
+type priorityFault struct {
+	Total  int                `json:"total"`
+	Counts map[string]int     `json:"counts"`
+	Rows   []priorityFaultRow `json:"rows"`
+}
+
+// priorityFaultRow is one row of a fault list as the statement answers it. The parked fault
+// carries five values more: the three `advances` columns every issue read answers
+// (issueAdvancesColumns), as one array, and the two cells of the move into `backlog` or `icebox`.
+// The first fault carries none of them: its rows advance no live priority, so their `advances` is
+// the empty list a zero advancesScan answers.
+type priorityFaultRow struct {
+	Key       string                `json:"key"`
+	Title     string                `json:"title"`
+	Project   string                `json:"project"`
+	Status    string                `json:"status"`
+	Assignee  *string               `json:"assignee"`
+	ClaimedBy *model.Actor          `json:"claimed_by"`
+	ClaimedAt *time.Time            `json:"claimed_at"`
+	ChangedAt time.Time             `json:"changed_at"`
+	Advances  priorityFaultAdvances `json:"advances"`
+	MovedAt   *time.Time            `json:"moved_at"`
+	MovedBy   *model.Actor          `json:"moved_by"`
+}
+
+// priorityFaultAdvances is a parked row's `advances` columns (issueAdvancesColumns), which the
+// statement answers as one array of the three in advancesScan's order.
+type priorityFaultAdvances advancesScan
+
+func (a *priorityFaultAdvances) UnmarshalJSON(raw []byte) error {
+	var columns []json.RawMessage
+	if err := json.Unmarshal(raw, &columns); err != nil {
+		return err
+	}
+	if len(columns) != 3 {
+		return fmt.Errorf("the advances of a parked row hold %d values, want 3", len(columns))
+	}
+	for index, target := range []any{&a.ids, &a.revision, &a.inherited} {
+		if err := json.Unmarshal(columns[index], target); err != nil {
 			return err
 		}
-		apply(count, counts, issues)
-		return nil
-	})
-}
-
-// priorityFaultRow is one row of a fault statement as it is scanned: the whole count and the
-// grouped counts, which every row carries, and the issue's own columns, which are null on the row
-// an empty fault answers.
-type priorityFaultRow struct {
-	total     int
-	counts    map[string]int
-	key       *string
-	title     *string
-	project   *string
-	status    *string
-	assignee  *string
-	claim     claimScan
-	changedAt *time.Time
-	advances  advancesScan
-	movedAt   *time.Time
-	movedBy   []byte
-}
-
-// targets are the row's scan targets. The parked fault carries five columns more: the three
-// `advances` columns every issue read answers (issueAdvancesColumns), and the two cells of the
-// move into `backlog` or `icebox`. The first fault carries none of them: its rows advance no
-// live priority, so their `advances` is the empty list a zero advancesScan answers.
-func (r *priorityFaultRow) targets(parked bool) []any {
-	targets := []any{&r.total, &r.counts, &r.key, &r.title, &r.project, &r.status, &r.assignee}
-	targets = append(targets, r.claim.targets()...)
-	targets = append(targets, &r.changedAt)
-	if parked {
-		targets = append(targets, r.advances.targets()...)
-		targets = append(targets, &r.movedAt, &r.movedBy)
 	}
-	return targets
+	return nil
 }
 
-// resolve turns a scanned row into the issue the fault list carries.
-func (r *priorityFaultRow) resolve() (model.PriorityIssue, error) {
-	claim, err := r.claim.resolve(*r.key)
-	if err != nil {
-		return model.PriorityIssue{}, err
-	}
+// resolve turns a row into the issue the fault list carries. An issue's claim is both of its
+// claim columns or none (the issues_claim_complete constraint).
+func (r priorityFaultRow) resolve() model.PriorityIssue {
 	issue := model.PriorityIssue{
-		Key:       *r.key,
-		Title:     *r.title,
-		Project:   *r.project,
-		Status:    *r.status,
-		Assignee:  r.assignee,
-		Claim:     claim,
-		ChangedAt: *r.changedAt,
-		Advances:  r.advances.resolve(),
-		MovedAt:   r.movedAt,
+		Key:       r.Key,
+		Title:     r.Title,
+		Project:   r.Project,
+		Status:    r.Status,
+		Assignee:  r.Assignee,
+		ChangedAt: r.ChangedAt.UTC(),
+		Advances:  (*advancesScan)(&r.Advances).resolve(),
+		MovedAt:   inUTC(r.MovedAt),
+		MovedBy:   r.MovedBy,
 	}
-	if len(r.movedBy) > 0 {
-		var actor model.Actor
-		if err := json.Unmarshal(r.movedBy, &actor); err != nil {
-			return model.PriorityIssue{}, fmt.Errorf("decode who moved %s: %w", issue.Key, err)
-		}
-		issue.MovedBy = &actor
+	if r.ClaimedBy != nil && r.ClaimedAt != nil {
+		issue.Claim = &model.IssueClaim{Actor: *r.ClaimedBy, At: r.ClaimedAt.UTC()}
 	}
-	return issue, nil
+	return issue
 }
 
-// scanPriorityFault reads one fault statement's answer: its whole count, its grouped counts and
-// its rows. A fault with no issue answers one row whose issue columns are all null, which is the
-// count with no row beside it.
+// resolve reads one fault: its whole count, its grouped counts and its rows.
 //
-// The rows are ordered again here, by the columns the statement cut its 50 on: a join keeps no
-// order of its own, so the order the answer carries is this one rather than the plan's. The key
-// breaks a tie in both by its bytes, which is what strings.Compare reads and what the
+// The rows are ordered again here, by the columns the statement cut its 50 on: jsonb_agg keeps
+// no order of its own, so the order the answer carries is this one rather than the plan's. The
+// key breaks a tie in both by its bytes, which is what strings.Compare reads and what the
 // statement's `collate "C"` names, so the 50 the statement cut are the first 50 of this order
 // whatever the database's collation. Left to the default collation, which on a deployment weighs
 // punctuation last, the cut and this sort would be two orders, and where a tie straddles the cut
 // (the parked issues whose move no event records all tie) the list would draw a row the order it
 // answers puts after one it leaves out.
-func scanPriorityFault(rows pgx.Rows, parked bool) (int, map[string]int, []model.PriorityIssue, error) {
-	count := 0
-	counts := map[string]int{}
-	issues := []model.PriorityIssue{}
-	for rows.Next() {
-		row := priorityFaultRow{}
-		if err := rows.Scan(row.targets(parked)...); err != nil {
-			return 0, nil, nil, fmt.Errorf("read a fault row: %w", err)
-		}
-		count = row.total
-		if row.counts != nil {
-			counts = row.counts
-		}
-		if row.key == nil {
-			continue
-		}
-		issue, err := row.resolve()
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		issues = append(issues, issue)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, nil, nil, fmt.Errorf("read a fault: %w", err)
+func (f priorityFault) resolve(parked bool) (int, map[string]int, []model.PriorityIssue) {
+	issues := make([]model.PriorityIssue, 0, len(f.Rows))
+	for _, row := range f.Rows {
+		issues = append(issues, row.resolve())
 	}
 	slices.SortFunc(issues, func(a, b model.PriorityIssue) int {
 		if parked {
@@ -647,7 +541,7 @@ func scanPriorityFault(rows pgx.Rows, parked bool) (int, map[string]int, []model
 		}
 		return strings.Compare(a.Key, b.Key)
 	})
-	return count, counts, issues, nil
+	return f.Total, f.Counts, issues
 }
 
 // comparePriorityTimes orders two move times newest first, with an issue whose events do not

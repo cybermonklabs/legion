@@ -168,20 +168,10 @@ func prioritiesReadStatements(sent []speedStatement) []prioritiesReadStatement {
 	for place, statement := range sent {
 		name := fmt.Sprintf("statement %d", place+1)
 		switch {
-		case statement.sql == priorityRelationsQuery:
-			name = "the relations"
-		case statement.sql == priorityCountsQuery:
-			name = "the counts"
-		case statement.sql == priorityNewestEventQuery:
-			name = "the newest event"
-		case statement.sql == unplacedQuery:
-			name = "the unplaced work"
-		case statement.sql == parkedQuery:
-			name = "the parked work"
-		case statement.sql == unplacedSummaryQuery:
-			name = "the unplaced count"
-		case statement.sql == parkedSummaryQuery:
-			name = "the parked count"
+		case statement.sql == priorityReadQuery:
+			name = "the full statement"
+		case statement.sql == prioritySummaryQuery:
+			name = "the summary statement"
 		case place == 0 && strings.Contains(statement.sql, "from priority_nodes"):
 			name = "the live priorities"
 		}
@@ -218,18 +208,47 @@ func (s prioritiesReadServer) requirePlansRun(t *testing.T, statements []priorit
 
 // prioritiesStatementPlan is one statement run under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) on
 // a forced plan's connection: its execution and planning times, the shared buffers its top node
-// read, hit and read, which count every node below it, the walk's share of both, and the plan.
+// read, hit and read, which count every node below it, the walk's share of both, each part's,
+// and the plan.
 //
 // The walk is priorityMemberTerms' descent from the relations down the parent links: the plan
-// of the CTE members_spread, which every statement of the batch splices. Its node's time and
-// buffers count every node below it.
+// of the CTE members_spread, which each form's one statement holds. Its node's time and buffers
+// count every node below it.
+//
+// The parts are every subplan of the statement, each CTE and each subquery the select list runs
+// once (InitPlan), with its time and shared buffers. A node's counts take in every node below it,
+// and a materialized CTE runs inside whichever node first reads it, so a part's counts take in
+// those of every CTE it was the first to read.
 type prioritiesStatementPlan struct {
 	milliseconds, planning float64
 	hit, read              float64
 	walks                  int
 	walkMilliseconds       float64
 	walkBuffers            float64
+	parts                  []prioritiesPlanPart
 	text                   string
+}
+
+// prioritiesPlanPart is one subplan of a statement's plan: its name, the node it begins with, how
+// many times it ran, and the time and the shared buffers, hit and read, of it and every node
+// below it over those runs.
+type prioritiesPlanPart struct {
+	name, node            string
+	loops                 float64
+	milliseconds, buffers float64
+}
+
+// partsRead says what each part of the statement took, in the order the plan holds them.
+func (p prioritiesStatementPlan) partsRead() string {
+	if len(p.parts) == 0 {
+		return "no subplan"
+	}
+	described := make([]string, 0, len(p.parts))
+	for _, part := range p.parts {
+		described = append(described, fmt.Sprintf("%s (%s, %.0f loops) %.1f ms, %.0f shared buffers",
+			part.name, part.node, part.loops, part.milliseconds, part.buffers))
+	}
+	return strings.Join(described, "; ")
 }
 
 func (p prioritiesStatementPlan) buffers() float64 { return p.hit + p.read }
@@ -297,6 +316,12 @@ func (s prioritiesReadServer) explain(t *testing.T, statement prioritiesReadStat
 			reading.walks++
 			reading.walkMilliseconds += node.TotalTime * node.Loops
 			reading.walkBuffers += node.SharedHitBlocks + node.SharedReadBlocks
+		}
+		if node.SubplanName != "" {
+			reading.parts = append(reading.parts, prioritiesPlanPart{
+				name: node.SubplanName, node: node.NodeType, loops: node.Loops,
+				milliseconds: node.TotalTime * node.Loops, buffers: node.SharedHitBlocks + node.SharedReadBlocks,
+			})
 		}
 		for _, child := range node.Plans {
 			visit(child)

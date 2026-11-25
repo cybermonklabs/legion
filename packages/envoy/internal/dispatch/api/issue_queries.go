@@ -203,7 +203,7 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // `advances` groups the two back onto the subject. The ids are the asserted relations to live
 // priorities alone: a relation whose last word is a retraction is no relation now, and a priority
 // whose state is `gone` is no priority, so the join to priority_nodes leaves it out of both
-// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityRelationsQuery
+// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityMemberTerms
 // out of the priorities read. Without it the issue read and every listing row would name a
 // priority that `advances=none` and the first fault already count as none. Depth 0 answers the
 // issue's own ids and the revision, and every greater depth answers what it inherits.
