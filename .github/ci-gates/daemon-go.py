@@ -62,7 +62,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
     ]),
 ], reads=reads(
-    ("scripts/daemon-contract-order.sh", at("daemon-go", DAEMON_STAMPED_GATE_STEP)),
+    ("scripts/daemon-contract-order.sh", at("daemon-go", DAEMON_CONTRACT_ORDER_STEP)),
     ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),

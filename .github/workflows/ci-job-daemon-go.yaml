@@ -207,18 +207,26 @@ jobs:
       # takes if the branch merges next; in a merge group it is the order main takes. So the
       # order a production build numbers its entries in is tested before it reaches main. The
       # checkout is one commit deep, and the order needs HEAD's history back to main's
-      # first-parent line and main's own, so the step fetches both, with no blob: the script reads
-      # commits and trees alone. The plain step compiled this test binary already, so the run
-      # here is the fetch, then the link and the two tests, which took 2 s past the fetch on
-      # 2026-11-24; the 1-minute -timeout is its share of the job's timeout-minutes, and the step
-      # prints how long the gate took.
-      - name: Test the shape gate in main's merge order
+      # first-parent line and main's own, so the first step fetches both, with no blob (the script
+      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
+      # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
+      # merge queue's test job runs, reads every go test step. The plain step compiled this test
+      # binary already, so the gate's run is the link and the two tests, which took 2 s past the
+      # fetch on 2026-11-24; the 1-minute -timeout is its share of the job's timeout-minutes, and
+      # the step's own duration in the job's log is how long the gate took.
+      - name: Stamp HEAD's contract entries in main's merge order
+        id: contract-order
         run: |
           head=$(git rev-parse HEAD)
           git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
           echo "$stamp"
-          time go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=$stamp" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+        working-directory: packages/daemon
+
+      - name: Test the shape gate in main's merge order
+        run: go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
