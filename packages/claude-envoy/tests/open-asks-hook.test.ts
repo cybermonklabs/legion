@@ -1657,8 +1657,8 @@ const DEVICE_LOGIN_LOCK_SOURCE = "packages/cipher-client/src/device-login-lock.t
 /** The device-login route's waits, the one route the hook's exit leaves to run
  *  (`endOnceWritten`): its trade holds the login's lock and may yet save a rotated refresh token.
  *  So its waits run to their bounds: the trade's attempt, the refresh's two requests
- *  (device-login.ts:132's BROKER_REQUEST_MS, at :321), the lock's heartbeat
- *  (device-login-lock.ts:63) and the retry's jittered first wait. */
+ *  (device-login.ts's BROKER_REQUEST_MS, armed in brokerConfiguration's customFetch), the lock's
+ *  heartbeat (device-login-lock.ts:63) and the retry's jittered first wait. */
 const DEVICE_LOGIN_ROUTE: readonly CensusEntry[] = [
   DISPATCH_READ,
   CREDENTIAL_WAIT,
@@ -1974,7 +1974,11 @@ for (const route of BROKER_ROUTES) {
 /**
  * The wait sites of the hook's code whose call carries no bound the scan traces, each with what
  * bounds it. An entry names its file, a text of the site's first line, and how many unbounded
- * sites of that file carry that text: one more of them, or one fewer, fails the row.
+ * sites of that file carry that text: one more of them, or one fewer, fails the row. No check
+ * reads `bound`: it is the reviewer's note, so a line number in it holds only at the commit that
+ * wrote it and moves whenever its file changes above that line, with nothing to say so. The
+ * device-login.ts references name functions instead, since that file's lines moved under them
+ * more than once.
  */
 const REVIEWED_WAIT_SITES: readonly {
   file: string
@@ -2053,7 +2057,7 @@ const REVIEWED_WAIT_SITES: readonly {
     count: 1,
     bound:
       "requestInit merges openid-client's own signal and `signal` into the request's (:112); its " +
-      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:321) and the trade's " +
+      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts, brokerConfiguration) and the trade's " +
       "AbortSignal.any([closed, attempt]) (token-client.ts:560), attempt being " +
       "AbortSignal.timeout(this.#attemptMs) (token-client.ts:557)",
   },
@@ -2062,7 +2066,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
     count: 1,
     bound:
-      "requestInit (broker-request.ts:112) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :321",
+      "requestInit (broker-request.ts:112) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS), armed just before it in brokerConfiguration's customFetch",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
@@ -2126,7 +2130,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 3,
     bound:
-      "a device login's default fetch (:570, :709, :999), handed to brokerConfiguration, whose requests are made at :323 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+      "a device login's default fetch (startDeviceLogin, finishDeviceLogin and refreshDeviceLogin), handed to brokerConfiguration, whose customFetch makes each request under AbortSignal.timeout(BROKER_REQUEST_MS)",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
