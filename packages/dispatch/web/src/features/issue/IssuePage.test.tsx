@@ -1318,6 +1318,36 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   }
 });
 
+// Graph's addresses are the new issue page's alone: today's page draws Not found at them, as it
+// did before the new page named them, and reads no issue.
+test("IssuePage renders a not-found view for a graph address without fetching the issue", async () => {
+  const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  try {
+    for (const path of ["/issues/CORE-1/graph", "/issues/CORE-1/graph/node-1"]) {
+      const view = renderIssuePage(path);
+      try {
+        await screen.findByRole("heading", { name: "Page not found" });
+        expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
+        expect(
+          screen.queryByRole("tablist", { name: "Issue detail" }),
+          `${path} drew the issue's tabs`
+        ).not.toBeInTheDocument();
+        expect(document.title, `the title at ${path}`).toBe("Not found · Dispatch");
+        expect(getIssueSpy, `${path} read the issue`).not.toHaveBeenCalled();
+        expect(getMyStateSpy, `${path} read the reader's state`).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getIssueSpy.mockRestore();
+    getMyStateSpy.mockRestore();
+  }
+});
+
 test("IssuePage keeps the Spec mounted across tabs", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);

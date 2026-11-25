@@ -7584,6 +7584,44 @@ test("a key with nowhere to go says so at its row, until the next move", async (
   expect(rowReport(view.container)).toBeUndefined();
 });
 
+// Down and Up scroll the page from the page's body: the outline takes them only from a row or a
+// control inside one, where they move as `j` and `k` do, while `j` from the page's body still
+// goes to the first row.
+test("the outline: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the outline took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "j from the page's body did not go to the first row").toBe(
+        "comment-1"
+      )
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "Down from a row did not go to the next").toBe(
+        "comment-1a"
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /**
  * Presses `key` on the row of `on`, where the key has nowhere to go, at each of `widths` (1440 and
  * 390 px unless a key goes somewhere at one of them), and reads that it says `report` at that row
