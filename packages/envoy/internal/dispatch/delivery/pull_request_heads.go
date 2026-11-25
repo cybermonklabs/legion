@@ -39,9 +39,10 @@ import (
 // every pass of one process that tries its whole batch while no more than PullRequestHeadBatch
 // rows are due, and past that, or after a pass a rate limit stopped, within the bound
 // ListStalePullRequestHeads states: of n due rows, the open rows due and the merged rows no read
-// has reached, each within ceil(n/PullRequestHeadBatch) passes that try their whole batch, a row
-// never tried first, and a pass a rate limit stops leaves the rows it did not try first for the
-// next; and as PullRequestHeadStaleAfter says with several) and every merged row the rule this
+// has reached, each within ceil(n/PullRequestHeadBatch) passes that try their whole batch, each
+// stamp acknowledged, while no stamp whose call failed can still commit, a row never tried first,
+// and a pass a rate limit stops leaves the rows it did not try first for the next; and as
+// PullRequestHeadStaleAfter says with several) and every merged row the rule this
 // build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
 // ListStalePullRequestHeads). Each writer that read GitHub stores, with the issue, the inputs it
 // judged the issue from (PullRequestHead.Inputs), so a change of an issue's links judges each row
@@ -864,26 +865,36 @@ const PullRequestHeadBatch = 200
 // failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
 // and nothing that waits on its read (the check states settler's read of a row with no base
 // revision, api/check_states.go, verifyFormerHeads) takes the try for one. A stamp whose call
-// times out or loses its connection may still commit, and the reconcile then gives the row up
-// with no read (reconcilePullRequestHeads): the row moves behind the other due rows unread, which
-// only delays its read by one turn of the order, and never supplies a base revision or releases a
-// handoff that waits on the read. Each such stamp counts as the row's try in the bound below.
+// times out or loses its connection may still commit, at a moment the reconcile never learns, and
+// the reconcile then gives the row up with no read (reconcilePullRequestHeads): where the stamp
+// commits before the next selection the row moves behind the other due rows unread, a selection
+// made before it commits takes the row from its old place, and where it commits after a later
+// stamp of the row nothing orders the two writes, so it can put back its older time. Whichever
+// comes, it stores no checked_at and no base revision, so the row stays due, and it never supplies
+// a base revision or releases a handoff that waits on the read.
 //
 // The bound. Of the rows due, n are those the first select takes from: the open rows due and the
 // merged rows credited to nobody that no read has reached. The rule half takes only the room that
-// select leaves, at most RejudgedHeadsPerPass, so it delays no row of the n. A place only moves
-// later, but for a row first written, which no read and no try has reached, and which goes first.
-// So a pass that tries every row of its batch and does not take a given due row takes limit rows
-// placed no later than that row and puts each of them behind it: of n rows due, each is tried
-// within ceil(n/limit) such passes, one more for each limit rows first written meanwhile,
-// whatever their reads answer. A pass a rate limit stops tries part of its batch
+// select leaves, at most RejudgedHeadsPerPass, so it delays no row of the n. A pass tries its whole
+// batch when it stamps every row of its batch and the server acknowledges each stamp. An
+// acknowledged stamp writes its pass's time, so it only moves a place later, and a row first
+// written, which no read and no try has reached, goes first. So a pass that tries its whole batch
+// and does not take a given due row takes limit rows placed no later than that row and puts each
+// of them behind it: of n rows due, each is tried within ceil(n/limit) such passes, one more for
+// each limit rows first written meanwhile, whatever their reads answer. That holds only while no
+// stamp whose call failed can still commit: such a stamp can leave its row in place for a
+// selection, take the slot of a row the bound counts on, or put back an older time (above), so it
+// is no try, its pass counts toward no bound, and the bound holds again only over the passes after
+// the stamp has settled. While such stamps recur, no number of passes bounds when a given row is
+// read. A pass a rate limit stops tries part of its batch
 // (reconcilePullRequestHeads): each row it tried goes behind every due row tried less lately, and
 // each row of its batch it did not try keeps its place, so the next pass takes those first, after
 // the rows first written meanwhile. Such a pass counts toward no bound above, and while GitHub's
 // limit lasts the passes it stops try few rows each. With one process a pass starts at most
 // ReconcileInterval after the one before it ended. The rule half below is taken in the same
 // order: of m merged rows a rule older than this build's judged, each is tried within
-// ceil(m/RejudgedHeadsPerPass) passes that try their whole batch and leave the rule half that room.
+// ceil(m/RejudgedHeadsPerPass) passes that try their whole batch and leave the rule half that
+// room, under the same condition on failed stamps.
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
 // round at every pass of one process that tries its whole batch while no more than a batch is due
@@ -1010,8 +1021,8 @@ func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull 
 // again, and a row whose reads fail never holds the front of every batch. It stamps nothing else:
 // a try is no read of the pull request, so checked_at, the base revision and every other fact of
 // the row stay as they are, and the row stays due. Its statement is one of its own, so a call that
-// times out or loses its connection may still have committed the stamp, and the reconcile, told
-// it failed, then reads nothing of the row (reconcilePullRequestHeads).
+// times out or loses its connection may still commit the stamp, then or later, and the reconcile,
+// told it failed, then reads nothing of the row (reconcilePullRequestHeads).
 func markHeadTried(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
 	if _, err := pool.Exec(ctx, `
 		update pull_request_heads set attempted_at = $3 where repo = $1 and number = $2

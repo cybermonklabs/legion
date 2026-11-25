@@ -60,13 +60,15 @@ body: |-
     until a write stores one, which the reconcile's read of each open pull request does: of n rows
     due in its first selection, the open rows due and the merged rows no read has reached (the
     merged rows of an older attribution rule take only the room those leave, at most 50 a pass),
-    it tries each within ceil(n/200) passes that try their whole batch, whatever their reads
-    answer, a row never tried first, and a pass a rate limit stops leaves the rows it did not try in
-    their places, so the next pass takes them first (`pull_request_heads.attempted_at`, migration
-    `20261123124956`, which the reconcile stamps just before each row's read, and orders its batch
-    by with `checked_at`, so a row whose reads fail no longer holds the front of every batch; a
-    stamp whose call times out or loses its connection may still commit with no read, which puts
-    that row's read one turn of the order later and stores no base revision); only
+    it tries each within ceil(n/200) passes that try their whole batch, each stamp acknowledged,
+    whatever their reads answer, a row never tried first, and a pass a rate limit stops leaves the
+    rows it did not try in their places, so the next pass takes them first
+    (`pull_request_heads.attempted_at`, migration `20261123124956`, which the reconcile stamps
+    just before each row's read, and orders its batch by with `checked_at`, so a row whose reads
+    fail no longer holds the front of every batch; a stamp whose call times out or loses its
+    connection may still commit with no read, at a moment the reconcile never learns, so the bound
+    counts no pass with such a stamp and holds again only once the stamp has settled, with no bound
+    while such stamps recur, and the stamp stores no base revision); only
     a candidate a `before_merge` check needs is read,
     a commit a result of such a check of the issue's Verification document was recorded at, so a
     candidate whose results are

@@ -562,17 +562,20 @@ type formerHeadsReads struct {
 // delivery.ListStalePullRequestHeads states: of n rows due in its first selection, the open rows
 // due and the merged rows no read has reached (the merged rows a rule older than the build's
 // judged take only the room those leave, at most delivery.RejudgedHeadsPerPass), each is tried
-// within ceil(n/delivery.PullRequestHeadBatch) passes that try their whole batch, whatever their
-// reads answer, one more for each batch of rows first written meanwhile, since a row never tried
-// goes first; a pass a rate limit stops tries part of its batch, and the rows it did not try keep
-// their places, so the next pass takes them first. Each pass of one process starts at most five
+// within ceil(n/delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
+// acknowledged, whatever their reads answer, one more for each batch of rows first written
+// meanwhile, since a row never tried goes first; a pass a rate limit stops tries part of its
+// batch, and the rows it did not try keep their places, so the next pass takes them first. Each
+// pass of one process starts at most five
 // minutes after the one before it ended, a row due once its last read is
 // delivery.PullRequestHeadStaleAfter old: with no more than a batch due and no pass a rate limit
 // stops, about nine and a half minutes after that read, plus the passes' run time. A try that
 // fails, or that a stopped pass never makes, stores nothing, and the row comes again the same way;
 // a try whose stamp's call times out or loses its connection may still commit the stamp with no
-// read, and then the row's read comes one turn of the order later, the stamp storing no base
-// revision. Until a read stores a base revision the candidates stay unverified.
+// read, at a moment the reconcile never learns, so the bound counts no pass with such a stamp and
+// holds again only once the stamp has settled, and while such stamps recur no number of passes
+// bounds the row's read; the stamp stores no base revision. Until a read stores a base revision
+// the candidates stay unverified.
 // A read of the pull request that finds GitHub at another head or base revision than the row
 // stores decides nothing either (delivery.CommitMembership.Stale): GitHub moved it on where no
 // write has stored it yet. Both are unverified, read again after the failure backoff, since a read

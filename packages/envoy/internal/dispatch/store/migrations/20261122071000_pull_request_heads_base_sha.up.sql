@@ -16,12 +16,13 @@
 -- revision, which the reconcile's read of each open pull request does: of n rows due in its first
 -- selection, the open rows due and the merged rows no read has reached (the merged rows of an
 -- older attribution rule take only the room those leave, at most 50 a pass), it tries each within
--- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, whatever their reads
--- answer, a row never tried first, and a pass a rate limit stops leaves the rows it did not try in
--- their places, so the next pass takes them first (migration 20261123124956,
--- delivery.ListStalePullRequestHeads); a try whose stamp's call times out or loses its connection
--- may still commit the stamp with no read, which puts that read one turn of the order later and
--- stores no revision.
+-- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
+-- acknowledged, whatever their reads answer, a row never tried first, and a pass a rate limit
+-- stops leaves the rows it did not try in their places, so the next pass takes them first
+-- (migration 20261123124956, delivery.ListStalePullRequestHeads); a try whose stamp's call times
+-- out or loses its connection may still commit the stamp with no read, at a moment the reconcile
+-- never learns, so the bound counts no pass with such a stamp and holds again only once the stamp
+-- has settled, with no bound while such stamps recur, and the stamp stores no revision.
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
 -- takes ACCESS EXCLUSIVE on pull_request_heads for the catalog write alone, after waiting for each

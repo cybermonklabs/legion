@@ -697,11 +697,13 @@ end $$;
 -- write stores one: the reconcile's read of the pull request, which of n rows due in its first
 -- selection, the open rows due and the merged rows no read has reached (the merged rows of an
 -- older attribution rule take only the room those leave, at most 50 a pass), tries each within
--- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, whatever their reads
--- answer, a row never tried first; a pass a rate limit stops leaves the rows it did not try in
--- their places, so the next pass takes them first (delivery.ListStalePullRequestHeads); a try
--- whose stamp's call times out or loses its connection may still commit the stamp with no read,
--- which puts that read one turn of the order later and stores no revision. It reads only.
+-- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
+-- acknowledged, whatever their reads answer, a row never tried first; a pass a rate limit stops
+-- leaves the rows it did not try in their places, so the next pass takes them first
+-- (delivery.ListStalePullRequestHeads); a try whose stamp's call times out or loses its connection
+-- may still commit the stamp with no read, at a moment the reconcile never learns, so the bound
+-- counts no pass with such a stamp and holds again only once the stamp has settled, with no bound
+-- while such stamps recur, and the stamp stores no revision. It reads only.
 create function pull_request_former_heads_snapshot(integer) returns text language sql stable as $$
   select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref
     || ' at ' || coalesce(head.base_sha, 'unknown'), ', ' order by lower(head.repo), head.number), '')

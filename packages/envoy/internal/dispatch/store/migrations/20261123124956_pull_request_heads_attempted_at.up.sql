@@ -7,16 +7,20 @@
 -- every due row tried less lately than it: of n rows due in its first selection, the open rows
 -- due and the merged rows no read has reached (the merged rows of an older attribution rule take
 -- only the room those leave, at most 50 a pass), each is tried within
--- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, whatever their reads
--- answer, and a pass a rate limit stops leaves the rows it did not try in their places, so the
--- next pass takes them first. Before, a row a read failed for kept
+-- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
+-- acknowledged, whatever their reads answer, and a pass a rate limit stops leaves the rows it did
+-- not try in their places, so the next pass takes them first. Before, a row a read failed for kept
 -- checked_at, and so its place at the front of every batch, and a full batch of such rows kept
 -- every row behind it from being read. checked_at stays when Dispatch last read the pull request:
 -- a failed read stamps no checked_at and stores nothing of the pull request, so it is evidence of
 -- nothing, and the row stays due. A stamp whose call times out or loses its connection may still
--- commit, and the reconcile then gives the row up with no read: the row moves behind the other
--- due rows unread, which only delays its read by one turn of the order, and never supplies a base
--- revision or releases a handoff that waits on the read.
+-- commit, at a moment the reconcile never learns, and the reconcile then gives the row up with no
+-- read: the row moves behind the other due rows unread where the stamp commits before the next
+-- selection, a selection made before it commits takes the row from its old place, and a stamp
+-- that commits after a later stamp of the row can put back its older time, so the bound counts no
+-- pass with such a stamp and holds again only once the stamp has settled, and while such stamps
+-- recur no number of passes bounds the row's read. The stamp never supplies a base revision or
+-- releases a handoff that waits on the read.
 --
 -- Null where the reconcile has stamped no try of the row since this migration. Adding a nullable
 -- column with no default is a catalog change that rewrites no row. The ALTER takes ACCESS

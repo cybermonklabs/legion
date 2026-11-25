@@ -18,8 +18,9 @@ import (
 // the release before this one: read by that release an hour ago, with no base revision stored,
 // so the check states settler compares none of its candidates until a read stores one. GitHub
 // answers #70's read. The reconcile tries each due row within ceil(n/PullRequestHeadBatch) passes
-// that try their whole batch, of n due rows, the least lately tried first, whatever earlier tries'
-// reads answered: so the second pass, with no rate limit, reads #70 and stores its base revision,
+// that try their whole batch, each stamp acknowledged, as every stamp here is, of n due rows, the
+// least lately tried first, whatever earlier tries' reads answered: so the second pass, with no
+// rate limit, reads #70 and stores its base revision,
 // and the failed reads leave each failing row as it was, unread and with no base revision, since
 // a failed read is evidence of nothing. The third pass tries the one failing row the second left,
 // before any row the second pass tried.
