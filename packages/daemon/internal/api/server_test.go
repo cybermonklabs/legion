@@ -318,9 +318,8 @@ func TestUnknownPathIsARefusedRoute(t *testing.T) {
 	}
 }
 
-// The daemon resolves no review thread for anyone: the reviewer names the bot threads it accepted
-// to the implementer, who resolves them with plain gh as the pull request's author. The route a
-// plugin built before DaemonAPIVersion's LEGION-631 entry would post to is no route at all.
+// The daemon resolves no review thread for anyone: a role resolves a thread with plain gh. The
+// route a plugin built before DaemonAPIVersion's LEGION-631 entry would post to is no route at all.
 func TestTheDeletedThreadsResolveRouteAnswersNoRoute(t *testing.T) {
 	recorder := serve(t, fakeSource{}, http.MethodPost, "/legion/v1/threads/resolve")
 
