@@ -218,7 +218,49 @@ type Engine struct {
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
 	wayFromRecordedHead        bool
+
+	// For a task's CI news (ci_news.go), each the fault its test plants first: assignFromSettlement
+	// gives the implementer a repair assignment of each failed run of a settlement (reportRuns);
+	// stateFromSettlement writes yes for a check whose run the settlement says succeeded
+	// (reportRuns); textDedupe reports no settlement whose text is the text before, and
+	// alsoRoleMessage tells main's settlement message beside the report (tellChecks);
+	// dropBesideFix reports no settlement while a fix is open, waitForJobName none while the open
+	// fix holds no job's name, and runsBeforeLost takes the record as holding no run and no status
+	// before the settlement (reportRuns); implementerInMerging reports to the implementer in
+	// merging too (ciReceivers); noHeadFence prompts at a head the task has left, noPromptJoin
+	// queues each prompt as a row of its own, and omitEmptyCheckSet drops a replacement of the
+	// head's set by no check (promptReaders); readersAtSettlement prompts the readers the last
+	// report chose, held in settlementReaders, and readersAsReceivers the report's receivers,
+	// whether their step runs or not (ciReaders); fixInMerging starts a fix for a failure in
+	// merging (fixFailure); tellCIFailureBesideFix tells a task that takes a fix of its failed CI
+	// job as any other task (tellCIFailure); noNextRead reads nothing of what Legion does next,
+	// nextByHoldAlone reads it from a hold for the fix alone, and noTestedHeadRead names no tested
+	// head (ciNext). Only a test sets any of them.
+	assignFromSettlement   bool
+	stateFromSettlement    bool
+	textDedupe             bool
+	alsoRoleMessage        bool
+	dropBesideFix          bool
+	waitForJobName         bool
+	runsBeforeLost         bool
+	implementerInMerging   bool
+	noHeadFence            bool
+	noPromptJoin           bool
+	omitEmptyCheckSet      bool
+	readersAtSettlement    bool
+	settlementReaders      map[string][]ciReader
+	readersAsReceivers     bool
+	fixInMerging           bool
+	tellCIFailureBesideFix bool
+	noNextRead             bool
+	nextByHoldAlone        bool
+	noTestedHeadRead       bool
 }
+
+// WithoutEmptyCheckSet sets the seam omitEmptyCheckSet on e: a prompt to read Dispatch names no
+// replacement of the head's set by no check (promptReaders). Only tests call it, as the control of
+// the removal of a head's last check on an engine another package builds.
+func (e *Engine) WithoutEmptyCheckSet() { e.omitEmptyCheckSet = true }
 
 // WithoutEndHold sets the seam noEndHold on e: no task's end is held for its CI (retroHold). Only
 // tests call it, as the control of the end hold on an engine another package builds.
