@@ -4950,7 +4950,7 @@ describe("executeDispatchTool", () => {
   // machine nobody signed in on, which keeps the sentence naming `agent-secrets login`.
   test.each([
     [
-      "a job's named token writes as its service in its one project",
+      "a job's named token writes as its service and is told of its project what a person's named token is",
       {
         service: "system:serviceaccount:example-ns:example-job",
         project: "EXAMPLE",

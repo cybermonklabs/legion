@@ -818,7 +818,9 @@ BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/sweep.y
 projects. The token the exchange mints for a job entry names the entry's identity as its service
 (the account, or `<repository>/<workflow path>@<ref>` for a workflow) and no person, holds no OAuth
 scope, and carries the entry's projects whatever the request names: under the project scope
-`named` its one project, which it writes alone, or under the project scope `public` its private
+`named` its one project, for which Dispatch judges the token as it judges a person's named token
+for that project (a write to another project is `403 PROJECT_SCOPE` for both until
+dispatch://INFRA-4799 changes that), or under the project scope `public` its private
 projects, beside which it reaches every public project. A request may name no project or only
 projects of the entry, and the broker refuses one that names any other, a public project's key
 under `public` included, since it cannot tell a public project's key from a key no project holds.

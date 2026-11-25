@@ -17,11 +17,12 @@ body: |-
 
   `dispatch whoami` says that a broker token that names a service and no person, and that Dispatch
   answers `sign_in_required` false for, a job's under the project scope `named` or `public` among
-  them, runs as its service and no person and writes as that service: in its one project where it
-  names one, and otherwise wherever a token that names no project may write. A machine's token,
-  which Dispatch answers `sign_in_required` true for, and a broker token that names a service and
-  proves a session, from a Dispatch that answers no `sign_in_required`, keep the sentence that
-  names `agent-secrets login`. Its details carry `project_scope`.
+  them, runs as its service and no person and writes as that service. Where the token names one
+  project, it says of that project what it says of a person's named token for the same project,
+  and otherwise that the token may write wherever a token that names no project may write. A
+  machine's token, which Dispatch answers `sign_in_required` true for, and a broker token that
+  names a service and proves a session, from a Dispatch that answers no `sign_in_required`, keep
+  the sentence that names `agent-secrets login`. Its details carry `project_scope`.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens

@@ -589,23 +589,25 @@ seeded EXAMPLE
 ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
 ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
 ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
-ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want exit 1 PROJECT_SCOPE)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want the person entry's: exit 1 PROJECT_SCOPE)
 ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
 ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
 ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)
 ```
 
 The script creates project `EXAMPLE` as alice, then runs this checkout's `dispatch api`
-(`packages/envoy-client/bin/dispatch.ts`) once for each line, in an environment that keeps only
-`PATH`, `HOME` and `TMPDIR` and sets `DISPATCH_URL`, `AGENT_SECRETS_URL`, `PERSON_SIGNIN_TRADE=off`
-and the identity of the line. The job pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with
-`job-token`) creates an issue in `EXAMPLE` from standard input, and Dispatch records it under the
-entry's session with the account as its service and no owner; the same issue in `OPS` is refused
-`403 PROJECT_SCOPE`. The workflow's run (`github-actions`, with the actions request URL and token
-and no `DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's
-token, the control, names its person as the owner. It exits 1 when any answer is not the one it
-wants. Project `EXAMPLE` then exists, so a second run needs `bun run dispatch:local` started
-again.
+(`packages/envoy-client/bin/dispatch.ts`) once for each line, and once more for the example
+entry's issue in `OPS`, in an environment that keeps only `PATH`, `HOME` and `TMPDIR` and sets
+`DISPATCH_URL`, `AGENT_SECRETS_URL`, `PERSON_SIGNIN_TRADE=off` and the identity of the line. The job
+pod (`AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` with `job-token`) creates an issue in `EXAMPLE`
+from standard input, and Dispatch records it under the entry's session with the account as its
+service and no owner. The same issue in `OPS` gets the answer that the example entry's token, a
+person's named token for `EXAMPLE`, gets there, and the line wants exactly that answer:
+`403 PROJECT_SCOPE`, `exit 1 PROJECT_SCOPE`, until dispatch://INFRA-4799 changes that for both.
+The workflow's run (`github-actions`, with the actions request URL and token and no
+`DISPATCH_HOST` or session id) comments on that issue from a file. The example entry's token, the
+control, names its person as the owner. It exits 1 when any answer is not the one it wants.
+Project `EXAMPLE` then exists, so a second run needs `bun run dispatch:local` started again.
 
 ## Read the log and the metrics
 

@@ -100,11 +100,11 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // project its entry names or `public` with its entry's private projects, beside which it reaches
 // every public project. It writes as its session, for its service and under no person:
 // writeNeedsASignedInPerson lets a broker credential naming no person write under those two
-// scopes alone (project_scope.go). A `named` one is held to its project like every named token
-// (Actor.Project below); a `public` one names no one project, so the project check holds it to
-// none and its writes that belong to the deployment follow the rule of a token naming no project.
-// It holds no OAuth scope, so the rows that need `person` or `approve` turn it away
-// (gateRouteScopes).
+// scopes alone (project_scope.go). A `named` one sets Actor.Project (below), so the project check
+// judges it as it judges a person's named token for that project; a `public` one names no one
+// project, so the project check holds it to none and its writes that belong to the deployment
+// follow the rule of a token naming no project. It holds no OAuth scope, so the rows that need
+// `person` or `approve` turn it away (gateRouteScopes).
 //
 // A caller that names a service and no person under the project scope named and names no project
 // is an account entry's that names no person and no project (cipher/exchange's Set.Pod): its
@@ -246,12 +246,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule, and a job's named token, whose entry names one
-	// project, is held to it the same way; a named token naming none (the shared public-session
-	// account's, and an account entry's naming no person) writes, as a token naming no project
-	// does, wherever Dispatch's own rules let it, and ciphertoken refuses a named token naming
-	// two, and a named token naming no person, no project and a service that is no account. A
-	// token narrowed from a named one names its project too, as the project it reads as, and
-	// writes none.
+	// project, names it the same way, so the project check judges the two alike; a named token
+	// naming none (the shared public-session account's, and an account entry's naming no person)
+	// writes, as a token naming no project does, wherever Dispatch's own rules let it, and
+	// ciphertoken refuses a named token naming two, and a named token naming no person, no
+	// project and a service that is no account. A token narrowed from a named one names its
+	// project too, as the project it reads as, and writes none.
 	// A token acting as its person carries the list its trade asked for
 	// (ciphertoken.Caller.Projects), and that list limits no write here: a dev box session's
 	// person writes wherever they may, and the token of a machine naming a service and no person

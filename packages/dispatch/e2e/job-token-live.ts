@@ -5,9 +5,11 @@
  *  BROKER_EXCHANGE_JOB_WORKFLOWS) names an identity, its projects and a fixed session, and no
  *  person; the broker's exchange answers that identity's own token with a token whose service is
  *  the identity, and Dispatch records each write of it under the session with that service and no
- *  owner, and holds a token of one project to that project (PROJECT_SCOPE elsewhere). The example
- *  entry's token, which names a person, is the control: whoami names that person as its owner, so
- *  the read tells a person's token from a job's.
+ *  owner. Dispatch answers a job's token of one project, where it writes another project, as it
+ *  answers a person's named token for that project: `PROJECT_SCOPE` until dispatch://INFRA-4799
+ *  changes that for both. The example entry's token, which names a person and EXAMPLE, is the
+ *  control: whoami names that person as its owner, so the read tells a person's token from a
+ *  job's, and its answer to the job pod's creation in OPS is the one the job pod's must equal.
  *
  *  Run it from packages/dispatch once two stacks are up on this machine:
  *
@@ -36,22 +38,25 @@
  *  1. The job pod (AGENT_SECRETS_MACHINE_IDENTITY=kubernetes, its token `job-token`): whoami names
  *     no owner, the pod's account as the service, the entry's session and project EXAMPLE; it
  *     creates an issue in EXAMPLE, the body on standard input, whose events record the creation
- *     under that session with that service and no owner; the same creation in OPS exits 1 naming
- *     PROJECT_SCOPE.
+ *     under that session with that service and no owner; the same creation in OPS gets the answer
+ *     that the control of step 3, a person's named token for EXAMPLE, gets for it there: exit 1
+ *     naming PROJECT_SCOPE until dispatch://INFRA-4799 changes that for both.
  *  2. The job workflow's run (AGENT_SECRETS_MACHINE_IDENTITY=github-actions, the request URL and
  *     request token of the issuer that stands in for GitHub, AGENT_SECRETS_MACHINE_AUDIENCE the
  *     broker's BROKER_EXCHANGE_GITHUB_AUDIENCE, and no DISPATCH_HOST and no session id): it comments
  *     on that issue, the body read from a file, and whoami names no owner and the workflow as the
  *     service.
  *  3. The control (the example entry's `exchange-token`, under the session the script registered
- *     its pod for): whoami names that entry's person as the owner.
+ *     its pod for): whoami names that entry's person as the owner. Its creation in OPS is step 1's.
  *
  *  It writes into that Dispatch: project EXAMPLE, signed in as alice, as read-token-live.ts does,
- *  since dispatch:local seeds only CORE and OPS; the job pod's issue in EXAMPLE; and the workflow's
- *  comment on it. Project EXAMPLE then exists, so a second run needs `bun run dispatch:local`
- *  restarted, which empties the instance.
+ *  since dispatch:local seeds only CORE and OPS; the job pod's issue in EXAMPLE; the workflow's
+ *  comment on it; and, where Dispatch lets a person's named token for EXAMPLE write OPS, the two
+ *  issues of step 1 there. Project EXAMPLE then exists, so a second run needs
+ *  `bun run dispatch:local` restarted, which empties the instance.
  *
- *  It prints one line per request, with `dispatch api`'s exit status and the code Dispatch answered,
+ *  It prints one line per request, with `dispatch api`'s exit status and the code Dispatch answered
+ *  (the control's creation in OPS on the job pod's line for OPS, as the answer that line wants),
  *  and exits 1 when any answer is not the one it wants, or when a step before them fails. */
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -62,9 +67,9 @@ import { baseUrl, createProject } from "./api";
 import { dispatchEntry } from "./dispatch-cli";
 import { harnessPorts } from "./harness-ports";
 
-/** The job pod entry's project (dev-broker.sh's EXCHANGE_PROJECT): its token writes it alone. */
+/** The project the job pod entry and the example entry name (dev-broker.sh's EXCHANGE_PROJECT). */
 const project = "EXAMPLE";
-/** A project dispatch:local seeds that the job pod's entry does not name. */
+/** A project dispatch:local seeds that neither the job pod's entry nor the example entry names. */
 const otherProject = "OPS";
 /** The job pod entry (dev-broker.sh's JOB_ACCOUNT and JOB_SESSION). */
 const jobAccount = "system:serviceaccount:example-ns:example-job";
@@ -210,6 +215,14 @@ async function main(work: string): Promise<void> {
   await createProject({ key: project, name: "Example" });
   console.log(`seeded ${project}`);
 
+  // The control: the example entry's token, which names a person and EXAMPLE. Step 1 compares the
+  // job pod's creation in OPS with its own, and step 3 reads its whoami.
+  const control = {
+    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+    AGENT_SECRETS_MACHINE_TOKEN_FILE: join(brokerDir, "exchange-token"),
+    DISPATCH_SESSION_ID: personSession,
+  };
+
   // 1. The job pod.
   const pod = {
     AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
@@ -259,17 +272,29 @@ async function main(work: string): Promise<void> {
     `exit 0 -, issue.created by session:${jobSession}, service ${jobAccount}, owner none`
   );
 
+  // The same creation in OPS, under the job pod's token and under the control's: the job's token
+  // gets the answer a person's named token for EXAMPLE gets there.
   const elsewhere = await dispatchApi(
     brokerUrl,
     pod,
     ["--method", "POST", "--path", "/api/v1/issues", "--body-file", "-"],
     JSON.stringify({ project: otherProject, spec, title: `Filed by a job pod in ${otherProject}` })
   );
+  const personElsewhere = await dispatchApi(
+    brokerUrl,
+    control,
+    ["--method", "POST", "--path", "/api/v1/issues", "--body-file", "-"],
+    JSON.stringify({
+      project: otherProject,
+      spec,
+      title: `Filed by the example entry in ${otherProject}`,
+    })
+  );
   report(
     `[job pod] POST /api/v1/issues (${otherProject}, body on standard input)`,
-    elsewhere.exit === 1 && elsewhere.code === "PROJECT_SCOPE",
+    elsewhere.exit === personElsewhere.exit && elsewhere.code === personElsewhere.code,
     `exit ${elsewhere.exit} ${elsewhere.code}`,
-    "exit 1 PROJECT_SCOPE"
+    `the person entry's: exit ${personElsewhere.exit} ${personElsewhere.code}`
   );
 
   // 2. The job workflow's run, with no DISPATCH_HOST and no session id.
@@ -303,12 +328,7 @@ async function main(work: string): Promise<void> {
     service: workflowService,
   });
 
-  // 3. The control: the example entry's token, which names a person.
-  const control = {
-    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-    AGENT_SECRETS_MACHINE_TOKEN_FILE: join(brokerDir, "exchange-token"),
-    DISPATCH_SESSION_ID: personSession,
-  };
+  // 3. The control.
   whoami("[person entry]", await dispatchApi(brokerUrl, control, ["--path", "/api/v1/whoami"]), {
     owner: person,
   });

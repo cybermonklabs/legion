@@ -18,10 +18,10 @@ const jobPublic = oauthwire.ProjectScopePublic
 var jobProjectsRule = fmt.Sprintf("a job entry's projects are one project key, or %s followed by ,<key> for each of at most %d private projects", jobPublic, oauthwire.MaxProjects)
 
 // JobProjects is a job entry's list: what the token of an entry that names no person reaches.
-// It is ProjectScopeNamed with exactly one project, which the token writes alone, or
-// ProjectScopePublic with 0 to oauthwire.MaxProjects private projects, beside which the token
-// reaches every public project, which no list names. The token carries the whole list whatever
-// the trade names.
+// It is ProjectScopeNamed with exactly one project, for which Dispatch judges the token as it
+// judges a person's named token for that project, or ProjectScopePublic with 0 to
+// oauthwire.MaxProjects private projects, beside which the token reaches every public project,
+// which no list names. The token carries the whole list whatever the trade names.
 //
 // ParseJobProjects builds it and nothing else does, so a list no rule allows is never held. Its
 // zero value is no job list, which is what an entry that names a person holds. It is a value,

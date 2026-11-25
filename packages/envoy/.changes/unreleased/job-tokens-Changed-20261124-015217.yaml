@@ -7,9 +7,11 @@ body: |-
   `owner` null, `service` that identity, and `project` the entry's one project for `named` and null
   for `public`. It also answers `project_scope`, a broker token's project scope (`named`, `public`
   or `person`), and leaves it out for every other credential, and `sign_in_required` is false for a
-  job's token. A `named` job token writes its one project alone. A `public` one writes wherever a
-  token that names no project may write. A job's token holds no OAuth scope, so a route that needs
-  `person` or `approve` refuses it. Every other broker token that names a service and no person is
+  job's token. A `named` job token writes its one project, and Dispatch answers its write to
+  another project as it answers a person's named token for that project: `403 PROJECT_SCOPE` until
+  dispatch://INFRA-4799 changes that for both. A `public` one writes wherever a token that names no
+  project may write. A job's token holds no OAuth scope, so a route that needs `person` or
+  `approve` refuses it. Every other broker token that names a service and no person is
   still refused every write with `403 SIGN_IN_REQUIRED`: that is a machine's token under the project
   scope `person`, from a machine nobody signed in on. Dispatch, the Envoy listener and the NATS auth
   service now refuse, as no session's credential, a `named` token that names no person and holds an

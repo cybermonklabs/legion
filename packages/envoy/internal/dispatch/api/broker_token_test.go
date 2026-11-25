@@ -1512,52 +1512,71 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 	}
 }
 
-// TestAJobsNamedTokenIsHeldToItsProject: a job's token whose entry names one project writes that
-// project alone, as a named token of a person's entry does: another project's object and a write
-// whose body names another project are refused PROJECT_SCOPE, and a write that belongs to the
-// deployment is refused PROJECT_SCOPE_DEPLOYMENT. Nothing lands.
+// TestAJobsNamedTokenIsHeldToItsProject: a job's token whose entry names one project is held to
+// the rule that holds a person's named token for that project. Each write below (one whose body
+// names another project, one to another project's object, and the deployment's own project
+// create) is sent under the job's token and under a person's named token for the same project,
+// and the job's answer has the status and the refusal code of the person's. At this release that
+// answer is 403 PROJECT_SCOPE for the first two and 403 PROJECT_SCOPE_DEPLOYMENT for the third
+// (dispatch://INFRA-264), and dispatch://INFRA-4799 changes it for the two tokens alike, so the
+// test pins no answer of its own. Where the person's answer is a refusal, the job's refused write
+// lands nothing. The job's writes into its own project are
+// TestAJobBrokerTokenWritesAsItsSessionForItsService's.
 func TestAJobsNamedTokenIsHeldToItsProject(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
-	const token = "a-job-token-held-to-one-project"
-	rig.broker.Says(token, liveJobNamedToken(caller.jkt))
+	const jobToken, personToken = "a-job-token-held-to-one-project", "a-persons-named-token-for-the-same-project"
+	rig.broker.Says(jobToken, liveJobNamedToken(caller.jkt))
+	rig.broker.Says(personToken, liveNamedToken(caller.jkt))
 	seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTHER", "Other")
 
 	for name, write := range map[string]struct {
 		method, path string
-		body         any
-		code         string
+		// job and person are the write's body under each token, each with a text of its own, so
+		// the job's write is told from the person's where both land.
+		job, person any
+		// read is where a person reads the job's write back, and written the text it would show.
+		read, written string
 	}{
 		"an issue whose body names another project": {
-			http.MethodPost, "/api/v1/issues",
-			map[string]any{"project": "OTHER", "title": "Filed by a job elsewhere", "spec": "# Spec"}, codeProjectScope,
+			method: http.MethodPost, path: "/api/v1/issues",
+			job:    map[string]any{"project": "OTHER", "title": "Filed by a job elsewhere", "spec": "# Spec"},
+			person: map[string]any{"project": "OTHER", "title": "Filed by a person elsewhere", "spec": "# Spec"},
+			read:   "/api/v1/issues?project=OTHER", written: "Filed by a job elsewhere",
 		},
 		"a comment on another project's issue": {
-			http.MethodPost, "/api/v1/issues/" + other.issue + "/comments",
-			map[string]any{"body": "Written by a job elsewhere."}, codeProjectScope,
+			method: http.MethodPost, path: "/api/v1/issues/" + other.issue + "/comments",
+			job:    map[string]any{"body": "Written by a job elsewhere."},
+			person: map[string]any{"body": "Written by a person elsewhere."},
+			read:   "/api/v1/issues/" + other.issue + "/comments", written: "Written by a job elsewhere.",
 		},
 		"a project of the deployment's own": {
-			http.MethodPost, "/api/v1/projects",
-			map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson}, codeProjectScopeDeployment,
+			method: http.MethodPost, path: "/api/v1/projects",
+			job:    map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson},
+			person: map[string]any{"key": "PERSON", "name": "Person", "default_assignee": brokerTestPerson},
+			read:   "/api/v1/projects", written: `"JOB"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			response := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
-			if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusForbidden || refusal.Code != write.code {
-				t.Fatalf("status=%d body=%s, want 403 %s", response.Code, response.Body.String(), write.code)
+			persons := rig.serve(caller.presenting(t, write.method, write.path, personToken, write.person))
+			jobs := rig.serve(caller.presenting(t, write.method, write.path, jobToken, write.job))
+			if decodeBody[refusalAnswer](t, jobs).Code != decodeBody[refusalAnswer](t, persons).Code || jobs.Code != persons.Code {
+				t.Fatalf("the job's token: status=%d body=%s, want the answer of the person's named token for the same project: status=%d body=%s",
+					jobs.Code, jobs.Body.String(), persons.Code, persons.Body.String())
+			}
+			if persons.Code < http.StatusBadRequest {
+				return
+			}
+			read := rig.asPerson(t, http.MethodGet, write.read, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read %s back: status=%d body=%s", write.read, read.Code, read.Body.String())
+			}
+			if strings.Contains(read.Body.String(), write.written) {
+				t.Fatalf("the job's refused write landed: %s", read.Body.String())
 			}
 		})
-	}
-
-	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project=OTHER", nil)
-	if strings.Contains(issues.Body.String(), "Filed by a job elsewhere") {
-		t.Fatalf("a refused write created an issue: %s", issues.Body.String())
-	}
-	projects := rig.asPerson(t, http.MethodGet, "/api/v1/projects", nil)
-	if strings.Contains(projects.Body.String(), `"JOB"`) {
-		t.Fatalf("a refused write created a project: %s", projects.Body.String())
 	}
 }
 

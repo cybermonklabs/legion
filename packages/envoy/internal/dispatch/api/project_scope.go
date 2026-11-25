@@ -44,9 +44,10 @@ package api
 //     the read-only gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
 //     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
-//     the one project its entry names and is held to it below, as every named token is. That is
-//     the rule and not a transitional measure: every caller that exists today writes exactly what
-//     it wrote before, which is what lets this deploy before anything presents a broker token.
+//     the one project its entry names, and the check below judges it as it judges a person's
+//     named token for that project. That is the rule and not a transitional measure: every caller
+//     that exists today writes exactly what it wrote before, which is what lets this deploy before
+//     anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -446,10 +447,11 @@ func addressesOneSession(route apiRoute) bool {
 // job's token, which the secrets broker's exchange mints from a job entry that names the job's
 // identity, its projects and no person, and, under `named`, the token of an exchange account
 // entry that names no person and no project, whose service is that account (brokerTokenActor).
-// Such a token writes as its session, for its service, and the project check holds a `named` one
-// naming a project to that project. The refusal is here, in front of every mutating row whatever
-// its class, rather than in each route, for the reason the two checks above are: a route added
-// later is covered by the table it joins and not by a line someone remembered to write.
+// Such a token writes as its session, for its service, and the project check judges a `named` one
+// naming a project as it judges a person's named token for that project. The refusal is here, in
+// front of every mutating row whatever its class, rather than in each route, for the reason the
+// two checks above are: a route added later is covered by the table it joins and not by a line
+// someone remembered to write.
 //
 // The rule names the scopes that write and refuses every other, so it fails closed. The one
 // other scope the verifier lets reach it is `person` (ciphertoken.Caller): an access token the
