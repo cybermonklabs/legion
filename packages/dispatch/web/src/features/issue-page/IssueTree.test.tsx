@@ -1232,6 +1232,61 @@ test("f steps through a row's chips, links and then the controls no key presses"
   }
 });
 
+// WCAG 2.1.1: an open question's options are drawn on its own row, out of the tab order as
+// every control inside a row is, and no key of the keymap presses one, so `f` steps to each
+// while the writer answers the question, and Enter on the one it stopped on picks it in the
+// writer's answer (`OutlineWriter.answer`).
+test("an open question's option is reached by f and picked by Enter", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        author: { id: "bob", kind: "user" },
+        id: "ask-1",
+        options: [{ label: "1280 px" }, { label: "1024 px" }],
+        question: true,
+        reference: buildDispatchReference({ id: "ask-1", key: KEY, kind: "ask" }),
+        state: "open",
+        text: "At which width does the identity block condense?",
+        type: "ask",
+        waiting: true,
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root, "alice");
+  const { container } = tree.view;
+  // The page opens on the question that waits on the reader, who answers it.
+  await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+  await user.keyboard("a");
+  await waitFor(() => expect(tree.writer()?.answer?.nodeId).toBe("ask-1"));
+  // Every stop of `f` is a link or a control of the row, and the last comes back to the first,
+  // so as many presses as the row draws of them reach every stop it has.
+  const stops = rowsFor(container, "ask-1")[0]?.querySelectorAll("a[href], button").length ?? 0;
+  let option: HTMLElement | null = null;
+  for (let press = 0; press < stops && option === null; press += 1) {
+    await user.keyboard("f");
+    option = document.activeElement?.closest<HTMLElement>("[data-pick-option]") ?? null;
+  }
+  if (option === null) throw new Error("f stepped over every option of the open question");
+  const label = option.dataset.pickOption;
+  if (label === undefined) throw new Error("the option f stopped on names no label");
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(tree.writer()?.answer).toEqual({
+      askId: "ask-1",
+      multiple: false,
+      nodeId: "ask-1",
+      selected: [label],
+    })
+  );
+  expect(
+    container.querySelector(`[data-pick-option="${label}"]`)?.getAttribute("aria-pressed")
+  ).toBe("true");
+});
+
 // Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
 // already holds the focus through the chip: the row's own placing, which runs as a row takes the
 // focus, does not run. A reader who scrolled the row off the screen from there is brought back
