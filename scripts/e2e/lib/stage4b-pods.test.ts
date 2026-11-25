@@ -502,8 +502,8 @@ describe("the pod shape's reservation rule", () => {
   });
 
   test("an init container carries the issue pod's one reservation, whichever launch created the pod", () => {
-    expect(reservationProblems(reserving("workspace-fetch", reservation("2", "1Gi")))).toEqual([
-      "container workspace-fetch reserves cpu 2, memory 1Gi, ephemeral-storage 6Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
+    expect(reservationProblems(reserving("workspace-fetch", reservation("1", "1Gi")))).toEqual([
+      "container workspace-fetch reserves cpu 1, memory 1Gi, ephemeral-storage 6Gi of 80Gi, not the run's cpu 2, memory 8Gi, ephemeral-storage 6Gi of 80Gi for the issue pod",
     ]);
   });
 
