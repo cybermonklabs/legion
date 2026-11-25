@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The fault rig of the download-retry, download-retry-images and download-retry-images-worker jobs
-# of ci-job-download-retry.yaml: it starts
+# of ci-job-download-retry.yaml, the browser image's two runs in the second and the worker image's
+# six, as the legs of one matrix, in the third: it starts
 # .github/scripts/ci-fault-proxy.py in front of one step, reads the proxy's log after that step,
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #
@@ -666,9 +667,8 @@ report() {
   # before a `retry: <what>: attempt <k> of <n> failed` line of the same step, xtrace's `+ `
   # lines passed over, is that attempt's own failure, read above as its attempt line, and it is
   # counted apart and not toward the 7. Without that, the worker image's toolchain RUN, seven
-  # retried curls most of whose hosts meet a window of their own under the worker arm's
-  # --per-host-window, would print well over 7 and fail every build. No `curl --retry 7` of the
-  # tree runs inside retry().
+  # retried curls whose hosts the worker arms' outages can fault, could print more than 7 and fail
+  # a build whose retries held. No `curl --retry 7` of the tree runs inside retry().
   #
   # Each line out of the awk opens with P, an attempt line to print, C, a count of curl's lines
   # to print, or F, a failure for `fail` below.

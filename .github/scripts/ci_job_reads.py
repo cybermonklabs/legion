@@ -2063,7 +2063,8 @@ PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 # and gated by an input of its own (dispatch://INFRA-1545, T7; the gates below say why each declares
 # the machinery alone). download-retry runs each real site under .github/scripts/ci-fault-proxy.py,
 # and download-retry-images and download-retry-images-worker build the four Dockerfiles under the
-# same fault, the worker image's in the second and the other three in the first.
+# same fault, the worker image's in the second, as six runs of one matrix, and the other three in
+# the first, which builds the browser image twice.
 RETRY_FILE = job_file(RETRY_JOB)
 RETRY_SITE_READS = reads(
     *ci_retry(f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "

@@ -2850,11 +2850,11 @@ downloads read: the Retries note of .github/ci-budgets.md says why.
 
 ## download_retry_images: The four Dockerfiles whose network RUN lines carry the inline retry
 
-The filter of the download-retry-images lane, the download-retry-images and
-download-retry-images-worker jobs of .github/workflows/ci-job-download-retry.yaml: the four
-Dockerfiles whose network RUN lines carry the inline retry, the fault and the rig, and the lane's
-own file. Not what the builds compile: worker-image, envoy-smoke and browser-image prove the
-builds. Not ci-retry.sh either: each Dockerfile carries its own inline copy of the loop.
+The filter of the download-retry-images lane, the download-retry-images job and the six runs of
+the download-retry-images-worker job's matrix, of .github/workflows/ci-job-download-retry.yaml:
+the four Dockerfiles whose network RUN lines carry the inline retry, the fault and the rig, and
+the lane's own file. Not what the builds compile: worker-image, envoy-smoke and browser-image
+prove the builds. Not ci-retry.sh either: each Dockerfile carries its own inline copy of the loop.
 
 ## download_retry: Both lanes' filters, which select ci.yaml's one download-retry job
 
@@ -2887,12 +2887,13 @@ the two lanes. The download-retry lane proves the retries against the two faults
 a host that refuses and then serves and one that stalls; its rig is .github/ci-budgets.md, "The
 download-retry job's rig". The download-retry-images lane puts the same recovering fault inside
 the four Dockerfiles whose network RUN lines carry the inline retry, in two jobs that read its one
-input: download-retry-images builds the Envoy, held-port and browser images, and
-download-retry-images-worker the worker image, since the four together would run past the 360
-minutes a hosted runner gives a job; its rig is .github/ci-budgets.md, "The download-retry-images
-job's rig". Each lane's steps, and the budget they add up to, are in the called file, and each
-lane is gated there on an input this job fills from its own filter's output (the download_retry
-section of these notes says why one job).
+input: download-retry-images builds the Envoy and held-port images and the browser image twice, and
+download-retry-images-worker the worker image six times, as the six runs of one matrix, each a
+runner job of its own, since the builds together would run past the 360 minutes a hosted runner
+gives a job; its rig is .github/ci-budgets.md, "The download-retry-images job's rig". Each lane's
+steps, and the budget they add up to, are in the called file, and each lane is gated there on an
+input this job fills from its own filter's output (the download_retry section of these notes says
+why one job).
 
 ## Why a lane's sizing step comes after its retried module download
 

@@ -25,12 +25,10 @@ download-retry job carries the same 20 s.
 The third is what the injected fault can add to a build that passes (dispatch://INFRA-1545, round
 64, INFRA-1310's architect's rule): for each retried call of its Dockerfile, the sleeps of that
 call's ladder, and the time its failed attempts took in this head's run. Each arm's proxy runs
-`--per-host-window`, so each host its `--hosts` lists answers 504 for 60 s from that host's own
-first request, wherever in the build that request comes, and is passed on after. Until round 63
-one window ran from the proxy's start, and a host the build first reached after its first minute
-met no fault at all: the worker image's seven model-catalog hosts, which the final RUN's `legion
-probe-image` reaches about 529 s in, were listed and never faulted. What a window per host costs
-a build:
+coalesced outages, `--coalesce-outage-gap <G>` (the section "The image arms' outages and their
+coverage" below): the first request of a listed host opens an outage of 60 s, and the hosts a call
+meets in turn join it or are passed on after it, wherever in the build their first request comes.
+What the fault costs a build:
 
 - docker build stops at the first RUN that fails, so at most one ladder runs out, and the build
   has failed by then. The longest single ladder in the first term pays for that.
@@ -55,67 +53,6 @@ Until round 64 this term was 70 s for each listed host the build reached, which 
 host a call meets on its first attempt: the ladder starts its attempts at 0, 10, 30, 70 and 150
 s, so a host first met on a later attempt costs more, up to the whole ladder (review round 38 of
 dispatch://INFRA-1545).
-
-THE LIMIT OF A WINDOW PER HOST. A call that meets listed hosts one after another, each first on a
-later attempt, spends its ladder on them in turn, where a real outage is one window: two such
-hosts cost a call its spare attempt, and three fail its arm although its retry works. In run
-45383555145 at fbcc6647 these calls met two listed hosts in turn and passed only on their last
-attempt:
-
-- the worker image (job 138409597020): the go-licenses install (#22: github.com, then
-  sum.golang.org), the go-modules download (#24: the go-get hosts, then sum.golang.org and
-  modernc.org), the gopls install (#25: golang.org, then sum.golang.org), mise's curl (#43, on its
-  eighth attempt of eight: github.com, then release-assets.githubusercontent.com), the toolchain
-  RUN's uv download (#45: the same two hosts) and the azure-cli wheels (#94: pypi.org, then
-  files.pythonhosted.org);
-- the held-port image's `go mod download` (#10 of job 138409597173: proxy.golang.org and the go-get
-  hosts, then sum.golang.org);
-- the Envoy image's go-licenses install (#30 of the same job: proxy.golang.org, then
-  sum.golang.org).
-
-Splitting the image builds per host would multiply builds that run up to an hour, so the limit
-stays. Each report prints the requests it faulted by host, each with the second its first request
-came, so a red arm whose call met three hosts in turn can be read for what it is.
-
-The hosts below are the hosts each arm's `--hosts` lists that a RUN line of its Dockerfile
-reaches, from round 61 and 62's table of every host the four builds fetch from, with the hosts
-images job 138228770096 (at f3e50c3f) showed each proxy passing and the two run 45383555145
-showed each proxy faulting besides. They are the evidence of what each arm faults, not a price:
-the budgets count retried calls.
-
-- The worker image, 64 hosts: deb.debian.org; registry.npmjs.org; github.com,
-  objects.githubusercontent.com, release-assets.githubusercontent.com and
-  raw.githubusercontent.com; mise.jdx.dev; nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
-  and dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
-  and files.pythonhosted.org; www.postgresql.org and apt.postgresql.org; cdn.playwright.dev and
-  playwright.download.prss.microsoft.com; azcliprod.blob.core.windows.net; proxy.golang.org,
-  sum.golang.org, golang.org and google.golang.org; go.googlesource.com; cloud.google.com;
-  dl-cdn.alpinelinux.org; registry.yarnpkg.com; the go-get hosts authelia.com and
-  www.authelia.com, cel.dev, codeberg.org, dario.cat, dmitri.shuralyov.com, filippo.io,
-  git.sr.ht, go.etcd.io, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io,
-  go.uber.org, go.yaml.in, go4.org, gonum.org and www.gonum.org, gopkg.in, gotest.tools,
-  honnef.co, k8s.io and sigs.k8s.io, modernc.org, mvdan.cc and rsc.io; gitlab.com; and Oh My
-  Pi's model catalog, catalog.stencil.so, api.commandcode.ai, api.kilo.ai, api.venice.ai,
-  coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. www.authelia.com is where
-  authelia.com's go-get page sends the go command (the Envoy arm's proxy passed both), and
-  www.gonum.org is where gonum.org's does. pkg.go.dev is the one the go.dev entry faulted in job
-  138409597020 beside go.dev, first at 159.5 s.
-- The Envoy image, 24 hosts: registry.npmjs.org; deb.debian.org; proxy.golang.org,
-  sum.golang.org, golang.org and google.golang.org; storage.googleapis.com; github.com, which its
-  proxy passed ten requests to in job 138228770096; and the go-get hosts authelia.com and
-  www.authelia.com, cloud.google.com, dario.cat, dmitri.shuralyov.com, go.opencensus.io,
-  go.opentelemetry.io, go.uber.org, go.yaml.in, gonum.org and www.gonum.org, gopkg.in,
-  gotest.tools, honnef.co, k8s.io and rsc.io.
-- The held-port image, 30 hosts: proxy.golang.org, sum.golang.org, golang.org and
-  google.golang.org; storage.googleapis.com; and the go-get hosts authelia.com and
-  www.authelia.com, cel.dev, charm.land, cloud.google.com, codeberg.org, dario.cat, git.sr.ht,
-  go.mongodb.org, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io, go.uber.org,
-  go.yaml.in, gocloud.dev, gonum.org and www.gonum.org, gopkg.in, gotest.tools, honnef.co,
-  lukechampine.com, modernc.org, mvdan.cc, pgregory.net and rsc.io. Its golang image carries no
-  git, so it clones nothing. contrib.go.opencensus.io's go-get page is one its `go mod download`
-  asked for after a proxy error in job 138409597173, first at 87.7 s.
-- The browser image, 5 hosts: www.postgresql.org and apt.postgresql.org;
-  azure.archive.ubuntu.com and security.ubuntu.com; deb.nodesource.com.
 
 The four budgets, each call's sleeps and its failed attempts read from run 45383555145's two
 images jobs as the third term above says:
@@ -152,16 +89,18 @@ images jobs as the third term above says:
   their failed attempts took 21.3 s, 22 s rounded up: the update's three, 21.2 s, and the key's
   three, 0.2 s. 66 + 1650 + 20 + 3 x 150 + 22 = 2208 s.
 
-The four builds do not fit one job. With its 300 s of base image pulls, the 900 s smoke build
-and about 200 s of checkout, bypass clearing and rig steps, the one job would come to
-1400 + 15833 + 4263 + 3360 + 2208 = 27064 s, and with the single slowest retried step that the
-Budgets note adds, the worker image's 4650 s ladder, to 31714 s, above the 360 minutes GitHub
-gives a job on a hosted runner. So the worker image's build runs in a job of its own,
-download-retry-images-worker, at 200 + 15833 = 16033 s and 16033 + 4650 = 20683 s, 345 minutes;
-the other three stay in download-retry-images, at 1400 + 4263 + 3360 + 2208 = 11231 s and
-11231 + 3150 = 14381 s, 240 minutes, where 3150 s is the longest single ladder of the three
-Dockerfiles that job builds. Each key is the whole minute strictly above its sum, and each job's
-comment derives it.
+The builds do not fit one job. With its 300 s of base image pulls, the 900 s smoke build and about
+200 s of checkout, bypass clearing and rig steps, one job holding the Envoy, held-port, browser
+(twice) and worker builds would come to 1400 + 15833 + 4263 + 3360 + 2208 + 2208 = 29272 s, and
+with the single slowest retried step that the Budgets note adds, the worker image's 4650 s ladder,
+to 33922 s, above the 360 minutes GitHub gives a job on a hosted runner. So the worker image's
+build runs in a job of its own, download-retry-images-worker, six times: the six runs of its
+matrix are six runner jobs, so its one key bounds one run, at 200 + 15833 = 16033 s and
+16033 + 4650 = 20683 s, 345 minutes. The other builds stay in download-retry-images, at
+1400 + 4263 + 3360 + 2208 + 2208 = 13439 s and 13439 + 3150 = 16589 s, 277 minutes, which was 240
+(11231 + 3150 = 14381 s) until round 65 added the browser image's second run; 3150 s is the longest
+single ladder of the three Dockerfiles that job builds. Each key is the whole minute strictly
+above its sum, 16589 s being 276.48 minutes and 20683 s 344.72, and each job's comment derives it.
 
 The Envoy and held-port arms take each build's own measured time, which envoy-smoke's key names,
 rather than the 1200 s that key carries for its whole job: that term holds both builds and the
@@ -184,6 +123,198 @@ one job held the four builds at 347 minutes: 16160 + 4650 = 20810 s. In images j
 Round 63 added 70 s for each listed host the build reached, 10880, 5053, 5211 and 2086 s, at
 263 and 282 minutes for the two jobs, and in jobs 138409597020 and 138409597173 (at fbcc6647)
 the four took 1024, 362, 213 and 192 s under a window per host.
+
+## The image arms' outages and their coverage
+
+THE COALESCED OUTAGE. Each image arm's proxy runs `--coalesce-outage-gap <G>`
+(.github/scripts/ci-fault-proxy.py's header). The first request of a listed host opens an outage
+of 60 s, and that host answers 504 until it ends. A host first reached while the outage is open
+joins it and answers 504 until it ends too. A host first reached less than G s after it ended is
+the same call going on, and is passed on. The first host reached G s or more after an outage
+ended opens the next one. A host's first request decides it for the whole run: no later request
+faults it again or extends an outage.
+History, in one sentence: round 63 gave each host a window of its own, and round 65 replaced it
+because a call that met listed hosts in turn spent its ladder on them, as the held-port image's
+`go mod download` (RUN #10) did when it exhausted at e3e586f3 in job 138666740472.
+
+A real outage is one stretch of time, and a call that comes through one asks for its later hosts
+at most its ladder's last sleep and one attempt's work after the outage ended, so G is that: 80 s,
+the last sleep of the inline `retry()`'s 10, 20, 40 and 80 s, plus the longest single attempt of a
+retried call measured in that arm's own builds, rounded up to the next whole 10 s, and the
+rounding is the margin. A host first reached later than that is some other call's, and may open
+the next outage. Each arm's G:
+
+- the Envoy image, 190 = 80 + 110 s: its `bun install`'s failed attempt took 108.5 s in job
+  138409597173 (at fbcc6647), longer than its go-licenses install's passing attempt of 92 s in job
+  138666740472 (at e3e586f3), and 110 s is 108.5 s rounded up;
+- the held-port image, 290 = 80 + 210 s: its `go mod download`'s fifth attempt ran from about
+  172.5 s to 373.5 s, about 201 s, in job 138666740472, which 210 s rounds up;
+- the browser image, both runs, 380 = 80 + 300 s: two of its `apt-get install` attempts ran to
+  their 300 s bound in job 136575882603, a whole 10 s already;
+- the worker image, every run, 230 = 80 + 150 s: the go-modules stage's `go mod download`'s
+  attempt 4 ran from 78.1 s to 224.3 s, 146.2 s, in job 138666740482 (at e3e586f3), which 150 s
+  rounds up.
+
+THE COVERAGE CRITERION. Every RUN line of an arm's Dockerfile that reaches a listed host meets a
+faulted request in some run of that arm, but for the five lines THE STATED LIMIT below names. It
+is read from each build log's attempt lines: `retry: <what>: attempt <k> of 5 failed` for an
+inline `retry()`, a `curl: (N)` line for a curl that makes its own attempts, or a bare tool's 504
+line. Each report prints the outages its proxy opened and, for each host it decided, the second of
+that host's first request and the outage it joined or `not faulted: after outage <N>, within <G>
+s`, so the hosts it left within G are named, and a RUN line that reached a listed host and met no
+fault can be found. The criterion counts RUN lines and not calls: a RUN line that makes several
+calls meets a fault when one of them does.
+
+THE HOSTS EACH ARM LISTS. They are the hosts each arm's `--hosts` lists that a RUN line of its
+Dockerfile reaches, from round 61 and 62's table of every host the four builds fetch from, with
+the hosts images job 138228770096 (at f3e50c3f) showed each proxy passing and the two run
+45383555145 showed each proxy faulting besides. They are the evidence of what each arm faults,
+not a price: the budgets count retried calls.
+
+- The worker image, 64 hosts: deb.debian.org; registry.npmjs.org; github.com,
+  objects.githubusercontent.com, release-assets.githubusercontent.com and
+  raw.githubusercontent.com; mise.jdx.dev; nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
+  and dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
+  and files.pythonhosted.org; www.postgresql.org and apt.postgresql.org; cdn.playwright.dev and
+  playwright.download.prss.microsoft.com; azcliprod.blob.core.windows.net; proxy.golang.org,
+  sum.golang.org, golang.org and google.golang.org; go.googlesource.com; cloud.google.com;
+  dl-cdn.alpinelinux.org; registry.yarnpkg.com; the go-get hosts authelia.com and
+  www.authelia.com, cel.dev, codeberg.org, dario.cat, dmitri.shuralyov.com, filippo.io,
+  git.sr.ht, go.etcd.io, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io,
+  go.uber.org, go.yaml.in, go4.org, gonum.org and www.gonum.org, gopkg.in, gotest.tools,
+  honnef.co, k8s.io and sigs.k8s.io, modernc.org, mvdan.cc and rsc.io; gitlab.com; and Oh My
+  Pi's model catalog, catalog.stencil.so, api.commandcode.ai, api.kilo.ai, api.venice.ai,
+  coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. www.authelia.com is where
+  authelia.com's go-get page sends the go command (the Envoy arm's proxy passed both), and
+  www.gonum.org is where gonum.org's does. pkg.go.dev is the one the go.dev entry faulted in job
+  138409597020 beside go.dev, first at 159.5 s. Run 1 lists all of them, and runs 2 to 6 the
+  clusters THE SIX WORKER RUNS names.
+- The Envoy image, 24 hosts: registry.npmjs.org; deb.debian.org; proxy.golang.org,
+  sum.golang.org, golang.org and google.golang.org; storage.googleapis.com; github.com, which its
+  proxy passed ten requests to in job 138228770096; and the go-get hosts authelia.com and
+  www.authelia.com, cloud.google.com, dario.cat, dmitri.shuralyov.com, go.opencensus.io,
+  go.opentelemetry.io, go.uber.org, go.yaml.in, gonum.org and www.gonum.org, gopkg.in,
+  gotest.tools, honnef.co, k8s.io and rsc.io.
+- The held-port image, 30 hosts: proxy.golang.org, sum.golang.org, golang.org and
+  google.golang.org; storage.googleapis.com; and the go-get hosts authelia.com and
+  www.authelia.com, cel.dev, charm.land, cloud.google.com, codeberg.org, dario.cat, git.sr.ht,
+  go.mongodb.org, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io, go.uber.org,
+  go.yaml.in, gocloud.dev, gonum.org and www.gonum.org, gopkg.in, gotest.tools, honnef.co,
+  lukechampine.com, modernc.org, mvdan.cc, pgregory.net and rsc.io. Its golang image carries no
+  git, so it clones nothing. contrib.go.opencensus.io's go-get page is one its `go mod download`
+  asked for after a proxy error in job 138409597173, first at 87.7 s.
+- The browser image, 5 hosts: www.postgresql.org and apt.postgresql.org;
+  azure.archive.ubuntu.com and security.ubuntu.com; deb.nodesource.com. Run 1 lists all five
+  (`postgresql.org,ubuntu.com,nodesource.com`) and run 2 the four apt hosts without
+  www.postgresql.org (`apt.postgresql.org,ubuntu.com,nodesource.com`).
+
+Why each arm lists them. The Envoy and held-port images list the module hosts a go command falls
+through `|direct` to after a proxy error: the go-get page of each module path's host that the
+go.sum files of their Go fetches name (the Envoy image's two, packages/envoy's and go-licenses
+v2.0.1's, which scripts/go-third-party-notices.sh installs; the held-port image's, those of
+packages/envoy/infra's workspace: its go.sum and go.work.sum, and packages/envoy's), where
+golang.org already holds google.golang.org. Their golang image carries no git, so the fall-through
+reads those pages and clones nothing (dispatch://INFRA-1545, round 61). The Envoy image's notices
+RUN's go-licenses report reads the same pages unretried, and a page it cannot read leaves only
+that module's license URL unknown, which the notices do not print. proxy.golang.org serves its
+module zips from storage.googleapis.com (googleapis.com), which images job 138228770096 showed
+these builds' Go fetches reaching unfaulted (round 62). The browser image lists Ubuntu's apt mirror,
+which its base's sources name (azure.archive.ubuntu.com and security.ubuntu.com), PostgreSQL's
+signing key and apt repository, each behind one of the Dockerfile's inline retries, and
+NodeSource's apt repository, deb.nodesource.com (nodesource.com), whose index the same retried
+`apt-get update` reads: the base's own build wrote /etc/apt/sources.list.d/nodesource.list for its
+Node 26 and left it there (round 61).
+
+The worker image's hosts are apt, the npm registry, the Go module proxy and the release hosts of
+mise, uv, Node, the AWS CLI, Go, kubectl, yq and Chromium, each behind one of the Dockerfile's
+inline retries, and since main's #4377 four more, each behind one too: the Google Cloud SDK's
+archive and component list from dl.google.com (google.com), uv's CPython from releases.astral.sh
+(astral.sh; its fallback is github.com), azure-cli's index and wheels from pypi.org and
+files.pythonhosted.org (pythonhosted.org), and Playwright's WebKit from cdn.playwright.dev and
+playwright.download.prss.microsoft.com (playwright.dev, microsoft.com). windows.net is the one
+host here no retry stands behind: `az version` reads the newest azure-cli versions from
+azcliprod.blob.core.windows.net and exits 0 without them, as the Dockerfile's toolchain step
+says, so a build that meets the fault there passes. Three kinds more, each behind a retry too
+(round 61): go-base's `apk add --no-cache git`, which reads Alpine's index and git's packages from
+dl-cdn.alpinelinux.org (alpinelinux.org); the corepack shims' default Yarn, 1.22.22, which Node
+24.22.1's corepack 0.36.0 fetches from registry.yarnpkg.com under COREPACK_DEFAULT_TO_LATEST=0
+(its default pnpm, 11.24.0, comes from the npm registry); and the module hosts a go command falls
+through `|direct` to after a proxy error. Those are the go-get page of each module path's host
+that the go.sum files of the build's three Go fetches name (go.work's modules, go-licenses v2.0.1
+and gopls v0.23.0): authelia.com, cel.dev, codeberg.org, dario.cat, dmitri.shuralyov.com,
+filippo.io, git.sr.ht, go.etcd.io, go.opencensus.io (contrib.go.opencensus.io with it),
+go.opentelemetry.io, go.uber.org, go.yaml.in, go4.org, gonum.org, gopkg.in, gotest.tools,
+honnef.co, k8s.io (sigs.k8s.io with it), modernc.org, mvdan.cc and rsc.io, where google.com and
+golang.org already hold cloud.google.com and google.golang.org; and, since go-base carries git,
+the repositories those pages name off github.com and go.googlesource.com: gitlab.com,
+modernc.org's, and the ones codeberg.org, git.sr.ht, dmitri.shuralyov.com and gopkg.in serve
+themselves. The go-notices stage's go-licenses report reads the same pages unretried, and a page
+it cannot read leaves only that module's license URL unknown, which the notices do not print. And
+Oh My Pi's model catalog, which images job 138228770096 showed passing (round 62):
+api.commandcode.ai (commandcode.ai), api.kilo.ai (kilo.ai), api.venice.ai (venice.ai),
+catalog.stencil.so (stencil.so), coding-intl.dashscope.aliyuncs.com (aliyuncs.com),
+hyper.charm.land (charm.land) and zenmux.ai. They are Oh My Pi's background model refresh in the
+sessions the final RUN's `legion probe-image` starts. It is a fetch at all because, in the Oh My
+Pi that .omp-pin names, `createAgentSession` (packages/coding-agent/src/sdk.ts) calls
+`modelRegistry.refreshInBackground()` when its caller passes no registry, and main.ts calls it
+after each non-interactive session it starts; that refresh
+(packages/coding-agent/src/config/model-registry.ts) is online-if-uncached, so it fetches
+models.dev's catalog from catalog.stencil.so (`MODELS_DEV_URL`,
+packages/catalog/src/provider-models/openai-compat.ts) and the model lists of the providers that
+need no key. Neither call reads a setting or an environment value that turns the refresh off, and
+a refresh that fails is logged as the warning "background model refresh failed" and fails
+nothing.
+
+THE BROWSER'S TWO RUNS. Its one RUN line makes three retried calls: the signing key's download
+from www.postgresql.org, `apt-get update` and `apt-get install`. In run 1 the signing key's host
+is the first listed host reached, at 5.4 s in job 138409597173, so it opens outage 1, which ends at
+65.4 s. The apt hosts are first reached at 76.4 s, about 11 s after that, inside G, so they are
+passed on and run 1 drives only the key. Run 2, the `browser-apt` arm, lists the apt hosts alone,
+so `apt-get update` opens an outage of its own and the apt calls are driven.
+
+THE SIX WORKER RUNS. The worker image is built six times, once for each run of the matrix of
+download-retry-images-worker, each run a job of its own. A stage runs its RUN lines in order, and
+the RUN that meets an outage retries through it, so only a run's first outage lands where an
+unfaulted build reaches the host: every fault before a RUN moves the start of each RUN after it,
+and later outages move with every fault before them. A run that lists one cluster of hosts alone
+opens its first outage at that cluster's first request, where the seconds below put it, predicted
+from the RUN spans of job 138666740482 and the uncached spans of worker-image job 138666741929
+(both at e3e586f3). That is why each cluster has a run of its own. The runs and the RUN lines each
+targets, with the second its first request comes in a clean no-cache build:
+
+- Run 1, `worker`, the job named download-retry-images-worker: the first-minute cluster,
+  deb.debian.org and dl-cdn.alpinelinux.org, which the four apt RUNs of plugin-deps, tools,
+  toolchain and runtime-base and go-base's `apk add` reach. It lists every host any run lists,
+  registry.yarnpkg.com among them, which THE STATED LIMIT says no run reaches.
+- Run 2, `worker-2`, about 10-20 s in: go, npm, github and the toolchain downloads, which go-licenses
+  2/2, go-modules 4/4, gopls 1/1, tools 3/5's mise curl, plugin-deps 19/26's bun install and
+  toolchain 4/7's downloads and `npm ci` reach. It lists npmjs.org, github.com,
+  objects.githubusercontent.com, release-assets.githubusercontent.com, jdx.dev, nodejs.org,
+  awscli.amazonaws.com, go.dev, dl.k8s.io, googleapis.com, golang.org, googlesource.com and
+  google.com, and the 22 go-get hosts and repository hosts authelia.com, cel.dev, codeberg.org,
+  dario.cat, dmitri.shuralyov.com, filippo.io, git.sr.ht, gitlab.com, go.etcd.io,
+  go.opencensus.io, go.opentelemetry.io, go.uber.org, go.yaml.in, go4.org, gonum.org, gopkg.in,
+  gotest.tools, honnef.co, k8s.io, modernc.org, mvdan.cc and rsc.io.
+- Run 3, `worker-3`, about 55-100 s in: notices 4/23's fetches, from raw.githubusercontent.com.
+- Run 4, `worker-4`, about 116 s in: azure-cli's toolchain 6/7, from astral.sh, pypi.org and
+  pythonhosted.org.
+- Run 5, `worker-5`, about 204-250 s in: webkit-check 2/2 and runtime 24/40's `az version`, from
+  playwright.dev, microsoft.com and windows.net.
+- Run 6, `worker-6`, about 271 s in: runtime 40/40's `legion probe-image`, from commandcode.ai,
+  kilo.ai, venice.ai, stencil.so, aliyuncs.com, charm.land and zenmux.ai.
+
+THE STATED LIMIT. Five lines no run can fault: plugin-deps 23/26 and 26/26 (the second and third
+`bun install`; registry.npmjs.org is always first reached, so decided, by 19/26), toolchain 5/7
+(the Cloud SDK; dl.google.com is decided by 4/7's Go tarball through go.dev's redirect), tools 5/5
+(its omp, jj and gh fetches and `mise --version`; github.com and release-assets.githubusercontent.com
+are decided by 3/5's mise curl or 4/7's uv, and mise.jdx.dev by 5/5 itself after that outage) and
+runtime 26/40 (corepack's pnpm on registry.npmjs.org). Each is a later RUN line on a host an
+earlier RUN line of the same build already met in its outage, so a fault keyed to a host cannot
+single it out, and each uses the same inline `retry()` that other lines prove under fault.
+registry.yarnpkg.com stays in run 1's `--hosts` by INFRA-1310's architect's ruling at 04:17Z
+although no run reaches it: neither by-host list of job 138666740482 names it. And if a real
+attempt runs longer than measured, a recovering call can meet a fresh outage, and the last-attempt
+check then reds it.
 
 ## The sites lane's arms with a window per host
 
@@ -277,9 +408,10 @@ before round 64 and 285 after it.
 
 Each report uses `continue-on-error: true` so a failed report does not skip later arms.
 GitHub Actions includes only steps with an `id` in the `steps` context. Each report has an
-ID of the form `report-<arm>`, where `<arm>` is its proxy name. The verdict checks all steps
-with that prefix. It reads `outcome`, the result before `continue-on-error` changes a failed
-report's `conclusion` to `success`.
+ID of the form `report-<arm>`, where `<arm>` is its proxy name, but for the six runs of the
+worker job, which are one job's steps and so share `report-worker` and name their proxies by the
+matrix's `run`. The verdict checks all steps with that prefix. It reads `outcome`, the result
+before `continue-on-error` changes a failed report's `conclusion` to `success`.
 
 The verdict does not count failures of the tested downloads or image builds directly.
 A stalled download is expected to fail, and each report checks the site's outcome against
