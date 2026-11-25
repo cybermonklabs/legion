@@ -149,7 +149,7 @@ func codePipesOutOfCode(nodes []*Node) ([]*Node, []string) {
 // codeSpanMarks is the marks node is written under (writtenMarks) when it is code-marked text, a
 // node of a code span (codePipesOutOfCode), and false when it is not.
 func codeSpanMarks(node *Node) ([]Mark, bool) {
-	if node.Type != "text" || !nodeHasMark(node, "inlineCode") {
+	if node.Type != "text" || !HasMark(node, "inlineCode") {
 		return nil, false
 	}
 	return writtenMarks(node, true, true), true

@@ -548,7 +548,7 @@ func typedFence(n *Node, column int) int {
 // writes it. Only levels one and two have that form; past them the break is written as a space, as
 // the browser editor also writes it.
 func (r *renderer) heading(n *Node, prefix string) {
-	level := int(num(n.Attrs["level"], 1))
+	level := HeadingLevel(n)
 	if !holdsHardBreak(n.Children) {
 		r.writeSyntax(strings.Repeat("#", level) + " ")
 		r.headingInline(n.Children, prefix)
@@ -1183,7 +1183,7 @@ func holdsLineBreakToWrite(nodes []*Node) bool {
 			}
 		case "text":
 			if node.Text == "" || len(node.Attrs) > 0 || len(node.Children) > 0 ||
-				strings.IndexByte(node.Text, '\n') >= 0 && !nodeHasMark(node, "inlineCode") {
+				strings.IndexByte(node.Text, '\n') >= 0 && !HasMark(node, "inlineCode") {
 				return true
 			}
 		}
@@ -1314,7 +1314,7 @@ func writtenLineBreaks(nodes []*Node) []*Node {
 		switch {
 		case node.Type == "hardbreak" && node.Attrs["isInline"] == true:
 			appendText(" ", nil)
-		case node.Type == "text" && !nodeHasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
+		case node.Type == "text" && !HasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
 			value := node.Text
 			lastNonWhitespace := len(strings.TrimRightFunc(value, unicode.IsSpace))
 			lineStart := 0

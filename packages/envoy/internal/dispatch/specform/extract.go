@@ -276,7 +276,7 @@ func (e *extraction) container(nodes []*pmdoc.Node, container string, termsLevel
 // Terms part, which the next heading of its level or above closes, and a heading of a component
 // or an interface is a name, with the paragraph right under it as its purpose.
 func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
-	level := headingLevel(node)
+	level := pmdoc.HeadingLevel(node)
 	if e.termsLevel > 0 && level <= e.termsLevel {
 		e.termsLevel = 0
 	}
@@ -420,19 +420,6 @@ func blockID(node *pmdoc.Node) string {
 	return id
 }
 
-// headingLevel is the level of a heading, 1 to 6.
-func headingLevel(node *pmdoc.Node) int {
-	switch level := node.Attrs["level"].(type) {
-	case int:
-		return level
-	case int64:
-		return int(level)
-	case float64:
-		return int(level)
-	}
-	return 1
-}
-
 // paragraphs is the reading of each paragraph of a typed block.
 func (e *extraction) paragraphs(node *pmdoc.Node) []reading {
 	var readings []reading
@@ -445,7 +432,7 @@ func (e *extraction) paragraphs(node *pmdoc.Node) []reading {
 // strongLead splits inline content after the strong text it starts with, if any.
 func strongLead(nodes []*pmdoc.Node) (lead, rest []*pmdoc.Node) {
 	end := 0
-	for end < len(nodes) && hasMark(nodes[end], "strong") {
+	for end < len(nodes) && pmdoc.HasMark(nodes[end], "strong") {
 		end++
 	}
 	return nodes[:end], nodes[end:]
@@ -523,9 +510,9 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 	}
 	for index := 0; index < len(nodes); {
 		node := nodes[index]
-		if node.Type == "text" && hasMark(node, "inlineCode") {
+		if node.Type == "text" && pmdoc.HasMark(node, "inlineCode") {
 			var code strings.Builder
-			for ; index < len(nodes) && nodes[index].Type == "text" && hasMark(nodes[index], "inlineCode"); index++ {
+			for ; index < len(nodes) && nodes[index].Type == "text" && pmdoc.HasMark(nodes[index], "inlineCode"); index++ {
 				code.WriteString(nodes[index].Text)
 				out.held = linkHeld(out.held, nodes, index)
 			}
@@ -712,13 +699,4 @@ func backticksAt(words string, at int) int {
 		run++
 	}
 	return run
-}
-
-func hasMark(node *pmdoc.Node, markType string) bool {
-	for _, mark := range node.Marks {
-		if mark.Type == markType {
-			return true
-		}
-	}
-	return false
 }

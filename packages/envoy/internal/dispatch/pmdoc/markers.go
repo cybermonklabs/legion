@@ -81,9 +81,15 @@ func MarkerAt(doc *Node, position int) (BlockMarker, bool) {
 	return marker, found
 }
 
+// HeadingLevel is the level of a heading node, as the renderer writes it: its `level` attribute,
+// in whichever number type the tree holds it, and 1 when it holds none.
+func HeadingLevel(node *Node) int {
+	return int(num(node.Attrs["level"], 1))
+}
+
 func textblockMarker(doc, node *Node, path []int) BlockMarker {
 	if node.Type == "heading" {
-		return BlockMarker{Kind: MarkerHeading, Level: int(num(node.Attrs["level"], 1))}
+		return BlockMarker{Kind: MarkerHeading, Level: HeadingLevel(node)}
 	}
 	// Only a paragraph can be carrying a list item's marker: a code block's first line follows a
 	// fence, and its content is literal.
