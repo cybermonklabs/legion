@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -259,6 +260,26 @@ func searchRowFilters(status, author, written string) string {
 // document_search: a block of an issue room's own fragment is the tree artifact's, no doc, and
 // answers nothing here, as the tree's row of document_search did not.
 //
+// A node that is an ask block or stands in one matches nothing here (graphstore.InsideAskBlockSQL,
+// tested before the rows are ranked and cut to the covers): its words are the ask's, which the ask
+// arm finds, as search_document_text keeps them out of the document's version vector. The test
+// reads each node's text ancestry as the store holds it now, so a retype of an ancestor into or
+// out of an ask block moves this answer with no write of the node.
+//
+// The rows the index matched are narrowed in the order that costs least. Each step is a filter of
+// rows, and a document's covers are taken from the rows all of them keep, so the order changes no
+// row and no cover. found reads each matched node's document once, through a lateral that
+// `offset 0` keeps a subquery of its own, and keeps the node only where that document is a doc of
+// the project the search names. Only those rows reach the ask test, which climbs the node's text
+// parents at two index probes a step. found ends in `offset 0` as well, so the planner cannot push
+// the test back down onto the scan of node_search, where it ran on every node of every project
+// that holds the word. The node's own rank is read after the test, on the rows it keeps. The kind
+// and the project are the document's, so the outer select tests neither again: its rows are the
+// documents found kept. On the measurement database (TestStatementTimings, searchQuery's middling
+// word) the index matched 1,232 nodes of 831 documents, 325 of them docs of the project searched;
+// the ask test ran on all 1,232 at 0.017 ms each, and each node's document was read twice, once
+// to test it and once to group by it.
+//
 // The text carries no newline of its own at either end: searchKeywordLegs joins it to its
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
 // wraps it in a select of its own.
@@ -272,27 +293,34 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
       select held.document,
              (array_agg(held.block order by held.r desc, held.block))[1:` + strconv.Itoa(searchKeywordBlocks) + `] as covers
         from (
-          select ` + refs.NodeSearchDocumentSQL("s") + ` as document, ` + refs.NodeSearchBlockSQL("s") + ` as block,
-                 ts_rank_cd(s.search, q.tsq, 32) as r
-            from node_search s, q
-           where s.search @@ q.tsq
+          select found.document, ` + refs.NodeSearchBlockSQL("found") + ` as block,
+                 ts_rank_cd(found.search, found.tsq, 32) as r
+            from (
+              select node_document.id as document, s.node_address, s.search, q.tsq
+                from node_search s
+                cross join q
+                cross join lateral (select ` + refs.NodeSearchDocumentSQL("s") + ` as id offset 0) node_document
+                join artifacts doc on doc.id = node_document.id
+               where s.search @@ q.tsq and doc.kind = 'doc' and ($2 = '' or doc.project_key = $2)
+              offset 0
+            ) found
+           where not ` + graphstore.InsideAskBlockSQL(`found.node_address`) + `
         ) held
-       where held.document is not null
        group by held.document
     ) matched
     join artifacts a on a.id = matched.document
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
     join lateral (` + documentLatestVersionSQL("a") + `) v on true, q
-   where a.kind = 'doc' and ($2 = '' or p.key = $2)` +
+   where true` +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
 }
 
 // searchKeywordBlocks is how many of a document's matching nodes its keyword row names as covers,
-// best first by each node's own rank (searchDocumentKeywordLeg): the page ranks each covered
-// block's text again to name the one hit, so the arm hands it the ten its own ranking puts first,
-// past any the reader may not see, rather than every block of a long document that holds a common
-// word.
+// best first by each node's own rank (searchDocumentKeywordLeg): where a row covers more than one
+// block, the page ranks each covered block's text again to name the one hit, so the arm hands it
+// the ten its own ranking puts first, past any the reader may not see, rather than every block of
+// a long document that holds a common word.
 const searchKeywordBlocks = 10
 
 // documentLatestVersionSQL is a lateral's body over the artifacts row aliased alias answering its
@@ -409,6 +437,17 @@ var (
 // page and the few blocks each row covers, never over every candidate; any other keyword row and
 // an issue carry no covers, so the join answers nothing for them.
 //
+// A row that covers one block names it without ranking its text: a rank orders candidates, and
+// one candidate is named whatever it ranks, so the case that guards the rank changes no answer.
+// It saves the read of the block's text and the vector built from it, which are what the rank
+// costs: on the measurement database nineteen of a page's twenty hits were documents covering one
+// block each, and the page spent 67 ms ranking them (TestStatementTimings, searchQuery's middling
+// word). The node_search vector of a document's block is no stand-in for that rank, since it
+// answers another block for some rows: it is search_vector over search_document_text, which drops
+// the text of any ask block the block holds, and it is built from the node's text value, where the
+// rank reads the block's text row; and a comment's, an ask's or a message's block has no
+// node_search row at all.
+//
 // A covered block is named only where the acting person may see it, by the registry's own
 // predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
 // credential is bound at): the hit is the best covered block the reader may see, and a window
@@ -490,7 +529,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
         end as text
       ) block
      where %[2]s
-     order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
+     order by case when cardinality(r.covers) > 1
+                   then ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) end desc,
+              covered.ord
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id

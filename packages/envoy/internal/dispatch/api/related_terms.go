@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -595,7 +596,9 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 // the excluded owner's items. Each kind probes its own search index with an exists: issues, then
 // documents through node_search (migration 20261125160000_issue_tree_node_search), the
 // GIN-indexed vector of each block node, a block read as a block of its document
-// (refs.NodeSearchDocumentSQL), then comments, asks and messages.
+// (refs.NodeSearchDocumentSQL) unless it is an ask block or stands in one, whose words are its
+// ask's (graphstore.InsideAskBlockSQL, tested on the rows the index matched), then comments, asks
+// and messages.
 //
 // The document arm's lexeme test is a subquery of its own, which `offset 0` keeps the planner
 // from folding into the exists around it. Folded in, the arm is costed as the search for a
@@ -620,7 +623,8 @@ with probe as (
 select p.lexeme from probe p
  where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
-                 from (select ` + refs.NodeSearchDocumentSQL("s") + ` as document from node_search s where s.search @@ p.tq offset 0) s
+                 from (select ` + refs.NodeSearchDocumentSQL("s") + ` as document from node_search s
+                        where s.search @@ p.tq and not ` + graphstore.InsideAskBlockSQL(`s.node_address`) + ` offset 0) s
                  join artifacts a on a.id = s.document
                 where a.kind = 'doc' and a.project_key = $1
                   and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)

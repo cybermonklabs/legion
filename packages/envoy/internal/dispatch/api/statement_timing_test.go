@@ -12,6 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -156,18 +158,28 @@ func TestStatementTimings(t *testing.T) {
 		text: word, project: subjects.Project, limit: searchDefaultLimit,
 	})
 	afterSearchMeaningArguments := slices.Concat(afterSearchArguments[:8], meaning, afterSearchArguments[8:])
+	// Main's two texts of the check bind these lists and nothing after them (mainRelatedKeywordQuery,
+	// mainRelatedMeaningQuery). This release's texts bind one more value last of all, the acting
+	// credential every predicate of the registry they render reads (searchKindsCTE,
+	// refs.VisibilityArg), and so does relatedMeaningQueryOverMainsDocumentArm, which is this
+	// release's meaning body over main's keyword legs. The credential is the zero actor's, the one
+	// the check itself binds (relatedSearch): the check runs off a write and has no reader of its
+	// own.
 	relatedKeywordArguments := slices.Concat(relatedArguments, []any{lexemes, weights})
 	relatedMeaningArguments := slices.Concat(relatedArguments, meaning, []any{lexemes, weights})
+	credential := []any{refs.VisibilityArg(model.Actor{})}
+	relatedMeaningOverMainsArguments := slices.Concat(relatedMeaningArguments, credential)
 	// The check's two statements each have a second shape, the one whose kinds CTE drops the
 	// owners the check leaves out (relatedExcludedOwners), and that shape is the one every
 	// write runs: relatedSearch runs it whenever the check excludes anything, and every
 	// recording source names an owner (INFRA-1160). It is measured with the subject issue
 	// excluded, as a create excludes the issue it is filing, and the owners are a non-empty
 	// list of their own rather than nil: over a NULL array the filter is null of every row, and
-	// `where not` would then drop the lot and measure a statement that reads nothing.
+	// `where not` would then drop the lot and measure a statement that reads nothing. The owners
+	// come before the credential, as relatedSearch binds them.
 	excludedOwners := []any{[]string{"issue:" + subjects.Issue}}
-	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners)
-	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners)
+	relatedKeywordExcludingArguments := slices.Concat(relatedKeywordArguments, excludedOwners, credential)
+	relatedMeaningExcludingArguments := slices.Concat(relatedMeaningArguments, excludedOwners, credential)
 	// The probe is measured on a subject of its own, subjects.ProbeLexemes, the project's twenty
 	// rarest words rather than the three the other statements are measured on. Twenty is the
 	// list a question of a paragraph or two hands the picker, and rare is what it hands it: of
@@ -268,7 +280,7 @@ func TestStatementTimings(t *testing.T) {
 	// The after side is the scoped excluding shape: relatedArguments binds the subject's
 	// project, which is what the check sends such a call (relatedMeaningStatementFor).
 	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
-		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningArguments, Setup: meaningSetup},
+		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningOverMainsArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
 	runner.Pair(t, "relatedProbeSQL",
@@ -297,10 +309,15 @@ func TestStatementTimings(t *testing.T) {
 // have a gap, having no type for the one nothing reads. q.term is a literal for the same
 // reason, no arm reading it.
 //
+// q's other columns are relatedQOpener's: no issue named by key and none of search's three
+// filters. This release's arm reads the filters (searchRowFilters) and main's reads none of them,
+// so both sides run under the q that answers no filter at all, as the check's own q does.
+//
 // Parameters: $1 the tsquery, $2 the project, $3 the chosen lexemes, $4 their idf.
 func documentLegStatement(documentLeg string, termWeights func(lexemes int) string) string {
 	return `
-with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key),
+with q as materialized (select $1::tsquery as tsq, ''::text as term, '{}'::text[] as own_keys,
+                               ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 ` + termWeights(3) + `document_arm as (
 ` + documentLeg + `
 )

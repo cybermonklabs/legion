@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -154,8 +155,11 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // per block node holding its text's vector), so each term is one probe of a GIN index and no
 // candidate's spec is read more than once per term. A block's node is read as a block of its
 // document (refs.NodeSearchDocumentSQL), so a term one of a primary document's blocks holds is a
-// term its issue holds. project_key, the status and the ancestors are filters on the rows those
-// index scans produced, never the driving predicate.
+// term its issue holds. A node that is an ask block or stands in one holds no term of its
+// document (graphstore.InsideAskBlockSQL, tested on the rows the index matched): its words are
+// its ask's, as search_document_text keeps them out of the document's version vector.
+// project_key, the status and the ancestors are filters on the rows those index scans produced,
+// never the driving predicate.
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
@@ -189,7 +193,7 @@ hits as (
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
-    join node_search s on s.search @@ w.tq
+    join node_search s on s.search @@ w.tq and not ` + graphstore.InsideAskBlockSQL(`s.node_address`) + `
     join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s") + ` and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
    where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
