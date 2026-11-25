@@ -581,8 +581,9 @@ runtime:
 #                                      # reads conversations from the session database
 #                                      # (runtime.kubernetes.session_store, above) through its own
 #                                      # conversation_store below. The loop is off, as without answers,
-#                                      # without that connection or with no provider below, and boot
-#                                      # then logs one line saying which.
+#                                      # without that connection, with no provider below, or under
+#                                      # dispatch_token_broker: true, and boot then logs one line saying
+#                                      # which.
 #                                      # With the loop on, boot needs the real gh on the daemon's own
 #                                      # host for the loop's gh tool (LEGION_GH_PATH, else the first gh on
 #                                      # PATH), and the shared public leak check that tool's guard runs:

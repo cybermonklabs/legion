@@ -358,6 +358,46 @@ func TestAnswersThatNameNoProviderLeaveTheLoopOff(t *testing.T) {
 	}
 }
 
+// Under `dispatch_token_broker: true` the daemon's Dispatch credential acts only as its own
+// session, legion-daemon:<PROJECT>, so Dispatch refuses a reply the loop writes in a stopped
+// agent's name, and the loop's dispatch tool has no Dispatch token for an agent's session. A
+// Kubernetes file that sets the broker and a complete `answers` block loads with the loop off, as
+// with no block, and one warning, the broker line, which stands alone where the block names no
+// provider and no store either. Its control, the same file with dispatch_token_file in place of
+// the broker, turns the loop on and warns of nothing.
+func TestAnswersBesideTheDispatchTokenBrokerLeaveTheLoopOff(t *testing.T) {
+	const answersOffBroker = "answers is set, but the answer loop is off: dispatch_token_broker is set, so the daemon's Dispatch credential acts only as legion-daemon:LEGSMOKE; Dispatch refuses a reply written in a stopped agent's name with it, and the loop's dispatch tool has no Dispatch token for an agent's session; a message to a stopped agent is handled as it is without answers"
+	broker := kubernetesWith(dispatchTokenLine, brokerOn) + exchangeAudienceBlock
+	complete := answersBlock(anthropicByFile, opusPrice, daemonDSNFile)
+	for name, block := range map[string]string{
+		"a complete block":                      complete,
+		"a block with no provider and no store": "answers:\n  providers: {}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, broker+block), noEnv)
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			if !cfg.DispatchTokenBroker || cfg.Answers != nil {
+				t.Errorf("DispatchTokenBroker = %t, Answers = %+v; want the broker on and nil: under the broker, no loop", cfg.DispatchTokenBroker, cfg.Answers)
+			}
+			if !reflect.DeepEqual(cfg.Warnings, []string{answersOffBroker}) {
+				t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, answersOffBroker)
+			}
+		})
+	}
+	t.Run("control, dispatch_token_file in place of the broker", func(t *testing.T) {
+		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+exchangeAudienceBlock+complete), noEnv)
+		if err != nil {
+			t.Fatalf("LoadForValidation: %v", err)
+		}
+		if cfg.DispatchTokenBroker || cfg.Answers == nil || len(cfg.Warnings) != 0 {
+			t.Fatalf("DispatchTokenBroker = %t, Answers = %+v, Warnings = %#v; want the broker off, the loop on and no warning",
+				cfg.DispatchTokenBroker, cfg.Answers, cfg.Warnings)
+		}
+	})
+}
+
 // A block that names no model provider is still read whole and held to every rule that does not
 // need a provider: `providers` that is no mapping or whose providers are written with no value,
 // an unknown key anywhere in it, any model `prices` names (its provider is then one the block

@@ -482,9 +482,10 @@ read of the real gh runs in a process group of its own, which a read past its ti
 and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
 guard's children whole.
 
-With the answer loop on (`answers` set in `legion.yaml` with what the loop needs to run, which
-`docs/kubernetes.md`, "The answer loop", lists), the loop, which answers a question to a stopped
-agent in its name, runs this same real gh on the daemon's own host as its `gh` tool: boot resolves
+With the answer loop on (`answers` set in `legion.yaml` with what the loop needs to run, and no
+`dispatch_token_broker: true`, which `docs/kubernetes.md`, "The answer loop", lists), the loop,
+which answers a question to a stopped agent in its name, runs this same real gh on the daemon's
+own host as its `gh` tool: boot resolves
 it as above under either runtime (`answersGH`) and refuses to start without one, naming `gh` and
 `LEGION_GH_PATH`. With the loop off, boot resolves no gh for it. The tool is not a pane: it runs
 only an allow list of commands, adds the agent's

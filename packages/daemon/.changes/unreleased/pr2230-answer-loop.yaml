@@ -12,7 +12,10 @@ body: |-
   `legion config check` prints it after `Config OK`, and a message to a stopped agent is refused
   and dropped as it is without the block. A block that names no model provider (`providers`
   absent, null or empty) leaves the loop off the same way under either runtime, with its own
-  warning in place of the conversation store's.
+  warning in place of the conversation store's. With `dispatch_token_broker: true` the loop is off
+  whatever the block names, with a warning of its own: the daemon's Dispatch credential then acts
+  only as `legion-daemon:<PROJECT>`, Dispatch refuses with it a reply written in a stopped agent's
+  name, and the loop's `dispatch` tool has no Dispatch token for an agent's session.
 
   The daemon reads and appends Oh My Pi and Claude Code conversations, answers on the model the
   agent last ran on, and posts the answer in the agent's name where the question was asked. The

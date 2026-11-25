@@ -232,10 +232,11 @@ func pluginsLine(cfg config.Config) string {
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level, then the line saying an `answers` block that names no model provider, or no
-// connection to the conversation store, leaves the answer loop off — in the words boot logs it
-// with: what the key would have been refused for, or why the loop is off, and what to change. A
-// deprecation is the first thing an operator reads that way, and the exit stays 0, since such a
-// key is ignored and never refused.
+// connection to the conversation store, or that the file sets beside `dispatch_token_broker:
+// true`, leaves the answer loop off — in the words boot logs it with: what the key would have
+// been refused for, or why the loop is off, and what to change where a key of the block turns it
+// on. A deprecation is the first thing an operator reads that way, and the exit stays 0, since
+// such a key is ignored and never refused.
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads

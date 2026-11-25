@@ -895,8 +895,11 @@ What each part is for:
   tokens, 20 `gh` calls of at most 30 seconds and 60,000 characters each, 4 conversations at once
   and $50 a UTC day per project. A block whose `providers` is absent, null or empty, or, under
   Kubernetes, that names no `conversation_store` connection, leaves the loop off, as without
-  `answers`: the daemon boots, logs one line saying why (the provider line when both are missing),
-  which `legion config check` prints right after `Config OK`, and a message to a stopped agent is
+  `answers`, and so does `dispatch_token_broker: true` whatever the block names: the daemon's
+  Dispatch credential then acts only as `legion-daemon:<PROJECT>`, and Dispatch refuses with it a
+  reply in a stopped agent's name. In each case the daemon boots, logs one line saying why (the
+  broker line under the broker, else the provider line when no store is named either), which
+  `legion config check` prints right after `Config OK`, and a message to a stopped agent is
   refused and dropped as it is without the block. Its one tool is `gh`, run on the daemon's host
   with an allow list and the agent's own GitHub access, so with the loop on the daemon needs the
   real gh (`LEGION_GH_PATH`, else `PATH`, never a script; in the worker image,

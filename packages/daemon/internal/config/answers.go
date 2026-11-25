@@ -41,7 +41,8 @@ var answerModelID = regexp.MustCompile(`^(anthropic|openai)/\S+$`)
 // to an agent that is not running, from that agent's own conversation. Config.Answers is nil when
 // the file sets none, or sets one that names no model provider (answersOffWithNoProvider) or no
 // connection to the conversation store its runtime.kubernetes.session_store reads through
-// (answersOff), and the loop is then off.
+// (answersOff), or sets one beside `dispatch_token_broker: true` (answersOffUnderBroker), and the
+// loop is then off.
 type Answers struct {
 	// Providers are the model providers the loop may call, each its endpoint and its key.
 	Providers map[AnswerProvider]AnswerEndpoint
@@ -477,11 +478,16 @@ func readNumber(value *yaml.Node, key string) (*float64, error) {
 
 // resolveAnswers settles `answers` once the runtime is: each api_key_file against the file's
 // directory, and the conversation store the runtime's own store needs (conversationStoreOf). A
-// block that names no model provider, or no such store, leaves cfg.Answers nil, the loop off as
-// with no block, and adds one line to cfg.Warnings saying why: the provider line when both are
-// missing, since without a provider no store would turn the loop on. Every other key of the block
-// was already read and held to its rules, and a conversation_store key the runtime does not use is
-// refused before either line, so a malformed block is refused, never turned off.
+// block that names no model provider, or no such store, or that the file sets beside
+// `dispatch_token_broker: true`, leaves cfg.Answers nil, the loop off as with no block, and adds
+// one line to cfg.Warnings saying why: the broker line whatever else is missing, since under the
+// broker nothing the block names turns the loop on; else the provider line when both are missing,
+// since without a provider no store would turn the loop on. Every other key of the block was
+// already read and held to its rules, and a conversation_store key the runtime does not use is
+// refused before any line, so a malformed block is refused, never turned off.
+//
+// It reads cfg.DispatchTokenBroker, so the order of resolve matters: resolve settles that field
+// (resolveDispatchTokenBroker) before it settles `answers`.
 func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 	read := file.Answers
 	if read == nil {
@@ -491,7 +497,10 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	if len(read.providers) == 0 {
+	switch {
+	case cfg.DispatchTokenBroker:
+		off = answersOffUnderBroker(cfg.Project)
+	case len(read.providers) == 0:
 		// With no connection to the conversation store either, the line names both things to
 		// set, so an operator who follows it meets no second line at the next boot.
 		if off != "" {
@@ -591,3 +600,15 @@ const answersOffWithNoProvider = answersKey + " is set, but the answer loop is o
 // answersOffAndNoStore ends answersOffWithNoProvider for a Kubernetes file that names no
 // connection to the conversation store either.
 const answersOffAndNoStore = ", and " + conversationStoreKey + " to the daemon's connection to the conversation store as well"
+
+// answersOffUnderBroker is the warning for a file that sets `answers` beside
+// `dispatch_token_broker: true`. The broker's token proves only the daemon's own session,
+// legion-daemon:<project> (internal/dispatch's DaemonSession), so Dispatch refuses with it every
+// reply the loop writes there in a stopped agent's name; and the loop's dispatch tool has no
+// Dispatch token for an agent's session, since the broker leaves dispatch_token_file unset. No key
+// of the block turns the loop on then, so the line names none. A warning, not a refusal, for the
+// reason answersOff gives: such a deployment boots as it does without the block.
+func answersOffUnderBroker(project string) string {
+	return fmt.Sprintf("%s is set, but the answer loop is off: dispatch_token_broker is set, so the daemon's Dispatch credential acts only as legion-daemon:%s; Dispatch refuses a reply written in a stopped agent's name with it, and the loop's dispatch tool has no Dispatch token for an agent's session; a message to a stopped agent is handled as it is without %s",
+		answersKey, project, answersKey)
+}

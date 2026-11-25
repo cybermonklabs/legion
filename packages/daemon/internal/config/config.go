@@ -265,8 +265,8 @@ type Config struct {
 	// Answers is the `answers` block, settled: the model loop that answers a question to an agent
 	// that is not running, from its own conversation. Nil while the loop is off: the file sets no
 	// block, or sets one that names no model provider or no conversation store its runtime needs,
-	// and the loader then adds the warning that says why (resolveAnswers). The daemon then answers
-	// nothing, as before the block existed.
+	// or sets one beside `dispatch_token_broker: true`, and the loader then adds the warning that
+	// says why (resolveAnswers). The daemon then answers nothing, as before the block existed.
 	Answers *Answers
 	// RoleConfigFiles is `role_config_files`: the Oh My Pi settings overlays one role names in its
 	// PI_CONFIG_FILES and no other role does, by role, each after the overlays every role names
@@ -305,10 +305,11 @@ type Config struct {
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 	// After them comes at most one more: the line saying the answer loop is off because the file
-	// sets `answers` and names no model provider (answersOffWithNoProvider) or, naming one, no
-	// connection to the conversation store (answersOff). When both are missing it is the provider
-	// line alone, which then names both (resolveAnswers). It comes last since the loader settles
-	// `answers` only once it has read every key.
+	// sets `answers` beside `dispatch_token_broker: true` (answersOffUnderBroker), or names no
+	// model provider (answersOffWithNoProvider) or, naming one, no connection to the conversation
+	// store (answersOff). Under the broker it is the broker line alone; when both of the others are
+	// missing it is the provider line alone, which then names both (resolveAnswers). It comes last
+	// since the loader settles `answers` only once it has read every key.
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
