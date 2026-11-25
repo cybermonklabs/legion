@@ -186,7 +186,9 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 		{"secret list, unreached", unreached, []string{"secret", "list"}, np},
 		{"self, answered", answering, []string{"self"}, "source: the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
 		{"status, answered", answering, []string{"status", "req-approved"}, "source: the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
-		{"exec, refused by the broker", answering, injection, "asked the broker AGENT_SECRETS_URL names"},
+		// A name the stand-in refuses (its default, 400): the request object names the broker's own
+		// URL (proof.Audience), so the address's user information no longer gets GRANT_ME refused.
+		{"exec, refused by the broker", answering, []string{"REFUSE_ME", "--", "sh", "-c", "echo the-child-ran"}, "asked the broker AGENT_SECRETS_URL names"},
 		{"a port no parser reads", userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:badport"), []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password", badEscape, []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password, injecting", badEscape, injection, "the broker's address is not a valid URL"},
