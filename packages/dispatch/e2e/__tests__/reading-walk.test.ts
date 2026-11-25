@@ -6,6 +6,7 @@ import { DISPATCH_READING_SURFACES, type DispatchReadingProof } from "@legion/co
 import * as ts from "typescript";
 
 import { type ListedRow, rowsOfListing } from "../configurations";
+import { referencesLaneFiles } from "../reference-lane";
 import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
@@ -275,30 +276,6 @@ test("a proof is held to a test its file declares and runs", () => {
     "row: its proof packages/dispatch/web/src/features/x/x.tsx is no unit test or browser spec"
   );
 });
-
-/** The script whose `references)` arm names the spec files the references lane runs on a pull
- *  request: `.github/workflows/dispatch-browser.yaml`'s shard job runs it for its browser step. */
-const LANE_SCRIPT = fileURLToPath(
-  new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url)
-);
-
-/**
- * The spec files the references lane runs: the entries of the `lane_files="..."` the script sets
- * in its `references)` arm, read as `.github/scripts/ci_filter_coverage.py`'s
- * `check_references_lane` reads them, with the script's comments and blank lines aside, so a
- * comment that spells an assignment is no entry.
- */
-function referencesLaneFiles(): string[] {
-  const script = readFileSync(LANE_SCRIPT, "utf8")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "" && !line.startsWith("#"))
-    .join("\n");
-  const arm = /^references\)$(.*?)^;;$/msu.exec(script)?.[1] ?? "";
-  return (/^lane_files="([^"]*)"/mu.exec(arm)?.[1] ?? "")
-    .split(/\s+/u)
-    .filter((entry) => entry !== "");
-}
 
 test(
   "the references lane runs every reading spec",
