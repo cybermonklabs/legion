@@ -108,6 +108,10 @@ func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSe
 	})
 }
 
+func (r renewingRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return r.client.ReleasePodSessions(ctx, names)
+}
+
 // TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken drives the stop of a
 // registration (stopRegistration, from the decision that lets the process go) while the
 // registration's renewal is reading the pod's token over the real worker stream (stream.Conn's

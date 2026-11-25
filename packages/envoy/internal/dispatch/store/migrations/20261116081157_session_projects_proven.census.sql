@@ -1,0 +1,15 @@
+-- 20261116081157 deletes every row of session_projects and session_projects_filled, a read model
+-- of `events` that a later slice's writers fill. It answers 0 rather than counting them, for two
+-- reasons the census's own rules give:
+--   - a census that answers non-zero refuses the deploy (pgmigrate.Census), and these rows have no
+--     repair before it;
+--   - a census that names a table the database does not have refuses too, and both tables are
+--     20261116015736_project_access's, which a deployment that takes the two migrations in one
+--     release has not applied when the census runs.
+--
+-- Nothing in this release writes either table, so in such a deployment both are empty when this
+-- migration runs. Until the later slice's backfill fills them, a viewer that is not open (a
+-- restricted member, a credential that lists projects) sees a session only as its own or through
+-- its listener record, the closed direction, and an open viewer reads no session but its own while
+-- any project is private (access.SessionClause).
+select 0;

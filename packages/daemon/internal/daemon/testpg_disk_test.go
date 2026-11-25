@@ -7,6 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // runtime.kubernetes.test_postgres_disk reaches sandbox.Options as its size, which is what gives
@@ -20,7 +21,7 @@ func TestPGDiskTheSettingReachesTheSandboxRuntime(t *testing.T) {
 		StorageClass: "gp2", IssueVolume: "50Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 		TestPostgres: true, TestPostgresDisk: "20Gi",
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -29,7 +30,7 @@ func TestPGDiskTheSettingReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.TestPostgresDisk = ""
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions without the disk: %v", err)
 	}
