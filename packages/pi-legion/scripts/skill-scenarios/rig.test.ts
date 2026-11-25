@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -34,35 +35,58 @@ const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 /**
  * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
- * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
- * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
- * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
- * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
- * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
- * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
- * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
- * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
- * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
- * the 1.8 MiB a run held there at its largest (1,392 entries).
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, or
+ * is in the developer's home, and then /tmp. A plain path, because the model route installers and
+ * judge-omp write the path of each key command, and of the key file, into a profile as one plain
+ * `!command` word, and refuse any other character in it (install-model-gateway.sh and
+ * install-key-file-model-route.sh at `--dest`, rig.sh's judge_keys at the key file): under a
+ * TMPDIR with a space or a quote in its name, every row that installs a route failed on that
+ * refusal. Not in the developer's home, because childCwd is in this directory (memoryRoot gives
+ * TMPDIR where /dev/shm does not suit, and a TMPDIR can be in the home). A tmpfs, because the
+ * file's afterAll removes the whole directory under the file's 60 s: on the disk TMPDIR names,
+ * that removal of about 1,600 entries took 70 to 90 s at a five-minute load of about 2,200, and
+ * failed the file with "a beforeEach/afterEach hook timed out" after every row had passed. `need`
+ * is about sixteen times the 1.8 MiB a run held there at its largest (1,392 entries).
  */
 const memory = memoryRoot({ need: 32 * 1024 * 1024 });
-const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+const memoryPath = realpathSync(memory);
+// A HOME that does not exist holds no config, and realpathSync would throw on it.
+const developerHome = existsSync(homedir()) ? realpathSync(homedir()) : path.resolve(homedir());
+/** Whether DIR, a real path, is the developer's home or a directory in it. Every path is in a
+ * home of `/`. */
+function inDeveloperHome(dir: string): boolean {
+  const relative = path.relative(developerHome, dir);
+  return !(relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative));
+}
+const workRoot =
+  /^[A-Za-z0-9/._-]+$/.test(memoryPath) && !inDeveloperHome(memoryPath) ? memory : "/tmp";
 if (workRoot !== memory) {
   console.error(
-    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, or is in ${developerHome}, so the work directory is under /tmp`
   );
 }
 const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
+/** The directory each child process this file starts with childEnv starts in. The test runner's
+ * own cwd is in the checkout, and every checkout on a devbox is in the developer's home. mise
+ * reads a config file in the cwd and in each directory above it. Under a HOME that is not the
+ * developer's, it reads the developer's ~/.config/mise/config.toml found there as the config of a
+ * project, not as its global config. That file holds [settings], [env] and [tool_alias], and mise
+ * loads each of them only from a trusted file. Under that HOME no record marks the file trusted,
+ * so every mise shim exits 1 there, python3 included ("Config files in
+ * /home/<user>/.config/mise/config.toml are not trusted", in services_up's row). The work
+ * directory is not in the developer's home (workRoot), so no directory above this one is. */
+const childCwd = path.join(work, "child-cwd");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
-// read it would list this directory. It is staged in a hook, below the one the reservation
-// registered: a run that selects no row of this file makes neither. Each level is made on its
-// own, never with `recursive`, so this hook makes nothing above the reserved root and a root the
-// fixture did not make is an error here rather than a directory nothing removes.
+// read it would list this directory. It and childCwd are staged in a hook, below the one the
+// reservation registered: a run that selects no row of this file makes none of them. Each level
+// is made on its own, never with `recursive`, so this hook makes nothing above the reserved root
+// and a root the fixture did not make is an error here rather than a directory nothing removes.
 beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  mkdirSync(childCwd);
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
  * own, and the caller's mise data and config directories when the caller names them. A tool on
@@ -108,7 +132,7 @@ function route(dir: string, env: Record<string, string>, model = "") {
       dir,
       model,
     ],
-    { env: { ...childEnv, ...env } }
+    { env: { ...childEnv, ...env }, cwd: childCwd }
   );
   return { code: result.exitCode, stderr: result.stderr.toString() };
 }
@@ -445,10 +469,11 @@ describe("a setup that fails after install_model_route", () => {
 });
 
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
- * environment of PATH and the test's own HOME. */
+ * environment of PATH and the test's own HOME, in childCwd. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
   const result = Bun.spawnSync(["bash", "-c", script, "-", ...args], {
     env: { ...childEnv, ...env },
+    cwd: childCwd,
   });
   return {
     code: result.exitCode,
@@ -463,6 +488,17 @@ function freshDir(name: string): string {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+// Catches: a child of this file that starts in the test runner's cwd, or a work directory in the
+// developer's home. Either way the developer's home is above the child's cwd, where a mise shim
+// run under the test's HOME exits 1 (childCwd). CI's PATH holds no mise shim, so services_up's
+// row passes in CI either way. Without childCwd this row fails in CI too, because a runner's
+// checkout is in the runner's home.
+test("a child of this file starts in childCwd, outside the developer's home", () => {
+  const cwd = realpathSync(childCwd);
+  expect(bash("pwd -P")).toEqual({ code: 0, stdout: `${cwd}\n`, stderr: "" });
+  expect({ cwd, inDeveloperHome: inDeveloperHome(cwd) }).toEqual({ cwd, inDeveloperHome: false });
+});
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
 // no .jj, and jj alone printed an empty commit line for it.
@@ -481,7 +517,7 @@ describe("checkout_commit", () => {
         "commit.gpgsign=false",
         ...args,
       ],
-      { env: childEnv }
+      { env: childEnv, cwd: childCwd }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -602,6 +638,7 @@ describe("omp_ancestor", () => {
     const work = path.join(top, "work");
     const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
       env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+      cwd: childCwd,
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
@@ -804,6 +841,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   const groupBash = (script: string, args: string[], procRoot: string) => {
     const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
       env: { ...childEnv, proc_root: procRoot },
+      cwd: childCwd,
     });
     return {
       code: result.exitCode,
@@ -1231,6 +1269,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
         ...env,
       },
+      cwd: childCwd,
     });
   let jobs = 0;
   function judgeDir(): string {
@@ -1561,6 +1600,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
             LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
             GIT_CEILING_DIRECTORIES: path.dirname(top),
           },
+          cwd: childCwd,
         }
       );
       expect(result.exitCode).toBe(1);
@@ -1653,7 +1693,7 @@ describe("worker_routes", () => {
     }
     const result = Bun.spawnSync(
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
-      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+      { env: { ...childEnv, SKILL_SCENARIO_RUN: run }, cwd: childCwd }
     );
     return {
       code: result.exitCode,
