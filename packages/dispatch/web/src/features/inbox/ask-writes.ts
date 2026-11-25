@@ -34,6 +34,10 @@ export interface AskWrites<P> {
   /** Lets go of the newest press of `askId` where it has landed. A press that is out or failed
    *  stays. The same function on every render. */
   readonly forgetLanded: (askId: string) => void;
+  /** The asks whose newest press is out past a deadline (`KeyedWriteResult.lateOf`): still
+   *  `out`, and tried under its key until Dispatch decides it or the reader stops it, but a
+   *  surface that holds its controls while the press is out lets them go here. */
+  readonly late: ReadonlySet<string>;
   /** The newest press of each ask this kind has written, by ask. */
   readonly newest: ReadonlyMap<string, AskPressState<P>>;
   /** The asks whose write is out. The Inbox keeps each one's row where the reader saw it until
@@ -97,8 +101,9 @@ export function useAskWrites<TData, P, TContext = unknown>(
       if (keepsLanded?.(askId) !== true) return without(current, askId);
       return new Map(current).set(askId, { at: entry.at, press, state: "landed" });
     });
-  const { again, mutate, stopped } = useKeyedWrite<TData, P, TContext>({
+  const { again, lateOf, mutate, stopped } = useKeyedWrite<TData, P, TContext>({
     ...options,
+    readsLate: true,
     onError: (error, press, result, context) => {
       options.onError?.(error, press, result, context);
       decide(press, error);
@@ -117,8 +122,11 @@ export function useAskWrites<TData, P, TContext = unknown>(
   );
   return useMemo(() => {
     const out = new Set<string>();
-    for (const [askId, { state }] of newest) {
-      if (state === "out") out.add(askId);
+    const late = new Set<string>();
+    for (const [askId, { press, state }] of newest) {
+      if (state !== "out") continue;
+      out.add(askId);
+      if (lateOf(press)) late.add(askId);
     }
     const holdOut = (press: P) =>
       setNewest((current) =>
@@ -131,6 +139,7 @@ export function useAskWrites<TData, P, TContext = unknown>(
           return state === undefined || state === "out" ? current : without(current, askId);
         }),
       forgetLanded,
+      late,
       newest,
       out,
       press: (press: P) => {
@@ -146,7 +155,7 @@ export function useAskWrites<TData, P, TContext = unknown>(
         if (kept === undefined || !again(kept)) mutate(press);
       },
     };
-  }, [again, askIdOf, forgetLanded, mutate, newest, stopped]);
+  }, [again, askIdOf, forgetLanded, lateOf, mutate, newest, stopped]);
 }
 
 /** The writes of one kind of the Inbox around the caller, which provides every kind of its ask

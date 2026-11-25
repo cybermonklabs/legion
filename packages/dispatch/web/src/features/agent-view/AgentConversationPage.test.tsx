@@ -2418,6 +2418,53 @@ test("a switch the reader stopped says picking again sends a new switch", async 
   });
 });
 
+// A switch whose send never answers - offline, each try failing at the network - holds the
+// pickers and Send until that send's deadline and no longer: past it the switch is still tried,
+// and a pick made then sends a switch of its own, which waits behind it in the session's line.
+test("a switch lets go of the pickers and Send at its send's deadline, and a pick sends again", async () => {
+  const user = userEvent.setup();
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new NetworkError("/api/v1/agents/planner/messages", new TypeError("Failed to fetch"))
+  );
+  spies.push(createAgentMessage);
+  const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+  await type(user, composerInput(), "and then run the tests");
+  await waitFor(() => expect(sendHeld()).toBe(false));
+
+  await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
+    await clockUser.selectOptions(picker("Model"), "anthropic/model-b");
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(1);
+    const switches = () =>
+      writesOf(view)
+        .rows()
+        .filter((row) => row.label.startsWith("Switch "))
+        .map((row) => row.status);
+
+    await jump(SEND_DEADLINE_MS - 1_000);
+    expect(switches(), "the switch, a second short of its deadline").toEqual(["sending"]);
+    expect(held(picker("Model")), "the Model picker, a second short of the deadline").toBe(true);
+    expect(sendHeld(), "Send, a second short of the deadline").toBe(true);
+
+    await jump(1_000);
+    expect(switches(), "the switch, past its deadline").toEqual(["late"]);
+    expect(held(picker("Model")), "the Model picker, past the deadline").toBe(false);
+    expect(held(picker("Thinking level")), "the Thinking level picker, past the deadline").toBe(
+      false
+    );
+    expect(sendHeld(), "Send, past the deadline").toBe(false);
+
+    await clockUser.selectOptions(picker("Thinking level"), "high");
+    await tick(0);
+    expect(switches(), "a pick past the deadline sends a switch behind the late one").toEqual([
+      "late",
+      "queued",
+    ]);
+    expect(held(picker("Model")), "the Model picker, behind the late switch").toBe(false);
+  });
+});
+
 /** A turn the session is still producing: the thread is mid-turn while it lasts. */
 const MID_TURN = [
   assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Working", undefined, true),

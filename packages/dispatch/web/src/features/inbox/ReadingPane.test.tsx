@@ -2280,7 +2280,9 @@ test("a thread's head draws Open page and Copy ref, Dismiss in the place at the 
     <MemoryRouter>
       <QueryClientProvider client={createQueryClient()}>
         <KeymapProvider login="alice">
-          <RowDismissContext value={{ dismiss: () => {}, pending: new Set(), show: "inbox" }}>
+          <RowDismissContext
+            value={{ dismiss: () => {}, held: new Set(), pending: new Set(), show: "inbox" }}
+          >
             <ThreadPaneHead thread={thread} />
           </RowDismissContext>
         </KeymapProvider>

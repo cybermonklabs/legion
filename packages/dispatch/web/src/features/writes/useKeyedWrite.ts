@@ -178,6 +178,12 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
    *  network - locks none of them, and a press made then, waiting behind it, locks none again.
    *  Read only where the write was made with `readsLate`; `false` for any other. */
   readonly late: boolean;
+  /** Whether the press made with `variables` - those very values, by identity - is out past a
+   *  deadline, as `late` is of the newest press: for a surface that holds more than one press of
+   *  the write at once, each by what it is of (an Inbox's write of every ask, a draft's uploads).
+   *  `false` for a press that is not out. Read only where the write was made with `readsLate`;
+   *  `false` for any other. */
+  readonly lateOf: (variables: TVariables) => boolean;
 };
 
 /** Whether the newest press of `write` ended with the reader's stop: its `error` is then that
@@ -376,6 +382,9 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   /** The press the hook made last (`mutate`, `mutateAsync`, `again`), set as it is made, before
    *  TanStack tells React of it. */
   const newestMade = useRef<Press<TVariables> | undefined>(undefined);
+  /** Every press whose run is out, by the key its attempts go out under, from the start of its
+   *  run until it settles: the presses `lateOf` looks among. */
+  const out = useRef(new Map<string, TVariables>());
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
@@ -392,6 +401,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     mutationFn: (press) => {
       const { key, variables } = press;
       setUnanswered(undefined);
+      out.current.set(key, variables);
       const spec = {
         detail: null,
         endsWithSession,
@@ -411,18 +421,20 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
               method: methodOf(variables),
               write: (bounds) => write(variables, bounds),
             })
-      ).then(
-        (answer) => {
-          if (answer === null) setUnanswered({ at: Date.now(), variables });
-          return answer;
-        },
-        (error: unknown) => {
-          if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
-            held.current = [press, ...held.current];
+      )
+        .then(
+          (answer) => {
+            if (answer === null) setUnanswered({ at: Date.now(), variables });
+            return answer;
+          },
+          (error: unknown) => {
+            if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
+              held.current = [press, ...held.current];
+            }
+            throw error;
           }
-          throw error;
-        }
-      );
+        )
+        .finally(() => out.current.delete(key));
     },
     networkMode: "always",
     onError:
@@ -526,6 +538,26 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     followLate,
     () => lateKey !== undefined && lateIn(writes.rows(), lateKey)
   );
+  // Every press out that is late, followed only where the surface reads it (`readsLate`), from
+  // the newest press on and while any press is out, as one string of their keys, so a change of
+  // the store that turns none of them late draws nothing again.
+  const followOut = readsLate === true && (newest !== undefined || out.current.size > 0);
+  const followPresses = useCallback(
+    (listener: () => void) => (followOut ? writes.subscribe(listener) : () => undefined),
+    [followOut, writes]
+  );
+  const lateOut = useSyncExternalStore(followPresses, () => {
+    if (!followOut) return "";
+    const rows = writes.rows();
+    return [...out.current.keys()].filter((key) => lateIn(rows, key)).join(" ");
+  });
+  const lateOf = useCallback(
+    (variables: TVariables) => {
+      const keys = lateOut.split(" ");
+      return [...out.current].some(([key, made]) => made === variables && keys.includes(key));
+    },
+    [lateOut]
+  );
   // Built only once the newest press ended stopped, when its request went out: a press whose
   // request could not be built ended with that error instead, which building it here would throw.
   const newestMethod =
@@ -557,6 +589,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     again,
     forgetUnanswered,
     late,
+    lateOf,
     method: newestMethod,
     mutate,
     mutateAsync,

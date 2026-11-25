@@ -1,10 +1,75 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { onRealTurns, realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { pressesOf } from "../../__tests__/held-until-late";
+import { untilAttempted } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { captureUploadBase, ReplacingUploadNote } from "./ArtifactUpload";
 import { renderHarness, UPLOADED } from "./artifact-upload-fixture";
+
+// An upload that never answers - offline, each try failing at the network - holds Upload and
+// Cancel until its deadline and no longer. Past it the upload is still tried, so a press of
+// Upload then sends nothing and says so beside it; once the upload fails, a press sends one.
+test("Upload and Cancel let go at the upload deadline without uploading the file twice", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/artifacts", new TypeError("Failed to fetch"))
+  );
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const view = renderHarness();
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Upload" });
+    const cancel = screen.getByRole<HTMLButtonElement>("button", { name: "Cancel" });
+    await user.click(button);
+    await untilAttempted(uploadArtifact, 1);
+    const status = () =>
+      writesOf(view.queryClient)
+        .rows()
+        .find((row) => row.label === "Upload of notes.md")?.status;
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(status(), "the upload, a second short of its deadline").toBe("sending");
+    expect(heldNotDisabled(button, "Upload"), "Upload, a second short of the deadline").toBe(true);
+    expect(heldNotDisabled(cancel, "Cancel"), "Cancel, a second short of the deadline").toBe(true);
+
+    await tick(1_000);
+    expect(status(), "the upload, past its deadline").toBe("late");
+    expect(heldNotDisabled(button, "Upload"), "Upload, past the deadline").toBe(false);
+    expect(heldNotDisabled(cancel, "Cancel"), "Cancel, past the deadline").toBe(false);
+
+    await user.click(button);
+    await tick(1_000);
+    expect(pressesOf([uploadArtifact]), "a press while the upload is out uploads nothing").toBe(1);
+    const stillUploading = /Upload sent nothing: notes\.md is still being uploaded/;
+    expect(screen.getByText(stillUploading)).toBeInTheDocument();
+
+    uploadArtifact.mockRejectedValue(new ApiError(403, { error: "Uploads are closed here" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillUploading)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Uploads are closed here");
+    await user.click(button);
+    await onRealTurns(() => pressesOf([uploadArtifact]) === 2);
+    expect(pressesOf([uploadArtifact]), "a press once the upload failed uploads one").toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    view.queryClient.clear();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
 
 test("choosing a file stages it behind a summary field instead of uploading immediately", async () => {
   const user = userEvent.setup();

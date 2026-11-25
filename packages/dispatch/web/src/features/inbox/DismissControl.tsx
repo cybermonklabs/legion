@@ -17,6 +17,8 @@ export interface RowDismiss {
   dismiss: (row: InboxDismissRow) => void;
   /** The row ids whose own press is still out. */
   pending: ReadonlySet<string>;
+  /** The row ids whose own press is out within its deadline, which holds the control. */
+  held: ReadonlySet<string>;
   /** Which view the row is drawn in, which is what its control is called. */
   show: InboxShow;
 }
@@ -38,7 +40,8 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
  * and always on the row the reading column is showing (`shown`); the column's own head and the
  * card draw it beside their other controls, where there is room for it. It is held while its
- * write is out (`heldPress`).
+ * write is out within its deadline (`heldPress`), and says what it is doing until that write is
+ * decided.
  */
 export function DismissControl({
   shortcutKeys,
@@ -69,7 +72,7 @@ export function DismissControl({
         shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
       }`}
       data-inbox-dismiss={named.id}
-      {...heldPress(live, () => dismiss.dismiss(named))}
+      {...heldPress(dismiss.held.has(named.id), () => dismiss.dismiss(named))}
       type="button"
     >
       {live ? (restoring ? "Moving…" : "Dismissing…") : label}

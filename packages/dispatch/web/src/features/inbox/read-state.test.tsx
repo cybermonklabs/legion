@@ -11,6 +11,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { heldNotDisabled } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -315,6 +316,43 @@ test("Mark read releases its hold when its landed mark's re-read reaches the req
     client.clear();
     act(() => onlineManager.setOnline(online));
     realClock();
+  }
+});
+
+// A mark that never answers - offline, each try failing at the network - holds Mark read until
+// its deadline and no longer: past it the mark is still tried, and a press then marks again.
+test("Mark read lets go at the mark's write deadline and marks again", async () => {
+  const mark = answerThreadReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
+  );
+  mockCommentReads();
+  const client = seeded([]);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByTestId("inbox-thread-comment");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Mark read" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([mark]);
+    await heldUntilLate(user, button, {
+      label: "Thread marked read",
+      name: "Mark read",
+      queryClient: client,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent(), "a press past the deadline marks again").toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
   }
 });
 

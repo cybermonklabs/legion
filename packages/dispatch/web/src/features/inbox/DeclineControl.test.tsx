@@ -20,6 +20,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { issueAsk } from "./inbox-fixture";
+import { AskDeclineWritesContext, useOutstandingAnswerWrites } from "./outstanding-answers";
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -159,18 +160,32 @@ function renderCard(
   return { queryClient, view };
 }
 
-test("Decline to answer lets go at the decline write deadline and sends again", async () => {
+/** An Inbox's declines around `children`, as the Inbox provides them: a card under it makes its
+ *  decline through the Inbox's write of its ask. */
+function InboxDeclines({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <AskDeclineWritesContext value={useOutstandingAnswerWrites()}>
+      {children}
+    </AskDeclineWritesContext>
+  );
+}
+
+/** Declines an open question on its card, drawn inside an Inbox's declines where `inbox` says
+ *  so, the decline never answering, and checks the dialog and its opener are held until the
+ *  write's deadline and no longer, and that a press then declines again. */
+async function declineLetsGo(inbox: boolean): Promise<void> {
   const ask = openAsk();
   const decline = spyOn(api, "declineAsk").mockRejectedValue(
     new NetworkError("/api/v1/asks/ask-1/decline", new TypeError("Failed to fetch"))
   );
-  const { queryClient, view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
-  const card = within(view.container);
+  const card = <AskCard ask={ask} initialThread={thread(ask)} />;
+  const { queryClient, view } = renderCard(inbox ? <InboxDeclines>{card}</InboxDeclines> : card);
+  const drawn = within(view.container);
   try {
     const prepare = userEvent.setup();
-    const opener = await card.findByRole("button", { name: "Decline to answer" });
+    const opener = await drawn.findByRole("button", { name: "Decline to answer" });
     await prepare.click(opener);
-    const dialog = within(card.getByRole("dialog", { name: "Decline to answer" }));
+    const dialog = within(drawn.getByRole("dialog", { name: "Decline to answer" }));
     const button = dialog.getByRole<HTMLButtonElement>("button", { name: "Decline to answer" });
     const note = dialog.getByLabelText<HTMLTextAreaElement>("Note (optional)");
     const cancel = dialog.getByRole("button", { name: "Cancel" });
@@ -202,7 +217,15 @@ test("Decline to answer lets go at the decline write deadline and sends again", 
     queryClient.clear();
     decline.mockRestore();
   }
-});
+}
+
+test("Decline to answer lets go at the decline write deadline and sends again", () =>
+  declineLetsGo(false));
+
+// Inside an Inbox the decline is the Inbox's write of the ask, which holds the dialog as the
+// card's own does: until its deadline and no longer.
+test("Decline to answer in an Inbox lets go at the decline write deadline and sends again", () =>
+  declineLetsGo(true));
 
 /** The sheet under the dialog, which a click anywhere on closes it. It is the dialog's own, not
  *  a card's: nothing else is drawn across the whole viewport. */

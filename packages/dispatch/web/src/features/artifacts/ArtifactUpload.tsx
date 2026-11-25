@@ -6,6 +6,7 @@ import {
   type DragEvent,
   type ReactNode,
   type RefObject,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -42,6 +43,7 @@ import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/rou
 import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { endedStopped, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
@@ -283,8 +285,13 @@ export interface DraftUpload<Draft = void> {
   /** Uploads the files a drop holds to `owner`, in place of the drop, and adds their text to
    *  `draft`. */
   drop(event: DragEvent<HTMLElement>, owner: ArtifactOwner, draft: Draft): void;
-  /** Uploads still out. */
+  /** Uploads still out, for what only says so ("Uploading file…"). */
   pending: number;
+  /** Uploads still out within their deadline (`KeyedWriteResult.lateOf`): what a host holds a
+   *  send over, since a send then would go without the file. An upload past it is still tried,
+   *  and its text still joins the draft once it lands, but it holds nothing, so one that never
+   *  answers holds no send for good. */
+  holding: number;
   error: unknown;
   /** The method of the newest upload's request where the reader stopped it
    *  (`KeyedWriteResult.method`). */
@@ -309,6 +316,15 @@ export interface DraftUpload<Draft = void> {
   retry(): void;
 }
 
+/** One press of a draft's upload: the file, the owner it goes to, the draft its text joins, and
+ *  the base read for it before the press was made (`useDraftUpload`). */
+interface DraftPress<Draft> {
+  readonly base: UploadBase;
+  readonly draft: Draft;
+  readonly file: File;
+  readonly owner: ArtifactOwner;
+}
+
 /**
  * The one upload behind a draft's field - a composer's, an ask's answer, a reply under an ask:
  * every file pasted or dropped into it uploads to the owner the paste or drop named, and once the
@@ -328,14 +344,18 @@ export function useDraftUpload<Draft = void>(
 ): DraftUpload<Draft> {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(0);
+  // The presses whose upload is out, by their variables, which `lateOf` reads: `pending` less
+  // those that are late is what a host holds over (`holding`).
+  const out = useRef(new Set<DraftPress<Draft>>());
   const retryGuard = useSubmitGuard();
   // Each file is one write under a key of its own, its refusal shown here beside the draft, and
   // its file kept across a reload with it.
   const upload = useKeyedWrite<
     { file: File; owner: ArtifactOwner; result: UploadResult },
-    { base: UploadBase; draft: Draft; file: File; owner: ArtifactOwner }
+    DraftPress<Draft>
   >({
     method: "POST",
+    readsLate: true,
     write: async ({ base, file, owner }, bounds) => ({
       file,
       owner,
@@ -350,7 +370,8 @@ export function useDraftUpload<Draft = void>(
       void refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result), draft);
     },
-    onSettled: () => {
+    onSettled: (_landed, _error, press) => {
+      out.current.delete(press);
       setPending((count) => count - 1);
       retryGuard.release();
     },
@@ -367,7 +388,9 @@ export function useDraftUpload<Draft = void>(
   ): Promise<void> => {
     for (const file of files) {
       setPending((count) => count + 1);
-      upload.mutate({ base: await captureUploadBase(owner, file), draft, file, owner });
+      const press = { base: await captureUploadBase(owner, file), draft, file, owner };
+      out.current.add(press);
+      upload.mutate(press);
     }
   };
   const receive = (
@@ -388,6 +411,7 @@ export function useDraftUpload<Draft = void>(
     drop: (event, owner, draft) => receive(event.dataTransfer.files, owner, draft, event),
     error: upload.error,
     isError: upload.isError,
+    holding: pending - [...out.current].filter(upload.lateOf).length,
     isPending: upload.isPending,
     madeUnanswered:
       upload.unanswered === undefined ? null : upload.unanswered.variables.file.name || "the file",
@@ -415,6 +439,7 @@ export function useDraftUpload<Draft = void>(
         // The very same press, base and all: nothing is read for it, so the write counts as
         // pending from here, as `send` counts one of its own.
         setPending((count) => count + 1);
+        out.current.add(stopped.variables);
         upload.again(stopped);
       });
     },
@@ -475,6 +500,10 @@ export interface ArtifactUpload {
   dropTarget: ArtifactDropTarget;
   error: unknown;
   fileInputRef: RefObject<HTMLInputElement | null>;
+  /** Whether Upload and Cancel are held: the upload is out within its deadline. Past it
+   *  (`KeyedWriteResult.late`) they are let go, and a press of Upload sends nothing while that
+   *  upload is still out (`stillUploading`). */
+  held: boolean;
   isError: boolean;
   isPending: boolean;
   /** The name of the last file Dispatch stored with no answer to give for it; null otherwise. */
@@ -489,6 +518,10 @@ export interface ArtifactUpload {
   /** The file the newest press sent, which the refusal on screen is about; undefined before any
    *  press. Upload makes that press again while it is the staged file (`confirm`). */
   refusedFile: File | undefined;
+  /** Whether a press of Upload sent nothing because the newest upload is still out
+   *  (`useOneCreateOut`): the row says so beside the control until that upload lands or
+   *  fails. */
+  stillUploading: boolean;
   selectFile(event: ChangeEvent<HTMLInputElement>): void;
   setSummary(value: string): void;
   /** What the summary field shows: the words typed into it, or, while a stopped press of the
@@ -543,6 +576,7 @@ export function useArtifactUpload(
   const pressGuard = useSubmitGuard();
   const upload = useKeyedWrite<UploadResult, UploadPress>({
     method: "POST",
+    readsLate: true,
     write: ({ base, file, name, summary }, bounds) =>
       uploadFile(owner, file, { base, name, summary }, bounds),
     file: ({ file }) => file,
@@ -560,6 +594,13 @@ export function useArtifactUpload(
       }
     },
   });
+  // Past the upload's deadline Upload and Cancel are let go, and so is the guard; a press of
+  // Upload then sends nothing while the upload is still out (`oneUpload`), since a second press
+  // of another file would be a second upload beside it.
+  useEffect(() => {
+    if (upload.late) pressGuard.release();
+  }, [pressGuard, upload.late]);
+  const oneUpload = useOneCreateOut(upload);
   // While a stopped press of the staged file is held, the summary field shows the summary that
   // press sent and takes no edit, and keeps those words once Upload makes the press again: the
   // press goes as it stands and its landing clears the field, so words typed meanwhile would be
@@ -597,7 +638,7 @@ export function useArtifactUpload(
     },
     confirm: () => {
       const file = pendingFile;
-      if (file === null) {
+      if (file === null || oneUpload.refuse()) {
         return;
       }
       pressGuard.guard(() => {
@@ -636,6 +677,7 @@ export function useArtifactUpload(
     },
     error: upload.error,
     fileInputRef,
+    held: upload.isPending && !upload.late,
     isError: upload.isError,
     isPending: upload.isPending,
     madeUnanswered:
@@ -650,6 +692,7 @@ export function useArtifactUpload(
     pendingFile,
     refusal,
     refusedFile: upload.variables?.file,
+    stillUploading: oneUpload.refused,
     selectFile: (event) => {
       receive(event.target.files?.[0]);
       event.target.value = "";
@@ -664,7 +707,7 @@ export function useArtifactUpload(
  *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
  *  host already shows the refusal on - the one line a closed issue's strip shows for every control
  *  in it; without it the row shows its own. The two presses are held while the upload is out
- *  (`heldPress`). */
+ *  within its deadline (`heldPress`, `ArtifactUpload.held`). */
 export function ArtifactUploadRow({
   refusalShownBy,
   upload,
@@ -711,20 +754,26 @@ export function ArtifactUploadRow({
           />
           <button
             className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            {...heldPress(upload.isPending, upload.confirm)}
+            {...heldPress(upload.held, upload.confirm)}
             type="button"
           >
             Upload
           </button>
           <button
             className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            {...heldPress(upload.isPending, upload.cancel)}
+            {...heldPress(upload.held, upload.cancel)}
             type="button"
           >
             Cancel
           </button>
         </>
       )}
+      {upload.stillUploading ? (
+        <p className={`w-full text-sm ${textMutedOnSurface}`} role="status">
+          Upload sent nothing: {upload.refusedFile?.name || "the file"} is still being uploaded. It
+          shows here once Dispatch stores it. If it fails, you can press Upload again.
+        </p>
+      ) : null}
       <ArtifactUploadStatus upload={upload} />
     </div>
   );

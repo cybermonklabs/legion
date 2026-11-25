@@ -231,7 +231,9 @@ export function SnoozeControl({
   // A snooze out over this row: its own pick's write, whose variable is a moment where an
   // un-snooze's is null, or the bar's.
   const snoozing = typeof write.pendingUntil === "string" || bulkSnoozing;
-  const held = useHeldThroughAnswer(write.pending || bulkSnoozing);
+  // The row's own write holds the controls until its deadline, past which a pick or Un-snooze
+  // sends a save of its own (`late`); the bar's write holds them until it is decided.
+  const held = useHeldThroughAnswer((write.pending && !write.late) || bulkSnoozing);
   const pickHeld = useHeldThroughAnswer(snoozing);
   const unsnoozeHeld = useHeldThroughAnswer(write.pendingUntil === null);
   /** Begins the hand-off a snooze press makes, at the press, before its optimistic write moves

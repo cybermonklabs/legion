@@ -40,8 +40,9 @@ import { ThreadTitle } from "./ThreadTitle";
  * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one. Mark read is held while its write is out (`heldPress`) and through
- * the re-read it starts, up to the read's request deadline (`useReadBound`).
+ * is no place to open one. Mark read is held while its write is out within its deadline
+ * (`heldPress`, `late`) and through the re-read it starts, up to the read's request deadline
+ * (`useReadBound`).
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
@@ -53,6 +54,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
     label: () => "Thread marked read",
     // Either mark is a `PUT`.
     method: "PUT",
+    readsLate: true,
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.
@@ -102,7 +104,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
           {...inboxActionMark("inbox.mark-read")}
-          {...heldPress(markRead.isPending, () => markRead.mutate(thread))}
+          {...heldPress(markRead.isPending && !markRead.late, () => markRead.mutate(thread))}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

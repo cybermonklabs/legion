@@ -1,6 +1,7 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a paste below carries a file, which user-event has no form for
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -8,7 +9,9 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../../__tests__/correction-feed";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
@@ -17,6 +20,7 @@ import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskReplyComposer, AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
+import { AskReplyWritesContext, useOutstandingAnswerWrites } from "./outstanding-answers";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -183,6 +187,114 @@ test("Retry lets go at the reply write deadline but cannot send while another co
     realClock();
     view.unmount();
     client.clear();
+    create.mockRestore();
+  }
+});
+
+/** An Inbox's replies around `children`, as the Inbox provides them (`useOutstandingAnswerWrites`):
+ *  a composer under it makes its press through the Inbox's write of its ask. */
+function InboxReplies({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <AskReplyWritesContext value={useOutstandingAnswerWrites()}>{children}</AskReplyWritesContext>
+  );
+}
+
+// Inside an Inbox the reply is the Inbox's write of the ask, which holds Reply and the box as the
+// composer's own does: until its deadline and no longer. Past it a press while the reply is still
+// out posts nothing and says so, and once the reply fails a press posts one.
+test("an Inbox's Reply lets go at the reply write deadline without posting twice", async () => {
+  const create = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <InboxReplies>
+        <AskReplyComposer ask={answeredAsk} createReply={create} />
+      </InboxReplies>
+    </QueryClientProvider>
+  );
+  try {
+    const prepare = userEvent.setup();
+    const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+    await prepare.click(box);
+    await prepare.paste("The rollout is on Friday.");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Reply" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([create]);
+    await heldUntilLate(user, button, {
+      label: "Reply on “Should this ship?”",
+      name: "Reply",
+      queryClient: client,
+      sent,
+    });
+    expect(box, "the box, past the deadline").not.toHaveAttribute("aria-disabled");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent(), "a press while the reply is out posts nothing").toBe(1);
+    const stillSending = /Reply sent nothing:.*reply is still being sent/;
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+    create.mockRejectedValue(new ApiError(403, { error: "Cannot reply" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent(), "a press once the reply failed posts one").toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
+    create.mockRestore();
+  }
+});
+
+// A picture still uploading is not in the draft yet, so Reply waits for it - but only until the
+// upload's deadline: an upload that never answers is still tried, its text joins the draft if it
+// lands, and Reply posts what the box holds.
+test("Reply lets go of a pasted picture's upload at its deadline and posts", async () => {
+  const upload = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/artifacts", new TypeError("Failed to fetch"))
+  );
+  const create = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(403, { error: "Cannot reply" })
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <AskReplyComposer ask={answeredAsk} createReply={create} uploadOwner={{ issue: "CORE-1" }} />
+    </QueryClientProvider>
+  );
+  try {
+    const prepare = userEvent.setup();
+    const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+    await prepare.click(box);
+    await prepare.paste("The rollout is on Friday.");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Reply" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(box, { clipboardData: { files: [file] } });
+    await untilAttempted(upload, 1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(button, "Reply"), "Reply, a second short of the deadline").toBe(true);
+    await user.click(button);
+    expect(create, "a press while the upload holds Reply").not.toHaveBeenCalled();
+
+    await tick(1_000);
+    expect(screen.getByText("Uploading file…"), "the upload, past its deadline").toBeVisible();
+    expect(heldNotDisabled(button, "Reply"), "Reply, past the upload's deadline").toBe(false);
+    await user.click(button);
+    await tick(1_000);
+    expect(pressesOf([create]), "a press past the upload's deadline posts the reply").toBe(1);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
+    upload.mockRestore();
     create.mockRestore();
   }
 });

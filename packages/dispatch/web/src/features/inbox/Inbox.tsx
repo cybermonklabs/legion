@@ -1972,6 +1972,7 @@ function InboxBody({
     <RowDismissContext
       value={{
         dismiss: dismissFromRow,
+        held: dismissWrite.held,
         pending: dismissWrite.pending,
         show,
       }}

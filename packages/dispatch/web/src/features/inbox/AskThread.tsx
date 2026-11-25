@@ -245,13 +245,13 @@ export function AskReplyComposer({
   // composer for the ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
   const pendingPress = usePendingKeyedPress(mutationKey);
-  const oneReply = useOneCreateOut(pendingPress);
   // A file's text joins the draft of the ask it was pasted or dropped under, which its press
   // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
   const upload = useDraftUpload((text: string, askId: string) =>
     setReplyDraft(askId, (current) => appendToDraft(current, text))
   );
-  const uploading = upload.pending > 0;
+  // An upload holds Reply only within its deadline (`DraftUpload.holding`).
+  const uploading = upload.holding > 0;
   // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
   // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
@@ -287,15 +287,17 @@ export function AskReplyComposer({
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
   const sending = inbox === undefined ? pendingPress.isPending : inbox.isPending;
-  const held = useHeldThroughAnswer(
-    sending && !(inbox === undefined && (own.late || pendingPress.late))
-  );
+  const late = inbox === undefined ? own.late || pendingPress.late : inbox.late;
+  const held = useHeldThroughAnswer(sending && !late);
+  // One reply out at a time, the Inbox's included: past the deadline a press while the reply is
+  // still out sends nothing and says so.
+  const oneReply = useOneCreateOut(inbox ?? pendingPress);
   // Reply is held while the send is out, while nothing is typed, and while a picture is still
   // uploading: a reply sent then would go without it.
   const replyHeld = held || body.trim() === "" || uploading;
   const refuseReply = () =>
-    inbox === undefined &&
-    (oneReply.refuse() || queryClient.isMutating({ exact: true, mutationKey }) > 0);
+    oneReply.refuse() ||
+    (inbox === undefined && queryClient.isMutating({ exact: true, mutationKey }) > 0);
 
   const submitReply = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -343,7 +345,7 @@ export function AskReplyComposer({
       >
         {sending ? "Replying…" : "Reply"}
       </button>
-      {inbox === undefined && oneReply.refused ? (
+      {oneReply.refused ? (
         <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
           Reply sent nothing: your reply is still being sent. It shows in the thread once Dispatch
           posts it. If it fails, you can press Reply again.

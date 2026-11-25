@@ -15,7 +15,11 @@ export interface AskHandOnWrite {
   error: string | undefined;
   /** True after a hand-on failed until the next attempt starts. */
   failed: boolean;
+  /** True while the hand-on is out, until Dispatch decides it or the reader stops it. */
   pending: boolean;
+  /** Whether the hand-on is out past its deadline (`KeyedWriteResult.late`): still `pending`,
+   *  but the control it holds is let go. */
+  late: boolean;
   /** Repeats the failed hand-on. */
   retry: () => void;
   /** Hands the ask to `askedOf`, the email of somebody who has signed in. */
@@ -125,7 +129,8 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     // A hand-on the reader stopped may have been made, and Retry makes it again (`retry`).
     error: stoppedNote(mutation, STOPPED_HAND_ON, "made") ?? mutation.error?.message,
     failed: mutation.isError,
-    pending: mutation.isPending && !mutation.late,
+    late: mutation.late,
+    pending: mutation.isPending,
     retry: mutation.retry,
     submit: (askedOf) => mutation.mutate({ ask, askedOf }),
   };
@@ -166,6 +171,7 @@ export function useAskHandOnWrites(): AskHandOnWrites {
                   "made"
                 ) ?? entry.failure.message),
           failed: entry?.state === "failed",
+          late: writes.late.has(ask.id),
           pending: entry?.state === "out",
           retry: () => writes.retry(ask.id),
           submit: (askedOf) => writes.press({ ask, askedOf }),

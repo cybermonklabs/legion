@@ -22,7 +22,7 @@
 
 import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { inboxDismissRequest } from "../../api/client";
 import {
@@ -234,6 +234,10 @@ export interface InboxDismiss {
   /** The row ids whose own press is still out, so each control says what it is doing. Empty for
    *  a press made under the narrowing, which names no row. */
   readonly pending: ReadonlySet<string>;
+  /** The row ids whose own press is out within its deadline, which hold the row's control. Past
+   *  it (`KeyedWriteResult.lateOf`) the control is let go: the press is still tried, and one made
+   *  then goes behind it on the dismiss line. */
+  readonly held: ReadonlySet<string>;
   /** What the reader is told about the last refused press, until the next one starts. */
   readonly refusal: string | undefined;
   /** Dismisses, or restores, the rows one press names. */
@@ -257,6 +261,9 @@ export function useInboxDismiss({
 } = {}): InboxDismiss {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  // The presses out that name their rows, from the press until Dispatch decides each: the rows
+  // whose press is not late are `held`.
+  const out = useRef(new Set<InboxDismissInput>());
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const inboxKey = inboxThreadsQuery().queryKey;
   const dismissedKey = dismissedThreadsQuery().queryKey;
@@ -279,6 +286,7 @@ export function useInboxDismiss({
     // rows it took out still in.
     holds: () => ({ endsOn: inboxThreadsWritten, keys: [inboxKey, dismissedKey, countKey] }),
     inline: true,
+    readsLate: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
       // What the press did not do, which is what the reader is told. A press under the
@@ -361,6 +369,7 @@ export function useInboxDismiss({
     onSettled: (_data, _error, input, context) => {
       if ("rows" in input) {
         const ids = input.rows.map(({ id }) => id);
+        out.current.delete(input);
         live(ids, false);
         onSettled?.(ids);
         return;
@@ -374,11 +383,17 @@ export function useInboxDismiss({
   });
 
   return {
+    held: new Set(
+      [...out.current]
+        .filter((input) => !write.lateOf(input))
+        .flatMap((input) => ("rows" in input ? input.rows.map(({ id }) => id) : []))
+    ),
     pending,
     refusal,
     submit: (input) => {
       if ("rows" in input) {
         if (input.rows.length === 0) return;
+        out.current.add(input);
         live(
           input.rows.map(({ id }) => id),
           true

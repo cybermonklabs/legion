@@ -391,7 +391,8 @@ export function AskCard({
     setAnswerTextOf(askId, (current) => appendToDraft(current, text));
     if (askId === ask.id) setQuestionChoice(false);
   });
-  const uploading = upload.pending > 0;
+  // An upload holds Answer and Ask back only within its deadline (`DraftUpload.holding`).
+  const uploading = upload.holding > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant

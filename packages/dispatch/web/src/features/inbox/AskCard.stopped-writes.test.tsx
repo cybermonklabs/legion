@@ -2,6 +2,7 @@ import { beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
@@ -22,6 +23,12 @@ import {
   renderCard,
   thread,
 } from "./ask-card-fixture";
+import {
+  AskAnswerWritesContext,
+  AskClarificationWritesContext,
+  useOutstandingAnswerWrites,
+} from "./outstanding-answers";
+import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 
 // A write the reader stopped on the card: a hand-on, an answer, a question back and a reply may
 // each have been made, so the card says what its Retry does rather than that the write failed;
@@ -78,12 +85,33 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
  *  stop. */
 const dropped = (path: string) => new NetworkError(path, new TypeError("Failed to fetch"));
 
-test.each([
-  "Answer",
-  "Ask back",
-  "Ask back instead",
-  "Answer with it anyway",
-] as const)("%s lets go at the question write deadline", async (name) => {
+/** An Inbox's hand-ons, answers and questions back around `children`, as the Inbox provides
+ *  them: a card under it makes each of those presses through the Inbox's write of its ask. */
+function InboxWrites({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <AskHandOnWritesContext value={useAskHandOnWrites()}>
+      <AskAnswerWritesContext value={useOutstandingAnswerWrites()}>
+        <AskClarificationWritesContext value={useOutstandingAnswerWrites()}>
+          {children}
+        </AskClarificationWritesContext>
+      </AskAnswerWritesContext>
+    </AskHandOnWritesContext>
+  );
+}
+
+/** `card`, inside an Inbox's writes where `inbox` says so. */
+function drawn(card: ReactNode, inbox: boolean): ReactNode {
+  return inbox ? <InboxWrites>{card}</InboxWrites> : card;
+}
+
+/** Presses `name` on an open question's card, drawn inside an Inbox's writes where `inbox` says
+ *  so, its write never answering, and checks the hold that follows ends at the write's
+ *  deadline: a press then answers again, or, for a question back, posts nothing while the first
+ *  is out and one once it failed. */
+async function questionWriteLetsGo(
+  name: "Answer" | "Ask back" | "Ask back instead" | "Answer with it anyway",
+  inbox: boolean
+): Promise<void> {
   const open = answeredAsk({ answer: null, state: "open" });
   const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
     Promise.reject<Ask>(dropped("/api/v1/asks/ask-1/answer"))
@@ -92,7 +120,7 @@ test.each([
     dropped("/api/v1/issues/CORE-1/comments")
   );
   const { queryClient, view } = renderCard(
-    <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
+    drawn(<AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />, inbox)
   );
   try {
     const card = within(view.container);
@@ -140,14 +168,35 @@ test.each([
     queryClient.clear();
     comment.mockRestore();
   }
-});
+}
 
-test("Hand on lets go at the question write deadline and sends another pick", async () => {
+test.each([
+  "Answer",
+  "Ask back",
+  "Ask back instead",
+  "Answer with it anyway",
+] as const)("%s lets go at the question write deadline", (name) =>
+  questionWriteLetsGo(name, false));
+
+// Inside an Inbox the answer and the question back are the Inbox's writes of the ask, which hold
+// the card as its own writes do: until their deadline and no longer.
+test.each([
+  "Answer",
+  "Ask back",
+] as const)("%s in an Inbox lets go at the question write deadline", (name) =>
+  questionWriteLetsGo(name, true));
+
+/** Picks bob in an open question's hand-on list, drawn inside an Inbox's writes where `inbox`
+ *  says so, the hand-on never answering, and checks the trigger is held until the write's
+ *  deadline and no longer, and that a pick then sends another hand-on. */
+async function handOnLetsGo(inbox: boolean): Promise<void> {
   const open = answeredAsk({ answer: null, state: "open" });
   const hand = spyOn(api, "handAskTo").mockRejectedValue(dropped("/api/v1/asks/ask-1/asked-of"));
   const users = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }, { login: "bob" }]);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
-  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  const { queryClient, view } = renderCard(
+    drawn(<AskCard ask={open} initialThread={thread(open, [])} />, inbox)
+  );
   try {
     const list = await openList(userEvent.setup(), "Hand this question to");
     const option = await within(list).findByRole("option", { name: "bob" });
@@ -175,7 +224,15 @@ test("Hand on lets go at the question write deadline and sends another pick", as
     users.mockRestore();
     getAsk.mockRestore();
   }
-});
+}
+
+test("Hand on lets go at the question write deadline and sends another pick", () =>
+  handOnLetsGo(false));
+
+// Inside an Inbox the hand-on is the Inbox's write of the ask, which holds the trigger as the
+// card's own does: until its deadline and no longer.
+test("Hand on in an Inbox lets go at the question write deadline and sends another pick", () =>
+  handOnLetsGo(true));
 
 /** An open question on its card over the held clock, its answer write `answerAsk`: the reader
  *  picks Ship and presses Answer. */
@@ -594,5 +651,65 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     realClock();
     view.unmount();
     uploadArtifact.mockRestore();
+  }
+});
+
+// A picture still uploading is not in the answer yet, so Answer and Ask back wait for it - but
+// only until the upload's deadline: an upload that never answers is still tried, its text joins
+// the answer if it lands, and a press sends what the card holds.
+test.each([
+  "Answer",
+  "Ask back",
+] as const)("%s lets go of a pasted picture's upload at its deadline and sends", async (name) => {
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/artifacts")
+  );
+  const open = answeredAsk({ answer: null, state: "open" });
+  const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+    Promise.reject<Ask>(new ApiError(403, { error: "Cannot answer" }))
+  );
+  const comment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(403, { error: "Cannot post the question" })
+  );
+  const { queryClient, view } = renderCard(
+    <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
+  );
+  try {
+    const card = within(view.container);
+    const prepare = userEvent.setup();
+    const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
+    if (name === "Answer") {
+      await prepare.click(await card.findByRole("radio", { name: "Ship" }));
+    } else {
+      await prepare.click(field);
+      await prepare.paste("Ship what, exactly?");
+    }
+    const button = card.getByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await untilAttempted(uploadArtifact, 1);
+    const status = () =>
+      writesOf(queryClient)
+        .rows()
+        .find((row) => row.label === "Upload of shot.png")?.status;
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(status(), "the upload, a second short of its deadline").toBe("sending");
+    expect(button.disabled, `${name}, a second short of the upload's deadline`).toBe(true);
+
+    await tick(1_000);
+    expect(status(), "the upload, past its deadline").toBe("late");
+    expect(button.disabled, `${name}, past the upload's deadline`).toBe(false);
+    await user.click(button);
+    await tick(1_000);
+    expect(pressesOf([answer, comment]), `a press of ${name} past the deadline sends`).toBe(1);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    uploadArtifact.mockRestore();
+    comment.mockRestore();
   }
 });

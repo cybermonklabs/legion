@@ -20,7 +20,11 @@ export interface AskSnoozeWrite {
   /** The press the failed save was while `failed` holds - its ask, and the moment of a snooze or
    *  `null` for an un-snooze - which `retry` makes again; `undefined` otherwise. */
   failedPress: AskSnoozePress | undefined;
+  /** True while the newest save is out, until Dispatch decides it or the reader stops it. */
   pending: boolean;
+  /** Whether the newest save is out past its deadline (`AskWrites.late`): still `pending`, but
+   *  the controls it holds are let go. */
+  late: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
    *  the time it renders, so this - not the row's own `snoozed_until` - is what the reader
@@ -183,6 +187,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
                 ) ?? entry.failure.message),
           failed: entry?.state === "failed",
           failedPress: entry?.state === "failed" ? entry.press : undefined,
+          late: writes.late.has(askId),
           pending: entry?.state === "out",
           pendingUntil: entry?.state === "out" ? entry.press.until : undefined,
           retry: (onSettled) => {

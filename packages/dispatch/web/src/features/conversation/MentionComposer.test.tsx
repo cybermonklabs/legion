@@ -18,8 +18,9 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import type {
   Agent,
   Comment,
@@ -4307,6 +4308,59 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     await waitFor(() =>
       expect(createComment).toHaveBeenCalledWith("CORE-1", { body }, keyedAttempt)
     );
+  } finally {
+    realClock();
+    view.unmount();
+    uploadArtifact.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// The same wait ends at the upload's deadline: an upload that never answers - offline, each try
+// failing at the network - is still tried, and its text joins the draft if it lands, but Send and
+// Ctrl+Enter take the draft as it stands, and the field still says the file is uploading.
+test("a send waits for a pasted picture only until its upload's deadline", async () => {
+  jest.useFakeTimers();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/artifacts", new TypeError("Failed to fetch"))
+  );
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const user = userOnFakeClock();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Look");
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(field, { clipboardData: { files: [file] } });
+    await untilAttempted(uploadArtifact, 1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    const send = screen.getByRole("button", { name: "Uploading file…" });
+    expect(send, "Send, a second short of the upload's deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+
+    await tick(1_000);
+    expect(screen.getByRole("status"), "the upload, past its deadline").toHaveTextContent(
+      "Uploading file…"
+    );
+    expect(
+      screen.getByRole("button", { name: "Send" }),
+      "Send, past the upload's deadline"
+    ).not.toHaveAttribute("aria-disabled");
+    field.focus();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    // A send's mutation function runs a task after the press (`pressSend`).
+    await tick(20);
+    expect(
+      createComment,
+      "Ctrl+Enter past the upload's deadline sends the draft"
+    ).toHaveBeenCalledWith("CORE-1", { body: "Look" }, keyedAttempt);
   } finally {
     realClock();
     view.unmount();

@@ -16,7 +16,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -41,6 +42,8 @@ import type {
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
+import { DismissControl, RowDismissContext } from "./DismissControl";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
 import {
@@ -192,6 +195,71 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(dismissRefusalText(1, false, "not found")).toBe("Could not dismiss 1 thread: not found.");
   // Back in the list, in the place it held.
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
+});
+
+/** `thread`'s Dismiss, drawn by the Inbox's dismiss write as a row's head draws it, whether or
+ *  not the read still lists the row. */
+function DismissOf({ thread }: { thread: MyReplyRow }): ReactNode {
+  const write = useInboxDismiss();
+  return (
+    <RowDismissContext
+      value={{
+        dismiss: (row) => write.submit({ rows: [row] }),
+        held: write.held,
+        pending: write.pending,
+        show: "inbox",
+      }}
+    >
+      <DismissControl shown thread={thread} />
+    </RowDismissContext>
+  );
+}
+
+// A dismiss that never answers - offline, each try failing at the network - holds the row's
+// Dismiss until its deadline and no longer: past it the dismiss is still tried, and the control
+// still says so, and a press then dismisses again, behind it on the dismiss line.
+test("Dismiss lets go at the dismiss write deadline and dismisses again", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const thread = replyRow("c1");
+  const client = seeded([thread]);
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <DismissOf thread={thread} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const button = document.querySelector<HTMLButtonElement>('[data-inbox-dismiss="reply:c1"]');
+  if (button === null) throw new Error("no Dismiss is drawn for reply:c1");
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await heldUntilLate(user, button, {
+      label: "Threads dismissed",
+      name: "Dismiss",
+      queryClient: client,
+      sent: () => pressesOf([dismissed]),
+    });
+    expect(button, "Dismiss, past the deadline").toHaveTextContent("Dismissing…");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(
+      writesOf(client)
+        .rows()
+        .filter((row) => row.label === "Threads dismissed")
+        .map((row) => row.status),
+      "a press past the deadline dismisses again, behind the late one"
+    ).toEqual(["late", "queued"]);
+    expect(button, "Dismiss, behind the late dismiss").not.toHaveAttribute("aria-disabled");
+  } finally {
+    realClock();
+    client.clear();
+  }
 });
 
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {

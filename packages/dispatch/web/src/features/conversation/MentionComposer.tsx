@@ -305,13 +305,14 @@ function mentionQuery(
 }
 
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
- *  empty draft is) and no save or upload it waits on is in flight. */
+ *  empty draft is) and no save it waits on is in flight, nor an upload within its deadline
+ *  (`DraftUpload.holding`). */
 export function canSubmitComposer(
   refusal: string | undefined,
   isSaving: boolean,
-  pendingUploads: number
+  holdingUploads: number
 ): boolean {
-  return refusal === undefined && !isSaving && pendingUploads === 0;
+  return refusal === undefined && !isSaving && holdingUploads === 0;
 }
 
 /**
@@ -1205,7 +1206,7 @@ export function MentionComposer({
       (offered === undefined ? undefined : "Use your draft or discard it before you send.") ??
       draftRefusal(kind, body, replacement, outbound));
   const footId = useId();
-  const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
+  const canSubmit = canSubmitComposer(submitReason, sending, upload.holding);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft (`stopHeldComposerInput`,
@@ -1490,7 +1491,7 @@ export function MentionComposer({
               setReferencePickerOpen(true);
               return;
             }
-            submitOnModifiedEnter(event, { disabled: upload.pending > 0 });
+            submitOnModifiedEnter(event, { disabled: upload.holding > 0 });
           }}
           onPaste={homes.paste}
           // Read-only while a send holds it, and while an edit or a draft waits beside the field,
@@ -1786,8 +1787,10 @@ export function MentionComposer({
           ) : null}
         </div>
       )}
+      {/* An upload holds Send only within its deadline (`DraftUpload.holding`); past it the
+          status under the field still says it is uploading. */}
       <RefusableButton
-        busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
+        busy={sending ? "Sending…" : upload.holding > 0 ? "Uploading file…" : undefined}
         refusal={submitReason ?? null}
         refusalShownBy={footId}
         type="submit"

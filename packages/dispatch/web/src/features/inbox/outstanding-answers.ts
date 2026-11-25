@@ -49,8 +49,9 @@ export interface OutstandingAnswerWrite<TVariables> {
   readonly error: Error | null;
   readonly isError: boolean;
   readonly isPending: boolean;
-  /** Whether the surface's own write is still out past its deadline. */
-  readonly late?: boolean;
+  /** Whether the newest press is out past its deadline (`KeyedWriteResult.late`): the surface
+   *  lets go of the controls it holds while the press is out. */
+  readonly late: boolean;
   readonly isSuccess: boolean;
   /** The method of the newest press's request where the reader stopped it, else undefined. */
   readonly method: WriteMethod | undefined;
@@ -210,6 +211,7 @@ export function useOutstandingAnswerWrites(): OutstandingAnswerWrites {
           error: failure ?? null,
           isError: failure !== undefined,
           isPending: entry?.state === "out",
+          late: writes.late.has(askId),
           isSuccess: entry?.state === "landed",
           method:
             failure instanceof SendStoppedError && entry !== undefined

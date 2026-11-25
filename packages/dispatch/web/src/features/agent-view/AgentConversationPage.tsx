@@ -326,6 +326,7 @@ export function AgentConversationPage({
   const queryClient = useQueryClient();
   const switchWrite = useKeyedWrite<Message, { request: SwitchRequest; session: string }>({
     inline: true,
+    readsLate: true,
     label: ({ request }) =>
       request.kind === "model"
         ? `Switch ${label}'s model to ${request.value}`
@@ -359,10 +360,16 @@ export function AgentConversationPage({
   );
   const switchRefusal =
     switchWrite.isError && switchWrite.variables?.session === sessionId ? switchWrite.error : null;
-  // A switch holds only the session it went to, from the press until the session answers.
+  // A switch holds only the session it went to, from the press until the session answers. Its
+  // send is a keyed write, tried until Dispatch decides it: past that write's deadline (`late`)
+  // the switch holds the pickers and Send no longer, so a send that never answers locks neither,
+  // and a pick or a message made then goes behind it in the session's line. The wait for the
+  // session's answer after Dispatch has the switch keeps its own deadline (`useSessionSwitch`).
+  const switchLate = switchWrite.late && switchWrite.variables?.session === sessionId;
   const switchPending =
-    sessionSwitch.pending ||
-    (switchWrite.isPending && switchWrite.variables?.session === sessionId);
+    !switchLate &&
+    (sessionSwitch.pending ||
+      (switchWrite.isPending && switchWrite.variables?.session === sessionId));
   const presence = shown === undefined ? undefined : STATUS[shown];
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.

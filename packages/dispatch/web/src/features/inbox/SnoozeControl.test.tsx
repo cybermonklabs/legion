@@ -1,15 +1,19 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { watchMoves } from "../../__tests__/laid-out-rows";
 import { answerAskSnoozes } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import type { InboxRow, IssueDetails } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { Inbox } from "./Inbox";
 import { InboxDrawer } from "./InboxDrawer";
 import {
@@ -19,6 +23,7 @@ import {
   shortRow,
   widenToReadingPane,
 } from "./inbox-fixture";
+import { SnoozeControl } from "./SnoozeControl";
 
 // dispatch://INFRA-2160, the table "Where the focus goes back, by opener": a key that opens the
 // Snooze list (`b`, `h`) or the priority list (`p`) from the Inbox hands the list the element the
@@ -283,5 +288,59 @@ test("a snooze that lands hands the focus to the next row", async () => {
     getIssue.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
+  }
+});
+
+// A row's own snooze write that never answers - offline, each try failing at the network - holds
+// Un-snooze and the list until its deadline and no longer: past it the write is still tried, and
+// a press then saves again.
+test("Un-snooze lets go at the snooze write deadline and saves again", async () => {
+  const unsnooze = spyOn(api, "unsnoozeAsk").mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <SnoozeWrites>
+            <SnoozeControl
+              askId="ask-a"
+              label="CORE-1: Which approach?"
+              snoozedUntil="2099-01-01T09:00:00Z"
+            />
+          </SnoozeWrites>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const button = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Un-snooze CORE-1: Which approach?",
+    });
+    const trigger = screen.getByRole("button", { name: /^Snooze CORE-1: Which approach\?/ });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([unsnooze]);
+    await heldUntilLate(user, button, {
+      label: "Ask brought back now",
+      name: "Un-snooze",
+      queryClient,
+      sent: () => {
+        if (sent() === 1) expect(trigger).toHaveAttribute("aria-disabled", "true");
+        return sent();
+      },
+    });
+    expect(trigger, "the list's trigger, past the deadline").not.toHaveAttribute("aria-disabled");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent(), "a press past the deadline saves again").toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    unsnooze.mockRestore();
   }
 });

@@ -105,13 +105,14 @@ function HandOnControl({
   // item being read (`RowAsideContext`).
   const aside = useContext(RowAsideContext);
   // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
-  // commit after the write's answer (`useHeldThroughAnswer`). Inside an Inbox the write's
-  // `pending` and the Inbox's hold on the row come from the same state, so the Inbox lets go of
-  // the row in the answer's own commit, while the trigger is still held: where the hand-on takes
-  // the ask out of the reader's list, that commit takes the row and this card away. A refusal
-  // lets go of the trigger the commit after its answer, with Retry beside it. While held, the
-  // list does not open.
-  const held = useHeldThroughAnswer(write.pending);
+  // commit after the write's answer (`useHeldThroughAnswer`), or until the write's deadline, past
+  // which a pick sends a hand-on of its own (`late`). Inside an Inbox the write's `pending` and
+  // the Inbox's hold on the row come from the same state, so the Inbox lets go of the row in the
+  // answer's own commit, while the trigger is still held: where the hand-on takes the ask out of
+  // the reader's list, that commit takes the row and this card away. A refusal lets go of the
+  // trigger the commit after its answer, with Retry beside it. While held, the list does not
+  // open.
+  const held = useHeldThroughAnswer(write.pending && !write.late);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The people are listed only while the list stands open, which is after the reader reached for
   // the control and they were asked for: the query keeps its people for the session, so a card
