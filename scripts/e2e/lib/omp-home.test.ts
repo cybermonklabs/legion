@@ -1,5 +1,5 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -14,11 +14,11 @@ const writeControllerProfile = scriptFunctions(join(lib, "..", "controller-start
   "write_controller_profile"
 );
 
-// sourced runs BODY in bash with lib/omp-home.sh sourced, under PATH and ENV alone.
-function sourced(body: string, env: Record<string, string> = {}) {
+// sourced runs BODY in bash with lib/omp-home.sh sourced, under PATH alone.
+function sourced(body: string) {
   const result = Bun.spawnSync(
     ["bash", "-c", `set -euo pipefail\n. ${JSON.stringify(join(lib, "omp-home.sh"))}\n${body}`],
-    { env: { PATH: process.env.PATH ?? "", ...env } }
+    { env: { PATH: process.env.PATH ?? "" } }
   );
   return { code: result.exitCode, stderr: result.stderr.toString() };
 }
@@ -38,23 +38,14 @@ describe("omp_setup_wizard_off", () => {
   });
 });
 
-// make_omp_home links DIR/.omp/natives to the natives directory the operator's own Oh My Pi
-// reads when none of PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, OMP_CONFIG_ROOT and PI_CONFIG_DIR is set
-// (getNativesDir, @oh-my-pi/pi-natives' native/natives-dir.js): $XDG_CACHE_HOME/omp/natives when
-// XDG_CACHE_HOME is set and $XDG_CACHE_HOME/omp exists, else $HOME/.omp/natives. An unset
-// XDG_CACHE_HOME is no ~/.cache to that rule, and $XDG_DATA_HOME/omp, which Oh My Pi
-// 18.18.6-sami.20261119-162325 read in its place, is nothing to it. The function's two jj calls go
-// to a stand-in that names one config file and lists no value.
-describe("make_omp_home", () => {
-  const bin = join(dir, "bin");
-  beforeAll(() => {
-    mkdirSync(bin);
-    writeFileSync(
-      join(bin, "jj"),
-      '#!/usr/bin/env bash\ncase "$*" in\n  "config path --user") echo "$HOME/.jjconfig.toml" ;;\n  "config list --user") ;;\n  *) exit 1 ;;\nesac\n',
-      { mode: 0o755 }
-    );
-  });
+// omp_natives_dir prints the natives directory the operator's own Oh My Pi reads when none of
+// PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, OMP_CONFIG_ROOT and PI_CONFIG_DIR is set (getNativesDir,
+// @oh-my-pi/pi-natives' native/natives-dir.js): $XDG_CACHE_HOME/omp/natives when XDG_CACHE_HOME is
+// set and $XDG_CACHE_HOME/omp exists, else $HOME/.omp/natives. An unset XDG_CACHE_HOME is no
+// ~/.cache to that rule, and $XDG_DATA_HOME/omp, which Oh My Pi 18.18.6-sami.20261119-162325 read in
+// its place, is nothing to it. make_omp_home and the four e2e scripts that link a home of their own
+// link .omp/natives to what it prints.
+describe("omp_natives_dir", () => {
   const cases = [
     { name: "an existing $XDG_CACHE_HOME/omp", cache: "set", made: ["cache"], to: "cache" },
     { name: "an XDG_CACHE_HOME with no omp directory", cache: "set", made: [], to: "home" },
@@ -67,7 +58,7 @@ describe("make_omp_home", () => {
     { name: "an existing $XDG_DATA_HOME/omp", cache: "unset", made: ["data"], to: "home" },
   ] as const;
   for (const [index, { name, cache, made, to }] of cases.entries()) {
-    test(`links the natives directory Oh My Pi reads for ${name}`, () => {
+    test(`names the natives directory Oh My Pi reads for ${name}`, () => {
       const home = join(dir, `home-${index}`);
       const places = {
         cache: join(home, "xdg-cache", "omp"),
@@ -75,17 +66,27 @@ describe("make_omp_home", () => {
         data: join(home, "xdg-data", "omp"),
       };
       for (const place of made) mkdirSync(places[place], { recursive: true });
-      const run = join(home, "run");
-      expect(
-        sourced(`make_omp_home ${JSON.stringify(run)}`, {
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-          HOME: home,
-          XDG_DATA_HOME: join(home, "xdg-data"),
-          ...(cache === "set" ? { XDG_CACHE_HOME: join(home, "xdg-cache") } : {}),
-        })
-      ).toEqual({ code: 0, stderr: "" });
-      expect(readlinkSync(join(run, ".omp", "natives"))).toBe(
-        to === "cache" ? join(places.cache, "natives") : join(home, ".omp", "natives")
+      const result = Bun.spawnSync(
+        [
+          "bash",
+          "-c",
+          `set -euo pipefail\n. ${JSON.stringify(join(lib, "omp-home.sh"))}\nomp_natives_dir`,
+        ],
+        {
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: home,
+            XDG_DATA_HOME: join(home, "xdg-data"),
+            ...(cache === "set" ? { XDG_CACHE_HOME: join(home, "xdg-cache") } : {}),
+          },
+        }
+      );
+      expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
+        code: 0,
+        stderr: "",
+      });
+      expect(result.stdout.toString()).toBe(
+        `${to === "cache" ? join(places.cache, "natives") : join(home, ".omp", "natives")}\n`
       );
     });
   }

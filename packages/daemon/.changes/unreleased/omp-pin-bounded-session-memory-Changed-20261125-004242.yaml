@@ -11,7 +11,9 @@ body: |-
     row, before it swaps them in: a reader that reads one session by its exact path gets the same
     bodies as before. A rate limit no longer moves a session whose context is larger than
     `retry.rateLimitFallbackMaxContextTokens` (100,000 tokens by default) down its fallback chain,
-    so such a turn ends with the 429, and the daemon sends its task again. From
+    so such a turn ends with the 429. When a prompt of the daemon's started the turn, the daemon
+    sends that task again; when a phase reminder, an Envoy message or a background job's result
+    started it, the daemon sends nothing again. From
     `18.18.6-sami.20261124-152326` on, after an OpenAI `cyber_policy` refusal Oh My Pi sends no
     request to an OpenAI route until input from outside the session, and its release archives
     carry an attestation. Its SQL session store makes and checks the same tables, indexes,
