@@ -41,15 +41,15 @@ func TestTheWayBackDocNamesEveryHeaderThatCarriesOne(t *testing.T) {
 	named := headerFileName.FindAllString(wayBackDoc(t), -1)
 	for _, name := range carry {
 		if !slices.Contains(named, name) {
-			t.Errorf("the doc comment of migrations.WayBack (%s) names no %s: the last paragraph of its "+
+			t.Errorf("the doc comment of migrations.WayBack (%s) names no %s. The last paragraph of its "+
 				"header is a way back by WayBack's own rule, so name it in that list", wayBackSource, name)
 		}
 	}
 	slices.Sort(named)
 	for _, name := range slices.Compact(named) {
 		if !slices.Contains(carry, name) {
-			t.Errorf("the doc comment of migrations.WayBack (%s) names %s, which is no embedded migration "+
-				"whose header carries a way back by WayBack's rule: take it out of that list", wayBackSource, name)
+			t.Errorf("the doc comment of migrations.WayBack (%s) names %s. It is no embedded migration "+
+				"whose header carries a way back by WayBack's rule, so take it out of that list", wayBackSource, name)
 		}
 	}
 }
@@ -68,9 +68,9 @@ func TestEveryRollbackSectionTheMigrationListNamesIsInTheGuide(t *testing.T) {
 	}
 	for _, section := range sections {
 		if err := rollbackSectionIn(guide, section); err != nil {
-			t.Errorf("%s's list of the migrations recorded above %s: the entry of %s names the section %q: "+
-				"%v: give the guide that heading, or name the heading it has", wayBackGuide, phaseEntryMigration,
-				section.entry, section.heading, err)
+			t.Errorf("%s's list of the migrations recorded above %s: the entry of %s names a section: %v. "+
+				"Give the guide that heading, or name in the entry the heading it has", wayBackGuide,
+				phaseEntryMigration, section.entry, err)
 		}
 	}
 }
@@ -120,8 +120,8 @@ func TestTheSectionCheckHoldsEachRollbackSectionAnEntryNames(t *testing.T) {
 }
 
 // headersThatCarryAWayBack is the file name of each embedded migration whose header's last
-// paragraph is a way back, in version order: each version migrations.WayBack answers with no
-// error. A set with none stops the test, since a list held to nothing would pass.
+// paragraph is a way back, in version order. Those are the versions migrations.WayBack answers
+// with no error. A set with none stops the test, since a list held to nothing would pass.
 func headersThatCarryAWayBack(t *testing.T) []string {
 	t.Helper()
 	all, err := migrations.All()
@@ -185,14 +185,14 @@ func (l phaseEntryListing) rollbackSections() []rollbackSection {
 
 // rollbackSectionIn holds text, a Markdown page, to a section an entry names. The page has one
 // heading of its words in both readings (sectionHeadingIn). A link names that heading's anchor
-// (sectionAnchor).
+// (sectionAnchor). Each error quotes the heading.
 func rollbackSectionIn(text string, section rollbackSection) error {
 	if err := sectionHeadingIn(text, section.heading); err != nil {
 		return err
 	}
 	if section.linked && section.anchor != sectionAnchor(section.heading) {
-		return fmt.Errorf("its link names #%s, where the heading's anchor is #%s", section.anchor,
-			sectionAnchor(section.heading))
+		return fmt.Errorf("%q: its link names #%s, where the heading's anchor is #%s", section.heading,
+			section.anchor, sectionAnchor(section.heading))
 	}
 	return nil
 }

@@ -260,9 +260,9 @@ func phaseEntryList(t *testing.T) phaseEntryListing {
 	return listing
 }
 
-// phaseEntryListing is the list as a reader sees it: the migrations its entries describe, every
-// migration name it carries, the described ones among them, and its entries, one to a line. Each
-// guide test reads it only through the method that is its check, so neither reads the other's names.
+// phaseEntryListing is the list as a reader sees it. It holds the migrations its entries describe,
+// every migration name it carries, described or not, and its entries, one to a line. Each guide
+// test reads it only through the method that is its check, so neither reads the other's names.
 type phaseEntryListing struct{ described, named, entries []string }
 
 // undescribed is every migration of above that no entry of the list describes, in above's order:

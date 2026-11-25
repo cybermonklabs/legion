@@ -72,8 +72,8 @@ const StepRecordsRollForward = 20261117064152
 // 20261121170714_dispatch_issue_applied_seq.up.sql, 20261123224717_members_owed.up.sql and
 // 20261125000600_production_check_failed_looks.up.sql. The header of
 // 20261115194357_project_pause.up.sql gives the three statements of its rollback, each as a
-// paragraph of its own. So this answers the last of them alone. No caller reads it, and
-// docs/kubernetes.md gives all three.
+// paragraph of its own. So this answers the last of them alone. No test or tool runs that
+// paragraph, and docs/kubernetes.md gives all three.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {
