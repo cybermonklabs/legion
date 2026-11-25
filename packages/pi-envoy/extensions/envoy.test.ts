@@ -17492,21 +17492,32 @@ console.log(JSON.stringify(args));
       }, 200_000);
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
-      // second message is taken while the first command still runs.
+      // second message is taken while the first command still runs. The first command's limit is
+      // held on the test's clock (`onPassClock`) until the second has been answered, so the first
+      // is still running then however late the second is taken; the clock then moves to the
+      // limit, and the first is answered as stopped. On the real clock a 1,000 ms limit could end
+      // the first command before the second was taken.
       test("answers a second command naming the one still running", async () => {
-        const { agent, replied, replies } = await bootShellSession("shell-command-busy", {
+        const { agent, replies } = await bootShellSession("shell-command-busy", {
           accept: (count) => ({
             accepted: true,
             body: count === 1 ? "!echo $$ > pid && sleep 600" : "!printf hi",
           }),
           limitMs: 1_000,
         });
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
-        agent.push(
-          directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
-        );
-        await replied(2);
+        await onPassClock(async (clock) => {
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
+          agent.push(
+            directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
+          );
+          // The first command is a real shell, whose start no count of turns measures, so each
+          // wait has no bound of its own (`wait`); the row's 200_000 is the hang guard.
+          await clock.wait("the reply to the second command", () =>
+            replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))
+          );
+          await clock.advance(1_000);
+          await clock.wait("the reply to the first command", () => replies.length >= 2);
+        });
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
           body: "!printf hi\n\nThe command was not run: this session is still running !echo $$ > pid && sleep 600.",

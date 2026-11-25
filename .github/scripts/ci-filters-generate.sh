@@ -31,8 +31,15 @@
 # run is red where the cause shows. A base tree whose filters cannot be computed, or a base commit
 # that cannot be read, makes every filter `'**'` in <out> alone: the computed filters stand, and the
 # lint job holds them. The names are every `steps.filter.outputs.<name>` .github/workflows/ci.yaml
-# reads, which needs no engine to find. It exits 0 either way, so the changes job's outputs always
-# come from its paths-filter step; it exits 1 only when it can write no file.
+# reads, which needs no engine to find and is the one form in which the changes job hands a job its
+# filter (check-ci-filters.sh's rule 2), but `changes`: that is the action's own list of the filters
+# that matched, which it writes only while no filter has the name (rule 19).
+# A step reads its filter out of that list instead (the test job's harness steps), and the file
+# holds no such filter, so either fallback also writes `every_filter=true` to the step's outputs
+# (GITHUB_OUTPUT), which ci.yaml's matched_filters reads as `all`, as on a dispatched run: every
+# step gated on the list runs, whatever form its gate is written in.
+# It exits 0 either way, so the changes job's outputs always come from its paths-filter step; it
+# exits 1 only when it can write no file.
 #
 # Run from anywhere: .github/scripts/ci-filters-generate.sh <out>
 # CI runs it in ci.yaml's changes job, writing "$RUNNER_TEMP/ci-filters.yaml".
@@ -55,15 +62,19 @@ head_root=$PWD
 # changes job's timeout-minutes in ci.yaml adds up the job's steps.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
-# every_filter <first line>: a filters file whose every filter is `'**'`, under that first line.
+# every_filter <first line>: a filters file whose every filter is `'**'`, under that first line,
+# with the step's output every_filter=true, which hands every step gated on the list `all`.
 every_filter() {
   local names
-  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | sort -u)
+  names=$(grep -o 'steps\.filter\.outputs\.[A-Za-z0-9_-]*' .github/workflows/ci.yaml | sed 's/.*\.//' | grep -vx changes | sort -u)
   [ -n "$names" ] || return 1
   echo "$1"
   while IFS= read -r name; do
     printf '%s:\n  - %s\n' "$name" "'**'"
   done <<<"$names"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    echo "every_filter=true" >>"$GITHUB_OUTPUT"
+  fi
 }
 
 started=$(date +%s)

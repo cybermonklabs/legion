@@ -76,6 +76,7 @@ func (f stalledStreamInfo) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.Strea
 }
 
 func TestSendHandler_StampsSenderAndReturnsRecipient(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_source": nil,
@@ -155,6 +156,7 @@ func TestSendHandler_StampsSenderAndReturnsRecipient(t *testing.T) {
 // listener's real send handler on the same JSON boundary. In particular, payload
 // is an opaque JSON string on this HTTP API, rather than an embedded JSON value.
 func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
+	t.Parallel()
 	publisher := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -219,6 +221,7 @@ func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
 // hint that disagrees with the frame -- are closed by construction because the hint does not
 // exist to omit or disagree: only the frame's own mode is ever read.
 func TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -271,6 +274,7 @@ func TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode(t *testing.T) {
 // AmbiguousDeliveryFrames): presence of that key is a claim of a targeted send, and an
 // unreadable claim is refused, never defaulted open the way genuine absence is here.
 func TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -323,6 +327,7 @@ func TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends(t *testing.T) {
 // attacker could hide an unadvertised real mode ("btw", exact key) behind an advertised decoy in
 // the wrong-cased key ("aside", sibling key).
 func TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -376,6 +381,7 @@ func TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames(t *testing.T) {
 // both checks and reach the receiver, so the mode itself is refused, as the Dispatch server's
 // own `validDelivery` refuses it.
 func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -415,6 +421,7 @@ func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
 // the optional HTTP payload field. A long structured message becomes the
 // receiver's payload.
 func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -457,6 +464,7 @@ func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
 // wire-contract test uses (delivery.mode "btw"), through the real listener handler -- not a
 // synthetic minimal payload -- so the parsing is proven against production shape.
 func TestDispatchClientSendFrameModeIsGuardedEndToEnd(t *testing.T) {
+	t.Parallel()
 	publisher := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_target", session.SessionEntry{
@@ -497,6 +505,7 @@ func mustJSONString(t *testing.T, value string) string {
 }
 
 func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -566,6 +575,7 @@ func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
 }
 
 func TestMessageHandlersRejectBlankMessage(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -613,6 +623,7 @@ func TestMessageHandlersRejectBlankMessage(t *testing.T) {
 // of the copy's hour as kept_until, and for a lapsed holder that holder, its state and when it was
 // last seen, as the 404 names them. Neither releases a lapsed holder's claim.
 func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	type roleError struct {
 		Error         string `json:"error"`
 		Reason        string `json:"reason"`
@@ -773,6 +784,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 }
 
 func TestRoleHolderLapsedResponseDoesNotInventLastSeen(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if _, err := registry.SetRole("ses_lapsed", "test-machine", "reviewer", false); err != nil {
@@ -890,6 +902,7 @@ func ageRoleClaim(t *testing.T, d *listenerDeps, role string, age time.Duration)
 // outbox counts the stream's ack as its delivery, so its messages are reported delivered when
 // nobody delivered them.
 func TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_ported_claimant"
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put(sessionID, session.SessionEntry{Port: 8080, MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -930,6 +943,7 @@ func TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry(t *testing.T) {
 // can register as: an id outside nats.go's key alphabet, which an earlier build or a direct
 // bucket write can leave in a claim.
 func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	lookup := func(role string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
@@ -979,6 +993,7 @@ func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.
 // registered is gone only from this listener's trailing cache, not from the session bucket: the soft
 // claim is refused, naming the live holder.
 func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	claimRole(t, claimant, "ses_live_holder", "contested")
 	if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -999,6 +1014,7 @@ func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *t
 // claim only when the session bucket has lost the holder, not when this listener's trailing cache has
 // yet to see it.
 func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	claimRole(t, claimant, "ses_fresh_holder", "fresh-claim")
 	claimRole(t, claimant, "ses_gone_holder", "lapsed-claim")
@@ -1028,6 +1044,7 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 // before it removes anything, keeps the interest of a session the bucket holds, and removes the
 // interest of one the bucket has lost.
 func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	interests, err := claimant.client.JS().KeyValue(bus.InterestBucket)
 	if err != nil {
@@ -1265,6 +1282,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 }
 
 func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -1389,6 +1407,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 }
 
 func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_holder", session.SessionEntry{MachineID: "test-machine", Host: "example-host-a", SelfSubscribed: true}); err != nil {
@@ -1445,6 +1464,7 @@ func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
 // ends its liveness and the registry's clock ends the grace window, so no step waits on a real TTL
 // and none can lose a race with one.
 func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	const (
 		sessionID  = "ses_role_restart"
@@ -1553,6 +1573,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 }
 
 func TestRoleSetHandlerSoftClaim(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	for _, id := range []string{"ses_live", "ses_resumer", "ses_heir"} {
@@ -1904,6 +1925,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 }
 
 func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
@@ -1948,6 +1970,7 @@ func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 }
 
 func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{err: errors.New("nats unavailable")}
@@ -1985,6 +2008,7 @@ func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
 // interest row once: the first creates it, and each later call answers with that stored row,
 // updated_at included, without a write. The session row is still written on every call.
 func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
+	t.Parallel()
 	const calls = 5
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
@@ -2050,6 +2074,7 @@ func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 }
 
 func TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment(t *testing.T) {
+	t.Parallel()
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{}}
 	deps := &listenerDeps{streamName: "notifications", streamInfo: inspector}
 	if warning := unwiredRepositoryWarning(context.Background(), deps, "notifications.github.*.example-repo.pr.>", logging.New("test")); warning != "" {
@@ -2086,6 +2111,7 @@ func subscribeWarnings(t *testing.T, state *listenerDeps, topics ...string) []st
 // those is warned. Another pull request's family does not reach this one, and neither does a
 // subject that only starts the same way (`pr.70` is not `pr.7`).
 func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycle(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
@@ -2128,6 +2154,7 @@ func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycl
 // the kinds rather than suggesting a name that receives nothing either. A row per kind and
 // wildcard holds that no published kind is mistaken for either.
 func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
@@ -2170,6 +2197,7 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 }
 
 func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	lookup := stalledStreamInfo{deadlines: make(chan time.Duration, 1), release: make(chan struct{})}
@@ -2228,6 +2256,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 }
 
 func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -2273,6 +2302,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 }
 
 func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_subscriber": {"notifications.github.example-org.example-repo.pr.>"},
@@ -2309,6 +2339,7 @@ func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
 // of the process it names (client_instance_id): the claim here names that very process, so the
 // role is free for its next holder.
 func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	const (
@@ -2344,6 +2375,7 @@ func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) 
 }
 
 func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_match": nil,
 		"ses_other": nil,
@@ -2388,6 +2420,7 @@ func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
 // handle its registration: a session whose plugin sent "host" shows that, and a session whose
 // plugin predates the field falls back to machine_id instead of an empty string.
 func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_reported", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", Host: "example-host-a"}); err != nil {
 		t.Fatalf("put reported-host session: %v", err)
@@ -2445,6 +2478,7 @@ func exampleTmuxPlace() *session.TmuxPlace {
 // off a session that does not: a cluster whose sessions run outside tmux pays no bytes per row,
 // and a reader can tell "no pane" from a pane whose members happen to be empty.
 func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	if err := sessions.Put("ses_paned", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", TmuxPlace: exampleTmuxPlace()}); err != nil {
 		t.Fatalf("put the session sitting in a pane: %v", err)
@@ -2490,6 +2524,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 // place. That registration must clear the place its entry held: the entry is built fresh from
 // each body and written whole, so nothing carries the stale pane forward onto the layout.
 func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
+	t.Parallel()
 	_, sessions := setupSessionsTest(t, nil, nil)
 	var placed listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
@@ -2524,6 +2559,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 }
 
 func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_source": nil,
@@ -2565,6 +2601,7 @@ func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
 // but the read-through can find it. The roles come from the claims, not the record
 // (TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics).
 func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testing.T) {
+	t.Parallel()
 	const (
 		target = "ses_stamp_target"
 		sender = "ses_stamp_sender_the_cache_missed"
@@ -2640,6 +2677,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 // miss, and still gives a message with no title, as a sender with no registration at all does
 // (TestSendHandler_StampsInterestSenderWithoutSessionEntry).
 func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T) {
+	t.Parallel()
 	const (
 		target   = "ses_title_stamp_target"
 		sender   = "ses_title_stamp_sender_the_cache_missed"
@@ -2719,6 +2757,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 }
 
 func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	payload := `{"kind":"structured"}`
@@ -2747,6 +2786,7 @@ func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
 }
 
 func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	recorder := httptest.NewRecorder()
@@ -2790,6 +2830,7 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 // reached the bus. Reading the bus is what proves the route still carries the sender's intent:
 // the answer alone is only the request read back.
 func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -2928,6 +2969,7 @@ func quotedOrAbsent(raw string) string {
 // it 413 and say how large it was against the server's max payload, rather than a 500 that reads
 // as the listener's own failure.
 func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{}, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -2966,6 +3008,7 @@ func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
 // the caller's to fix: every /v1 route that reads or writes one answers 413 or 400, as for a message
 // NATS cannot take, and the connection stays up.
 func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
+	t.Parallel()
 	client, err := bus.Connect([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -3040,6 +3083,7 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 }
 
 func TestPublishHandler_DedupeKeySelection(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.github.example-org.example-repo.dedupe-key"
@@ -3092,6 +3136,7 @@ func TestPublishHandler_DedupeKeySelection(t *testing.T) {
 }
 
 func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.github.example-org.example-repo.dedupe-key-conflict"
@@ -3125,6 +3170,7 @@ func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
 // caller who supplies one would get a 200 for a message that vanishes: no
 // forward, no exception, no log line. The prefix is reserved at the API.
 func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3165,6 +3211,7 @@ func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
 // nobody, now or later, and no retry of the same topic could change that. A team topic, which
 // the stream stores, is accepted on the same route.
 func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3209,6 +3256,7 @@ func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) 
 // Dispatch's outbox numbers its keys in sequence, so a key a caller chose there would make a host
 // drop the real event when it arrives. The key is still the caller's on any other source.
 func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
 	const topic = "notifications.dispatch.issue.SQUAT-1.comment.created"
@@ -3258,6 +3306,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 // ignores any field it does not read, so a body carrying both keys is still a
 // send keyed by its idempotency_key (LEGION-108, architect decision).
 func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3279,6 +3328,7 @@ func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
 // contracts.AgentSendDedupeKey, so a host that holds the mention drops the copy; that holds only
 // while the listener keys the mention's send by the same function, byte for byte.
 func TestSendHandler_KeysASendByAgentSendDedupeKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3300,6 +3350,7 @@ func TestSendHandler_KeysASendByAgentSendDedupeKey(t *testing.T) {
 }
 
 func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	// No known route is requested, so no store is read.
 	registerV1Routes(mux, &listenerDeps{}, "test-machine", logging.New("test"))
@@ -3331,6 +3382,7 @@ func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
 // as Dispatch's client does: a Dispatch copy names no session, so its repeat is answered with the
 // copy's ids alone (requestSender.answer), whose event_id is the first send's.
 func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3388,6 +3440,7 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	}
 }
 func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	deps := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3417,6 +3470,7 @@ func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
 }
 
 func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -3439,6 +3493,7 @@ func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
 	}
 }
 func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 
@@ -3482,6 +3537,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 // A registration names its plugin and that plugin's build; both reach the session list and the
 // per-session route, trimmed. A registration from a plugin predating the fields lists neither key.
 func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
@@ -3535,6 +3591,7 @@ func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 // always written. A row with no "delivery" key at all is then a listener older than the field,
 // which that reading must not count as a session on the core path.
 func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
 	for id, entry := range map[string]session.SessionEntry{
@@ -3599,6 +3656,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // each role message for it on its agent subject, which the stream does capture (startRoleForward).
 // A team topic and a topic outside notifications. are stored as they always were.
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	// withRoleClaimDrain, because the last registration names a role lane, and a registration
 	// that makes its session live again hands it the kept lane of each role its row names
@@ -3668,6 +3726,7 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 // that order too (subscribeRefusesTopic in @legion/envoy-client), so a caller reads one rule
 // wherever it is told.
 func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	private := func(topic, sessionID string) string {
@@ -3770,6 +3829,7 @@ func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) intere
 // The registration is not refused whole, since a released pi-envoy registers a fork parent's agent
 // subject with the rest of what it follows.
 func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	refused := []string{"notifications.agent.>", "notifications.agent.*", other, "notifications.>"}
@@ -3807,6 +3867,7 @@ func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t 
 // wildcard reaching them (notifications.envoy.>). A GitHub topic, a team topic and the session's
 // own agent subject are stored, and the answer stays 200.
 func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	githubTopic, teamTopic := "notifications.github.acme.widgets.pr.7.>", "notifications.team.x.>"
@@ -3850,6 +3911,7 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 // notifications.team.> to, so it registers that topic beside the team topic it follows, and a
 // refusal would leave it with no session consumer at all, at every heartbeat.
 func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
@@ -3876,6 +3938,7 @@ func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
 // with the session's own agent subject stored and nothing else: the session is registered, so its
 // consumer is created and its entry written, and the warning tells it what was left out.
 func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const stale = "notifications.team"
@@ -3904,6 +3967,7 @@ func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t 
 // inbox and one no stream subject captures each draw their own warning, naming themselves, and
 // the topics the listener does store are stored.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
@@ -3938,6 +4002,7 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 // subscription of its own (INFRA-771). The lane is answered, stored and routed by the listener's
 // fan-out (Registry.Match), with the issue topic the session also follows.
 func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own := contracts.LegacyAgentSubject(interestSession)
 	const (
@@ -3975,6 +4040,7 @@ func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *tes
 // topics are the filter of a consumer that would otherwise hand this controller another project's
 // notices or another session's messages.
 func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const (
@@ -4027,6 +4093,7 @@ func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *t
 // registers now, and the listener's fan-out (Registry.Match) stops handing it another session's
 // failed-delivery lane and the Legion controller's notices.
 func TestInterestSubscribeCleansAStoredRowOfTopicsReachingPrivateStreamSubjects(t *testing.T) {
+	t.Parallel()
 	const githubTopic = "notifications.github.acme.widgets.pr.7.>"
 	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	lane := bus.ExceptionTopicPrefix + other
@@ -4082,6 +4149,7 @@ func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) listen
 // route reads the bucket itself and answers it: anything else tells a Dispatch mention, a broadcast
 // or an issue claim that a working session is gone.
 func TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	entry := session.SessionEntry{
 		SelfSubscribed: true,
@@ -4117,6 +4185,7 @@ func TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled(t *testing.T) {
 // than inside it, so a Dispatch reading only the prefix is unaffected. A session that is
 // registered answers itself.
 func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_live"})
 	state := &listenerDeps{registry: registry, sessions: sessions}
 
@@ -4176,6 +4245,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 // The route and GET /v1/sessions answer one shape built one way, so a caller that reads one session
 // sees exactly the row the list would have given it, joined interests and all.
 func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t,
 		map[string][]string{"ses_listed": nil},
 		[]string{"ses_listed"})
@@ -4221,6 +4291,7 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 // body, because a decoded empty string cannot tell a field omitempty left out from one present and
 // empty.
 func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
+	t.Parallel()
 	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
@@ -4251,6 +4322,7 @@ func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
 // The route reads; every other method on it is the caller's mistake, answered as every other /v1
 // handler answers one.
 func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
+	t.Parallel()
 	recorder := httptest.NewRecorder()
 	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodDelete, "/v1/registry/ses_live", nil))
@@ -4318,6 +4390,7 @@ func registrationViewDeps(t *testing.T) *listenerDeps {
 // then holds its role claim and its issue claims until the gone horizon takes them, which is the
 // delay the stop exists to remove.
 func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_claims_view_refilling"
 		instance  = "9a8b7c6d5e4f3a2b9a8b7c6d5e4f3a2b"
@@ -4351,6 +4424,7 @@ func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnsw
 // failed, on which it sends no delete: such a session could never be clean-stopped. The
 // registration view reads no interest record, so it answers the registration the stop needs.
 func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannotBeRead(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_unreadable_interest_registration"
 		instance  = "3c2b1a0f9e8d7c6b3c2b1a0f9e8d7c6b"
@@ -4389,6 +4463,7 @@ func TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannot
 // role's claims standing. The full answer reads the cache first, as it must for a session the
 // cache has not caught up with, and is asked here first to show that the two really differ.
 func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_replaced_instance"
 		cached    = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
@@ -4426,6 +4501,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTh
 // registration that exists is one the caller may remove whatever state it reads. Only the
 // bucket's word that it holds no record is a 404, in the words the full answer uses for it.
 func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds(t *testing.T) {
+	t.Parallel()
 	const instance = "7e6d5c4b3a291807e6d5c4b3a2918070"
 	d, now := stalledSessionsRig(t)
 	stoppedAt := register(t, d, "ses_stopped", session.SessionEntry{
@@ -4483,6 +4559,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 // selector was dropped in silence would be handed the full answer it asked not to have, and
 // would read that answer's 503 as its own session's.
 func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	recorder := httptest.NewRecorder()
 	sessionEntryHandler(&listenerDeps{}).ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/v1/registry/ses_live?view=rows", nil))
@@ -4504,6 +4581,7 @@ func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
 // that carry the state). A client then reads one field from every role answer instead of
 // inferring live from the status code.
 func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "state-on-the-200"
@@ -4549,6 +4627,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 // session that stopped answering and neither is counted. The count rose for both before this
 // change, so a box's operator read the share of its traffic going to stalled sessions too high.
 func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
+	t.Parallel()
 	d, now := stalledSessionsRig(t)
 	const target = "ses_counted_recipient"
 	register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -4740,6 +4819,7 @@ func compactNoInterestRecordJSON(t *testing.T, value json.RawMessage) string {
 // listenerwire.SessionInfo, which would drop a key listenerwire.SessionInfo does not name, so the
 // row could not be held to the fixture's keys.
 func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	t.Parallel()
 	fixture := readNoInterestRecordFixture(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
@@ -4768,6 +4848,7 @@ func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *test
 // The per-session route and the list answer one shape built one way, so a caller holding a session
 // id reads the same row for a session with no interest record, its topics the empty list included.
 func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	t.Parallel()
 	fixture := readNoInterestRecordFixture(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
@@ -4795,6 +4876,7 @@ func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *te
 // field set cannot hold that, since a field added after the value was written is left empty in it,
 // and an omitempty one is then absent from its keys.
 func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
+	t.Parallel()
 	fixture := readNoInterestRecordFixture(t)
 	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
 	infoType := reflect.TypeOf(listenerwire.SessionInfo{})
@@ -4844,6 +4926,7 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 // listener, so this test holds it to the after row's values and to the one difference, topics,
 // which was null and is now the empty list.
 func TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics(t *testing.T) {
+	t.Parallel()
 	fixture := readNoInterestRecordFixture(t)
 	before, after := fixture.BeforeThisChange, fixture.AfterThisChange
 	sameNoInterestRecordRowValues(t, "the before row", "the after row", before, after, map[string]bool{"topics": true})
