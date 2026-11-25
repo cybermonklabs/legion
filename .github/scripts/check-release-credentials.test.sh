@@ -554,8 +554,8 @@ check "exits 1" "$(is "$status" 1)"
 check "names go" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Build the daemon' runs 'go'")"
 
 # A here-document a shell reads as its script runs its lines: `bash <<'EOT'` holding `bunx …` runs
-# bunx, whatever the delimiter's quoting. One a shell does not read is text, but an unquoted one's
-# `$(…)` runs, and so does a substitution inside arithmetic.
+# bunx, whatever the delimiter's quoting. An unquoted body's `$(…)` runs, and so does a
+# substitution inside arithmetic. This check reads every body as commands, as main's reader did.
 echo "case: a dependency command in a here-document a shell reads, in a credentialed job"
 root=$(fixture heredoc-shell)
 add_publish_step "$root" $'      - name: Run a script from a here-document\n        run: |\n          bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
@@ -571,7 +571,10 @@ check "names bun, and the substitution in arithmetic, bunx" \
 root=$(fixture heredoc-text)
 add_publish_step "$root" $'      - name: Print a here-document\n        run: |\n          cat <<\'EOF\'\n          bunx evil-package\n          $(bun install)\n          EOF\n'
 run_check "$root"
-check "a quoted body a shell does not read exits 0" "$(is "$status" 0)"
+# Main's rule, which this check keeps (every_body): a body is read as commands even where no shell
+# of its line reads it, so a quoted `cat` body naming bunx is refused too, reading more than bash
+# runs rather than less.
+check "a quoted body no shell of its line reads is read too: exits 1" "$(is "$status" 1)"
 
 # The forms main's reader read as commands and the here-document reader first missed (review
 # 6052147931): a process substitution among an array's values, an array whose quoted `(` hides
@@ -585,6 +588,22 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 for step in 'Array process substitution' 'Array quoted paren' 'Pipe to a shell' 'Shell given stdin' \
   'Shell behind setsid' 'Shell behind timeout'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
+# The forms of review 6054247075: a here-document body that reaches a shell by a route the line
+# rule does not follow, which the release check reads anyway because it reads every body as
+# commands; a `((` that is two subshells to bash, not arithmetic; a substitution in a case
+# pattern, which bash expands; and env with an expansion of many words before the shell. Each runs
+# bunx in a credentialed job under bash, and each is refused by name.
+echo "case: the routes into a shell the line rule misses, in a credentialed job"
+root=$(fixture every-body-forms)
+add_publish_step "$root" $'      - name: Eval of a substitution\n        run: |\n          eval "$(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )"\n      - name: Bash -c of a substitution\n        run: |\n          bash -c "$(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )"\n      - name: Source of a process substitution\n        run: |\n          . <(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )\n      - name: Bash of a process substitution\n        run: |\n          bash <(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )\n      - name: Pipe after the body\n        run: |\n          cat <<\'EOT\' |\n          bunx evil-package\n          EOT\n          bash\n      - name: Shell behind taskset\n        run: |\n          taskset -c 0 bash <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Body ended by EOF paren\n        run: |\n          x=$(cat <<\'EOF\'\n          bunx evil-package\n          EOF)\n          eval "$x"\n      - name: Two subshells\n        run: |\n          ((bunx evil-package) || true)\n      - name: Case pattern\n        run: |\n          case x in "$(bunx evil-package)") : ;; esac\n      - name: Env with an expansion\n        run: |\n          env "${args[@]}" bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Eval of a substitution' 'Bash -c of a substitution' 'Source of a process substitution' \
+  'Bash of a process substitution' 'Pipe after the body' 'Shell behind taskset' 'Body ended by EOF paren' \
+  'Two subshells' 'Case pattern' 'Env with an expansion'; do
   check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
 done
 

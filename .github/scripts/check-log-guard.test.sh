@@ -219,6 +219,21 @@ check "a listed name the check now reads fails" "$(is "$status" 1)"
 check "naming the row" \
   "$(contains "$out" '^::error file=.github/log-guard-unread.tsv,line=2::row 2 names .scripts/made.sh. in .github/workflows/app.yaml, and no script name there now goes unread')"
 
+# The two ways review 6054247075 found a script go unread: env handed an expansion of many words
+# before the shell that runs it (airlock-check.test.sh's `env "${unset_inputs[@]}" … bash x.sh`),
+# and a literal path a script names from a directory above its own after `cd "$(dirname "$0")/.."`
+# (up-dispatch.sh's `. scripts/compose-refusal.sh`). Each script is read, and its client named.
+echo "case: a script behind env and an expansion, and one named from above the script's own directory"
+root=$(fixture env-and-parent "$(printf '%s\n' 'inputs=(-u A)' 'env "${inputs[@]}" PATH=/bin "$@" bash scripts/deep/run.sh')")
+mkdir -p "$root/scripts/deep" "$root/scripts/lib"
+printf 'cd "$(dirname "$0")/.."\n. lib/helper.sh\n' >"$root/scripts/deep/run.sh"
+printf 'curl -sS https://example.com/helper\n' >"$root/scripts/lib/helper.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the client of the script the parent path names" \
+  "$(contains "$out" '::the script scripts/lib/helper.sh .* runs .curl -sS https://example.com/helper.')"
+check "and counts that one problem" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
+
 echo "case: a client behind flock, ionice, setsid or unshare fails by name"
 root=$(fixture more-runners "$(cat <<'SH'
 flock x git fetch origin main
@@ -279,6 +294,31 @@ check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 proble
 # closes is a call.
 echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
+a=(curl -sS https://example.com/k)
+"${a[@]}"
+coproc curl -sS https://example.com/l
+wait
+coproc C { curl -sS https://example.com/m; }
+wait
+trap 'command curl -sS https://example.com/n' EXIT
+function f { curl -sS https://example.com/o; }
+f
+bash <<< 'curl -sS https://example.com/p'
+echo 'curl -sS https://example.com/q' | bash
+cat <<'EOT' | xargs -I{} bash -c '{}'
+curl -sS https://example.com/r
+EOT
+shopt -s expand_aliases
+alias c='curl -sS'
+c https://example.com/s
+$'\x63url' -sS https://example.com/t
+((curl -sS https://example.com/u) || true)
+case x in "$(curl -sS https://example.com/v)") : ;; esac
+args=()
+env "${args[@]}" bash <<'EOT'
+curl -sS https://example.com/w
+EOT
+env -S 'curl -sS https://example.com/x'
 files=(<(curl -sS https://example.com/e))
 wait $!
 x=("(")
@@ -329,8 +369,8 @@ for client in curl gh jq; do
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs gh three times, curl eight and jq once" \
-  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 8 curl 3 gh 1 jq ")"
+check "bash runs gh three times, curl twenty-two and jq once" \
+  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 22 curl 3 gh 1 jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -339,12 +379,16 @@ check "names the command curl" "$(contains "$out" 'step "Fetch" runs .command cu
 check "names the curl of the body bash reads" "$(contains "$out" 'step "Fetch" runs .curl -sS https://example.com/d.')"
 check "names the gh of the unquoted body's substitution" "$(contains "$out" 'step "Fetch" runs .gh api repos/o/v.')"
 check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
-for form in e f g h i j; do
-  check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .curl -sS https://example.com/$form.")"
+# e to j: the forms of review 6052147931; k to x: those of 5aef29db5a's two reviews, each a
+# command word a shell builds rather than one written (an array, a coprocess, a trap, a one-line
+# function, a here-string, a piped echo, xargs -I, an alias, an ANSI-C escape, two subshells, a
+# case pattern, env with an expansion of many words, env -S).
+for form in e f g h i j k l m n o p q r s t u v w x; do
+  check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .[^\`]*https://example.com/$form.")"
 done
 check "names the stderr guard after the string, and not the one inside it" \
   "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 11 problem(s)$')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 25 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

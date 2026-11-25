@@ -115,7 +115,10 @@
 # kind of action, or one this check cannot read, runs dependency code. Command position is found
 # by `.github/scripts/shell_commands.py` (`commands_of`), whose docstring gives the rules it reads a
 # `run:` by, as bash does: comments, quotes, line joins, substitutions, redirections, the
-# assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through. A
+# assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through.
+# This check reads it with `every_body`: every here-document body is read as commands, whatever
+# its line runs, so a body that reaches a shell by any route (`eval "$(cat <<'EOT' …)"`, `. <(cat
+# <<'EOT' …)`, a pipe continued after the body, a runner the reader does not know) is read. A
 # variable in command position (`"$tool" build`), a command behind `xargs` or `nohup`, or a
 # program not on the list passes here; the job-level tripwire (`release-push.sh no-credential`)
 # and review hold the rest.
@@ -421,7 +424,7 @@ def dependency_code(step: Mapping, job: Mapping, workflow: Mapping, seen: tuple 
             found.append(f"runs its body under shell '{interpreter}', not bash or sh")
         else:
             commands = []
-            for words in commands_of(run):
+            for words in commands_of(run, every_body=True):
                 what = dependency_command(words)
                 if what and what not in commands:
                     commands.append(what)
@@ -479,7 +482,7 @@ def deploy_key_allowed(steps: list, path: tuple, text: str) -> bool:
     run = steps[path[1]].get("run")
     return isinstance(run, str) and any(
         from_checkout(words[0]) and is_release_push(words[0]) and words[1:2] == ["push-tag"]
-        for words in commands_of(run)
+        for words in commands_of(run, every_body=True)
     )
 
 
@@ -575,7 +578,7 @@ def check_job(
             continue
         if shell_of(step, job, workflow)[0] not in SHELLS:
             continue
-        if any(is_release_push(words[0]) for words in commands_of(run)):
+        if any(is_release_push(words[0]) for words in commands_of(run, every_body=True)):
             problem(
                 path, line_of(step, job_line),
                 f"job '{name}' {describe(step, index)} runs {RELEASE_PUSH}, but no "

@@ -115,7 +115,14 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && "${helm[@]}" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+# The helm's own lines, and `go run`'s, a module proxy's reply among them, reach the log only inside
+# a .github/scripts/ci-log-guard.sh block, where they cannot become workflow commands; the render
+# itself goes to a file. The library is sourced here, after the archive's sha256 check, so the copy
+# cluster.test.sh makes of this script beside a changed archive, which that check refuses, needs no
+# copy of the library.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$here/../../../../.github/scripts/ci-log-guard.sh"
+(cd -- "$tmp" && ci_log_guard_stderr "${helm[@]}" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 
 while read -r kind; do

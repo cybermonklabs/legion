@@ -73,7 +73,7 @@ from pathlib import Path
 
 import yaml
 from shell_commands import (ASSIGNMENT, EXPRESSION, INTERPRETERS, RUNNERS, SKIP_WORDS, Scanner, command_of,
-                            quoted_line_starts, strip_runner, without_heredocs)
+                            quoted_line_starts, shed_prefix, strip_runner, without_heredocs)
 
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
@@ -81,9 +81,9 @@ ALLOW = Path(".github/log-guard-allow.tsv")
 # lists none).
 UNREAD = Path(".github/log-guard-unread.tsv")
 WRAPPERS = ("ci_log_guard", "ci_log_guard_stderr")
-# env and time are runners here (RUNNERS), read with their options, not keywords shed before the
-# command.
-KEYWORDS = SKIP_WORDS - set(WRAPPERS) - {"env", "time"}
+# env, exec and time are runners here (RUNNERS), read with their options, not keywords shed before
+# the command.
+KEYWORDS = SKIP_WORDS - set(WRAPPERS) - set(RUNNERS)
 GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
 # A call of ci_log_guard_stderr. Its stdout is no part of the log when the call stands inside a
 # `$(…)`, a backtick pair or a `<(…)` still open at the call, or when its own command, up to the
@@ -142,8 +142,7 @@ def commands(run: str) -> list:
             rest.append(line)
     for words in RawScanner().scan("\n".join(rest)):
         words = list(words)
-        while words and (ASSIGNMENT.match(words[0]) or words[0] in KEYWORDS):
-            words.pop(0)
+        shed_prefix(words, KEYWORDS, runners=())
         if words and words[0] in WRAPPERS:
             out.append((True, words[1:]))
         elif words and words[0].rsplit("/", 1)[-1] in RUNNERS:
@@ -430,16 +429,27 @@ def subdirectories(text: str) -> dict:
     return {name: below.rstrip("/") for name, below in SUBDIRECTORY.findall(text)}
 
 
+def above(directory: str) -> list:
+    """`directory` and each directory above it, to the repository root."""
+    found = [directory]
+    while directory not in (".", ""):
+        directory = os.path.dirname(directory) or "."
+        found.append(directory)
+    return found
+
+
 def script_path(word: str, workdir, action, own, moved=(), below=None) -> tuple:
     """(the shell script of this repository a command's first word names, as a path from the
     repository root, or ''; whether the word names a script, a word ending in .sh, that it could
     not find). `$GITHUB_WORKSPACE/` names the root and `$GITHUB_ACTION_PATH/` the composite
     action's directory (`action`, None outside one); any other relative path is read from
-    `workdir` (None: not known), else from each directory a `cd` of the same text moves to (`moved`),
-    else from `own`. A path after a variable or a substitution (FROM_DIRECTORY) is read from `own`, the directory of the script the word is in (the step's directory for a step), and,
-    where no such file is there, from each directory above it to the repository root: the
-    directory the variable holds is one of those wherever this repository's scripts compute it. A
-    variable `below` maps to a directory under another is read as that directory."""
+    `workdir` (None: not known), else from each directory a `cd` of the same text moves to
+    (`moved`), else from `own`, the directory of the script the word is in, and each directory
+    above it (a script that runs `cd "$(dirname "$0")/.."` first names its neighbours from there).
+    A path after a variable or a substitution (FROM_DIRECTORY) is read from `own` (the step's
+    directory for a step) and each directory above it to the repository root: the directory the
+    variable holds is one of those wherever this repository's scripts compute it. A variable
+    `below` maps to a directory under another is read as that directory."""
     for prefix, base in (("$GITHUB_WORKSPACE/", "."), ("${GITHUB_WORKSPACE}/", "."),
                          ("$GITHUB_ACTION_PATH/", action), ("${GITHUB_ACTION_PATH}/", action)):
         if word.startswith(prefix):
@@ -452,16 +462,11 @@ def script_path(word: str, workdir, action, own, moved=(), below=None) -> tuple:
         rest = computed.group(1)[1:]
         if name and name.group(1) in (below or {}):
             rest = below[name.group(1)].lstrip("/") + "/" + rest
-        directory = own
-        while True:
-            candidates.append(os.path.normpath(os.path.join(directory, rest)))
-            if directory in (".", ""):
-                break
-            directory = os.path.dirname(directory) or "."
+        candidates = [os.path.normpath(os.path.join(directory, rest)) for directory in above(own)]
     elif workdir is not None and word and not any(c in word for c in "$`*?[~") and not word.startswith("/"):
         if "/" in word or word.endswith(".sh"):  # a bare name other than x.sh is looked up on PATH
             candidates += [os.path.normpath(os.path.join(base, word))
-                           for base in (workdir, *moved, *((own,) if own is not None else ()))]
+                           for base in (workdir, *moved, *(above(own) if own is not None else ()))]
     for path in candidates:
         if path.endswith(".sh") and not path.startswith("..") and not os.path.isabs(path) and os.path.isfile(path):
             return path, False
