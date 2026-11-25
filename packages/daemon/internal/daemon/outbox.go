@@ -4570,11 +4570,19 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 
 // branchLeftNotice is the owning architect's notice of a next change's branch left where it
 // stands (startBranchAtBase): where its tip is, why Legion did not move it, and what to do first.
+// A merge snapshot that names only its pull request gives no merged head (record.BranchFrom), and
+// then the notice says Legion does not know it rather than print an empty commit.
 func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {
 	branch := workspace.Bookmark(issue)
+	why := fmt.Sprintf("Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it.",
+		from.MergedHead, result.Head, result.Base)
+	if from.MergedHead == "" {
+		why = fmt.Sprintf("Legion does not know the head that the last pull request merged. The tip does not hold the head %s of %s, so Legion did not move it.",
+			result.Head, result.Base)
+	}
 	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it. Merge %s into %s before the next change's first task.",
-			branch, result.Tip, from.MergedHead, result.Head, result.Base, result.Base, branch)}
+		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s Merge %s into %s before the next change's first task.",
+			branch, result.Tip, why, result.Base, branch)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
