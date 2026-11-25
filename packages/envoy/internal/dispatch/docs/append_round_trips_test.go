@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A round trip is one exchange with Postgres: the client sends and waits for the server. It is
@@ -310,11 +311,11 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 	recorder := &roundTripRecorder{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, recorder, nil)}
 	service := New(Deps{
-		Store:     traced,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(traced),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    traced,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(traced),
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   time.Hour,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {

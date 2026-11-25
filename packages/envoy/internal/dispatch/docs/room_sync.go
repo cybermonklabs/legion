@@ -195,7 +195,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
 // behind a catch-up reading another document's stored history; it reads the rows of this
 // process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
-// while the hub had no connection reached nobody and nothing announces it again.
+// while the hub had no connection reached nobody and nothing announces it again. The access lane
+// closes each socket whose person no longer reads its room on each access change
+// (store.AccessChangedChannel) and after each LISTEN, for the same reason (Service.recheckAccess).
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -218,6 +220,10 @@ func (r *roomSync) handlers() []roomSyncHandler {
 			channels:  []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}},
 			connected: r.service.recheckRemovedRooms,
 		},
+		{
+			channels:  []roomSyncChannel{{name: store.AccessChangedChannel, notified: r.service.accessChanged}},
+			connected: r.service.recheckAccess,
+		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},
 		{channels: []roomSyncChannel{{name: documentAnswerChannel, notified: r.service.roomQueries.answer}}},
 	}
@@ -236,7 +242,9 @@ func (r *roomSync) connected(ctx context.Context) {
 
 // register registers every handler's channels on hub and returns what runs the lanes. Each handler
 // gets a lane of its own, and what the hub calls - on its own goroutine, which must not block -
-// only queues work there.
+// only queues work there. The sockets' access epoch is registered on hub too (accessEpoch.listen):
+// it moves on the hub's own goroutine as a notification arrives, ahead of any lane, so a socket's
+// next frame asks its rule again without waiting for the access lane's pass.
 //
 // Each lane runs on a context with a pool hold mark of its own (store.ForConcurrentWorker). The
 // pool's one-connection guard is per mark, so lanes sharing one would refuse each other: while
@@ -246,6 +254,7 @@ func (r *roomSync) connected(ctx context.Context) {
 // lifetime, outside any transaction of the shared pool, which is what a fresh mark per lane
 // needs.
 func (r *roomSync) register(hub *pglisten.Hub) (run func(ctx context.Context)) {
+	r.service.accessEpoch.listen(hub)
 	handlers := r.handlers()
 	lanes := make([]*roomSyncLane, 0, len(handlers))
 	for _, handler := range handlers {

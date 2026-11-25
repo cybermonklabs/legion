@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
@@ -1008,11 +1010,20 @@ type unrecordedPeople struct{ auth.PeopleStore }
 
 func (unrecordedPeople) Record(context.Context, string) error { return nil }
 
+// TestArtifactIDRoutesValidateBeforeDatabaseUse: an artifact route's {id} that is no uuid is
+// answered 404 ARTIFACT_NOT_FOUND, as an id no row holds, and the one statement the request sends
+// is the read of its caller's viewer, which the route's gate makes before any handler runs
+// (withinReadScope, withinProjectScope). No statement reads the artifact or binds the id, so no
+// Postgres cast of a value that is no uuid can answer 500.
+//
+// Control: a handler that loads the artifact before validateArtifactRequestRef sends that load's
+// statement, and this fails naming it.
 func TestArtifactIDRoutesValidateBeforeDatabaseUse(t *testing.T) {
 	t.Parallel()
+	recorder := &statementRecorder{}
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{
-		Store:    &store.Store{},
+		Store:    storetest.TracedStore(t, storetest.Open(t), recorder),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
 	})
 
@@ -1020,18 +1031,33 @@ func TestArtifactIDRoutesValidateBeforeDatabaseUse(t *testing.T) {
 		name   string
 		method string
 		suffix string
-		body   any
+		body   string
 	}{
 		{name: "details", method: http.MethodGet},
 		{name: "text", method: http.MethodGet, suffix: "/text"},
 		{name: "version", method: http.MethodGet, suffix: "/versions/1"},
-		{name: "named version", method: http.MethodPost, suffix: "/versions", body: map[string]string{"summary": "Named version"}},
-		{name: "edit", method: http.MethodPost, suffix: "/edits", body: map[string]any{"ops": []any{}}},
+		{name: "named version", method: http.MethodPost, suffix: "/versions", body: `{"summary":"Named version"}`},
+		{name: "edit", method: http.MethodPost, suffix: "/edits", body: `{"ops":[]}`},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			response := dispatchRequest(t, mux, route.method, "/api/v1/artifacts/not-a-uuid"+route.suffix, route.body, "alice")
+			response := httptest.NewRecorder()
+			statements := recorder.record(func() {
+				request := httptest.NewRequestWithContext(context.WithValue(t.Context(), recordingKey{}, true),
+					route.method, "/api/v1/artifacts/not-a-uuid"+route.suffix, strings.NewReader(route.body))
+				request.Header.Set("X-Dispatch-User", "alice")
+				request.Header.Set("Content-Type", "application/json")
+				mux.ServeHTTP(response, request)
+			})
 			if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"ARTIFACT_NOT_FOUND"`) {
 				t.Fatalf("invalid UUID %s: status=%d body=%s", route.name, response.Code, response.Body.String())
+			}
+			if len(statements) == 0 {
+				t.Fatalf("invalid UUID %s sent no statement: the gate's read of the caller's viewer was not recorded, so this check sees nothing", route.name)
+			}
+			for _, statement := range statements {
+				if statement.SQL != access.VisibleProjectsSQL() {
+					t.Errorf("invalid UUID %s sent a statement other than the read of its caller's viewer: %s %v", route.name, statement.SQL, statement.Args)
+				}
 			}
 		})
 	}

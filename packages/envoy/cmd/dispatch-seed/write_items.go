@@ -53,6 +53,34 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		followerNodes := make([]graphstore.Node, 0, to-from)
 		followed := map[string]struct{}{}
 		opened := make([][]any, 0, to-from)
+		// Each ask's node goes in before any row of the batch, in its project, as the server's
+		// ask create writes it; the seed records no event of it here, so it takes the sentinel.
+		// The owner lock of every ask of the batch comes first, in owner key order, as the
+		// store's lock order has it: the window write below takes each ask's owner lock
+		// (refs.WriteItemWindows), which a batch holding the asks' nodes would otherwise take
+		// after them.
+		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
+		for index := from; index < to; index++ {
+			ask := r.plan.asks[index]
+			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
+			var issueKey, artifactID *string
+			if ask.Issue >= 0 {
+				issueKey = &r.plan.issues[ask.Issue].Key
+			}
+			if ask.Document >= 0 {
+				artifactID = &r.plan.documents[ask.Document].ID
+			}
+			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+				owners = append(owners, *owner)
+			}
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the asks' owners: %w", err)
+		}
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+			return fmt.Errorf("the asks' nodes: %w", err)
+		}
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			mention := ""
@@ -118,7 +146,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				answerJSON, resolution, ask.CreatedAt, blockID, blockArtifact); err != nil {
 				return fmt.Errorf("ask %s: %w", ask.ID, err)
 			}
-			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, serverURL)), ask.CreatedAt)
+			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, seedOrigins)), ask.CreatedAt)
 			if index < r.sizes.AskFollowers {
 				followers = append(followers, []any{ask.ID, ask.Follower, ask.CreatedAt})
 				if _, written := followed[ask.Follower]; !written {
@@ -162,7 +190,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
-			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
+			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, seedOrigins)
 			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
 			if err != nil {
 				return err
@@ -199,6 +227,26 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// writeItemNodes writes the nodes of the asks or the messages one batch copies, before any row of
+// the batch, each in its project (seedRun.itemProject), at the sentinel, as every write of the
+// seed's is. The rows carry no foreign key into the store, so where they fall beside this moves no
+// lock of the store's order.
+func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	return graphstore.Write(ctx, tx, nodes, nil)
+}
+
+// itemProject is the project of an item of the plan: its issue's, or its document's where it
+// belongs to no issue.
+func (r *seedRun) itemProject(issue, document int) string {
+	if issue >= 0 {
+		return r.plan.projects[r.plan.issues[issue].Project].Key
+	}
+	if document >= 0 {
+		return r.plan.projects[r.plan.documents[document].Project].Key
+	}
+	return ""
 }
 
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
@@ -358,7 +406,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
 				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
-					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
+					comment.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				}
 			}
@@ -366,7 +414,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if comment.Edited {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
-			located := text.ExtractAt(body, serverURL)
+			located := text.ExtractAt(body, seedOrigins)
 			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
@@ -416,7 +464,8 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 			}
 		}
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner)
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner,
+			r.itemProject(comment.Issue, comment.Document), nil)
 		nodes = append(nodes, node)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
@@ -438,6 +487,22 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
+		// Each message's node goes in before any row of the batch, in its issue's project, as the
+		// server's message create writes it; every seeded message is on an issue. The issues'
+		// owner locks come first, as for the asks (writeAsks): the window write takes them.
+		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
+		for index := from; index < to; index++ {
+			message := r.plan.messages[index]
+			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			owners = append(owners, store.IssueOwner(r.plan.issues[message.Issue].Key))
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the messages' owners: %w", err)
+		}
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+			return fmt.Errorf("the messages' nodes: %w", err)
+		}
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			mention := ""
@@ -463,11 +528,11 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
 				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
-					message.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
+					message.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
 				}
 			}
-			located := text.ExtractAt(body, serverURL)
+			located := text.ExtractAt(body, seedOrigins)
 			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)

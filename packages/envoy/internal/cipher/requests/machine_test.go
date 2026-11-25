@@ -97,7 +97,7 @@ func replayer(st *store.Store) func(context.Context, string, time.Time) (bool, e
 // (operator) or no one's, and names no service. Returns the enrollment id and the requester's own
 // signing key, whose RFC 7638 thumbprint the row carries (and Create checks a request object's iss
 // against).
-func newEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, operator, subject *string) (string, *ecdsa.PrivateKey) {
+func newEnrollment(t testing.TB, st *store.Store, kind, runtimeID string, operator, subject *string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
 	return insertEnrollment(t, st, kind, runtimeID, operator, nil, subject)
 }
@@ -112,7 +112,7 @@ func newServiceEnrollment(t *testing.T, st *store.Store, service, subject, runti
 
 // insertEnrollment inserts a launcher credential naming operator and service, and a live
 // enrollment under it.
-func insertEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, operator, service, subject *string) (string, *ecdsa.PrivateKey) {
+func insertEnrollment(t testing.TB, st *store.Store, kind, runtimeID string, operator, service, subject *string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
 	ctx := context.Background()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -140,7 +140,7 @@ func insertEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, ope
 // fixtureService registered, its pods running as fixtureSubject, and enrolls one live box session
 // the operator runs. Returns the Machine, that enrollment's id, its own signing key (for
 // record.Sign), and the login DEEL_API_KEY's records name as approver (its owner, the operator).
-func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+func newFixture(t testing.TB) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
 	return newAppFixture(t)
 }
@@ -149,7 +149,7 @@ func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ec
 // stores, through a profile of its own name (policytest.AppProfile), as the broker serves every
 // App it releases: one no profile names is refused (policy.ReasonGitHubAppNoProfile). With no apps
 // the deployment has no profiles file.
-func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+func newAppFixture(t testing.TB, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(fixtureSecrets()...)
@@ -171,7 +171,7 @@ func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID strin
 
 // appCurrent is the live policy of local with fixtureService registered and, for each of apps, a
 // profile of that github-app secret's own name; with none, a deployment with no profiles file.
-func appCurrent(t *testing.T, local *secrets.Local, apps ...string) *policy.Current {
+func appCurrent(t testing.TB, local *secrets.Local, apps ...string) *policy.Current {
 	t.Helper()
 	if len(apps) == 0 {
 		return policytest.Current(t, local, fixtureService)
@@ -184,7 +184,7 @@ func appCurrent(t *testing.T, local *secrets.Local, apps ...string) *policy.Curr
 }
 
 // signRequest signs an agent_secret request object over names, ready for Machine.Create.
-func signRequest(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason string, names ...string) string {
+func signRequest(t testing.TB, m *Machine, key *ecdsa.PrivateKey, reason string, names ...string) string {
 	t.Helper()
 	details := make([]record.AuthorizationDetail, len(names))
 	for i, n := range names {
@@ -1305,8 +1305,10 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 // TestAnyoneDecidesASharedHumanTierRequest pins the approver record.AnyoneApprover: a request for a
 // shared human-tier secret reaches the pending list of its session's operator alone, yet any
 // person's login decides it and is recorded as the decider, the sentinel itself, in any casing,
-// and a blank login decide nothing, approve or deny, and the grant releases its value because its
-// chain verifies under that approver.
+// and a login of white space alone decide nothing, approve or deny, and the grant releases its
+// value because its chain verifies under that approver. An empty login is not among them: a
+// decision is made under an approval-page session (ApplyPageDecision), and browser_sessions
+// refuses a session with none.
 func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
@@ -1323,7 +1325,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 		}
 	}
 	for _, approve := range []bool{true, false} {
-		for _, login := range []string{record.AnyoneApprover, " ANYONE ", "", "  ", "\t"} {
+		for _, login := range []string{record.AnyoneApprover, " ANYONE ", "  ", "\t"} {
 			if _, err := m.ApplyDecision(ctx, *req.RecordID, approve, login); !errors.Is(err, record.ErrNotApprover) {
 				t.Fatalf("ApplyDecision(approve=%v, %q) = %v, want record.ErrNotApprover", approve, login, err)
 			}

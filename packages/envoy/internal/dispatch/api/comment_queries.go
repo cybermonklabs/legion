@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
@@ -56,7 +58,11 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), who, owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -96,31 +102,67 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 // refusal, as this route has always done - so a list that has never been written and one whose
 // owner does not exist are one case in the answer, as they have always been. They are two cases
 // for the server's own keeping: the empty list of an owner no row holds is kept under no key,
-// since that key is the path the caller spelled (writeListAnswer).
-func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, bool, error) {
+// since that key is the path the caller spelled (writeListAnswer). An owner of a project who does
+// not see is read as an owner no row holds (ownerClause).
+func (s *server) commentListWatermark(ctx context.Context, who model.Actor, owner owner) (int64, int64, bool, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
 		query, value = `
-			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
-			       coalesce((select last_seq from issues where key = $1), 0),
-			       exists(select 1 from issues where key = $1)
+			with seen as (select `+ownerClause(owner, "$1", "$2")+` as owner_seen)
+			select case when owner_seen then coalesce((select seq from comment_watermarks where issue_key = $1), 0) else 0 end,
+			       case when owner_seen then coalesce((select last_seq from issues where key = $1), 0) else 0 end,
+			       owner_seen and exists(select 1 from issues where key = $1)
+			from seen
 		`, *owner.IssueKey
 	case owner.ArtifactID != nil:
 		query, value = `
-			select coalesce((select seq from comment_watermarks where artifact_id = $1), 0),
-			       coalesce((select max(seq) from events where artifact_id = $1), 0),
-			       exists(select 1 from artifacts where id = $1)
+			with seen as (select `+ownerClause(owner, "$1", "$2")+` as owner_seen)
+			select case when owner_seen then coalesce((select seq from comment_watermarks where artifact_id = $1), 0) else 0 end,
+			       case when owner_seen then coalesce((select max(seq) from events where artifact_id = $1), 0) else 0 end,
+			       owner_seen and exists(select 1 from artifacts where id = $1)
+			from seen
 		`, *owner.ArtifactID
 	default:
 		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
 	var ownerHeld bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value, refs.VisibilityArg(who)).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
 		return 0, 0, false, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
 	return watermark, lastSeq, ownerHeld, nil
+}
+
+// ownerClause is the rule of the owner a comment list is keyed on, the issue's key or the
+// document's id bound at keyParam, so a statement tests its owner once rather than every row: an
+// issue when the viewer sees its project (access.IssueProjectClause), and a document as an item
+// it owns is read (access.ItemOwnerClause). A document no row holds passes an open viewer alone,
+// which reads it as the empty owner it is.
+func ownerClause(listOwner owner, keyParam, viewerParam string) string {
+	if listOwner.IssueKey != nil {
+		return access.IssueProjectClause(keyParam, viewerParam)
+	}
+	return access.ItemOwnerClause("null::text", keyParam, viewerParam)
+}
+
+// commentListViewOf is the part of who's viewer a comment list's bytes turn on, which its kept
+// answer is filed under beside the owner. The comments, their reply blocks and their mentions and
+// deliveries are read as everyReader; the one read made for who is which sessions they name it
+// sees (leaveOutHiddenCommentSessions), and access.SessionClause decides that from the viewer's
+// session, whether it is open and what it sees, never from its person. So two people who agree on
+// those three share one kept list, where keptViewOf, which an event feed's backlink counts need,
+// would file each person apart. A reader that sees every object reads every session (R9) and files
+// under the owner alone, as keptViewOf does.
+func commentListViewOf(who model.Actor) string {
+	viewer := who.Viewer
+	switch {
+	case viewer == nil:
+		return "\x00closed"
+	case seesEveryObject(who):
+		return ""
+	}
+	return fmt.Sprintf("\x00%s\x00%t\x00%s", viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
 }
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
@@ -185,11 +227,11 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
 		return
 	}
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -199,12 +241,14 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+	// The comment and its replies are hydrated in one pass: one read each of their mentions, their
+	// deliveries and their reply blocks, and one of which sessions those name the reader sees.
+	thread, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, append([]model.Comment{comment}, replies...))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -290,22 +334,47 @@ func withReply(replies []model.Comment, reply model.Comment) []model.Comment {
 	return slices.Insert(replies, index, reply)
 }
 
-func (s *server) loadComment(ctx context.Context, q queryer, id string) (model.Comment, error) {
-	return scanComment(q.QueryRow(ctx, `
+// loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who
+// does not see is pgx.ErrNoRows, as an id no row holds is, and so is an id Postgres will not read
+// as a uuid (malformedIDIsNoRow), which the prefix layer leaves as written when no comment's id
+// starts with it.
+func (s *server) loadComment(ctx context.Context, q queryer, who model.Actor, id string) (model.Comment, error) {
+	comment, err := scanComment(q.QueryRow(ctx, `
 		select `+commentColumns+`
-		from comments where id = $1
-	`, id))
+		from comments c where c.id = $1 and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2"),
+		id, refs.VisibilityArg(who)))
+	return comment, malformedIDIsNoRow(err)
+}
+
+// malformedIDIsNoRow answers pgx.ErrNoRows for an id Postgres refused to read as a uuid (SQLSTATE
+// 22P02, which it reports as it binds the parameter), and err as it is otherwise: an id that is no
+// uuid is an id no row holds, never the database's error.
+func malformedIDIsNoRow(err error) error {
+	var refused *pgconn.PgError
+	if errors.As(err, &refused) && refused.Code == "22P02" {
+		return pgx.ErrNoRows
+	}
+	return err
 }
 
 // loadOwnedComment reads a comment and refuses one that is not on this owner, with the 400 every
 // reply_to walk answers. It locks no row: the caller holds the owner's lock (requireOpenOwner),
 // which every writer of a comment takes before it reads one, so the comment cannot change under
-// the caller until it commits.
+// the caller until it commits. The owner is bound in the read itself, so a comment on another
+// owner - one of a project the writer does not see among them - is not read: it is refused
+// exactly as an id no comment holds is.
 func (s *server) loadOwnedComment(
 	ctx context.Context, tx pgx.Tx, owner owner, id string,
 ) (model.Comment, error) {
-	comment, err := s.loadComment(ctx, tx, id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !commentHasOwner(comment, owner)) {
+	column, value := "issue_key", owner.IssueKey
+	if value == nil {
+		column, value = "artifact_id::text", owner.ArtifactID
+	}
+	comment, err := scanComment(tx.QueryRow(ctx, `
+		select `+commentColumns+`
+		from comments where id = $1 and `+column+` = $2
+	`, id, value))
+	if err = malformedIDIsNoRow(err); errors.Is(err, pgx.ErrNoRows) {
 		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
 	}
 	if err != nil {
@@ -382,11 +451,11 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		ids[index] = comments[index].ID
 		replies[index] = &comments[index]
 	}
-	mentions, err := s.loadCommentMentions(ctx, q, ids)
+	mentions, err := s.loadCommentMentions(ctx, q, who, ids)
 	if err != nil {
 		return nil, err
 	}
-	deliveries, err := s.loadCommentDeliveries(ctx, q, ids)
+	deliveries, err := s.loadCommentDeliveries(ctx, q, who, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +466,50 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		comments[index].Mentions = mentions[comments[index].ID]
 		comments[index].Deliveries = deliveries[comments[index].ID]
 	}
-	return comments, nil
+	return comments, leaveOutHiddenCommentSessions(ctx, q, who, comments)
+}
+
+// leaveOutHiddenCommentSessions writes comments as who reads them (the rule of references,
+// references_seen.go): a mention or a delivery attempt naming a session who does not see - by the
+// session it resolved to or reached, or by a `session:<id>` target - or targeting a role of a
+// private project who does not see (a `role:legion-<project>-…` target), is left out, as the
+// comment would read had it never named it. Its one read is made whatever the comments name
+// (seenReferences); no comment reads nothing.
+func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) error {
+	if seesEveryObject(who) || len(comments) == 0 {
+		return nil
+	}
+	named := references{}
+	for _, comment := range comments {
+		for _, mention := range comment.Mentions {
+			named.nameRoute(&mention.Target)
+			if mention.SessionID != nil {
+				named.name(sessionReference, *mention.SessionID)
+			}
+		}
+		for _, delivery := range comment.Deliveries {
+			named.nameRoute(&delivery.Target)
+			if delivery.SessionID != nil {
+				named.name(sessionReference, *delivery.SessionID)
+			}
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	hidden := func(target string, session *string) bool {
+		return !seen.holdsRoute(target) || session != nil && *session != "" && !seen.holds(sessionReference, *session)
+	}
+	for index := range comments {
+		comments[index].Mentions = slices.DeleteFunc(comments[index].Mentions, func(mention model.Mention) bool {
+			return hidden(mention.Target, mention.SessionID)
+		})
+		comments[index].Deliveries = slices.DeleteFunc(comments[index].Deliveries, func(delivery model.CommentDelivery) bool {
+			return hidden(delivery.Target, delivery.SessionID)
+		})
+	}
+	return nil
 }
 
 // hydrateWrittenComment is the comment a write answers, with the side tables
@@ -421,7 +533,7 @@ func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, who model
 // answers it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the
 // block it replies to, read now from the pool.
 func (s *server) freshComment(ctx context.Context, who model.Actor, id string) (model.Comment, error) {
-	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, who, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
@@ -437,7 +549,7 @@ func (s *server) freshComment(ctx context.Context, who model.Actor, id string) (
 // the caller the repeat answers (freshComment), shaped as those routes shape it, an accept's lost
 // kept from the first answer.
 func (s *server) rereadComment(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -458,7 +570,7 @@ func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id s
 		s.rereadComment(w, r, id, status, stored)
 		return
 	}
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -470,7 +582,9 @@ func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id s
 	s.writeRefreshed(w, status, stored, reply)
 }
 
-func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {
+// loadCommentMentions reads the mentions of each of commentIDs, of the comments who may read
+// (access.ItemOwnerClause over each mention's own comment).
+func (s *server) loadCommentMentions(ctx context.Context, q queryer, who model.Actor, commentIDs []string) (map[string][]model.Mention, error) {
 	mentions := make(map[string][]model.Mention, len(commentIDs))
 	for _, id := range commentIDs {
 		mentions[id] = []model.Mention{}
@@ -479,11 +593,12 @@ func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs 
 		return mentions, nil
 	}
 	rows, err := q.Query(ctx, `
-		select comment_id::text, target, delivery, resolved_session_id
-		from comment_mentions
-		where comment_id = any($1::uuid[])
-		order by comment_id, target
-	`, commentIDs)
+		select m.comment_id::text, m.target, m.delivery, m.resolved_session_id
+		from comment_mentions m
+		join comments c on c.id = m.comment_id
+		where m.comment_id = any($1::uuid[]) and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2")+`
+		order by m.comment_id, m.target
+	`, commentIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +614,9 @@ func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs 
 	return mentions, rows.Err()
 }
 
-func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.CommentDelivery, error) {
+// loadCommentDeliveries reads the delivery attempts of each of commentIDs, of the comments who may
+// read (access.ItemOwnerClause over each attempt's own comment).
+func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, who model.Actor, commentIDs []string) (map[string][]model.CommentDelivery, error) {
 	deliveries := make(map[string][]model.CommentDelivery, len(commentIDs))
 	for _, id := range commentIDs {
 		deliveries[id] = []model.CommentDelivery{}
@@ -510,9 +627,11 @@ func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentID
 	rows, err := q.Query(ctx, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries
-		where comment_id = any($1::uuid[])
+		where comment_id = any($1::uuid[]) and exists (
+			select 1 from comments c
+			where c.id = comment_deliveries.comment_id and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2")+`)
 		order by comment_id, target, attempt
-	`, commentIDs)
+	`, commentIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

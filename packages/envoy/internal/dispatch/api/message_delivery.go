@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -160,7 +160,11 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.loadMessage(ctx, s.deps.Store.Pool, who, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -642,7 +646,8 @@ func finishPendingMessageDelivery(
 		if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, &message); err != nil {
 			return err
 		}
-		derived, err := loadMessageReplyThread(ctx, tx, message)
+		// The writer's path read this parent as its writer reads it; the frame reads it as everyReader.
+		derived, err := loadMessageReplyThread(ctx, tx, everyReader, message)
 		if err != nil {
 			return err
 		}
@@ -1053,6 +1058,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The writer's reader is resolved before the transaction holds a connection: the answer a
+	// repeat reads back is loaded as the writer may read it (loadMessage), and the role read below
+	// reads the message as the writer does.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
@@ -1084,7 +1096,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// (messages.go) - and the row this route judges and answers from is the one read again
 	// under that lock. A message with no issue takes no lock and needs none: a delete refuses
 	// one (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set.
-	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
+	message, err := s.loadMessage(r.Context(), tx, who, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -1094,7 +1106,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if message, err = s.loadMessage(r.Context(), tx, "", message.ID); err != nil {
+		if message, err = s.loadMessage(r.Context(), tx, who, "", message.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1160,7 +1172,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 				"a follow-up is filed under the session's first reply, so it names no block of message "+message.ID)
 			return
 		}
-		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
+		answer, err := s.loadMessage(r.Context(), tx, who, messageIssueKey(message), *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1413,8 +1425,10 @@ func scanMessageDelivery(row pgx.Row, extra ...any) (model.MessageDelivery, erro
 
 // loadMessageDeliveries reads every delivery attempt of the given messages in one query, keyed
 // by message id and ordered by attempt within each; a message with no attempts maps to an empty
-// (never nil) slice.
-func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageIDs []string) (map[string][]model.MessageDelivery, error) {
+// (never nil) slice. Each attempt is read only where who may read its own message
+// (access.MessageClause, in the statement itself), so a message made hidden after the read of it
+// answers no attempt.
+func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, who model.Actor, messageIDs []string) (map[string][]model.MessageDelivery, error) {
 	deliveries := make(map[string][]model.MessageDelivery, len(messageIDs))
 	for _, id := range messageIDs {
 		deliveries[id] = []model.MessageDelivery{}
@@ -1424,8 +1438,12 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 	}
 	rows, err := q.Query(ctx, `
 		select `+messageDeliveryColumns+`
-		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
-	`, messageIDs)
+		from message_deliveries
+		where message_id = any($1::uuid[]) and exists (
+			select 1 from messages m
+			where m.id = message_deliveries.message_id and `+access.MessageClause("m", "$2")+`)
+		order by message_id, attempt
+	`, messageIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -1448,8 +1466,8 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 // pool after the write committed, so a read that fails there fails the answer of a write that
 // stands: a keyed repeat's answer (recoveredMessage, freshMessage), and the answer of a targeted
 // message whose attempt 1 another sender took (createStoredMessage's errAttemptNotPending).
-func (s *server) hydrateWrittenMessage(ctx context.Context, q queryer, message *model.Message) error {
-	deliveries, err := s.loadMessageDeliveries(ctx, q, []string{message.ID})
+func (s *server) hydrateWrittenMessage(ctx context.Context, q queryer, who model.Actor, message *model.Message) error {
+	deliveries, err := s.loadMessageDeliveries(ctx, q, who, []string{message.ID})
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -143,6 +144,8 @@ func (stream *liveSubscriptionStream) ended(ctx context.Context) error {
 
 func (stream *liveSubscriptionStream) Holds(scope string) bool { return stream.socket.holds(scope) }
 
+func (stream *liveSubscriptionStream) Caller() model.Actor { return stream.socket.caller() }
+
 // subscribeLive answers one subscribe frame: it starts the subscription the frame's view's kind
 // names in place of any the socket holds under the frame's sub, or answers the error frame refusing
 // it. A frame the socket refuses itself (no sub, a kind it does not serve, a resume of another
@@ -193,6 +196,7 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		if held != nil && held.streamed != nil {
 			s.endLive(socket, sub, held)
 		}
+		resolve := func(ctx context.Context) (model.Actor, error) { return s.readerFor(ctx, socket.caller()) }
 		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume}) {
 			socket.subs[sub] = &liveSub{}
 		}

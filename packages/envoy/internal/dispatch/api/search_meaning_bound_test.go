@@ -241,7 +241,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 
 	// The check searched by meaning on this database, under the case's bound (meaningVerdictServer),
 	// before the bound on its statement was shortened.
-	healthy := meaningVerdictServer(t, srv.deps).relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	healthy := meaningVerdictServer(t, srv.deps).relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}
@@ -251,7 +251,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	endMeaningStatementsAt(t, "1ms")
 	release := holdMeaningStatements(t, database)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
-		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+		return srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MBOUND", text: text})
 	})
 	release()
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||

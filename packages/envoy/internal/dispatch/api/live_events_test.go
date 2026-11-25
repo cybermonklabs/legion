@@ -15,7 +15,6 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"

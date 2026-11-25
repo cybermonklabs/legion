@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A write to a document no room holds forks the stored document and loads no room while it runs:
@@ -73,7 +74,7 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 			if lost, verdict := ledger.LostOps(artifactID); !verdict || len(lost) != 0 {
 				t.Fatalf("the write's lost operations = %v (verdict %t), want none, judged on the store", lost, verdict)
 			}
-			got, err := service.Text(context.Background(), artifactID)
+			got, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read the document: %v", err)
 			}
@@ -163,7 +164,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				Persistence: store,
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
-				ServerURL:   "https://dispatch.example",
+				Origins:     text.NewOrigins("https://dispatch.example"),
 				Settle:      time.Hour,
 			})
 			t.Cleanup(func() {

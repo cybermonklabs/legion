@@ -24,7 +24,6 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
-
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -42,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -85,15 +85,17 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and server URL,
-// shut down once the test ends, after every cleanup registered later (a server's wait among
-// them). An input with no broker gets one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker, identity and origins (the
+// server URL and the outside origin, read as NewDeps reads them), shut down once the test ends,
+// after every cleanup registered later (a server's wait among them). An input with no broker gets
+// one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -150,7 +152,8 @@ type testServerOptions struct {
 	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
 	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
 	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
-	agentSecretsURL string
+	agentSecretsURL       string
+	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -347,7 +350,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, Origins: text.NewOrigins(testServerURL), Settle: settle})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -365,8 +368,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
-	agentSecretsTokenFile := ""
-	if options.agentSecretsURL != "" {
+	agentSecretsTokenFile := options.agentSecretsTokenFile
+	if options.agentSecretsURL != "" && agentSecretsTokenFile == "" {
 		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
 	}
 	deps, err := NewDeps(DepsInput{
@@ -617,7 +620,10 @@ func assertUnchanged(t *testing.T, request string, before, after map[string]stri
 // awaitBackgroundWrites waits for every write srv's earlier requests left running past their
 // answers: the term-statistics refresh a related-item check starts for a project with no statistics
 // yet (ensureSearchTermStats), which commits search_term_stats and search_term_totals rows when it
-// finishes, and every detached run (srv.detached), such as a related_checks record's retry.
+// finishes; every detached run (srv.detached), such as a related_checks record's retry; and every
+// comment mention the mention sender holds (mentionSender.held), whose send writes the comment's
+// deliveries, watermarks and events. A comment enqueues its mentions before it answers
+// (createComment), so once the request has answered, an empty held set is a settled sender.
 func awaitBackgroundWrites(t *testing.T, srv *server) {
 	t.Helper()
 	rows, err := srv.deps.Store.Pool.Query(context.Background(), `select key from projects`)
@@ -640,6 +646,21 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 	case <-idle:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server's detached work did not end")
+	}
+	// A server built without its background work (directServer) has no mention sender, and so
+	// holds no send.
+	held := func() int {
+		if srv.mentions == nil {
+			return 0
+		}
+		srv.mentions.mu.Lock()
+		defer srv.mentions.mu.Unlock()
+		return len(srv.mentions.held)
+	}
+	for deadline := time.Now().Add(30 * time.Second); held() > 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the mention sender still holds %d sends after 30s", held())
+		}
 	}
 }
 
@@ -924,7 +945,7 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
+func (failingLoadStore) DocumentStamp(context.Context, string, any) (docs.DocumentStamp, error) {
 	return docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
@@ -2168,8 +2189,9 @@ func newCookieServer(t *testing.T) (http.Handler, *store.PgSessionStore, *http.C
 }
 
 // newCookieServerOn is newCookieServer on database, with heartbeat as the API's StreamHeartbeat
-// (zero leaves it unset), also returning the server's document service.
-func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
+// (zero leaves it unset), also returning the server's document service. Each of with edits the
+// dependencies before the server is built.
+func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration, with ...func(*DepsInput)) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
 	t.Helper()
 	sessions := store.NewPgSessionStore(database.Pool)
 	cookieIdentity := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}
@@ -2178,10 +2200,14 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store: database, Identity: cookieIdentity, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs: documentService, Events: broker, StreamHeartbeat: heartbeat,
-	})
+	}
+	for _, edit := range with {
+		edit(&input)
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
@@ -2189,14 +2215,15 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	// Every server mounts GET /ws/live, the event feed's socket, which a revoked cookie is refused
 	// too.
 	t.Cleanup(Register(handler, t.Context(), deps).Wait)
+	// A session cookie is issued at sign-in, and a sign-in records the person first (people.Record,
+	// as the sign-in callback does, before EnsureSession; a new session names a person people holds,
+	// migration 20261118041916), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	generation, err := sessions.EnsureSession(context.Background(), "alice@d.example")
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
-	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
-	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
-	// defaults to her, and that default is held to the people table like every other.
-	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

@@ -164,7 +164,8 @@ var proofAlgorithmNames = func() []string {
 }()
 
 // Caller is who a verified token names and whether that token only reads: what a writer is
-// recorded under, and nothing else the broker's answer carries. It never carries the token.
+// recorded under and the Google account its credential records, and nothing else the broker's
+// answer carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -179,10 +180,11 @@ type Caller struct {
 	// caller may do; what this package promises is that one of the two is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
-	// token's one project, or none for an account entry naming none (the shared public-session
-	// account's, and an account entry naming no person), and the projects a ProjectScopePerson
-	// token's trade asked for, each one its person could see then, nil for none. A read-only
-	// caller (ReadOnly) names none, since it writes none. Sorted, each once.
+	// token's one project (an operator's entry's, or a restricted member's machine login's), or
+	// none for an account entry naming none (the shared public-session account's, and an account
+	// entry naming no person), and the projects a ProjectScopePerson token's trade asked for, each
+	// one its person could see then, nil for none. A read-only caller (ReadOnly) names none, since
+	// it writes none. Sorted, each once.
 	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
@@ -195,9 +197,38 @@ type Caller struct {
 	// the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
+	// AccountIssuer and AccountSubject are the Google account the token's credential records at
+	// the broker (Introspection's AccountIssuer and AccountSubject): the person token that made
+	// the sign-in the token was minted under, or the account that approved the machine login it
+	// was exchanged from. Both are empty for a token recording none: a token naming no person (a
+	// read-only one among them), and one whose sign-in or machine login was made before the
+	// broker recorded accounts. Whoever mounts this check decides whether that account may still
+	// act for Person.
+	AccountIssuer  string
+	AccountSubject string
+	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
+	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
+	// the answer and keeps it as long as it keeps any affirmative answer
+	// (AffirmativeCacheTTL). Dispatch reads it after its own revocation and admission checks,
+	// and the Envoy listener after its own checks, and each refuses a held caller 401
+	// MEMBERSHIP_HELD.
+	Held bool
+	// NotHeldUntil is the broker's introspection answer's `not_held_until`
+	// (Introspection.NotHeldUntil): when its answer that Person is not held stops being good, the
+	// deadline an IAP deployment's Dispatch put on it. The zero time for an answer naming none, a
+	// held one and every answer outside IAP. The Verifier keeps a not-held answer no later than
+	// it, and Dispatch and the Envoy listener refuse a not-held caller as unavailable once it is not
+	// after the Verifier's clock (Verifier.Lapsed).
+	NotHeldUntil time.Time
+	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
+	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
+	// machine login it was exchanged from. The zero time for a token naming no person and for one
+	// minted before the broker recorded it. Whoever mounts this check holds a token recording no
+	// account to it.
+	CredentialCreatedAt time.Time
 }
 
-// Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
+// Options is what a Verifier needs. BrokerURL, Account, Origins, Replay and Address are required.
 type Options struct {
 	// BrokerURL is the secrets broker's base URL (DISPATCH_AGENT_SECRETS_URL for Dispatch,
 	// ENVOY_AGENT_SECRETS_URL for a listener), the origin IntrospectPath is asked on.
@@ -206,10 +237,12 @@ type Options struct {
 	// a projected Kubernetes ServiceAccount token (AccountToken) or a machine's Google identity
 	// token (GoogleAccount).
 	Account Account
-	// Origin is the mounting program's own public origin (DISPATCH_SERVER_URL,
-	// ENVOY_PUBLIC_URL): an absolute http(s) URL with no path. A proof's 'htu' is checked
-	// against it plus the request's path, never against a forwarded header — see atOrigin.
-	Origin string
+	// Origins are the mounting program's own public origins, the canonical one first
+	// (DISPATCH_SERVER_URL, then DISPATCH_OUTSIDE_ORIGIN where it is set; ENVOY_PUBLIC_URL alone):
+	// each an absolute http(s) URL with no path, and no two with one Host (host and port). A
+	// proof's 'htu' is checked against one of them plus the request's path, never against a
+	// forwarded header — see atOrigin.
+	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).
 	Replay rfc9449.DPoPReplayStorage
@@ -250,11 +283,8 @@ type Options struct {
 type Verifier struct {
 	brokerURL string
 	account   Account
-	origin    *url.URL
-	// originTLS is the TLS state atOrigin puts on the request it rewrites: one empty state for
-	// the whole process when the origin is https, nil when it is not. Nothing reads more of it
-	// than whether it is there, and nothing writes to it, so every request shares this one.
-	originTLS *tls.ConnectionState
+	// origins are Options.Origins as atOrigin puts each on a request, the canonical one first.
+	origins   []origin
 	http      *http.Client
 	strategy  *rfc9449.DefaultStrategy
 	address   func(r *http.Request) string
@@ -267,9 +297,19 @@ type Verifier struct {
 	servesReadOnly bool
 }
 
+// origin is one of Options.Origins as atOrigin puts it on a request: its scheme and host, and the
+// TLS state of a request that reached it — one empty state built with the Verifier when the
+// origin is https, nil when it is not. Nothing reads more of that state than whether it is there,
+// and nothing writes to it, so every request rewritten to the origin shares this one.
+type origin struct {
+	scheme, host string
+	tls          *tls.ConnectionState
+}
+
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
-// failing one request at a time: a missing dependency and an Origin that is not an absolute
-// http(s) origin are both deployment errors.
+// failing one request at a time: a missing dependency, no origin, an origin that is not an
+// absolute http(s) origin, and two origins with one Host (host and port), which no request's Host
+// could tell apart (atOrigin), are all deployment errors.
 func New(options Options) (*Verifier, error) {
 	if options.BrokerURL == "" {
 		return nil, errors.New("brokertoken: the broker URL is required")
@@ -283,12 +323,9 @@ func New(options Options) (*Verifier, error) {
 	if options.Address == nil {
 		return nil, errors.New("brokertoken: the source address function is required")
 	}
-	origin, err := url.Parse(options.Origin)
+	origins, err := originsOf(options.Origins)
 	if err != nil {
-		return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", options.Origin, err)
-	}
-	if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-		return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", options.Origin)
+		return nil, err
 	}
 	limit := options.AddressLimit
 	if limit == (ratelimit.Limit{}) {
@@ -302,19 +339,12 @@ func New(options Options) (*Verifier, error) {
 	if now == nil {
 		now = time.Now
 	}
-	// One empty state serves every request atOrigin rewrites, built here rather than per
-	// request: what reads it asks only whether the request carried TLS.
-	var originTLS *tls.ConnectionState
-	if origin.Scheme == "https" {
-		originTLS = &tls.ConnectionState{}
-	}
 	return &Verifier{
 		// The trailing slash goes so BrokerURL + IntrospectPath is one path, as cipher.New
 		// trims it for the same reason.
 		brokerURL: strings.TrimRight(options.BrokerURL, "/"),
 		account:   options.Account,
-		origin:    origin,
-		originTLS: originTLS,
+		origins:   origins,
 		http:      client,
 		strategy:  rfc9449.NewDefaultStrategy(proofConfig{}, withoutNonces{options.Replay}),
 		address:   options.Address,
@@ -324,6 +354,35 @@ func New(options Options) (*Verifier, error) {
 
 		servesReadOnly: options.ServesReadOnly,
 	}, nil
+}
+
+// originsOf is raw, Options.Origins, as the origins atOrigin puts on a request, in the same
+// order, or the refusal of the first origin New cannot serve a request with.
+func originsOf(raw []string) ([]origin, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("brokertoken: at least one origin is required")
+	}
+	origins := make([]origin, 0, len(raw))
+	for _, value := range raw {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", value, err)
+		}
+		if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+			return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", value)
+		}
+		for _, earlier := range origins {
+			if strings.EqualFold(earlier.host, parsed.Host) {
+				return nil, fmt.Errorf("brokertoken: the origin %q has the Host of %s://%s, and no request's Host could tell the two apart", value, earlier.scheme, earlier.host)
+			}
+		}
+		next := origin{scheme: parsed.Scheme, host: parsed.Host}
+		if parsed.Scheme == "https" {
+			next.tls = &tls.ConnectionState{}
+		}
+		origins = append(origins, next)
+	}
+	return origins, nil
 }
 
 // RetryAfter is how long a source address waits for its next introspection, for the Retry-After
@@ -379,6 +438,16 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
 	_, _, caller, err := v.live(ctx, r, true)
 	return caller, err
+}
+
+// Lapsed reports whether caller, a Caller this verifier answered, is not held and its NotHeldUntil
+// is set and not after this verifier's clock: the deadline an IAP deployment's Dispatch put on its
+// answer that the person is not held has passed, so whether they may still act cannot be read,
+// and each reader refuses the caller as unavailable rather than serving it. A held caller is never
+// lapsed: it is refused as held. The verifier's clock is the one its cache keeps the answer by, so
+// a kept answer and a fresh one are judged alike.
+func (v *Verifier) Lapsed(caller Caller) bool {
+	return !caller.Held && !caller.NotHeldUntil.IsZero() && !caller.NotHeldUntil.After(v.now())
 }
 
 // LiveUntil is Live and the instant the broker's answer says the token stops being live: its
@@ -452,15 +521,16 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// project scope read together with the OAuth scope: a project-scope word this package does
 	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
 	// here rather than taken as a token that names no project at all (ErrNotASession). A
-	// read-only token passes only a verifier whose service serves one. A named token is an
-	// operator's entry's, which names one project, or none for an account entry that names none:
-	// such an entry names a person, or names no person and acts as its account, which is the
-	// token's service and is always a whole Kubernetes account subject (oauthwire.AccountSubject),
-	// so a named answer naming no person and any other service, a fleet's name or a string that
-	// only opens like an account among them, is no token the broker mints. A named answer naming
-	// two or more projects, which a reader holding a write to one project would take as no limit
-	// at all, is the same case. A list no exchange mints (oauthwire.ValidProjects) and a service's
-	// token naming a project, which the exchange refuses to mint, are refused for the same reason.
+	// read-only token passes only a verifier whose service serves one. A named token is held to
+	// one project, an operator's entry's or a restricted member's machine login's, or names none
+	// for an account entry that names none: such an entry names a person, or names no person and
+	// acts as its account, which is the token's service and is always a whole Kubernetes account
+	// subject (oauthwire.AccountSubject), so a named answer naming no person and any other service,
+	// a fleet's name or a string that only opens like an account among them, is no token the broker
+	// mints. A named answer naming two or more projects, which a reader holding a write to one
+	// project would take as no limit at all, is the same case. A list no exchange mints
+	// (oauthwire.ValidProjects) and a service's token naming a project, which the exchange refuses
+	// to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
@@ -573,19 +643,33 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spe
 	return shared.(Introspection), nil
 }
 
-// atOrigin is r as if it had reached Dispatch's own public origin directly: its URL's scheme and
-// host and its Host are that origin's, it carries TLS state exactly when that origin is https,
-// and it has no forwarding headers.
+// atOrigin is r as if it had reached the origin it came to directly: its URL's scheme and host
+// and its Host are that origin's, it carries TLS state exactly when that origin is https, and it
+// has no forwarding headers. The origin it came to is the one of Options.Origins whose host is
+// r.Host, compared without regard to case, and the first, the canonical one, for every other
+// Host — Dispatch's own rule for which origin a request is answered as (routes.publicOrigin). So
+// a verifier of one origin checks every request against it, whatever its Host.
 //
 // The library rebuilds a proof's expected 'htu' from X-Forwarded-Proto and r.Host
 // (oauth2.RequestURL), both of which a caller behind a proxy could choose, so the proof would
 // name a URL the caller picked rather than Dispatch's. The broker answers this the same way for
-// its own OAuth routes (internal/cipher/api/handlers_oauth.go, atPublicURL): the caller signs
-// DISPATCH_SERVER_URL plus the request's path, and Dispatch checks against exactly that.
+// its own OAuth routes (internal/cipher/api/handlers_oauth.go, atPublicURL): the caller signs the
+// origin it sends to plus the request's path, and Dispatch checks against exactly that. r.Host
+// is the caller's to write too, and choosing it chooses only which of the program's own origins
+// the proof must name, never a URL the caller picked: a proof names one 'htu', and the replay
+// store records it by that 'htu', so a proof one origin accepted is spent, and the other never
+// accepts it.
 func (v *Verifier) atOrigin(r *http.Request) *http.Request {
+	at := v.origins[0]
+	for _, other := range v.origins[1:] {
+		if strings.EqualFold(r.Host, other.host) {
+			at = other
+			break
+		}
+	}
 	out := r.Clone(r.Context())
-	out.URL.Scheme, out.URL.Host, out.Host = v.origin.Scheme, v.origin.Host, v.origin.Host
-	out.TLS = v.originTLS
+	out.URL.Scheme, out.URL.Host, out.Host = at.scheme, at.host, at.host
+	out.TLS = at.tls
 	out.Header.Del("X-Forwarded-Proto")
 	out.Header.Del("X-Forwarded-Host")
 	return out

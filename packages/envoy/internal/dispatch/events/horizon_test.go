@@ -1720,6 +1720,8 @@ func commitHorizonEvent(ctx context.Context, t *testing.T, database *store.Store
 	return id
 }
 
+// resetEventLog empties the event log and restarts its ids, as e2e/seed.ts's reset does: with every
+// table that references events (project_access_changes), which a truncate of events alone refuses.
 // holdOtherDatabaseTransactionID opens a transaction in the test cluster's postgres database and
 // takes a transaction id, as another service's job on the instance does, and holds it open until
 // the test ends.
@@ -1760,7 +1762,7 @@ func holdTransactionIDWithoutAnEvent(ctx context.Context, t *testing.T, database
 
 func resetEventLog(ctx context.Context, t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := database.Pool.Exec(ctx, `truncate events restart identity`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
 	}
 }

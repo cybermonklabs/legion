@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -97,10 +96,11 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The caller's own credential names the writer: this route takes no `actor`, so a question
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
-	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded). The reader
+	// is resolved here, at the start, with what that credential may see (readerOf), and the run's
+	// search reads as it (goingSearch).
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	actor := caller.Recorded()
@@ -173,16 +173,17 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, reader) })
 	WriteJSON(w, http.StatusCreated, request)
 }
 
-// startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
-// window the record gave it (goingRequest.EndsAt), which is what every reader of the run reads
-// too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
-// a run reaching its deadline is stored at the moment the deadline passes and a context that
-// ended with the run could not store it.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
+// startGoingRun answers one recorded run and stores its frames, searching as reader, the asker
+// with what it may see. The run itself is bounded by the window the record gave it
+// (goingRequest.EndsAt), which is what every reader of the run reads too; the writes are bounded
+// by that window and goingStreamGrace, because the terminal frame of a run reaching its deadline
+// is stored at the moment the deadline passes and a context that ended with the run could not
+// store it.
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, reader model.Actor) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
@@ -203,7 +204,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
-		Search: s.goingSearch(request.Project, request.Author),
+		Search: s.goingSearch(request.Project, reader),
 		Bodies: s.goingBodies(request.ID),
 	}, emit)
 	switch {
@@ -221,10 +222,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
-func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
+// search past what the caller asked of. It searches as reader, the credential that asked the
+// question and the only one the stream serves, with the viewer that credential resolved when it
+// asked, so the answer is drawn from what that credential may read and no more.
+func (s *server) goingSearch(project string, reader model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
@@ -289,6 +290,10 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
 	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and this route answers an
@@ -297,7 +302,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		writeGoingRequestNotFound(w)
 		return
 	}
-	request, err := s.readGoingRequest(r.Context(), id)
+	request, err := s.readGoingRequest(r.Context(), who, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeGoingRequestNotFound(w)
 		return
@@ -332,7 +337,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	ctx, done := context.WithDeadline(r.Context(), until)
 	defer done()
 	for {
-		frames, state, err := s.readGoingStream(ctx, id, after)
+		frames, state, err := s.readGoingStream(ctx, who, id, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
 			// (contracts.GoingRequestTTL); either way there is nothing left to read.

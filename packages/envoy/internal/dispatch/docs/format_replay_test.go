@@ -115,13 +115,13 @@ func TestEveryCopyOfARoomReplaysItsFormattedCommitsToItsMarkdown(t *testing.T) {
 	}
 
 	want := roomMarkdown(t, service, artifactID)
-	if got, err := service.Text(ctx, artifactID); err != nil || got != want {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != want {
 		t.Fatalf("the replica reads %q (%v), want the room's %q", got, err, want)
 	}
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room: %v", err)
 	}
-	if got, err := service.Text(ctx, artifactID); err != nil || got != want {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != want {
 		t.Fatalf("the stored history folds to %q (%v), want the room's %q", got, err, want)
 	}
 	if got := roomMarkdown(t, service, artifactID); got != want {

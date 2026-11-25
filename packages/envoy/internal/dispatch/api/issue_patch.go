@@ -67,6 +67,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The issue is read as the caller reads it (loadIssue), so the reader is resolved here,
+	// before the write holds a connection.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -200,7 +206,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if closes {
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
-		s.settleIssueBeforeClose(outlivingTheClient(r), key)
+		s.settleIssueBeforeClose(outlivingTheClient(r), who, key)
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -272,7 +278,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	before, err := s.loadIssue(r.Context(), tx, key)
+	before, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -306,7 +312,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.RefuseOpenForeignChildren {
 		var open openForeignChildrenError
-		if err := refuseOpenForeignChildren(r.Context(), tx, key, before.Project); errors.As(err, &open) {
+		if err := refuseOpenForeignChildren(r.Context(), tx, who, key, before.Project); errors.As(err, &open) {
 			WriteJSON(w, http.StatusConflict, open.body())
 			return
 		} else if err != nil {
@@ -372,7 +378,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "status = "+placeholder, "closed_at = case when "+placeholder+" = 'done' then now() else null end")
 	}
 	if input.Rank != nil {
-		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
+		issueRank, err := s.rankForInput(r.Context(), tx, who, before.Project, key, *input.Rank)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -592,7 +598,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// response's last_seq and the status event's payload are filled in from what those appends
 	// took (appendedIssueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted
 	// here.
-	after, err := s.loadIssue(r.Context(), tx, key)
+	after, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

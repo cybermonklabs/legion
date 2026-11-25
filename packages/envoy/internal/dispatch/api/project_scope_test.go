@@ -269,12 +269,11 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 				if refusal.Code != codeProjectScope {
 					t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
 				}
-				if !strings.Contains(refusal.Error, own.key) || !strings.Contains(refusal.Error, other.key) {
-					t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the project the write belongs to (%s)",
-						refusal.Error, own.key, other.key)
-				}
-				if strings.Contains(refusal.Error, token) {
-					t.Fatalf("the refusal repeats the token: %q", refusal.Error)
+
+				seen := rig.serve(caller.presenting(t, write.method, write.path(other, spelling.spell), token, write.body))
+				if wantOther := `{"code":"PROJECT_SCOPE","error":"this request's credential may write project BRK; this write belongs to project OTH"}`; seen.Code != http.StatusForbidden ||
+					strings.TrimSpace(seen.Body.String()) != wantOther {
+					t.Fatalf("a write to %s: status=%d body=%s, want 403 %s", other.key, seen.Code, seen.Body.String(), wantOther)
 				}
 
 				answered := rig.serve(caller.presenting(t, write.method, write.path(own, spelling.spell), token, write.body))

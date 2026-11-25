@@ -26,7 +26,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -825,8 +824,10 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
-// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// from the attempt it holds, with that attempt's time in UTC, and a failed one's cause by its class
+// alone: the status GitHub answered ("status 503"), or "no status" for a failure that carries
+// none, since the cause's text can name a repository (gitHubReadCauseClass). `at` and `cause` are
+// present and null wherever the state carries neither, and the four keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -859,7 +860,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	fromTheCopy := map[string]map[string]any{
 		"webhook_redelivery":  entry("no_attempt", nil, nil),
 		"architecture_import": entry("succeeded", &succeededAt, nil),
-		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"delivery_reconcile":  entry("failed", &failedAt, new("status 503")),
 		"ci_reconcile":        entry("off", nil, nil),
 	}
 
@@ -882,6 +883,10 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		"architecture_import": entry("unknown", nil, nil),
 		"delivery_reconcile":  entry("unknown", nil, nil),
 		"ci_reconcile":        entry("off", nil, nil),
+	})
+	_, health = probeGitHubReads(t, database, unanswered)
+	requireGitHubReads(t, "with a failure that carries no status", health.GitHub, map[string]map[string]any{
+		"delivery_reconcile": entry("failed", &failedAt, new("no status")),
 	})
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // askPartLayout reads an ask's parts as one line: its current parts in order, each as
@@ -353,8 +354,8 @@ func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
 	// release had no part index, so the parts are owed and the reconciliation indexes them.
 	rewordAsAnEarlierRelease(t, database, issue.Key, ask, "Ship on Tuesday?",
 		[]model.AskOption{{Label: "Tuesday", Description: "Ship it."}, {Label: "No", Description: "Later."}})
-	if indexed, err := refs.IndexOwedItemBlocks(context.Background(), database.Pool,
-		refs.OwedItemBlock{Kind: refs.ItemAsk, ID: ask.ID}, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.IndexOwedItemBlocks(context.Background(), database.Pool, refs.OwedItemBlock{Kind: refs.ItemAsk, ID: ask.ID}, text.NewOrigins(
+		"https://dispatch.example")); err != nil || !indexed {
 		t.Fatalf("the reconciliation indexed the reworded ask = %v (%v), want it indexed", indexed, err)
 	}
 	requireAskParts(t, database, ask.ID, "the earlier release's rewording", "b1@3 b2@3 b3@1 b4@2", 3)

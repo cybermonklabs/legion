@@ -266,10 +266,10 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 // deployment that configured one and not the other still shows the board. A project that does
 // not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.reader, spec.project); err != nil {
 		return nil, err
 	}
-	board, err := h.server.readLegionBoard(ctx, spec.project)
+	board, err := h.server.readLegionBoard(ctx, spec.reader, spec.project)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	if spec.at != nil {
 		read.at = *spec.at
 	}
-	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, spec.reader, read.settings, read.at); err != nil {
 		return nil, err
 	}
 	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
@@ -331,7 +331,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	if spec.preset > 0 {
 		from, to = now.Add(-spec.days()), now
 	}
-	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, spec.reader, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
 	read.issues = map[string]struct{}{}

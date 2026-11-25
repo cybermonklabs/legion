@@ -25,34 +25,49 @@ import (
 // login in it.
 const heldDescription = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
 
-// TestMembershipHeldIsNotPermanent: the broker's `membership_held` is not a refusal the client
-// stops on, and the wire corpus both clients replay says the same of it.
-func TestMembershipHeldIsNotPermanent(t *testing.T) {
-	refused := &RefusedError{Status: 400, Code: "membership_held", Description: heldDescription}
-	if refused.Permanent() {
-		t.Errorf("the client reads membership_held as permanent; want a refusal it trades again on: Dispatch releases the hold at the person's next sign-in, and the credential in hand is served again then")
-	}
+// directoryHeldDescription is the same refusal from an Identity-Aware Proxy deployment's broker
+// (BROKER_HOLD_REQUIRES_DEADLINE), where the Workspace Directory's next active answer, not a
+// sign-in, ends the hold (hold.Gate.HeldWords).
+const directoryHeldDescription = "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
 
-	var row *corpusExchange
-	read := readCorpus(t)
-	for i := range read.Exchanges {
-		if code, _ := read.Exchanges[i].Answer.Body["error"].(string); code == "membership_held" {
-			if row != nil {
-				t.Fatalf("the wire corpus names membership_held in %q and in %q; want one row", row.Name, read.Exchanges[i].Name)
-			}
-			row = &read.Exchanges[i]
+// TestMembershipHeldIsNotPermanent: the broker's `membership_held` is not a refusal the client
+// stops on, in either of its wordings, and the wire corpus both clients replay holds one row for
+// each wording and says the same of each.
+func TestMembershipHeldIsNotPermanent(t *testing.T) {
+	for _, description := range []string{heldDescription, directoryHeldDescription} {
+		refused := &RefusedError{Status: 400, Code: "membership_held", Description: description}
+		if refused.Permanent() {
+			t.Errorf("the client reads membership_held (%q) as permanent; want a refusal it trades again on: Dispatch releases the hold, and the credential in hand is served again then", description)
 		}
 	}
-	if row == nil {
-		t.Fatal("the wire corpus has no row whose answer is membership_held, so the TypeScript client is held to nothing about it")
+
+	rows := map[string]*corpusExchange{}
+	read := readCorpus(t)
+	for i := range read.Exchanges {
+		row := &read.Exchanges[i]
+		if code, _ := row.Answer.Body["error"].(string); code != "membership_held" {
+			continue
+		}
+		description, _ := row.Answer.Body["error_description"].(string)
+		if earlier := rows[description]; earlier != nil {
+			t.Fatalf("the wire corpus names membership_held with %q in %q and in %q; want one row for each wording", description, earlier.Name, row.Name)
+		}
+		rows[description] = row
+		if row.Answer.Status != 400 || row.Expect.Outcome != "refuse" || row.Expect.Permanent {
+			t.Errorf("the corpus row %q answers HTTP %d and expects outcome %q, permanent=%t; want HTTP 400, refuse, permanent=false",
+				row.Name, row.Answer.Status, row.Expect.Outcome, row.Expect.Permanent)
+		}
+		if got := newRefusedError("ada@example.com's sign-in on this machine", row.Answer.Status, "membership_held", description).Permanent(); got != row.Expect.Permanent {
+			t.Errorf("the client reads the corpus row %q as permanent=%t; the row says %t", row.Name, got, row.Expect.Permanent)
+		}
 	}
-	if row.Answer.Status != 400 || row.Expect.Outcome != "refuse" || row.Expect.Permanent {
-		t.Errorf("the corpus row %q answers HTTP %d and expects outcome %q, permanent=%t; want HTTP 400, refuse, permanent=false",
-			row.Name, row.Answer.Status, row.Expect.Outcome, row.Expect.Permanent)
+	for _, description := range []string{heldDescription, directoryHeldDescription} {
+		if rows[description] == nil {
+			t.Errorf("the wire corpus has no membership_held row worded %q, so the TypeScript client is held to nothing about it", description)
+		}
 	}
-	description, _ := row.Answer.Body["error_description"].(string)
-	if got := newRefusedError("ada@example.com's sign-in on this machine", row.Answer.Status, "membership_held", description).Permanent(); got != row.Expect.Permanent {
-		t.Errorf("the client reads the corpus row %q as permanent=%t; the row says %t", row.Name, got, row.Expect.Permanent)
+	if len(rows) != 2 {
+		t.Errorf("the wire corpus names membership_held in %d wordings; want the broker's two, each in one row", len(rows))
 	}
 }
 

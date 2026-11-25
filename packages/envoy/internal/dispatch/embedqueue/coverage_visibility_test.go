@@ -85,7 +85,7 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 	}
 
 	before := embeddingsScans(t, single)
-	if _, err := Coverage(ctx, single, configuredIdentity); err != nil {
+	if _, err := Coverage(ctx, single, configuredIdentity, everyProject); err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
 	after := embeddingsScans(t, single)

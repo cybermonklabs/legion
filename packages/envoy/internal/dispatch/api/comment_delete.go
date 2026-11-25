@@ -23,7 +23,6 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -45,6 +44,10 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerAs(w, r, actor)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -53,7 +56,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, ok := s.lockedCommentForCorrection(w, r, tx, actor, "delete")
+	comment, ok := s.lockedCommentForCorrection(w, r, tx, who, actor, "delete")
 	if !ok {
 		return
 	}

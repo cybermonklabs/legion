@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -262,6 +261,24 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	return nil
 }
 
+// SessionAccessChannel is the Postgres channel each write of what the session content rule reads
+// (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
+// so every Dispatch process hears it once the write commits and none hears a write that did not: a
+// session's tie to a person or a project it wrote in (queueSessionProject), the tie and the reached
+// projects a broker-issued token records (access.TieSession, access.RecordListedReach), a stored
+// listener answer (api: storeRouteRoster) and `envoy-dispatch backfill-session-projects`. It
+// carries no payload. Each process's document service moves its access epoch on it (docs:
+// accessEpoch), so a document socket asks its rule again before its next frame; a project's owner,
+// visibility or access list and a group announce on store.AccessChangedChannel instead, which
+// moves the epoch too.
+const SessionAccessChannel = "dispatch_session_access_changed"
+
+// AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the
+// select list of a statement over the rows it wrote: Postgres sends one notification however many
+// rows select it in a transaction, none when no row does, and none when the transaction does not
+// commit.
+const AnnounceSessionAccess = `pg_notify('` + SessionAccessChannel + `', '')`
+
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
 // of them is one of exactly two kinds, each told by its payload: a session-addressed message or
 // viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
@@ -291,7 +308,8 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
-		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+		switch payload := e.Payload.(type) {
+		case model.PriorityEventPayload:
 			if e.Type != "priority.updated" || payload.ID == "" {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}

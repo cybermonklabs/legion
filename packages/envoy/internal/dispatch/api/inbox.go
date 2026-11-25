@@ -90,6 +90,10 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	assigneeMode, assigneeLogin, err := s.inboxAssigneeFilter(r.Context(), r.URL.Query().Get("assignee"), caller)
 	if err != nil {

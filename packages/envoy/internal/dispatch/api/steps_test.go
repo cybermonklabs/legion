@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Every read behind an ask card's initial data: the orchestrator, its reply chain, and the
@@ -16,7 +18,9 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
-func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskEdit, error) {
+// loadInboxAskEdits reads each listed ask's rewordings from its ask.edited events, oldest first,
+// of the events who may read (eventReadableSQL).
+func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {
 		edits[askID] = []model.AskEdit{}
@@ -24,9 +28,9 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []stri
 	rows, err := q.Query(ctx, `
 		select payload->>'id', payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = any($1::text[])
+		where type = 'ask.edited' and payload->>'id' = any($1::text[]) and `+eventReadableSQL("events", "$2")+`
 		order by payload->>'id', id
-	`, askIDs)
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask edits: %w", err)
 	}
@@ -54,17 +58,21 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []stri
 	return edits, nil
 }
 
-func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskFollower, error) {
+// loadInboxAskFollowers reads each listed ask's followers, in the order they joined, as who may
+// read them (asks.Followers' rule, access.ItemOwnerClause, in the statement itself): an ask who may
+// not read lists none, whatever an earlier read of the ask answered.
+func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskFollower, error) {
 	followers := make(map[string][]model.AskFollower, len(askIDs))
 	for _, askID := range askIDs {
 		followers[askID] = []model.AskFollower{}
 	}
 	rows, err := q.Query(ctx, `
-		select ask_id::text, session_id, since
-		from ask_followers
-		where ask_id = any($1::uuid[])
-		order by ask_id, since, session_id
-	`, askIDs)
+		select f.ask_id::text, f.session_id, f.since
+		from ask_followers f
+		join asks a on a.id = f.ask_id
+		where f.ask_id = any($1::uuid[]) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+		order by f.ask_id, f.since, f.session_id
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask followers: %w", err)
 	}
@@ -111,15 +119,15 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
-	edits, err := s.loadInboxAskEdits(ctx, q, askIDs)
+	edits, err := s.loadInboxAskEdits(ctx, q, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
-	followers, err := s.loadInboxAskFollowers(ctx, q, askIDs)
+	followers, err := s.loadInboxAskFollowers(ctx, q, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
-	reaches, err := s.loadAskReaches(ctx, askIDs)
+	reaches, err := s.loadAskReaches(ctx, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -138,17 +146,23 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 
 // loadAskReaches reads every listed ask's askReach, keyed by ask id: the claimant only while a
 // session holds the claim on the ask's issue (the same rule the outbox's readBatch
-// reads), the issue's route, and that route's reach now (status and holder). The reach comes
-// from one listener read for the whole batch (routeRosterOrUnknown), made only when some ask has
-// a route and only once scanAskReaches has released its pooled connection, so the listener call
-// never runs inside a transaction or with a connection held; a listener that is unconfigured or
-// does not answer, or a failed read of the stored answer, marks every route's status unknown
-// with a null holder and never fails the read, since the ask itself was read. A route whose
-// holder has missed its heartbeats reads holder_unresponsive, naming that holder: the ask still
-// reaches it, since what is sent to it waits for it.
-func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[string]askReach, error) {
-	reaches, err := scanAskReaches(ctx, s.deps.Store.Pool, askIDs)
+// reads), the issue's route, and that route's reach now (status and holder). The claimant and the
+// route are judged as who reads them before anything else (leaveOutHiddenReaches), so a claimant or
+// a route who does not see reads as none and costs what none costs: the reach comes from one
+// listener read for the whole batch (routeRosterOrUnknown), made only when some ask has a route who
+// sees, and only once scanAskReaches has released its pooled connection, so the listener call
+// never runs inside a transaction or with a connection held; a role route's holder is judged after
+// it (leaveOutHiddenRouteHolders). A listener that is unconfigured or does not answer, or a failed
+// read of the stored answer, marks every route's status unknown with a null holder and never fails
+// the read, since the ask itself was read. A route whose holder has missed its heartbeats reads
+// holder_unresponsive, naming that holder: the ask still reaches it, since what is sent to it
+// waits for it.
+func (s *server) loadAskReaches(ctx context.Context, who model.Actor, askIDs []string) (map[string]askReach, error) {
+	reaches, err := scanAskReaches(ctx, s.deps.Store.Pool, who, askIDs)
 	if err != nil {
+		return nil, err
+	}
+	if err := leaveOutHiddenReaches(ctx, s.deps.Store.Pool, who, reaches); err != nil {
 		return nil, err
 	}
 	routed := false
@@ -166,13 +180,32 @@ func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[strin
 		reach.IssueRouteReach = roster.reach(reach.Route)
 		reaches[askID] = reach
 	}
+	if seesEveryObject(who) {
+		return reaches, nil
+	}
+	ids := make([]string, 0, len(reaches))
+	judged := make([]askReach, 0, len(reaches))
+	for askID, reach := range reaches {
+		ids, judged = append(ids, askID), append(judged, reach)
+	}
+	routes := make([]routedReach, len(judged))
+	for index := range judged {
+		routes[index] = routedReach{route: judged[index].Route, reach: &judged[index].IssueRouteReach}
+	}
+	if err := leaveOutHiddenRouteHolders(ctx, s.deps.Store.Pool, who, routes); err != nil {
+		return nil, err
+	}
+	for index, askID := range ids {
+		reaches[askID] = judged[index]
+	}
 	return reaches, nil
 }
 
 // scanAskReaches reads every listed ask's claimant and route in one query and returns with the
 // pooled connection released; an empty id or route is none. A project document's ask joins no
-// issue, and an ask the query does not find keeps the zero askReach, so every key is null.
-func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string]askReach, error) {
+// issue, and an ask the query does not find, or who may not read (access.ItemOwnerClause), keeps the
+// zero askReach, so every key is null.
+func scanAskReaches(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string]askReach, error) {
 	reaches := make(map[string]askReach, len(askIDs))
 	rows, err := q.Query(ctx, `
 		select a.id::text,
@@ -180,8 +213,8 @@ func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string
 			nullif(i.route, '')
 		from asks a
 		left join issues i on i.key = a.issue_key
-		where a.id = any($1::uuid[])
-	`, askIDs)
+		where a.id = any($1::uuid[]) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load ask reach: %w", err)
 	}
