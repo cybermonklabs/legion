@@ -178,26 +178,26 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	for _, p := range proved {
 		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
 		for index, head := range heads {
-			job := jobs[p.check.BlockID][ciHeadKeyOf(head)]
+			job := jobs[p.check.BlockID][ciHeadKeyOf(head.Repo, head.HeadSHA)]
 			switch {
 			case reads[index].err != nil:
-				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
+				atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
 					ciUnreadDetail(head, reads[index].err), words)
 				continue
 			case job == jobAtHeadUnresolved:
-				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseReadFailed,
+				atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseReadFailed,
 					fmt.Sprintf("Dispatch could not read the repository %s resolves to, so whether the result the check's CI job recorded at %s is of %s, and decides that head in place of the run, is not known.",
 						issueKey, head.HeadSHA, head.Repo), words)
 				continue
 			}
 			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name], job == jobAtHeadRecorded, words)
-			atHead[ciHeadKeyOf(head)] = answer
+			atHead[ciHeadKeyOf(head.Repo, head.HeadSHA)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
 			}
 		}
 		p.check.Results = newestResultsFirst(p.check.Results)
-		p.check.CI = atHead[ciHeadKeyOf(heads[0])]
+		p.check.CI = atHead[ciHeadKeyOf(heads[0].Repo, heads[0].HeadSHA)]
 		answers[p.check.BlockID] = atHead
 	}
 	return answers, nil
@@ -212,9 +212,9 @@ type ciHeadKey struct {
 	commit string
 }
 
-// ciHeadKeyOf is the key of head.
-func ciHeadKeyOf(head delivery.NewestHead) ciHeadKey {
-	return ciHeadKey{repo: head.Repo, commit: head.HeadSHA}
+// ciHeadKeyOf is the one key constructor for inserting and looking up a repository's head.
+func ciHeadKeyOf(repo, commit string) ciHeadKey {
+	return ciHeadKey{repo: repo, commit: commit}
 }
 
 // jobAtHead is what the check's CI job recorded at one head, in rising order: of two readings at
@@ -244,35 +244,42 @@ const (
 // false and no head is read, since the head of the highest number, or of a merge with no time
 // ordered last, may be an older merge's than the newest.
 func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *comparisonReader) ([]delivery.NewestHead, bool, error) {
-	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
-	if err != nil {
-		return nil, false, err
-	}
-	var heads []delivery.NewestHead
-	for _, head := range attributed {
-		read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
-		if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
-			return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
-		}) {
-			heads = append(heads, read)
+	for {
+		generation := reader.fills.generation
+		attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
+		if err != nil {
+			return nil, false, err
 		}
+		var heads []delivery.NewestHead
+		for _, head := range attributed {
+			read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
+			if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
+				return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
+			}) {
+				heads = append(heads, read)
+			}
+		}
+		if len(heads) > 0 {
+			slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
+			return heads, true, nil
+		}
+		merged := make([]delivery.MergeTime, len(attributed))
+		for index, head := range attributed {
+			merged[index] = head.MergeTime()
+		}
+		ordered := s.fillMergeTimes(ctx, reader.fills, merged)
+		if generation != reader.fills.generation {
+			continue
+		}
+		if !ordered {
+			return nil, false, nil
+		}
+		head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
+		if err != nil || !found {
+			return nil, true, err
+		}
+		return []delivery.NewestHead{head}, true, nil
 	}
-	if len(heads) > 0 {
-		slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
-		return heads, true, nil
-	}
-	merged := make([]delivery.MergeTime, len(attributed))
-	for index, head := range attributed {
-		merged[index] = head.MergeTime()
-	}
-	if !s.fillMergeTimes(ctx, reader.fills, merged) {
-		return nil, false, nil
-	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
-	if err != nil || !found {
-		return nil, true, err
-	}
-	return []delivery.NewestHead{head}, true, nil
 }
 
 // ciHeadRead is GitHub's answer for the check runs at one head: the run of each name, or the

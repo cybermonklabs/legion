@@ -4175,6 +4175,23 @@ func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 		atMerge := record("k4", baseMergeCommit)
 		onIntegration := record("k4", integrationCommit)
 		onTrunk := record("k5", mergeCommit)
+		// The integration branch really landed on main. Its final head contains the work's
+		// merge, and each recorded result holds the merge required on its own branch.
+		landingMerge := strings.Repeat("f1", 20)
+		landingAt := time.Date(2026, time.November, 6, 7, 15, 8, 0, time.UTC)
+		if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+			Repo: "acme/widgets", Number: 51, HeadSHA: baseMergeCommit,
+			HeadRef: "integration/x", BaseRef: "main", State: "merged",
+			MergeCommitSHA: landingMerge, MergedAt: &landingAt, EventAt: &landingAt,
+		}); err != nil {
+			t.Fatalf("store the integration branch's landing on main: %v", err)
+		}
+		if _, err := rig.database.Pool.Exec(context.Background(), `
+			insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at)
+			values ('acme/widgets', $1, $2, true, $5), ('acme/widgets', $3, $4, true, $5)
+		`, integrationCommit, baseMergeCommit, mergeCommit, landingMerge, landingAt); err != nil {
+			t.Fatalf("store the fixture's commit-history facts: %v", err)
+		}
 		// GitHub names one pull request for the head: merged into integration/x, its merge commit
 		// baseMergeCommit, which no event told Dispatch of. A writer's read stores its head row and
 		// the merge commit's yes on integration/x (delivery.UpsertPullRequestHead), and measures the
@@ -4459,6 +4476,9 @@ func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) str
 		check := &read.Checks[index]
 		for basis := range check.ComparedWith {
 			clearReadTime(&check.ComparedWith[basis])
+		}
+		for subject := range check.PassStands.Subjects {
+			clearReadTime(&check.PassStands.Subjects[subject].Basis)
 		}
 		for result := range check.Results {
 			if stands := check.Results[result].CommitStands; stands != nil {

@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -40,18 +41,19 @@ type resultsHeadsRead struct {
 	text string
 }
 
-// resultsHeadsReads is the registry of the reads of pull_request_heads on the results path: the
-// five reads of plan D30, each with its one function and its one statement.
+// resultsHeadsReads is the head reads of the results path, including merge refresh, each with
+// its one function and its one statement.
 // TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
 // TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
 	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
 	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
-	{read: "MergeOfIssue", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
-	{read: "MergeIn", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
+	{read: "mergeOfIssueQuery", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
+	{read: "mergeInQuery", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
 	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: landingQuery},
-	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestQuery", text: mergedPullRequestQuery},
+	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: mergedPullRequestOfQuery},
+	{read: "headForRefresh", function: "headForRefresh", statement: "headForRefreshQuery", text: headForRefreshQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
@@ -61,6 +63,8 @@ var resultsHeadsReads = []resultsHeadsRead{
 // (Branches.ReadCommitOnBranch). A function is named by its name, and a method as Type.Method.
 var answeredReads = []string{
 	"headsStatement.query",
+	"readMerged",
+	"Attributor.ReadPullRequestHead",
 	"Branches.ReadCommitOnBranch",
 	"Branches.readCommitOnBranch",
 	"mergeLearnedOnBranch",
@@ -909,7 +913,7 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	var questions []foldQuestion
 	for _, read := range resultsHeadsReads {
 		switch read.read {
-		case "headsAttributedQuery", "MergeOfIssue", "NewestPullRequestHead":
+		case "headsAttributedQuery", "mergeOfIssueQuery", "NewestPullRequestHead":
 			for _, issue := range []string{foldIssue, foldLinkingIssue} {
 				questions = append(questions, foldQuestion{read: read.read, args: []string{issue}})
 			}
@@ -923,14 +927,14 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 					}
 				}
 			}
-		case "MergeIn":
+		case "mergeInQuery":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
-		case "LandingOf", "MergedPullRequestOf":
+		case "LandingOf", "MergedPullRequestOf", "headForRefresh":
 			asked := map[[2]string]bool{}
 			for _, step := range steps {
 				for _, head := range step.pulls.Heads {
 					argument := head.HeadRef
-					if read.read == "MergedPullRequestOf" {
+					if read.read != "LandingOf" {
 						argument = fmt.Sprint(head.Number)
 					}
 					key := [2]string{head.Repo, argument}
@@ -1035,10 +1039,10 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "HeadStoredAt":
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
-	case "MergeOfIssue":
+	case "mergeOfIssueQuery":
 		merged, err := attributor.MergeOfIssue(ctx, q, args[0], answers)
 		return fmt.Sprintf("%+v", merged), err
-	case "MergeIn":
+	case "mergeInQuery":
 		merged, err := attributor.MergeIn(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%+v", merged), err
 	case "NewestPullRequestHead":
@@ -1054,6 +1058,17 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 		}
 		merged, found, err := MergedPullRequestOf(ctx, q, args[0], number, answers)
 		return fmt.Sprintf("%+v, %t", merged, found), err
+	case "headForRefresh":
+		var number int
+		if _, err := fmt.Sscan(args[1], &number); err != nil {
+			return "", err
+		}
+		head, found, err := headForRefresh(ctx, q, args[0], number, answers)
+		if err != nil {
+			return "", err
+		}
+		value, err := json.Marshal(head)
+		return fmt.Sprintf("%s, %t", value, found), err
 	}
 	return "", fmt.Errorf("no read answers %s", question.read)
 }
