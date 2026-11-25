@@ -576,6 +576,13 @@
         "operands": [],
         "guarded_package": "github.com/nats-io/nats.go",
         "why": "nats.go keeps whether its legacy KV handle reads by direct get in the handle's unexported useDirect and reports it through no method; readsDirect reads that bool once its guard holds the handle's type to nats.go, and prints nothing"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/githubapp/objects.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.objectOf",
+        "operands": [],
+        "exported_fields_only": true,
+        "why": "the GitHub App client's read of a listed object into the map its readers take: it reads each exported member the listing's type declares under a json name (membersOf's table), each a member type that writes itself into the map (scalar.put, objectMember.put), so no box's storage, and prints nothing"
       }
     ],
     "external_errors": ["golang.org/x/oauth2.RetrieveError"],
@@ -4172,6 +4179,11 @@
     "boundary_exempt": [
       {
         "file": "packages/daemon/internal/modeltoken/modeltoken.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
