@@ -9,15 +9,20 @@
 // (routeFileName says how a pattern is written), whose one declaration states every one of those
 // facts, so two branches that add different routes touch no file in common.
 //
-// Usage, from packages/envoy, once a merge of main into the branch holds conflicts:
+// Usage, from packages/envoy of a checkout that holds this command, with the branch to adopt on a
+// clean tree:
 //
-//	go run ./cmd/dispatch-route-adopt
+//	go run ./cmd/dispatch-route-adopt [-C <worktree>] [<revision>]
 //
-// with git, while `git merge origin/main` has stopped (HEAD and MERGE_HEAD are the two sides); with
-// jj, with the merge as the working-copy commit, after `jj new <branch> main@origin` (its two
-// parents are the two sides). A checkout jj answers for (`jj root`) is resolved with jj: commits
-// are read from jj's git store (`jj git root`), nothing is staged, and the conflicts left are the
-// ones `jj file list` reports.
+// It makes the merge itself: do not merge first. <revision> is what to merge, origin/main by
+// default. -C names the worktree to adopt, which a branch made before the move needs, since that
+// branch does not hold this command until the merge brings it in: run it from a checkout of main
+// (or of the branch that adds it) with -C naming the branch's worktree.
+//
+// It refuses a tree that is mid-merge or holds a change, naming the command that recovers it and
+// what that costs. A checkout jj answers for (`jj root`) is resolved with jj: it makes the merge
+// commit from a fresh empty `@` (`jj new <branch>` first), commits are read from jj's git store
+// (`jj git root`), nothing is staged, and the conflicts left are the ones `jj file list` reports.
 //
 // One side of the merge holds the old layout and the other the new one, in either order: a branch
 // made before the move merging main, or the move's own branch merging a main that still had the
@@ -46,7 +51,7 @@
 // It exits 0 when nothing is left, 2 when it resolved what it could and something is left for the
 // person, and 1 when it could not run.
 //
-//	go run ./cmd/dispatch-route-adopt split -rev <commit> -out <dir>
+//	go run ./cmd/dispatch-route-adopt [-C <worktree>] [<revision>] split -rev <commit> -out <dir>
 //
 // writes the route files the old layout at <commit> splits into, and nothing else, into <dir>. It
 // is how main's route files were made: splitting main's old table again writes each route's

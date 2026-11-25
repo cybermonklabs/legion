@@ -307,12 +307,22 @@ func TestASecondRunIsRefusedBecauseTheStepOwnsTheMerge(t *testing.T) {
 	if strings.Count(staged, "\n") != 3 {
 		t.Fatalf("git's index holds %q for %s, want its three stages", staged, file)
 	}
-	theirs := strings.TrimSpace(repo.git("show", ":3:"+filepath.Join(apiDir, file)))
-	if theirs != strings.TrimSpace(branchRoute) {
-		t.Fatalf("stage 3 holds\n%s\nwant the branch's own route:\n%s", theirs, branchRoute)
+	// git's own stage order for a merge made while the branch is checked out: stage 2 is HEAD's
+	// side, the branch, and stage 3 is MERGE_HEAD's, what it merges. So `--ours` answers the
+	// branch's route, as it does for every other path of this merge, and neither side's stage
+	// holds the conflict-marked text the working tree carries.
+	ours := strings.TrimSpace(repo.git("show", ":2:"+filepath.Join(apiDir, file)))
+	if ours != strings.TrimSpace(branchRoute) {
+		t.Fatalf("stage 2 holds\n%s\nwant the branch's own route, which is HEAD's side:\n%s", ours, branchRoute)
 	}
-	if strings.Contains(theirs, "<<<<<<<") {
-		t.Fatal("stage 3 holds conflict markers, so `git checkout --theirs` answers marked text")
+	theirs := strings.TrimSpace(repo.git("show", ":3:"+filepath.Join(apiDir, file)))
+	if theirs == strings.TrimSpace(branchRoute) {
+		t.Fatal("stage 3 holds the branch's route, and git's stage 3 is MERGE_HEAD's side")
+	}
+	for stage, text := range map[string]string{"2": ours, "3": theirs} {
+		if strings.Contains(text, "<<<<<<<") {
+			t.Fatalf("stage %s holds conflict markers, so `git checkout --ours`/`--theirs` answer marked text", stage)
+		}
 	}
 
 	carried := repo.read(tableFile) + "\n// carried by hand\n"
@@ -743,5 +753,77 @@ func TestTheSplitterReadsTheReadFromEitherLayout(t *testing.T) {
 	}
 	if _, err := splitOldLayout(neither); err != nil {
 		t.Fatalf("a tree whose read is an empty list is no refusal, and this one answered: %v", err)
+	}
+}
+
+// Nothing is merged until both sides are read: a branch the step cannot adopt is refused with the
+// tree as it was, not left mid-merge. The rows are the two layout refusals and the merge base's.
+func TestTheStepRefusesBeforeItMerges(t *testing.T) {
+	for _, row := range []struct {
+		why, into, says string
+		set             func(repo *scratchRepo)
+	}{
+		{
+			why: "both sides hold the old table", into: "main", says: "neither side has the layout to adopt",
+			set: func(repo *scratchRepo) {
+				base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+				repo.addRouteOn("branch-a", base, "a")
+			},
+		},
+		{
+			why: "both sides hold the route files", into: "main", says: "there is nothing to adopt",
+			set: func(repo *scratchRepo) {
+				repo.moveMain()
+				repo.git("checkout", "-q", "-b", "branch-a", "main")
+				repo.write("note.go", "package api\n\n// A change of the branch's own.\n")
+				repo.commit("the branch adds a file")
+			},
+		},
+		{
+			why: "the revision shares no history", into: "unrelated", says: "merge-base",
+			set: func(repo *scratchRepo) {
+				base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+				repo.addRouteOn("branch-a", base, "a")
+				repo.moveMain()
+				repo.git("checkout", "-q", "--orphan", "unrelated")
+				repo.git("rm", "-rqf", "--ignore-unmatch", ".")
+				// It holds the new layout, so every other check passes and the missing merge
+				// base is the one thing between the step and its writes.
+				for _, name := range strings.Fields(repo.git("ls-tree", "-r", "--name-only", "main")) {
+					if strings.HasPrefix(name, apiDir+"/") {
+						repo.write(strings.TrimPrefix(name, apiDir+"/"), repo.git("show", "main:"+name))
+					}
+				}
+				repo.git("add", "-A")
+				repo.git("commit", "-q", "-m", "unrelated")
+				repo.git("checkout", "-qf", "branch-a")
+			},
+		},
+	} {
+		t.Run(row.why, func(t *testing.T) {
+			repo := newScratchRepo(t)
+			row.set(repo)
+			before := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+			found, err := findRepo(repo.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adopt(found, row.into)
+			if err == nil || !strings.Contains(err.Error(), row.says) {
+				t.Fatalf("the step answered %v, want a refusal saying %q", err, row.says)
+			}
+			if row.says != "merge-base" && !strings.Contains(err.Error(), "nothing is merged") {
+				t.Fatalf("the refusal does not say the tree is untouched: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(repo.root, ".git", "MERGE_HEAD")); !os.IsNotExist(err) {
+				t.Fatal("the step started a merge before refusing")
+			}
+			if now := strings.TrimSpace(repo.git("rev-parse", "HEAD")); now != before {
+				t.Fatalf("HEAD moved from %s to %s", before, now)
+			}
+			if dirty := repo.git("status", "--porcelain"); strings.TrimSpace(dirty) != "" {
+				t.Fatalf("the refused step left the tree dirty:\n%s", dirty)
+			}
+		})
 	}
 }

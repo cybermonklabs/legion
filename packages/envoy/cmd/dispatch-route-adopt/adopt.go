@@ -93,34 +93,41 @@ func (r *adoptReport) print(w io.Writer) {
 }
 
 // adopt makes the merge of into and resolves its route layer (see the package comment).
+//
+// Nothing is merged until both sides are read: a tree this cannot adopt is refused before the
+// first write, so a person who runs it on the wrong branch is left where they were rather than
+// mid-merge with a refusal.
 func adopt(repo gitRepo, into string) (*adoptReport, error) {
-	sides, err := repo.startMerge(into)
+	if err := repo.refuseATreeThisDidNotStart(); err != nil {
+		return nil, err
+	}
+	here, there, err := repo.sidesOf(into)
 	if err != nil {
 		return nil, err
 	}
-	firstOld, err := hasOldLayout(gitTree{repo, sides.first})
+	hereOld, err := hasOldLayout(gitTree{repo, here})
 	if err != nil {
-		return nil, fmt.Errorf("read %s's %s: %w", sides.firstName, tableFile, err)
+		return nil, fmt.Errorf("read the branch's %s: %w", tableFile, err)
 	}
-	secondOld, err := hasOldLayout(gitTree{repo, sides.second})
+	thereOld, err := hasOldLayout(gitTree{repo, there})
 	if err != nil {
-		return nil, fmt.Errorf("read %s's %s: %w", sides.secondName, tableFile, err)
+		return nil, fmt.Errorf("read %s's %s: %w", into, tableFile, err)
 	}
 	report := &adoptReport{}
 	var oldRev, newRev string
 	switch {
-	case firstOld && secondOld:
-		return nil, fmt.Errorf("%s and %s both hold the old route table: neither side has the layout to adopt", sides.firstName, sides.secondName)
-	case !firstOld && !secondOld:
-		return nil, fmt.Errorf("%s and %s both hold the route files already: there is nothing to adopt", sides.firstName, sides.secondName)
-	case firstOld:
-		report.oldSide, report.newSide = sides.firstName, sides.secondName
-		oldRev, newRev = sides.first, sides.second
+	case hereOld && thereOld:
+		return nil, fmt.Errorf("the branch and %s both hold the old route table: neither side has the layout to adopt, and nothing is merged", into)
+	case !hereOld && !thereOld:
+		return nil, fmt.Errorf("the branch and %s both hold the route files already: there is nothing to adopt, and nothing is merged", into)
+	case hereOld:
+		report.oldSide, report.newSide = "the branch "+here[:12], into+" "+there[:12]
+		oldRev, newRev = here, there
 	default:
-		report.oldSide, report.newSide = sides.secondName, sides.firstName
-		oldRev, newRev = sides.second, sides.first
+		report.oldSide, report.newSide = into+" "+there[:12], "the branch "+here[:12]
+		oldRev, newRev = there, here
 	}
-	base, err := repo.line("merge-base", sides.first, sides.second)
+	base, err := repo.line("merge-base", here, there)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +135,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if baseOld, err := hasOldLayout(gitTree{repo, base}); err != nil {
 		return nil, fmt.Errorf("read the merge base's %s: %w", tableFile, err)
 	} else if !baseOld {
-		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split", base)
+		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split, and nothing is merged", base)
 	}
 	baseFiles, err := splitOldLayout(gitTree{repo, base})
 	if err != nil {
@@ -137,6 +144,10 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	branchFiles, err := splitOldLayout(gitTree{repo, oldRev})
 	if err != nil {
 		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
+	}
+	// Everything this needs is read; now the merge.
+	if err := repo.startMerge(into, there); err != nil {
+		return nil, err
 	}
 	// No guard against a second run: startMerge refuses a tree that is mid-merge or holds a
 	// change, so this always begins from a tree nobody has touched, and after it the tree is
@@ -233,14 +244,21 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			continue
 		}
 		// A conflict this step cannot resolve is written into the index as one, so git refuses to
-		// commit the path until the person resolves it and runs `git add`. Without this, main's
-		// version of the route sits in the index at stage 0, which a plain `git commit` records,
-		// and the branch's change is left in the working tree alone. The three stages are the
-		// merge's own sides, so `git checkout --theirs` answers the branch's route rather than
-		// the conflict-marked text the working copy holds: stage 1 the merge base, stage 2 main's,
-		// stage 3 the branch's own bytes (branchFiles[name], not branchContent, which merge has
-		// replaced with the marked text).
-		if err := repo.recordConflict(name, current, baseContent, branchFiles[name]); err != nil {
+		// commit the path until the person resolves it and runs `git add`. Without this, the
+		// version in the working tree sits at stage 0, which a plain `git commit` records.
+		//
+		// The stages are git's own, for a merge of `into` made while the branch is checked out:
+		// stage 1 the merge base, stage 2 HEAD's side, which is the branch, and stage 3
+		// MERGE_HEAD's, which is what the branch merges. So `git checkout --ours` answers the
+		// branch's route and `--theirs` the other side's, as they do for every other path of this
+		// merge. Each is the side's own bytes, never the conflict-marked text the working tree
+		// holds: the branch's route is branchFiles[name], not branchContent, which merge replaced.
+		ours, theirs := branchFiles[name], current
+		if oldRev != here {
+			// The branch holds the route files and `into` the old table: HEAD is the new side.
+			ours, theirs = current, branchFiles[name]
+		}
+		if err := repo.recordConflict(name, ours, baseContent, theirs); err != nil {
 			return nil, err
 		}
 	}

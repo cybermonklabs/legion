@@ -31,61 +31,64 @@ func jjLine(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(output), err
 }
 
-// mergeSides is the merge this run made, as two commits and their names in the report.
-type mergeSides struct {
-	first, second         string
-	firstName, secondName string
+// sidesOf is the two commits a merge of into would join: this checkout's own commit, and the one
+// into names. It reads and merges nothing, so a caller can refuse a tree before any write.
+func (g gitRepo) sidesOf(into string) (here, there string, err error) {
+	if g.jj {
+		if here, err = jjLine(g.root, "log", "--no-graph", "-r", "@", "-T", "commit_id"); err != nil {
+			return "", "", err
+		}
+		if there, err = jjLine(g.root, "log", "--no-graph", "-r", into, "-T", "commit_id"); err != nil {
+			return "", "", fmt.Errorf("%s names no commit jj knows: %w", into, err)
+		}
+		return here, there, nil
+	}
+	if here, err = g.line("rev-parse", "HEAD"); err != nil {
+		return "", "", err
+	}
+	if there, err = g.line("rev-parse", "--verify", into+"^{commit}"); err != nil {
+		return "", "", fmt.Errorf("%s names no commit: %w", into, err)
+	}
+	return here, there, nil
 }
 
-// startMerge makes the merge this step works in, and refuses any tree it did not start itself.
+// startMerge makes the merge this step works in. The step writes route files, takes
+// routes_table.go and routes_shapes.go whole from the new side, and writes conflicts into the
+// index, so it must own the merge: a run over its own output would take those two files again and
+// erase whatever had been carried into them. Afterwards the tree is mid-merge, so another run is
+// refused by refuseATreeThisDidNotStart, with no file content read anywhere.
 //
-// The step writes route files, takes routes_table.go and routes_shapes.go whole from the new
-// side, and writes conflicts into the index. A second run over its own output would take those
-// two files again and erase whatever had been carried into them, so there is no second run to
-// judge: the step begins from a tree nobody has touched since its last commit, and the merge it
-// starts is the one it finishes. Afterwards the tree is mid-merge, so another run is refused by
-// that fact, with no file content read anywhere.
-//
-// Four guards that read content to answer "has this run already?" each missed a state a person
-// or the step itself can leave (a file resolved by hand, a merge whose output is what is already
-// there, a resolution that takes the current side). This asks nothing about content.
-func (g gitRepo) startMerge(into string) (mergeSides, error) {
-	if err := g.refuseATreeThisDidNotStart(); err != nil {
-		return mergeSides{}, err
-	}
+// Four guards that read content to answer "has this run already?" each missed a state a person or
+// the step itself can leave. This asks nothing about content.
+func (g gitRepo) startMerge(into, there string) error {
 	if g.jj {
 		head, err := jjLine(g.root, "log", "--no-graph", "-r", "@", "-T", "commit_id")
 		if err != nil {
-			return mergeSides{}, err
+			return err
 		}
-		other, err := jjLine(g.root, "log", "--no-graph", "-r", into, "-T", "commit_id")
-		if err != nil {
-			return mergeSides{}, fmt.Errorf("%s names no commit jj knows: %w", into, err)
+		if _, err := jjOutput(g.root, "new", head, there, "-m", "merge "+into); err != nil {
+			return err
 		}
-		if _, err := jjOutput(g.root, "new", head, other, "-m", "merge "+into); err != nil {
-			return mergeSides{}, err
-		}
-		return mergeSides{head, other, "the branch " + head[:12], into + " " + other[:12]}, nil
+		return nil
 	}
-	head, err := g.line("rev-parse", "HEAD")
-	if err != nil {
-		return mergeSides{}, err
-	}
-	other, err := g.line("rev-parse", "--verify", into+"^{commit}")
-	if err != nil {
-		return mergeSides{}, fmt.Errorf("%s names no commit: %w", into, err)
-	}
-	// --no-commit, because the person finishes the merge once they have resolved what is left;
-	// a merge that settles by itself still stops here, so the route layer is translated before
+	// --no-commit, because the person finishes the merge once they have resolved what is left; a
+	// merge that settles by itself still stops here, so the route layer is translated before
 	// anything is recorded.
-	if _, err := g.run("merge", "--no-commit", "--no-ff", other); err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			return mergeSides{}, err
+	_, mergeErr := g.run("merge", "--no-commit", "--no-ff", there)
+	// A merge that stopped on conflicts is the state this step is for, and git records
+	// MERGE_HEAD for it. A merge that failed for any other reason records none, and writing into
+	// that tree would leave changes nobody asked for, so the failure is answered here.
+	mergeHead, err := g.line("rev-parse", "-q", "--verify", "MERGE_HEAD")
+	if err != nil || mergeHead == "" {
+		if mergeErr != nil {
+			return fmt.Errorf("git merge %s failed and left no merge in progress, so nothing was adopted: %w", into, mergeErr)
 		}
-		// Conflicts: the state this step is for.
+		return fmt.Errorf("git merge %s left no MERGE_HEAD, so this step has no merge to resolve and wrote nothing", into)
 	}
-	return mergeSides{head, other, "the branch " + head[:12], into + " " + other[:12]}, nil
+	if mergeHead != there {
+		return fmt.Errorf("git merge %s left MERGE_HEAD at %s, and this step read %s: nothing is adopted into a merge it did not make", into, mergeHead, there)
+	}
+	return nil
 }
 
 // refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
@@ -279,9 +282,9 @@ func readFileIfPresent(path string) ([]byte, bool, error) {
 	return content, true, nil
 }
 
-// recordConflict writes one path into git's index as a conflict: the merge base at stage 1, the
-// new side's at 2 and the branch's at 3, which is what `git merge` leaves for a path it could not
-// merge. git then refuses to commit until the person resolves the file and runs `git add`. jj
+// recordConflict writes one path into git's index as a conflict, in git's own stage order: the
+// merge base at stage 1, HEAD's side at 2 and MERGE_HEAD's at 3, which is what `git merge` leaves
+// for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then refuses to commit until the person resolves the file and runs `git add`. jj
 // takes the working copy as it is, markers and all, and keeps the file as a conflict of its own,
 // so nothing is written there.
 func (g gitRepo) recordConflict(name string, ours, base, theirs []byte) error {
