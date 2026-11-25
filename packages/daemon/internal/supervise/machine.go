@@ -1886,18 +1886,19 @@ type Machine struct {
 	turnsEnded atomic.Uint64
 }
 
-// sending is the send in flight (startSend): its delivery id and generation, and whether a
-// result has made its outcome moot (resulted). What its prompt carries of news of the approved
-// design is the pending delivery's own while the id is the pending one's (startSend says why), so
-// the send keeps no copy of it.
+// sending is the send in flight (startSend): its delivery id and generation, and whether an answer
+// has made its outcome moot (resulted). What its prompt carries of news of the approved design is
+// the pending delivery's own while the id is the pending one's (startSend says why), so the send
+// keeps no copy of it.
 //
 // The send's outcome reaches the machine from the send's own goroutine, and the turn its prompt
 // starts, that turn's end and the prompt's result reach it from the stream's queue. Oh My Pi
 // writes the acknowledgement first, but the two goroutines hand the machine their events in
-// whatever order they are scheduled, so all three can be decided before the outcome. A result
-// decided first answers this prompt, or reports a turn of an earlier prompt of the same task
-// (promptResulted). In either case the send's outcome ends the send and decides nothing about
-// the task it was sent for (fenceOutcome).
+// whatever order they are scheduled, so all three can be decided before the outcome. An answer
+// decided first is this prompt's result or its refusal after the acknowledgement (promptResulted,
+// lateRefused), or a result that reports a turn of an earlier prompt of the same task
+// (promptResulted). In each case the send's outcome ends the send and decides nothing about the
+// task it was sent for (fenceOutcome).
 type sending struct {
 	id         string
 	generation uint64

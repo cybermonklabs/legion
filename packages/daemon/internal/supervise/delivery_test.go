@@ -930,6 +930,77 @@ func TestTheFirstPromptsResultDecidesTheTaskWhileItsResendIsInFlight(t *testing.
 	}
 }
 
+// An earlier prompt's no-turn answer takes back the task a turn confirmed once a resend in flight
+// has answered too (waitedOutAnswer, sendUnanswered), and a refusal of the resend's prompt answers
+// its send as a result does (lateRefused). The order: the first prompt's wait for its turn runs out
+// and the sweep sends the task again; a turn of another input's starts with that resend in flight,
+// is taken for the task's, and ends; the resend's own answer, read before its acknowledgement, says
+// its prompt ran no turn; then the first prompt says the same. Neither turn was the task's. Read as
+// still waiting on the resend, the task kept its confirmation with nothing left to come, and settle
+// retired it as a finished turn's though no turn of it ran.
+func TestAnEarlierPromptsNoTurnAnswerTakesTheTaskBackOnceTheResendHasAnswered(t *testing.T) {
+	const refusal = "the model provider refused the request"
+	answers := []struct {
+		name string
+		of   func(prompt string) Event
+	}{
+		{name: "a result that says it ran no turn", of: func(prompt string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: prompt}
+		}},
+		{name: "a refusal after its acknowledgement", of: func(prompt string) Event {
+			return StreamLateRefusal{Claim: testToken, DeliveryID: prompt, Error: refusal}
+		}},
+	}
+	for _, resend := range answers {
+		for _, first := range answers {
+			t.Run("the resend: "+resend.name+"; the first prompt: "+first.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				gated := newGatedConn()
+				h.conns.Register(testToken, gated)
+				// Handle, not must: must waits for the send, which the gate is holding.
+				handle := func(ev Event) {
+					t.Helper()
+					if err := h.m.Handle(h.ctx, ev); err != nil {
+						t.Fatalf("handle %T: %v", ev, err)
+					}
+				}
+				handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+				firstPrompt := testwait.Receive(t, "the first send", gated.entered)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				h.advance(testRPC)
+				handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+				resent := testwait.Receive(t, "the resend", gated.entered)
+				handle(StreamTurnStart{Claim: testToken})
+				handle(StreamTurnEnd{Claim: testToken})
+				if p := h.pending(); p.ID != resent || p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the turn's end = %+v, want the resend's task %s confirmed, kept for the answers to come", p, resent)
+				}
+
+				handle(resend.of(resent))
+				if p := h.pending(); p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the resend's answer = %+v, want the confirmation kept for the first prompt, still outstanding", p)
+				}
+
+				handle(first.of(firstPrompt))
+				if c := h.claim(); c.Pending == nil || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the first prompt's answer: pending %+v serving %d, want the task kept, unconfirmed: no turn of it ran", c.Pending, c.ServingGeneration)
+				}
+
+				// The resend's outcome may send the task again: the plain connection takes that
+				// send, so no send waits at the gate.
+				h.conns.Register(testToken, h.conn)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				if c := h.claim(); c.Pending == nil || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the resend's outcome: pending %+v serving %d, want the task kept, unconfirmed", c.Pending, c.ServingGeneration)
+				}
+			})
+		}
+	}
+}
+
 // dispatch://INFRA-3135's case: a claim held a pending task whose late turn's result was dropped
 // at the fence, so the task never settled, and its next task was refused "a delivery is already
 // pending" 160 times while every completion was refused HANDOFF_STALE_ASSIGNMENT. The late turn

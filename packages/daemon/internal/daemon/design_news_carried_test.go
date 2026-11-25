@@ -424,7 +424,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			// The case holds the news task's send at the door while its turn starts and ends, so
 			// the send's own deadline is a hang guard here and no part of what the case reads.
 			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
-			flag := &pauseFlag{}
+			flag := &orderPause{}
 			if tc.pause {
 				st := r.sup.deps.Store.(*store.Store)
 				pods, err := st.PodRecordsOf("LEGION")

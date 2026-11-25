@@ -28,16 +28,11 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // never handed the finished one's. A task of no phase — an operator's own, an architect's — is
 // not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
-// task it kept (SuspendSource.RetiresPhaseTask). A project pause's stop that reaches an idle claim
-// whose turn ended before the answer of its task's prompt does not run here: it is held for that
-// answer (pauseStopWaits, holdSuspension), as it would have been had it come in the turn.
+// task it kept (SuspendSource.RetiresPhaseTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
-	}
-	if m.pauseStopWaits(request) {
-		return holdSuspension(m, ctx, ev)
 	}
 	return m.suspendNow(ctx, request, false)
 }

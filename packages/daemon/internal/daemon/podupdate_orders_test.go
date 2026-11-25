@@ -163,12 +163,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// pauseFlag is the project's pause flag as a test drives it (supervise.Deps.Paused): the open
-// pause's id, 0 while the project runs.
-type pauseFlag struct{ id atomic.Int64 }
+// orderPause is the project's pause flag as the order table drives it (supervise.Deps.Paused):
+// the open pause's id, 0 while the project runs.
+type orderPause struct{ id atomic.Int64 }
 
 // Paused is the flag as a machine reads it.
-func (p *pauseFlag) Paused() (int64, bool) {
+func (p *orderPause) Paused() (int64, bool) {
 	id := p.id.Load()
 	return id, id != 0
 }
@@ -589,7 +589,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		roles = append(roles, readyWorker(tester))
 	}
 	var opts podUpdateRigOptions
-	pause := &pauseFlag{}
+	pause := &orderPause{}
 	if kind == pausedNeverRun {
 		opts.paused = pause.Paused
 	}

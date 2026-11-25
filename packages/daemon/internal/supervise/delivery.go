@@ -1764,15 +1764,15 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
-// The same holds while the send of the task's prompt is in flight and no result has made it moot
-// (sending.resulted): its own result, or a turn-reporting result of any prompt of the task
-// (resultPending's send window). A turn that starts then is taken for the task's
-// (turnAnswers), and its end can be decided before the send's acknowledgement, which reaches the
-// machine on the send's own goroutine (sending). A task retired at that end would have its
-// prompt's result dropped as stale (fence), and with it the final credit of the news the prompt
-// carried, which would then be owed and sent again, or the provider error that leaves the work
-// owed (providerErrored). The send's outcome and the prompt's result say which turn it was, as
-// they do for a prompt acknowledged first.
+// The same holds while the send of the task's prompt is in flight and no answer has made it moot
+// (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that
+// starts then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task
+// retired at that end would have its prompt's result dropped as stale (fence), and with it the
+// final credit of the news the prompt carried, which would then be owed and sent again, or the
+// provider error that leaves the work owed (providerErrored). The send's outcome and the prompt's
+// result say which turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
