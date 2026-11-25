@@ -928,6 +928,16 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
+# connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
+# which `store/cmd/connections -process` prints, and its needs, what parallel runs and the batch's
+# own queries open at once: per_run for each run and 20 more. It fails when no count is printed.
+connections_needed() {
+  per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
+    [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
+    fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
+  needs=$((per_run * parallel + 20))
+}
+
 # services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
 # gave (given_services) or two containers it starts, and the Envoy listener built from this
 # checkout, which the services file ($services_env) names with the NATS and the listener token.
@@ -977,10 +987,7 @@ services_up() {
     done
     require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
-    per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
-      [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
-      fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
-    needs=$((per_run * parallel + 20))
+    connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
@@ -993,10 +1000,7 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   else
-    per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
-      [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
-      fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
-    needs=$((per_run * parallel + 20))
+    connections_needed
     # A given Postgres's URL that a batch killed outright left would send this batch's runs there.
     rm -f -- "$services_postgres"
     # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

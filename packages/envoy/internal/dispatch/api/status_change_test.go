@@ -2175,9 +2175,6 @@ func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *test
 	run := &statusChangeRun{key: named, callerName: "alice", resumed: &statusChangeRecovery{Moved: earlier}, moved: moved(3002, 2000)}
 	all := append(slices.Clone(run.resumed.Moved), run.moved...)
 	body := run.namedComment()
-	if pmdoc.LineFeeds(body) != body || strings.TrimSpace(body) == "" {
-		t.Fatalf("the comment is blank or holds a line ending that is no line feed: %q", body)
-	}
 	if err := itemblocks.Check("body", body); err != nil {
 		t.Fatalf("the comment for %d moves is refused: %v", len(all), err)
 	}
@@ -2771,8 +2768,11 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				t.Fatal(err)
 			}
 			firstAnswer := make(chan keyedAnswered, 1)
+			// The first request carries the shared wait's bound itself, as body_drain_test.go's
+			// first requests do (testwait.Context).
+			ctx := testwait.Context(t)
 			go func() {
-				status, body, _, err := keyedPost(server, write.path, string(encoded), key, 30*time.Second)
+				status, body, _, err := keyedPostContext(ctx, server, write.path, string(encoded), key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			select {

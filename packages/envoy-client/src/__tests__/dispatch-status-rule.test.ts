@@ -550,10 +550,11 @@ describe("dispatch issue-update with an option of the status change", () => {
       ["--unlink-children", "unlink_children"],
       ["--include-parent", "include_parent"],
     ] as const) {
-      for (const other of [
-        ["--title", "Renamed"],
-        ["--parent", "ACME-4"],
-        ["--priority", "1"],
+      for (const [other, value, name] of [
+        ["--title", "Renamed", "title"],
+        ["--parent", "ACME-4", "parent"],
+        ["--priority", "1", "priority"],
+        ["--labels-add", "x", "labels_add"],
       ] as const) {
         const { code, stdout } = await run([
           "issue-update",
@@ -562,9 +563,9 @@ describe("dispatch issue-update with an option of the status change", () => {
           "--status",
           "in_progress",
           flag,
-          ...other,
+          other,
+          value,
         ]);
-        const name = other[0].slice(2);
         expect({ flag, other: name, code }).toEqual({ flag, other: name, code: 2 });
         expect(stdout).toStartWith("dispatch issue-update was not called: 1 problem\n");
         expect(stdout).toContain(
