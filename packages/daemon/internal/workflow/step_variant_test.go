@@ -120,7 +120,7 @@ func TestTheStartTheBootOpensNamesTheVariantOfItsIssue(t *testing.T) {
 			if drawn {
 				drawnInto(t, pool, "LEGION-208", "planning", "b", "default")
 			}
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			execSQL(t, pool, `delete from step_starts where issue = 'LEGION-208'`)
 			if opened := openUncountedRuns(t, pool, stepEngine(nil)); opened != 1 {
 				t.Fatalf("the boot opened %d runs, want the tester's", opened)

@@ -182,7 +182,7 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 	}
 	refused := errors.New("the App lease could not be minted")
 	for _, role := range claim.Roles {
-		own, other := appauth.AppRoleFor(role), otherApp(role)
+		own, other := appOf(role), otherApp(role)
 		t.Run(string(role), func(t *testing.T) {
 			token, err := claim.NewToken("s1", "S1-2", role)
 			if err != nil {
@@ -194,7 +194,7 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 				log: slog.New(slog.NewJSONHandler(&logged, nil)),
 				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 					asked = append(asked, asking)
-					if appauth.AppRoleFor(asking) == other {
+					if appOf(asking) == other {
 						return runtime.GitIdentity{}, refused
 					}
 					return appIdentities[own], nil
@@ -210,14 +210,14 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 			}
 			ownRoles := map[claim.Role]runtime.GitIdentity{}
 			for _, r := range claim.Roles {
-				if appauth.AppRoleFor(r) == own {
+				if appOf(r) == own {
 					ownRoles[r] = appIdentities[own]
 				}
 			}
 			if got, want := spec.Env[runtime.RoleIdentitiesVariable], runtime.RoleIdentities(ownRoles); got != want {
 				t.Errorf("LEGION_ROLE_IDENTITIES = %q, want the %s App's roles alone, %q", got, own, want)
 			}
-			if len(asked) != 2 || asked[0] != role || appauth.AppRoleFor(asked[1]) != other {
+			if len(asked) != 2 || asked[0] != role || appOf(asked[1]) != other {
 				t.Errorf("identity asked for %q, want the %s and then one role of the %s App, once", asked, role, other)
 			}
 			var warnings []map[string]any
@@ -263,7 +263,7 @@ func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
 		}},
 	} {
 		for _, role := range claim.Roles {
-			own := appauth.AppRoleFor(role)
+			own := appOf(role)
 			t.Run(ending.name+"/"+string(role), func(t *testing.T) {
 				token, err := claim.NewToken("s1", "S1-2", role)
 				if err != nil {
@@ -275,7 +275,7 @@ func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 					log: slog.New(slog.NewJSONHandler(&logged, nil)),
 					identity: func(ctx context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
-						if app := appauth.AppRoleFor(asking); app != own {
+						if app := appOf(asking); app != own {
 							during()
 							return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s: %w", app, asking, ctx.Err())
 						}
@@ -343,11 +343,11 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 	}
 	every := map[claim.Role]runtime.GitIdentity{}
 	for _, role := range claim.Roles {
-		every[role] = appIdentities[appauth.AppRoleFor(role)]
+		every[role] = appIdentities[appOf(role)]
 	}
 	table := runtime.RoleIdentities(every)
 	for _, role := range claim.Roles {
-		own, other := appauth.AppRoleFor(role), otherApp(role)
+		own, other := appOf(role), otherApp(role)
 		t.Run(string(role), func(t *testing.T) {
 			token, err := claim.NewToken("s1", "S1-2", role)
 			if err != nil {
@@ -408,7 +408,7 @@ func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
 	}
 	refused := errors.New("the App lease could not be minted")
 	for _, role := range claim.Roles {
-		own := appauth.AppRoleFor(role)
+		own := appOf(role)
 		t.Run(string(role), func(t *testing.T) {
 			token, err := claim.NewToken("s1", "S1-2", role)
 			if err != nil {
@@ -419,7 +419,7 @@ func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
 			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 					asked = append(asked, asking)
-					if appauth.AppRoleFor(asking) == own {
+					if appOf(asking) == own {
 						return runtime.GitIdentity{}, refused
 					}
 					return runtime.GitIdentity{Name: "legion-" + string(asking) + "[bot]", Email: string(asking) + "@users.noreply.github.com"}, nil
