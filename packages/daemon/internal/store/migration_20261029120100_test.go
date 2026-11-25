@@ -11,6 +11,7 @@ import (
 // stay null rather than taking a time the migration would have to invent: a reader tells "no turn
 // is recorded" from a turn that happened by the null.
 func TestAClaimRecordedBefore20261029120100HasNoTurnTimes(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120000)

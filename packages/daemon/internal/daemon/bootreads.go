@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -20,9 +21,10 @@ import (
 type bootReads struct {
 	project, operatorToken, dispatchToken string
 	secrets                               map[string]string
-	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
-	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
-	instructions                          []byte         // nil when the configuration names none
+	paneNatsUser                          string             // the pane seed's user's public key, "" with no pane seed
+	nats                                  natsConnection     // the user the daemon's own NATS connection authenticates as
+	privateNameRules                      *leakguard.RuleSet // compiled from the launch secret leakguard.RulesSecret; nil when the deployment names no rule file
+	instructions                          []byte             // nil when the configuration names none
 	variantInstructions                   []variantInstructions
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
@@ -44,11 +46,12 @@ type variantInstructions struct {
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, or under dispatch_token_broker the transition token's file where the configuration names
-// one, and the runtime's own reads (readTmux, readSandbox).
+// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the deployment's private-name
+// rule file among them, which it compiles (compilePrivateNameRules), the daemon's own NATS nkey
+// seed (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file,
+// the file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch
+// bearer's file, or under dispatch_token_broker the transition token's file where the
+// configuration names one, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -74,6 +77,13 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if r.secrets, err = readLaunchSecrets(cfg, lookup); err != nil {
 		return bootReads{}, err
+	}
+	// The rule file is compiled from the bytes every launch carries, read once (launchSecrets), so
+	// the rules the daemon's branch create runs and the rules each role runs are one file.
+	if content, named := r.secrets[leakguard.RulesSecret]; named {
+		if r.privateNameRules, err = compilePrivateNameRules(cfg.PrivateNameRulesNamedBy, cfg.PrivateNameRulesFile, content); err != nil {
+			return bootReads{}, err
+		}
 	}
 	paneSeed := r.secrets[natsauth.SeedVariable]
 	if paneSeed != "" {

@@ -281,11 +281,12 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 // The notice of a head GitHub will not merge names each check run GitHub reported on the head by
 // the word GitHub gave it, a skipped one skipped, and says once, after the commit statuses, that a
 // skipped check ran nothing on this head: a required check GitHub skipped there never ran, and
-// the architect reading the notice must not take it for a pass (dispatch://INFRA-4135 R1).
+// the architect reading the notice must not take it for a pass (dispatch://INFRA-4135 R1). The
+// head is `behind`, a state the round does not end on.
 func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
-	seedMergeStateRound(t, pool, record.MergeStateBlocked)
+	seedMergeStateRound(t, pool, record.MergeStateBehind)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{wordedRun("unit tests", 2, "success"), skippedRun("envoy-go", 3)}),
 		status("deploy", "success", 1)))
@@ -293,7 +294,7 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 	told := reviewStuckNotices(t, pool)
 	want := "GitHub reported on head " + headOne + `: "envoy-go" skipped, "unit tests" success; commit statuses: "deploy" success; ` +
-		skippedSaid + ". The daemon reads the base's rules only on a conflicting read"
+		skippedSaid + ". The issue waits in reviewing"
 	if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 	}
