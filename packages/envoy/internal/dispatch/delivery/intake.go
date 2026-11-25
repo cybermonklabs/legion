@@ -68,10 +68,11 @@ type Intake struct {
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, routing by
-// settings, and attributing each pull request by attributor.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+// settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
+// production's values, which StartIntakes passes, or a test's.
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
-	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
+	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
 }
 
@@ -278,24 +279,26 @@ const githubIntakeSubject = "notifications.github.>"
 // failure it does not cover is a deadline that falls on a pull request's head write, or on
 // either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
 // that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
-// A var so a test can shrink it.
-var intakeMessageTimeout = time.Minute
+// It is the default of the intake's own messageTimeout (intakeTuning), which a test shortens on
+// the intakes it builds.
+const intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
 // once, and so how many handlers run at once: one per key (intakeKey), and every message of a key
 // waits for the one before it. All of them can be one key's, so the bound has to be what one
-// handler can acknowledge in turn well inside intakeAckWait; the server's own default of 1,000 is
-// far past it, and messages it redelivers under a handler still working accumulate in the
-// client's pending buffer until that buffer drops them. A var so a test can shrink it.
-var intakeMaxAckPending = 4
+// handler can acknowledge in turn well inside the ack wait (intakeTuning.ackWait); the server's
+// own default of 1,000 is far past it, and messages it redelivers under a handler still working
+// accumulate in the client's pending buffer until that buffer drops them. It is the default of
+// the intake's own maxAckPending (intakeTuning).
+const intakeMaxAckPending = 4
 
-// intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
-// the two values above rather than chosen: when every outstanding message is one key's, the last
-// of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
-func intakeAckWait() time.Duration {
-	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
+// ackWait is how long NATS waits for an acknowledgement before redelivering. Derived from the
+// intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
+// one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
+// handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
+// on its intakes gets an ack wait derived from what it set.
+func (t *intakeTuning) ackWait() time.Duration {
+	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
@@ -308,15 +311,16 @@ func intakeAckWait() time.Duration {
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
 // process is left. A change to this config takes a new consumerConfigGeneration and a new row in
-// TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
-func deliveryConsumerConfig() natsgo.ConsumerConfig {
+// TestTheConsumerConfigEqualsItsGenerationsPinnedRow. Its AckWait and MaxAckPending are tuning's,
+// production's values outside tests.
+func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(),
-		MaxAckPending:  intakeMaxAckPending,
+		AckWait:        tuning.ackWait(),
+		MaxAckPending:  tuning.maxAckPending,
 		Metadata:       consumerGenerationMetadata(),
 	}
 }
@@ -338,14 +342,15 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment -- as a push
-// the importer failed to take is by the importer's own five-minute pass. One route error is not,
-// and is the second case below. The deadline is what makes intakeAckWait a bound rather than a
-// hope: without it one stuck GitHub call could hold an in-flight slot past the ack wait and have
-// the message redelivered underneath it. An envelope route answers not handled (an empty payload,
-// a kind route sends to no handler, or a push, which is no delivery fact) is acknowledged with no
+// settings the cache holds under the intake's messageTimeout, and acks: a malformed envelope has
+// nothing to retry, and a route error (a failed GitHub call, or that deadline passing) is caught
+// up by the next reconcile pass rather than by NATS redelivery -- see the package doc comment --
+// as a push the importer failed to take is by the importer's own five-minute pass. One route error
+// is not, and is the second case below. The deadline is what makes the ack wait
+// (intakeTuning.ackWait) a bound rather than a hope: without it one stuck GitHub call could hold an
+// in-flight slot past the ack wait and have the message redelivered underneath it. An envelope
+// route answers not handled (an empty payload, a kind route sends to no handler, or a push, which
+// is no delivery fact) is acknowledged with no
 // freshness write, and with no log line unless its handler failed. One it handles records the
 // event's time, whatever its handler decided.
 //
@@ -409,7 +414,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
+	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope
@@ -431,14 +436,14 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
-		delivered, spent := headWriteDeliveriesSpent(msg)
+		delivered, spent := headWriteDeliveriesSpent(msg, in.tuning.headWriteMaxDeliveries)
 		if spent {
 			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
 				"subject", msg.Subject, "deliveries", delivered, "error", err)
 			return
 		}
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
-			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
+			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", in.tuning.headWriteMaxDeliveries,
 			"redeliver_after", headWriteRedeliverAfter, "error", err)
 		headNotStored = true
 		return
@@ -502,27 +507,28 @@ const headWriteRedeliverAfter = 10 * time.Second
 // deliveries again after each take-over — at a take-over per rolling release, beside a cap
 // whose whole run is five minutes, that is a cost no reader of this slice can measure.
 //
-// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
-// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
-// spend.
-var headWriteMaxDeliveries uint64 = 30
+// It is the default of the intake's own headWriteMaxDeliveries (intakeTuning), which a test
+// lowers on the intakes it builds: thirty deliveries of one envelope is minutes of wall clock no
+// test should spend.
+const headWriteMaxDeliveries uint64 = 30
 
 // headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
-// that is every delivery headWriteMaxDeliveries allows a head write to fail in.
+// that is every delivery the intake allows a head write to fail in (allowed, its
+// headWriteMaxDeliveries).
 //
 // A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
 // answers an error for one with no JetStream reply subject). No count can be read from it and
 // so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
 // the answer that keeps the head row's one chance of being written, and the ack wait bounds a
 // hand-back the server never takes.
-func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
+func headWriteDeliveriesSpent(msg *natsgo.Msg, allowed uint64) (delivered uint64, spent bool) {
 	meta, err := msg.Metadata()
 	if err != nil {
 		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
 			"subject", msg.Subject, "error", err)
 		return 0, false
 	}
-	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
+	return meta.NumDelivered, meta.NumDelivered >= allowed
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,

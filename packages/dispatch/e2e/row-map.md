@@ -244,6 +244,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
 | `e2e/followers.e2e.ts` | follower and subscriber writes change what the server delivers |
+| `e2e/foot-sweep.e2e.ts` | the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document |
 | `e2e/gated-step-approvals.e2e.ts` | gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side |
 | `e2e/github-checks.e2e.ts` | the checks pill is the server's evaluation of fake GitHub runs |
 | `e2e/going-bar.e2e.ts` | every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor |
@@ -316,6 +317,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/nested-directive.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other |
 | `e2e/offline-edits.e2e.ts` | document transport, IndexedDB recovery and read-only admissions |
 | `e2e/overlapping-marks.e2e.ts` | two readers' marks and the server's anchor refresh |
+| `e2e/parent-status-choice.e2e.ts` | each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote |
 | `e2e/parse-count.e2e.ts` | every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does |
 | `e2e/paste-recovery.e2e.ts` | pastes into the live document |
 | `e2e/phone-conversation.e2e.ts` | sends held, refused and retried, and read marks written from a thread |

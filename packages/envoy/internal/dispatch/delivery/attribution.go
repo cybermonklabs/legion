@@ -473,8 +473,8 @@ type Attributor struct {
 	resolvedQuery   string
 	linkedQuery     string
 	headQuery       string
-	headsQuery      string
-	mergedInQuery   string
+	headsRead       headsStatement
+	mergedInRead    headsStatement
 }
 
 // NewAttributor is the Attributor of renames.
@@ -486,8 +486,8 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		resolvedQuery:   resolvedCandidatesQuery(renames),
 		linkedQuery:     linkedPullRequestsQuery(renames),
 		headQuery:       headAttributedQuery(renames),
-		headsQuery:      headsAttributedQuery(renames),
-		mergedInQuery:   baseBranchMergedInQuery(renames),
+		headsRead:       headsAttributedRead(renames),
+		mergedInRead:    baseBranchMergedInRead(renames),
 	}
 }
 

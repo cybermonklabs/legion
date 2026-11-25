@@ -198,6 +198,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -264,6 +267,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		DashboardEntry:         opts.DashboardEntry,
 		Build:                  opts.Build,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
