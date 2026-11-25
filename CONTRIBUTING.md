@@ -8,7 +8,17 @@ The `AGENTS.md` at the root and beside most packages holds the rules for working
 - Write the pull request's title as a conventional commit subject:
   `main` takes squash merges through GitHub's merge queue, and the title becomes the commit's subject.
 
-- Add the label `full-ci` (every slow suite, which a pull request otherwise leaves to the merge queue) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; a `lane:<output>` label runs one slow suite instead, and `.github/ci-notes/ci.md` says when to take either off.
+- Add the label `full-ci` (every slow suite, which a pull request otherwise leaves to the merge queue) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; a `lane:<output>` label runs one slow suite instead.
+  CI reads either label from the event that starts its run, and adding a label starts no run (`.github/workflows/ci.yaml` takes no `labeled` trigger), so:
+
+  1. Put the label on before the push whose run must carry it.
+
+  2. To run at a head that must not move, start a run with no commit, whose event carries the label: close the pull request, wait a minute and reopen it, or mark it a draft and then ready for review.
+
+  3. Take the label off only after that run has started, and not while a `ci_check` of the issue names a held-back job, since every push's run must then carry it.
+
+- Before you write that CI is green, in a pull request body or any other message, read the `not run at this head:` lines of the `ci-ok` job in the head's newest CI run, after that run has concluded, and name each job they list: `ci-ok` passes over a job a pull request held back, so its pass says nothing of those jobs.
+  `gh run list --workflow ci.yaml --commit <head> --event pull_request --limit 1 --json databaseId,status` names the run, `gh run view <run id> --json jobs --jq '.jobs[] | select(.name=="ci-ok") | .databaseId'` its `ci-ok` job, and `gh run view --job <job id> --log | grep 'not run at this head:'` prints the lines.
 
 - A change worth a changelog line adds a changie fragment to each package it changes that `.github/changelog-packages` lists, and never edits a `CHANGELOG.md`:
   a release renders the fragments into its notes.
