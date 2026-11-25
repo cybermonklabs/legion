@@ -1816,11 +1816,6 @@ function statedBounds(name: string): string[] {
   return held(specFor(name).arguments(api) as Record<string, Bounded>);
 }
 
-/** The rule of a `components` argument's parts: the refusal dispatch_issue and
- *  dispatch_issue_update give a call that breaks it, and the words their components field states
- *  it in, both written from the one constant of dispatch-tools.ts. */
-const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
-
 // The catalogue serves each tool's arguments with the bounds its spec states (ToolField's Min and
 // Max), and a client holds a call to them before it is sent, so a bound the Go loses or moves, or
 // one looser than the route's, promises an argument the route refuses.
@@ -1872,12 +1867,14 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
   // TestIssueComponentsInputValidation holds the route to each, U+0085 among them, and takes a
   // reason of U+FEFF. The tool refuses the same calls before anything is sent, in the rule its
   // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
-  // the other way. The field's description holds the refusal's text, both copies of one constant.
+  // the other way. The field's description holds the refusal's text, both copies of one constant,
+  // so the test reads the rule from the refusal and holds the description to it, not to a copy.
   test.each([
     "dispatch_issue",
     "dispatch_issue_update",
   ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
     const schema = schemaFor(name);
+    const refusals = new Set<string>();
     for (const components of [
       { mode: "explicit" },
       { mode: "none" },
@@ -1886,11 +1883,14 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
     ]) {
       const result = schema.safeParse({ ...validCalls[name], components });
       expect(result.success, JSON.stringify(components)).toBe(false);
-      expect(
-        result.error?.issues.map((issue) => issue.message),
-        JSON.stringify(components)
-      ).toEqual([COMPONENTS_RULE]);
+      const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+      expect(messages, JSON.stringify(components)).toHaveLength(1);
+      for (const message of messages) refusals.add(message);
     }
+    // The four calls get one refusal, the rule, and it is not empty.
+    expect(refusals.size).toBe(1);
+    const [rule = ""] = refusals;
+    expect(rule.trim()).not.toBe("");
     const empty = { mode: "explicit", ids: [] };
     expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
     for (const components of [
@@ -1908,7 +1908,7 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
     >;
     const argument = fields.components;
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
-    expect(description).toContain(COMPONENTS_RULE);
+    expect(description).toContain(rule);
   });
 
   // POST /api/v1/issues refuses the import of a GitHub issue already imported into another
