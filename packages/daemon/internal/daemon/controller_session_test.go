@@ -360,6 +360,42 @@ func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
 			t.Fatalf("the replacement lines after the fresh launch are %d, want the one", len(lines))
 		}
 	})
+
+	t.Run("an idle controller holding an operator's suspension whose stop the runtime refused keeps its session for the operator's resume", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		k, sup, rt, logs := keptController(t, idle(old))
+		m, _ := sup.Machine(claim.ControllerToken("legion"))
+		token := m.Claim().Token
+		// An operator suspends the controller during a turn; the suspension is held for the turn's
+		// end, where the runtime refuses the stop, so the claim stands idle with the operator's
+		// suspension still held.
+		if err := m.Handle(context.Background(), supervise.StreamTurnStart{Claim: token}); err != nil {
+			t.Fatalf("start a turn: %v", err)
+		}
+		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "an operator drains the daemon", By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
+			t.Fatalf("the operator's suspension in a turn answered %v, want it held", err)
+		}
+		rt.FailSuspend(errors.New("the runtime could not stop the process"))
+		_ = m.Handle(context.Background(), supervise.StreamTurnEnd{Claim: token})
+		if state := m.Claim().State; state != supervise.StateIdle {
+			t.Fatalf("the controller is %s after its turn ended with the stop refused, want idle", state)
+		}
+		rt.FailSuspend(nil)
+
+		keepOnce(t, k)
+
+		c := controllerOf(t, sup)
+		if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByOperator || c.Session != old || c.Abandoned.Session != "" {
+			t.Fatalf("the controller is %s, suspended by %q, on %q with %q abandoned; want it suspended by the operator on %s, nothing abandoned",
+				c.State, c.SuspendedBy, c.Session, c.Abandoned.Session, old)
+		}
+		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
+			t.Fatalf("the keeper wrote %d replacement lines for a session it kept, want none", len(lines))
+		}
+		if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
+			t.Fatalf("the runtime was asked %d times to spawn, want never", len(spawns))
+		}
+	})
 }
 
 // dispatch://INFRA-2045 R4 for a replacement under R3: one Warn line of the keeper's names the

@@ -73,10 +73,6 @@ func (m *Machine) betweenTurns(ctx context.Context) error {
 	return nil
 }
 
-// mayNotHold is whether this suspension may not be held: NeverHold, or BetweenTurns, which implies
-// it (RequestSuspend).
-func (r RequestSuspend) mayNotHold() bool { return r.NeverHold || r.BetweenTurns }
-
 // holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
 // statement of what a held suspension (Machine.held) does.
 //
@@ -151,7 +147,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// The flag and the deadline are the asker's own: suspendRequest hands a daemon's request under
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
 	// too, nor hold a request whose asker reports a refusal as nothing having happened.
-	if ev.(RequestSuspend).mayNotHold() {
+	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
 	}
@@ -260,7 +256,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
 		return m.suspendedFor(ctx, request, true)
 	}
-	if ev.(RequestSuspend).mayNotHold() {
+	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}

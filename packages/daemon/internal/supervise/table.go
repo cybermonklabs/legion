@@ -516,12 +516,18 @@ type RequestReady struct {
 //
 // BetweenTurns is a suspension that must find the claim between turns: ready or idle with no task
 // waiting, its shim connected to this daemon, and its agent answering that it is not streaming
-// (suspendBetweenTurns). A claim that fails any of these refuses it with a *RefusedError and
-// records nothing. It is for a caller that read the claim idle from outside the machine — the
-// controller keeper's replacement of an old session (dispatch://INFRA-2045 R3) — where that read
-// can be stale: a task delivered since, or a turn an Envoy message started while the daemon was
-// down, which a restarted daemon reads only from the frames its shim replays after its hello. It
-// implies NeverHold.
+// (Machine.betweenTurns). It is posted with NeverHold. The test runs in the suspend row, where a
+// registered, ready or idle claim lands, and a claim there that fails it refuses with a
+// *RefusedError and records nothing. The other rows answer as they answer any NeverHold
+// suspension: a working claim refuses it, but one whose process the daemon found gone is
+// suspended there (holdSuspension); a launch refuses it, but one this suspension cuts short is
+// suspended there (holdSuspendUntilReady); and a claim already suspended answers nil
+// (suspendedAgain), whoever suspended it. So a caller that goes on to act on the suspension it
+// asked for names that suspension in what it posts next (RequestForgetSession.SuspendedBy). It is
+// for a caller that read the claim idle from outside the machine — the controller keeper's
+// replacement of an old session (dispatch://INFRA-2045 R3) — where that read can be stale: a task
+// delivered since, or a turn an Envoy message started while the daemon was down, which a restarted
+// daemon reads only from the frames its shim replays after its hello.
 //
 // Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
 // dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
@@ -661,10 +667,21 @@ type RequestOperatorRetry struct {
 // fresh agent is told in its first prompt: the controller keeper's reason for its replacement of
 // a session older than its age (internal/daemon's controllerKeeper). "" is the operator's own
 // forget, recorded under the words that name the command.
+//
+// SuspendedBy, when set, is the suspension the asker expects the claim to stand under, and a claim
+// suspended by anyone else, or not suspended, refuses the forget with a *RefusedError and records
+// nothing. The controller keeper sets it to the daemon's: its replacement suspends the claim as the
+// daemon and then forgets the session, and an operator's suspension can take the claim over
+// between the two — one held through a turn whose stop the runtime refused, which a later
+// suspension of the claim runs as the operator's (suspendRequest), or one decided first, which the
+// keeper's suspension then answers with nil (suspendedAgain). The operator's resume promises the
+// same session, so that session is not the keeper's to forget. "" is the operator's own forget,
+// which forgets under any suspension.
 type RequestForgetSession struct {
-	Claim   claim.Token
-	Session string
-	Why     string
+	Claim       claim.Token
+	Session     string
+	Why         string
+	SuspendedBy SuspendSource
 }
 
 // RequestDeliver gives the claim a task. ID is a durable outbox delivery id when an outbox row
@@ -3050,6 +3067,10 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
+	}
+	if by := request.SuspendedBy; by != "" && (m.claim.State != StateSuspended || m.claim.SuspendedBy != by) {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Reason: fmt.Sprintf(
+			"the claim stands %s, suspended by %q, and this forget is for a claim suspended by %q", m.claim.State, m.claim.SuspendedBy, by)}
 	}
 	if err := m.mayForget(ctx, "forget-session"); err != nil {
 		return err
