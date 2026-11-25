@@ -201,6 +201,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		issue := woken
 		slots := rig.slots(t, issue.key)
 		reads := rig.publish(t, issue, issue.head)
+		rig.registerWoken(t, issue)
 		rig.await(t, "the listener's refusal of the merger's topic at the message's second try", func() bool {
 			return rig.listener.refused(issue.topic) >= 1
 		})
@@ -257,6 +258,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the fifth read failed", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -271,6 +273,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	t.Run("an issue that leaves merging while the message waits is not told", func(t *testing.T) {
 		issue := leaves
 		reads := rig.publish(t, issue, issue.head)
+		rig.registerWoken(t, issue)
 		rig.await(t, "the message to wait for the woken merger's session", func() bool {
 			return rig.listener.refused(issue.topic) >= 1
 		})
@@ -343,6 +346,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -400,6 +404,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -427,6 +432,20 @@ type dequeueRig struct {
 	// the one fact a case applies of its own (startedAgainEngine).
 	engine *workflow.Engine
 	issues []dequeueIssue
+	// d is the booted daemon, whose claims route registers the session of a woken merger's launch
+	// (registerWoken), as the merger's plugin does once its agent has booted.
+	d *daemon
+}
+
+// registerWoken registers the session of the woken merger's launch of issue with the daemon, as
+// the merger's plugin does once its agent has booted (registerLaunch): a removal is published only
+// once the merger's launch has registered its session (deliverHeld), and the fake runtime boots
+// no agent of its own. The removal still waits for the listener to name a holder (holds).
+func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	r.await(t, "the runtime's resume of the woken merger", func() bool { return len(resumesOf(r.rt, issue.merger)) >= 1 })
+	resumes := resumesOf(r.rt, issue.merger)
+	registerLaunch(t, r.d, resumes[len(resumes)-1].Spec)
 }
 
 // dequeueIssue is one case's issue: its key, its pull request's number and the head the record
@@ -683,7 +702,7 @@ func dequeueHead(number int) string {
 // daemon's log, which is where a row that never finished says why.
 func (r *dequeueRig) boot(t *testing.T) {
 	t.Helper()
-	startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), dequeueWait)
+	r.d = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), dequeueWait)
 	t.Cleanup(func() {
 		if t.Failed() {
 			log := r.logs.String()

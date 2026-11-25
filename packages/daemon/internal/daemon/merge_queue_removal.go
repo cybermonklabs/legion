@@ -154,7 +154,7 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
 		what: "the merge-queue removal of " + row.Issue, message: payload.Message(row.Issue, pr.Repo), attributes: attributes,
 		claimEnded: "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
-		delivered:  "outbox merge-queue removal delivered to the merger"})
+		delivered:  "outbox merge-queue removal delivered to the merger", toLaunch: true})
 }
 
 // heldMessage is one message a row delivers to a role of its issue and holds until a session of
