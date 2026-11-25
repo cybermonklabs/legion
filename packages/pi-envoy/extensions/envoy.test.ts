@@ -1102,12 +1102,19 @@ afterEach(async () => {
   // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
   // on for every row after it (`onTestClock` says what that costs), so the clock is put back first.
   jest.useRealTimers();
-  // A managed-timer callback that rejects fails the test that scheduled it.
-  await Promise.all(contextTimers.splice(0));
-  // What its row left running, at its limit included, is stopped while that row's fetch still
-  // answers a session's deregistration (`rowStops`).
-  await runRowStops();
-  resetFileState();
+  // A managed-timer callback that rejects fails the test that scheduled it. The stops and the
+  // reset below run whether or not one did, so a rejection leaves no row's state to the next.
+  try {
+    await Promise.all(contextTimers.splice(0));
+  } finally {
+    try {
+      // What its row left running, at its limit included, is stopped while that row's fetch
+      // still answers a session's deregistration (`rowStops`).
+      await runRowStops();
+    } finally {
+      resetFileState();
+    }
+  }
 }, 60_000);
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
@@ -1851,7 +1858,9 @@ function onTestClock<T>(
  *  so once its promise settles (`onPassClock`). */
 interface PassClock {
   /** Lets the code's own work run on real turns (`settle`), which move no clock, until `done()`
-   *  holds or `turns` of them (10_000 by default) run out. */
+   *  holds or `turns` of them (10_000 by default) run out. It throws nothing when they run out:
+   *  a row that relies on `done()` checks it after the hold and fails naming what did not
+   *  happen, and a row that holds to see a thing not happen reads `done()` as false. */
   readonly hold: (done: () => boolean, turns?: number) => Promise<void>;
   /** Holds as `hold` does until `pending` settles, and answers what it settled to; one that has
    *  not settled when the turns run out fails here, naming `what`. */
@@ -2387,7 +2396,7 @@ async function withEnvoyTimings<T>(
 }
 
 /**
- * The `ENVOY_PASS_DEADLINE_MS` of every row on `gatedRoleFixture`, which sets it, and of four rows
+ * The `ENVOY_PASS_DEADLINE_MS` of every row on `gatedRoleFixture`, which sets it, and of five rows
  * of the same kind that boot a session of their own: an hour, past the limit of each of those
  * rows. Each pass and role move is abandoned at its deadline, a real `setTimeout` of the extension
  * (`createRegistrationState`, `src/registration-state.ts`), and at the 90 s it is otherwise (the
@@ -14499,7 +14508,13 @@ console.log(JSON.stringify(args));
     // clock (`Date.now() - registeredAt`), so a tick inside that interval posts nothing: the row
     // waits on the registration reaching the listener, and ticks again until it does, rather than
     // reading the count after a sleep a loaded machine outruns.
-    await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 5000 }, async () => {
+    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    // The wedged pass then holds the queue until the row answers it, and only the tick's own
+    // refresh can move the count meanwhile. At the 5 s deadline the row had before, the wedged
+    // pass was abandoned on the real clock, and an ordinary pass behind it moved the count, so
+    // the row passed with that refresh removed.
+    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
+    await withEnvoyTimings({ heartbeatMs: 25 }, async () => {
       let wedgePass = false;
       const wedged = Promise.withResolvers<void>();
       const answered = Promise.withResolvers<void>();
@@ -14580,13 +14595,14 @@ console.log(JSON.stringify(args));
       answered.resolve();
       for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
     });
-    // The row's own bound is a hang guard, the file's convention: its work is a handful of ticks,
-    // and what can hang is a refresh that never comes (`refreshed`). Worst measured cost:
-    // 12 099.87 ms at the 96 rung in the Job infra-1580-t24-j2-z6l42 of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB (140 busy loops, at which row A took 37.3 s), at 919ee888;
-    // 7 802.57 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j5-sjzwb (271 busy
-    // loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
-    // 2026-11-21T23:05Z to 23:21Z. 90_000 is 7.4 times the worst.
+    // A hang guard: what can hang is a refresh that never comes (`refreshed`), which a tick with
+    // no refresh of its own leaves for good, since the wedged pass outlasts the limit. The row's
+    // work is a handful of ticks. The readings below were taken with the pass's deadline at 5 s.
+    // Worst measured cost: 12 099.87 ms at the 96 rung in the Job infra-1580-t24-j2-z6l42 of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
+    // 37.3 s), at 919ee888; 7 802.57 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j5-sjzwb (271 busy loops, at which row A's runs took 51.2 s against the
+    // calibration's 31.2 s), 2026-11-21T23:05Z to 23:21Z. 90_000 is 7.4 times the worst.
   }, 90_000);
 
   test("a role move that never settles still lets the next tick refresh the registration", async () => {
@@ -23871,11 +23887,11 @@ console.log(JSON.stringify(args));
             expect(part[0]).toContain(reason);
           }
           session.heartbeat();
-          await clock.hold(
-            () =>
-              natsState.controls.get(relay) !== first &&
-              natsState.controls.get(relay)?.active() === true
-          );
+          const reopened = () =>
+            natsState.controls.get(relay) !== first &&
+            natsState.controls.get(relay)?.active() === true;
+          await clock.hold(reopened);
+          if (!reopened()) throw new Error("the heartbeat did not open the relay subject again");
           await clock.hold(() => session.restored().written.length === 1);
           for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
           expect(natsState.connectedNames).toHaveLength(1);
@@ -23919,7 +23935,11 @@ console.log(JSON.stringify(args));
           natsState.controls.get(control)?.end();
           await redialParked(clock);
           session.heartbeat();
-          await clock.hold(() => natsState.connectedNames.length === 3);
+          const raced = () => natsState.connectedNames.length === 3;
+          await clock.hold(raced);
+          if (!raced()) {
+            throw new Error("the heartbeat's dial did not begin beside the parked redial");
+          }
           natsState.heldConnect = undefined;
           parked.resolve();
           await clock.hold(() =>
@@ -26526,7 +26546,8 @@ describe("consumer delivery", () => {
       readonly refuseCard?: (message: SentCard) => boolean;
       /** The test's clock a row on `onPassClock` boots on: the start is stepped on it through a
        *  refused registration's retry (`stepping`), and the first registration is held for on it
-       *  (`hold`), since `until` is for real timers only. */
+       *  (`hold`), since `until` is for real timers only. A registration that has not reached the
+       *  listener when the hold's turns run out fails the boot, naming it. */
       readonly clock?: PassClock;
     } = {}
   ) {
@@ -26657,6 +26678,11 @@ describe("consumer delivery", () => {
       const registered = () => registrations.length > 0;
       if (options.clock === undefined) await until(registered, "the first registration");
       else await options.clock.hold(registered);
+      if (!registered()) {
+        throw new Error(
+          "the first registration did not reach the listener with the test's clock held"
+        );
+      }
     }
     await settle();
     let inboxes = 0;
@@ -26709,7 +26735,8 @@ describe("consumer delivery", () => {
           .map((published) => new TextDecoder().decode(published.data)),
       /** One heartbeat tick, run until its registration reached the listener: waited for with
        *  `until`, or, in a row on the test's clock (`onPassClock`), held on that `clock`, since
-       *  `until` is for real timers only. */
+       *  `until` is for real timers only. A registration that has not reached the listener when
+       *  the hold's turns run out fails the tick, naming it. */
       tick: async (clock?: PassClock) => {
         stillOn(ownRow, "ticking the consumer session's heartbeat");
         const before = registrations.length;
@@ -26717,6 +26744,11 @@ describe("consumer delivery", () => {
         const sent = () => registrations.length > before;
         if (clock === undefined) await until(sent, "the heartbeat's registration");
         else await clock.hold(sent);
+        if (!sent()) {
+          throw new Error(
+            "the heartbeat's registration did not reach the listener with the test's clock held"
+          );
+        }
         await settle();
       },
       /** nats.js reports a reconnect. */
@@ -27079,7 +27111,13 @@ describe("consumer delivery", () => {
         session.accept();
         await session.tick(clock);
         const inbox = session.relay(3, peer(`after-${refusal.reason}`));
-        await clock.hold(() => session.replies(inbox).includes("done"));
+        const answered = () => session.replies(inbox).includes("done");
+        await clock.hold(answered);
+        if (!answered()) {
+          throw new Error(
+            "the frame relayed after the accepted registration was not answered done"
+          );
+        }
 
         expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
       });
@@ -27331,7 +27369,9 @@ describe("consumer delivery", () => {
     // arms no interval.
     await onPassClock(async (clock) => {
       const inbox = session.relay(5, peer("cleared"));
-      await clock.hold(() => session.cards("evt-cleared").length > 0);
+      const handed = () => session.cards("evt-cleared").length > 0;
+      await clock.hold(handed);
+      if (!handed()) throw new Error("the frame's card was not handed to the streaming turn");
       expect(session.replies(inbox)).toEqual(["received"]);
 
       await clock.run("the interrupt", session.interrupt());
@@ -27366,10 +27406,11 @@ describe("consumer delivery", () => {
   // and the extension says so once, naming the message.
   test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
     });
     const session = await bootConsumer("consumer-deep-payload");
+    const stop = rowShutdown(session.stop);
     try {
       const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
       const inbox = session.relay(
@@ -27399,7 +27440,7 @@ describe("consumer delivery", () => {
       ]);
     } finally {
       stopSink();
-      await session.stop();
+      await stop();
     }
     // A hang guard: what can hang is the consumer's boot or its delivery of the frame. The row's
     // own cost is CPU work, not a wait: the parse and the card's encoding of a payload nested 9,999
