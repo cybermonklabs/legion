@@ -387,13 +387,11 @@ test("a control a pointer press focuses in a panel scrolls nothing while the pre
     // 164-208, 10 px below what the panel shows.
     layOutPanel(panel, 320, stacked(within(panel).getAllByRole("button")));
     const delta = screen.getByRole("button", { name: "Delta" });
-    // The press as a browser makes it: the pointer goes down, and its mousedown focuses Delta.
-    fireEvent.pointerDown(delta);
-    fireEvent.mouseDown(delta);
-    act(() => delta.focus());
+    // The press as a browser makes it: the pointer goes down on Delta, and its mousedown focuses
+    // Delta, with the button still held.
+    await user.pointer({ keys: "[MouseLeft>]", target: delta });
     expect([document.activeElement?.textContent, panel.scrollTop]).toEqual(["Delta", 0]);
-    fireEvent.pointerUp(delta);
-    fireEvent.mouseUp(delta);
+    await user.pointer({ keys: "[/MouseLeft]", target: delta });
     // Epsilon, at 216-260, ends 62 px below what the panel shows.
     await user.tab();
     expect([document.activeElement?.textContent, panel.scrollTop]).toEqual(["Epsilon", 62]);
@@ -401,6 +399,40 @@ test("a control a pointer press focuses in a panel scrolls nothing while the pre
     view.unmount();
   }
 });
+
+// A press can end with no release: a context menu opened as the button goes down takes the
+// pointerup itself, a drag ends at its dragend, and the window can lose the focus mid-press. Each
+// ends the press, as `hearPresses` reads one, so a key's focus after it still shows its control.
+for (const [ending, end] of [
+  // user-event has no form for a context menu that takes the press's release.
+  ["its context menu", (target: HTMLElement) => fireEvent.contextMenu(target)],
+  // user-event has no form for a drag, and so none for a drag's end.
+  ["its drag's end", (target: HTMLElement) => fireEvent.dragEnd(target)],
+  // user-event has no form for the window losing the focus.
+  ["the window's blur", () => fireEvent.blur(window)],
+] as const) {
+  test(`a pointer press in a panel that ends at ${ending} lets a key's focus after it show its control whole`, async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <OpenPanel label="Filters">
+        {buttons(["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])}
+      </OpenPanel>
+    );
+    try {
+      await user.click(screen.getByRole("button", { name: "Filters" }));
+      const panel = screen.getByRole("dialog", { name: "Filters" });
+      layOutPanel(panel, 320, stacked(within(panel).getAllByRole("button")));
+      const delta = screen.getByRole("button", { name: "Delta" });
+      // The pointer goes down on Delta and focuses it, and no release follows.
+      await user.pointer({ keys: "[MouseLeft>]", target: delta });
+      act(() => end(delta));
+      await user.tab();
+      expect([document.activeElement?.textContent, panel.scrollTop]).toEqual(["Epsilon", 62]);
+    } finally {
+      view.unmount();
+    }
+  });
+}
 
 // What a box inside the panel cuts off is drawn nowhere, so no scroll of the panel shows it: the
 // panel shows whole what that box draws of the control.

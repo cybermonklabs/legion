@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { hearPresses } from "../features/issue-page/focus-keeper";
 import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { inputMethodKey } from "../lib/input-method";
 import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
@@ -332,12 +333,16 @@ export function AnchoredPanel({
     // and WebKit alike. A scroll then moves the control under the pointer before it comes up: on a
     // chip of the Inbox's +N more panel cut 20 px by the panel's bottom at 390x664, the panel
     // scrolled 24 px between the pointer's down and up in all three (builds Job
-    // infra-3135-probe1-8lssx). The reader pressed what they saw, so the panel stays where it is
-    // for the focus that press makes. A focus by a key, or one a script hands on - a press's own
-    // hand-off in the click that the pointer's up makes included - still shows its control whole,
-    // since the reader cannot see where it went. A press is down from its `pointerdown` in the
-    // panel to its `pointerup`, and again from its `mousedown` to its `mouseup`: a touch focuses
-    // its control at the `mousedown` the browser makes after the finger has gone up.
+    // infra-3135-probe1-8lssx). The reader pressed what they saw, so while a press in the panel is
+    // down no focus scrolls the panel, the press's own focus included. A focus by a key, or one a
+    // script hands on once the press is over - a press's own hand-off in the click that the
+    // pointer's up makes included - still shows its control whole, since the reader cannot see
+    // where it went. A press is the one `hearPresses` reads
+    // (`features/issue-page/focus-keeper.ts`), from its `pointerdown` in the panel: it ends at the
+    // `pointerup` once the press has moved the focus, else at its click, before the click's own
+    // handlers, so a touch, which focuses its control at the `mousedown` the browser makes after
+    // the finger has gone up, is still down then; and a press that sends no release ends at its
+    // `pointercancel`, its `dragend`, its `contextmenu` or the blur of the page's window.
     let pressing = false;
     const followFocus = (event: FocusEvent) => {
       const target = event.target;
@@ -369,7 +374,6 @@ export function AnchoredPanel({
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (panelRef.current?.contains(target)) {
-        pressing = true;
         // A press on the panel's own prose focuses nothing, which would leave focus on the
         // body and Escape with no owner. The panel takes it, so the reader stays in the panel.
         if (
@@ -382,13 +386,6 @@ export function AnchoredPanel({
       if (anchorRef.current?.contains(target)) return;
       for (const held of inner) if (held.contains(target)) return;
       dismiss.current("press");
-    };
-    const pressIn = (event: MouseEvent) => {
-      if (event.target instanceof Node && panelRef.current?.contains(event.target) === true)
-        pressing = true;
-    };
-    const endPress = () => {
-      pressing = false;
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       // An Escape that ends an IME composition is the input method's (`inputMethodKey`): it
@@ -412,18 +409,21 @@ export function AnchoredPanel({
     };
     document.addEventListener("focusin", followFocus, true);
     document.addEventListener("pointerdown", outside, true);
-    document.addEventListener("mousedown", pressIn, true);
-    document.addEventListener("pointerup", endPress, true);
-    document.addEventListener("mouseup", endPress, true);
-    document.addEventListener("pointercancel", endPress, true);
+    const stopPresses = hearPresses(
+      document,
+      (event) => {
+        pressing =
+          event.target instanceof Node && panelRef.current?.contains(event.target) === true;
+      },
+      () => {
+        pressing = false;
+      }
+    );
     document.addEventListener("keydown", dismissOnEscape, true);
     return () => {
       document.removeEventListener("focusin", followFocus, true);
       document.removeEventListener("pointerdown", outside, true);
-      document.removeEventListener("mousedown", pressIn, true);
-      document.removeEventListener("pointerup", endPress, true);
-      document.removeEventListener("mouseup", endPress, true);
-      document.removeEventListener("pointercancel", endPress, true);
+      stopPresses();
       document.removeEventListener("keydown", dismissOnEscape, true);
     };
   }, [anchorRef, inner]);
