@@ -125,8 +125,10 @@ export interface InstalledParseWorker {
   /** Resolves on the post that brings the bodies the engine has sent to `count`, however long the
    *  engine takes to load and send them: it waits for the post itself, not for a number of tasks,
    *  so a lazy load that a slow or loaded machine, or the cold-load lane, holds back still ends in
-   *  the body. Nothing here bounds it: a body that never comes is ended by the row's own deadline,
-   *  and the row then fails naming the bodies it waited for and the bodies the engine sent. */
+   *  the body. A wait for the first body also ends on the engine's load: with the load's own error
+   *  where the load fails, and once the worker's ready task has run where the engine loaded and
+   *  posted nothing. Any other wait ends at the row's own deadline, and the row then fails naming
+   *  the bodies it waited for and the bodies the engine sent. */
   waitForRequests(count: number): Promise<void>;
 }
 
@@ -172,9 +174,9 @@ export function installFakeParseWorker({
           `and the row waited for ${count}: a body longer than markdownWorkerThreshold is still ` +
           "parsed on the page's own thread, or the Markdown engine never loaded."
       );
-    /** How the wait ended: a body came, no body came once the engine had loaded, or the row
-     *  ended first. */
-    let ended: "came" | "no body" | "row ended" | undefined;
+    /** How the wait ended: a body came, the engine's load failed, no body came once the engine
+     *  had loaded, or the row ended first. */
+    let ended: "came" | "load failed" | "no body" | "row ended" | undefined;
     const wait = {
       count,
       /** The post that brings the bodies to `count`. */
@@ -198,15 +200,29 @@ export function installFakeParseWorker({
       // loaded engine's render, which ran on that same load before this, and the ready handshake
       // of the worker that render created: `flushTasks` runs after that handshake's task. So a
       // wait no body has ended by then never will be, and it fails at once rather than at the
-      // row's deadline. Later bodies follow what the row itself does next, so only the first ends
-      // on the load.
+      // row's deadline. A load that fails posts nothing either, and the wait fails with the load's
+      // own error, which is the cause. Later bodies follow what the row itself does next, so only
+      // the first ends on the load.
       void (async () => {
-        await warmMarkdownRenderer().catch(() => undefined);
-        await flushTasks();
-        if (taken.length === 0 && unfinished.has(wait)) {
+        let loadFailure: { error: unknown } | undefined;
+        try {
+          await warmMarkdownRenderer();
+        } catch (error) {
+          loadFailure = { error };
+        }
+        if (loadFailure === undefined) {
+          await flushTasks();
+        }
+        if (taken.length > 0 || !unfinished.has(wait)) {
+          return;
+        }
+        unfinished.delete(wait);
+        waits.splice(waits.indexOf(wait), 1);
+        if (loadFailure !== undefined) {
+          ended ??= "load failed";
+          reject(loadFailure.error);
+        } else {
           ended ??= "no body";
-          unfinished.delete(wait);
-          waits.splice(waits.indexOf(wait), 1);
           reject(failure("once the Markdown engine had loaded"));
         }
       })();
