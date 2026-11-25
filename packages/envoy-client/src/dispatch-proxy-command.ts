@@ -6,9 +6,9 @@ import { resolve } from "node:path";
  * its help, its exit line and the parse of its own arguments. The proxy itself is
  * `dispatch-proxy.ts`.
  *
- * This module imports nothing that imports `@legion/broker-client`: the docs generator's program
- * is `dispatch-command.ts`'s, which imports this module and holds no broker-client source
- * (`.github/scripts/ci_job_reads.py`, the docs gate's read of envoy-client's sources).
+ * This module imports nothing that imports `@legion/cipher-client`: the docs generator's program
+ * is `dispatch-command.ts`'s, which imports this module and holds no cipher-client source
+ * (`.github/ci-gates/docs.py`, the docs gate's read of envoy-client's sources).
  */
 
 /** The proxy's command word. */

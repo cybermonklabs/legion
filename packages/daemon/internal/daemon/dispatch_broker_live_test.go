@@ -1951,14 +1951,17 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 // proxyLifetime is how long an access token of C2's broker lives: L in C2's bound.
 const proxyLifetime = 420 * time.Second
 
-// proxyRenewBefore is how long before its token's expiry the proxy's one client trades again:
-// DEFAULT_RENEW_BEFORE_MS of packages/cipher-client/src/token-client.ts, the rule
-// dispatch://INFRA-4799's R4 holds the proxy to. Each token serves the proxy for proxyLifetime
-// less this, 120 s, which is one renewal period.
+// proxyRenewBefore is DEFAULT_RENEW_BEFORE_MS of packages/cipher-client/src/token-client.ts, the
+// rule dispatch://INFRA-4799's R4 holds the proxy to. The proxy's one client trades again this
+// long before a token's expiry, and never before half of the life the token had when it landed
+// (renewalAt). A 420 s token has less than twice this, so the client renews it at its half life,
+// about 210 s after it landed. C2's bound, 1 + T / (L - 300 s), allows one renewal every 120 s,
+// so a client that renews later than that keeps to it.
 const proxyRenewBefore = 300 * time.Second
 
-// proxyReads is how long C2's client reads, from its own start: more than two renewal periods, so
-// the run outlives the token the proxy traded first and the token it renewed that one with.
+// proxyReads is how long C2's client reads, from its own start: longer than the 210 s after which
+// the proxy renews a 420 s token, so the run outlives the token the proxy traded first and goes on
+// with the token it renewed that one with.
 const proxyReads = 255 * time.Second
 
 // proxyPace is the least time between the starts of two requests of C2's client: in proxyReads
@@ -2133,9 +2136,10 @@ type proxyClientRun struct {
 // proxyClient as its command, which reaches Dispatch through the proxy's unix socket alone. The
 // client reads back 64 KiB of random bytes the role uploaded to P's issue as a file, at GET
 // /api/v1/artifacts/<id>/versions/1; posts one comment on that issue twice under one
-// Idempotency-Key; and for 255 s, more than two renewal periods of that lifetime, reads pages of
-// P's issues and of each issue's events, the reads INFRA-4430's work-cost makes, starting one
-// request each 100 ms at most. The result is a table: T, the proxy run's wall time; L, the
+// Idempotency-Key; and for 255 s, longer than the 210 s after which the proxy renews a token of
+// that lifetime (its half life), reads pages of P's issues and of each issue's events, the reads
+// INFRA-4430's work-cost makes, starting one request each 100 ms at most. The result is a table:
+// T, the proxy run's wall time; L, the
 // lifetime; the proxy's exit line; the client's requests and their answers; the requests the
 // recording proxy holds of the role's session from the mark on; and each token presented from the
 // mark on, by its digest, with its session, when it was first and last presented and when it
@@ -2155,7 +2159,7 @@ type proxyClientRun struct {
 // It takes about five minutes past the rig's start, so it runs only when LEGION_E2E_PROXY=1.
 func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 	if os.Getenv("LEGION_E2E_PROXY") != "1" {
-		t.Skip("LEGION_E2E_PROXY is not 1: this check reads through the proxy for more than two renewal periods of a 420 s token, about five minutes, so it runs only when that variable asks for it")
+		t.Skip("LEGION_E2E_PROXY is not 1: this check reads through the proxy for 255 s, past the renewal of a 420 s token at its half life, about five minutes in all, so it runs only when that variable asks for it")
 	}
 	r := newDispatchBrokerRig(t, proxyLifetime)
 	role := r.registeredRole("proxy")
