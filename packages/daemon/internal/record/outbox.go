@@ -1441,24 +1441,16 @@ type PendingBasisSeed struct {
 
 func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisSeed }
 
-// BasisRegistration normalizes a basis registration time (GateBasis.RegisteredAt) to UTC at
-// microsecond precision, the precision Postgres stores and reads back, so a pending-basis seed
-// queued from an in-memory gate names the same wait as one queued from the stored row. It runs
-// once, in PendingBasisSeedOf: the seed's executor (the daemon's seedPendingBasis) and the
-// workflow's check of its read against the stored step (workflow's pendingBasisRead) take the
-// seed's time as it is.
-func BasisRegistration(at time.Time) time.Time {
-	return at.UTC().Truncate(time.Microsecond)
-}
-
 // PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
 // (DesignGate.PendingOnBasis), for the root generation that registered it: the one row every
-// queue of such a read writes, so each reads the same ancestor, version, request and registration
-// (RegisteredAt normalized through BasisRegistration, here and nowhere else).
+// queue of such a read writes, so each reads the same ancestor, version, request and registration.
+// RegisteredAt is normalized here, and nowhere else, to UTC at microsecond precision, the precision
+// Postgres stores and reads back, so a seed queued from an in-memory gate names the same wait as
+// one queued from the stored row.
 func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
 		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation,
-		RegisteredAt: BasisRegistration(gate.Basis.RegisteredAt)}
+		RegisteredAt: gate.Basis.RegisteredAt.UTC().Truncate(time.Microsecond)}
 }
 
 // ReparentSeed reads the new Dispatch parent of a root that ran as a tree of its own and that a
