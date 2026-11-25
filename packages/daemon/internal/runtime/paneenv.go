@@ -60,13 +60,16 @@ var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s
 // runtime (`runtime.tmux.pane_env`), or "" when nothing here refuses it. The loader asks it at load
 // (config) and the tmux runtime again at boot (tmux.New), each beside its own checks of what only
 // it can see. The tmux runtime also asks it, with no value, of each provider key's name at boot
-// (tmux's readProviderKeyNames), since the shim exports a provider key into Oh My Pi's
+// (tmux's readProviderKeyNames), and the loader of each provider key's name under runtime tmux
+// (config's checkTmuxProviderKeyNames), since the shim exports a provider key into Oh My Pi's
 // environment. A variable that places the session a resume reads is refused, since the runtime
 // places a pane's sessions itself and a resume must find the session where the agent left it; so
 // is one the runtime sets after the operator's variables on every Claude Code pane, or on every
 // resumed Oh My Pi pane (SessionExclusiveVariable), where the operator's value would be overridden
-// without a word, and a launch secret's pointer, which every launch sets to a file of its own and
-// the runtime then refuses at every launch. A value that is a URL carrying a password is refused
+// without a word, a launch secret's pointer, which every launch sets to a file of its own and
+// the runtime then refuses at every launch, and the table of every role's identity
+// (RoleIdentitiesVariable), which every workflow launch sets for the push step of `legion jj` and
+// which an operator's value would forge. A value that is a URL carrying a password is refused
 // too: a pane variable is a value on tmux's command line, which every process on the host can
 // read, and a secret reaches a pane as a file. The reason names the variable's role and never the
 // value.
@@ -78,6 +81,8 @@ func PaneVariableRefusal(name, value string) string {
 		return "the runtime sets it on every Claude Code pane itself, after the operator's variables"
 	case name == SessionExclusiveVariable:
 		return "the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"
+	case name == RoleIdentitiesVariable:
+		return "every launch sets it (the identities of the issue's roles, which the push step reads)"
 	}
 	for _, secret := range launchSecrets {
 		if name == secret+"_FILE" {

@@ -141,22 +141,26 @@ func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T)
 // expired unapproved. login-status keeps the word the dotfiles launcher gate matches, "expired",
 // and says on stderr the cause the helper names (credential_dropped), in the words of the helper's
 // own journal line. A helper from before credential_dropped sets login_refused alone, and only for
-// a broker refusal, so that reads as one; with neither, "expired" is a login nobody approved.
+// a broker refusal, so that reads as one; with neither, "expired" is a login nobody approved, and
+// one whose last polls the broker did not answer says so (login_reason).
 func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
 	binary := buildAgentSecrets(t)
+	const unreached = "the broker was unreachable or busy for the last 3 polls"
 	for _, tc := range []struct {
 		name    string
 		refused bool
 		dropped string
+		reason  string
 		want    string
 	}{
-		{"dropped at its expiry", true, "the launcher credential reached its expiry", "the launcher credential reached its expiry; run: agent-secrets machine login, and have a human approve it"},
-		{"refused, from a helper before credential_dropped", true, "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it"},
-		{"a login nobody approved", false, "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login, and have a human approve it"},
+		{"dropped at its expiry", true, "the launcher credential reached its expiry", "", "the launcher credential reached its expiry; run: agent-secrets machine login, and have a human approve it"},
+		{"refused, from a helper before credential_dropped", true, "", "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it"},
+		{"a login nobody approved", false, "", "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login, and have a human approve it"},
+		{"a login that lapsed while the broker was down", false, "", unreached, "the most recent machine login expired before anyone approved it; " + unreached + "; run: agent-secrets machine login, and have a human approve it"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock := filepath.Join(shortTempDir(t), "h.sock")
-			fakeHelperAt(t, sock, helper.Response{OK: true, LoginState: "expired", LoginRefused: tc.refused, CredentialDropped: tc.dropped})
+			fakeHelperAt(t, sock, helper.Response{OK: true, LoginState: "expired", LoginReason: tc.reason, LoginRefused: tc.refused, CredentialDropped: tc.dropped})
 			stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
 				[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, "machine", "login-status")
 			want := "agent-secrets machine login-status: " + tc.want + "\n"
