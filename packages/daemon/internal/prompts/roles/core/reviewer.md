@@ -12,7 +12,7 @@ The command prints excluded results too.
 Passes at another commit, under older check words, or retracted passes do not count.
 A pass and a fail at one required head read not known until one is retracted.
 
-A check with `ci_check` derives one CI result per required head.
+A check carrying `ci_check` is CI's: it derives one CI result per required head.
 Each derived result stands for both roles.
 Until each required run concludes, wait for it by name and head.
 Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at its globally required heads.

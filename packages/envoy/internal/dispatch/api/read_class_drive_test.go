@@ -150,6 +150,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
+			{"checks.*.pass_stands.subjects.*.basis.learned_at.at", "the same moment, on the basis each subject's pass stands at"},
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},

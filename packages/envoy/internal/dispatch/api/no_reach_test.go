@@ -746,6 +746,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/deploys":              url.Values{"repo": {"acme/widgets"}}.Encode(),
 	}
 }
 
