@@ -1,3 +1,4 @@
+import { settled, timeLeft } from "@legion/test-fixtures/wait"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { untilTheGuard } from "./row-deadline"
@@ -16,6 +17,26 @@ export async function connectedToServer(
   guardMs?: number,
 ): Promise<void> {
   await client.connect(transport, { timeout: untilTheGuard(guardMs) }).catch((error: unknown) => {
+    throw new Error(
+      `the channel server did not answer initialize: ${String(error)}; its stderr: ${stderr()}`,
+    )
+  })
+}
+
+/**
+ * `connectedToServer` for a row that waits through `@legion/test-fixtures/wait`: the wait for the
+ * answer to `initialize` ends at the row's deadline (`settled`), which is the request's own timeout
+ * too (`timeLeft`) in place of the MCP SDK's 60 s.
+ */
+export async function connectedBeforeTheDeadline(
+  client: Client,
+  transport: StdioClientTransport,
+  stderr: () => string,
+): Promise<void> {
+  await settled(
+    "the channel server's answer to initialize",
+    client.connect(transport, { timeout: timeLeft() }),
+  ).catch((error: unknown) => {
     throw new Error(
       `the channel server did not answer initialize: ${String(error)}; its stderr: ${stderr()}`,
     )

@@ -3,6 +3,7 @@
  * process: it polls the socket the server bound, answers the calls the server makes, and sends
  * the events a real session would. What the real mod adds beyond this is Claude Code itself.
  */
+import { until } from "@legion/test-fixtures/wait"
 import {
   MOD_ROUTE_EVENTS,
   MOD_ROUTE_REQUESTS,
@@ -75,18 +76,16 @@ export async function startFakeMod(
     readonly answers?: ModAnswers
     /** Sent as the first event, as a real mod's `session.start` does; true by default. */
     readonly hello?: boolean
-    /** The server's exit, where the caller started it: the probe for its socket stops, naming
-     *  that, once the server has exited. */
+    /** The server's exit, where the caller started it: the probe for its socket throws, naming
+     *  that exit and what the server wrote (`wrote`), once the server has exited. */
     readonly exited?: Promise<unknown>
+    /** What the server has written so far, which the probe names once the server has exited. */
+    readonly wrote?: () => string
     /** Aborted once the caller's row has ended, at its limit included: the probe for the socket
      *  stops, naming that, and so does the polling after it, as `stop` stops it. A caller that
      *  holds the server process passes `exited`; one that does not passes this, and one may pass
-     *  both. With neither, and no `answerWithinMs`, the probe runs until the socket answers. */
+     *  both. With neither, the probe runs until the socket answers or the row's deadline passes. */
     readonly signal?: AbortSignal
-    /** How long the probe waits for the socket to answer the first event, for a caller whose
-     *  row's limit is past what its job leaves one hang (`ROW_TIMEOUT_MS`,
-     *  `./reopen-server.ts`). Once it has passed, the probe stops, naming that. */
-    readonly answerWithinMs?: number
   },
 ): Promise<FakeMod> {
   const calls: ModCall[] = []
@@ -182,51 +181,50 @@ export async function startFakeMod(
     await post(MOD_ROUTE_EVENTS, { events: [event] }, signal)
   }
 
-  // The server binds its socket while its MCP transport starts, so a mod started beside it
-  // probes until the socket answers, as the real mod does. How long the bind takes is the host's
-  // speed. A caller whose row's limit ends a hang within its job's room gives the probe no
-  // deadline: a socket that never answers is that limit's to end, which names the row. A caller
-  // whose row's limit is past that room passes `answerWithinMs`. Its probe then stops once that
-  // time has passed, naming the socket. That includes a socket that took the event and never
-  // answered it, since the event's send is aborted then. A server that exits first ends the probe
-  // at once (`exited`), and so does the end of the caller's row (`signal`).
-  let exited = false
-  const ended = () => {
-    exited = true
-  }
-  void options.exited?.then(ended, ended)
-  const answerBy =
-    options.answerWithinMs === undefined ? undefined : AbortSignal.timeout(options.answerWithinMs)
-  const probeEnds = [options.signal, answerBy].filter((signal) => signal !== undefined)
-  const probeSignal = probeEnds.length === 0 ? undefined : AbortSignal.any(probeEnds)
-  for (;;) {
-    if (options.signal?.aborted === true) {
-      throw new Error("the row ended before the server's mod socket answered")
-    }
+  // The server binds its socket while its MCP transport starts. Retry the hello until the
+  // socket answers; an exit aborts even an in-flight hello, and the shared wait ends a probe
+  // that never gets an answer.
+  if (options.hello !== false) {
+    const probe = new AbortController()
+    const signal =
+      options.signal === undefined ? probe.signal : AbortSignal.any([options.signal, probe.signal])
+    void options.exited?.then(
+      (code) => {
+        const output = options.wrote === undefined ? "" : `; it wrote: ${options.wrote()}`
+        probe.abort(
+          new Error(`the server exited (${String(code)}) before its mod socket answered${output}`),
+        )
+      },
+      (error: unknown) => {
+        probe.abort(
+          new Error("could not read the server's exit while probing its mod socket", {
+            cause: error,
+          }),
+        )
+      },
+    )
     try {
-      if (options.hello !== false) {
-        await send(
-          {
-            kind: "hello",
-            sessionId: options.sessionId,
-            claudeVersion: "2.1.310",
-            interactive: true,
-          },
-          probeSignal,
-        )
-      }
-      break
-    } catch (error) {
-      if (exited) {
-        throw new Error("the server exited before its mod socket answered", { cause: error })
-      }
-      if (answerBy?.aborted === true) {
-        throw new Error(
-          `the server's mod socket had not answered ${options.answerWithinMs} ms into the probe`,
-          { cause: error },
-        )
-      }
-      await Bun.sleep(50)
+      await until("the server's mod socket to answer the mod's hello", async () => {
+        signal.throwIfAborted()
+        try {
+          await send(
+            {
+              kind: "hello",
+              sessionId: options.sessionId,
+              claudeVersion: "2.1.310",
+              interactive: true,
+            },
+            signal,
+          )
+        } catch {
+          signal.throwIfAborted()
+          return false
+        }
+        signal.throwIfAborted()
+        return true
+      })
+    } finally {
+      probe.abort()
     }
   }
   void poll()

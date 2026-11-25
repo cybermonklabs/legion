@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
@@ -8,10 +8,12 @@ import { signedIn, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { RETRY_FIRST_WAIT_MS, TRADE_ATTEMPT_MS } from "@legion/cipher-client/token-client"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { settled } from "@legion/test-fixtures/wait"
+import type { Subprocess } from "bun"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
-import { collected, exitBeforeTheGuard, JOB_ROOM_GUARD_MS, rowStarted } from "./row-deadline"
+import { collected } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -20,22 +22,10 @@ const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 // A row waits for its hooks to exit and decides on what they printed and wrote. A hook that never
-// exits fails its row by name before the hang guard this file sets as its rows' default
-// (`OPEN_ASKS_ROW_GUARD_MS`, below), which each wait for a hook's exit is given too
-// (`exitBeforeTheGuard`). Fixed limits of 20 s and 30 s decided rows before: each hook first wrote
-// Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at loads of 790 to 960
-// a hook did not exit within them.
-//
-// The guard is the claude-envoy job's room (`JOB_ROOM_GUARD_MS`, `./row-deadline.ts`), not six
-// times a reading: this file's rows read up to 59 101 ms over 20 runs at the 80 rung (the resume
-// row, in the Job infra-1580-r27oa-rl5gq of the cluster's `builds` namespace, two CPUs and 8 GiB,
-// 201 busy loops for the 80 rung, row A 39.7 s), and up to 50 694 ms in this file run whole there
-// (infra-1580-r27ow-46ct9, 183 busy loops, row A 36.6 s), both at 82306880, where
-// `row-deadline.ts`'s 120 s was 2.0 times the worst. Six times it is 355 s, past that room, so the
-// room decides 240_000, 4.1 times the worst.
-const OPEN_ASKS_ROW_GUARD_MS = JOB_ROOM_GUARD_MS
-beforeEach(rowStarted)
-setDefaultTimeout(OPEN_ASKS_ROW_GUARD_MS)
+// exits fails its row by name at the row's deadline (`settled`, `@legion/test-fixtures/wait`),
+// before the command's guard ends the row. Fixed limits of 20 s and 30 s decided rows before: each
+// hook first wrote Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at
+// loads of 790 to 960 a hook did not exit within them.
 
 /** The pidfile directories of the fake jjs that never answer (`hangingJjDirectory`), one per jj,
  * each recorded before its row runs the hook. The hook spawns jj in a process group of its own
@@ -45,12 +35,6 @@ setDefaultTimeout(OPEN_ASKS_ROW_GUARD_MS)
  * one that starts after the directory is gone cannot record itself, so it does not sleep. */
 const hangingJjPidDirectories: string[] = []
 
-// A bound on work, not a hang guard: the body is synchronous, a read, a signal and a removal per
-// hanging jj, and no row of this file has more than one hanging jj. Bun does not interrupt a
-// synchronous hook at its limit. It fails the hook once the hook has returned, when the hook took
-// longer than its limit. So the limit bounds the charge Bun puts on this hook, which a starved
-// host stretches. It is the file's default (`setDefaultTimeout` above), which reaches this hook
-// without it (Bun 1.4.4). It is stated here beside the body it bounds.
 afterEach(() => {
   for (const directory of hangingJjPidDirectories.splice(0)) {
     let pid = 0
@@ -68,7 +52,20 @@ afterEach(() => {
     }
     rmSync(directory, { recursive: true, force: true })
   }
-}, OPEN_ASKS_ROW_GUARD_MS)
+})
+
+/** `child`'s exit code once it exits, or a failure naming `what` and what `wrote` reports at the
+ *  row's deadline (`settled`, `@legion/test-fixtures/wait`), with the child ended. */
+async function exitOf(child: Subprocess, what: string, wrote: () => string): Promise<number> {
+  try {
+    return await settled(`${what}'s exit`, child.exited)
+  } catch (error) {
+    child.kill("SIGKILL")
+    throw new Error(`${error instanceof Error ? error.message : String(error)}: ${wrote()}`, {
+      cause: error,
+    })
+  }
+}
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment (and Bun's transpiler
  * cache off, `./transpiler-cache.ts`) and `options.preload` given to Bun first where set. The
@@ -88,14 +85,17 @@ async function runHook(
   })
   const stdout = collected(run.stdout)
   const stderr = collected(run.stderr)
-  const exitCode = await exitBeforeTheGuard(
+  const exitCode = await exitOf(
     run,
     "the open-asks hook",
     () =>
       `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
-    OPEN_ASKS_ROW_GUARD_MS,
   )
-  return { exitCode, stdout: await stdout.ended, stderr: await stderr.ended }
+  const [out, err] = await settled(
+    "the open-asks hook's stdout and stderr to end",
+    Promise.all([stdout.ended, stderr.ended]),
+  )
+  return { exitCode, stdout: out, stderr: err }
 }
 
 const hookInput = {
@@ -223,13 +223,8 @@ test("a summary larger than a pipe holds arrives whole before the hook ends its 
       }
       return text + decoder.decode()
     })()
-    const exitCode = await exitBeforeTheGuard(
-      run,
-      "the open-asks hook",
-      () => stderr.text(),
-      OPEN_ASKS_ROW_GUARD_MS,
-    )
-    const stdout = await read
+    const exitCode = await exitOf(run, "the open-asks hook", () => stderr.text())
+    const stdout = await settled("the open-asks hook's large summary to finish draining", read)
 
     expect(exitCode).toBe(0)
     expect(Buffer.byteLength(stdout)).toBeGreaterThan(2_000_000)
@@ -715,13 +710,12 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
 
 /** A `jjDirectory` whose jj never answers: it writes its pid to a pidfile, in a directory of its
  * own the afterEach above kills it from, and only then sleeps 600 s in that same process. 600 s is
- * 2.5 times the row's guard (`OPEN_ASKS_ROW_GUARD_MS`, 240 s), and the sleep starts after its row
- * has started, so a hook that stopped bounding its wait for jj is still waiting when that guard
- * ends the row, and the row fails naming the hook's exit. A 30 s sleep would have let such a hook
- * return inside the guard and left the row green while broken. The sleep leaves no process behind:
- * the hook's own bound kills the jj's group, and the afterEach above kills the pid the jj wrote
- * before it slept; a jj that had not written its pid when the afterEach removed its directory
- * cannot write it, so it does not sleep. */
+ * past the command's guard, and the sleep starts after its row has started, so a hook that stopped
+ * bounding its wait for jj is still waiting when that guard ends the row, and the row fails naming
+ * the hook's exit. A 30 s sleep would have let such a hook return inside the guard and left the row
+ * green while broken. The sleep leaves no process behind: the hook's own bound kills the jj's
+ * group, and the afterEach above kills the pid the jj wrote before it slept; a jj that had not
+ * written its pid when the afterEach removed its directory cannot write it, so it does not sleep. */
 async function hangingJjDirectory(scratch: string): Promise<string> {
   const pidDirectory = mkdtempSync(join(tmpdir(), "claude-envoy-hook-jj-pid-"))
   hangingJjPidDirectories.push(pidDirectory)
@@ -1586,14 +1580,7 @@ test("the census sees each child a script starts through node:child_process", as
       stderr: "pipe",
     })
     const stderr = collected(run.stderr)
-    expect(
-      await exitBeforeTheGuard(
-        run,
-        "the routing script",
-        () => stderr.text(),
-        OPEN_ASKS_ROW_GUARD_MS,
-      ),
-    ).toBe(0)
+    expect(await exitOf(run, "the routing script", () => stderr.text())).toBe(0)
     const census: Census = JSON.parse(await readFile(record, "utf8"))
     expect(census.waits.map((wait) => `${wait.kind} ${wait.command}`)).toEqual([
       "Bun.spawnSync true",
@@ -2017,8 +2004,7 @@ async function projectedTokenFile(scratch: string): Promise<string> {
 // CPUs and 8 GiB, 183 busy loops for the 80 rung, row A 36.6 s, at 82306880), and 1 time in 20 at
 // the 48 rung (infra-1580-r27cb48-5rhzl, 54 busy loops for the 48 rung, row A 35.7 s). At the 32
 // rung each of the six rows is 20 of 20 (infra-1580-r27cb32-zslfn, 34 busy loops for the 32 rung,
-// row A 32.1 s, at 58517f21), the worst run charged 40 297 ms. Their guard is the file's
-// (`OPEN_ASKS_ROW_GUARD_MS`), which the job's room decides, 5.96 times that worst.
+// row A 32.1 s, at 58517f21).
 for (const route of BROKER_ROUTES) {
   test(`a hook whose credential is traded at the broker by ${route.name}, the first service never answering, waits on nothing but that route's bounds`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-broker-"))

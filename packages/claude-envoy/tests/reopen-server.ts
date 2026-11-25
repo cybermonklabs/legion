@@ -19,25 +19,24 @@ import { waitFor } from "./channel-session-harness"
 import { type FakeMod, startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
+import { collected } from "./row-deadline"
 import { socketOwner } from "./socket-owner"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
-/** Each wait's last-resort bound. Every step here is a whole server process, which a loaded
- *  machine starts and runs slowly, and each wait ends the moment its fact holds: this bound never
- *  decides a row that works, only names the step of one that is stuck. A row that took 25.8 s
- *  alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
+/** The last-resort bound for a legacy `waitFor` on a whole server process. Every such wait ends
+ *  the moment its fact holds; the bound only names the step of a row that is stuck. A row that took
+ *  25.8 s alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
 export const PROCESS_WAIT_MS = 120_000
 /** Each row's: above its chain of waits, so a stuck wait names its step before the runner does. */
 export const ROW_TIMEOUT_MS = 600_000
 
 /** The fake mod of `run`'s session `sessionId`, once the server's mod socket answers its hello.
- *  The probe waits `PROCESS_WAIT_MS`, as each wait of these files does: a row's limit
- *  (`ROW_TIMEOUT_MS`) is past what the claude-envoy job leaves one hang, so a socket that never
- *  answers fails here by name. */
+ *  The probe waits until the row's deadline (`@legion/test-fixtures/wait`), and ends at once,
+ *  naming the exit and the server's stderr, once the server has exited. */
 export async function startSessionMod(
-  run: Pick<ReopenServer, "stateDirectory" | "server">,
+  run: Pick<ReopenServer, "stateDirectory" | "server" | "stderr">,
   sessionId: string,
 ): Promise<FakeMod> {
   const socketPath = modSocketPath(sessionId, { XDG_RUNTIME_DIR: run.stateDirectory })
@@ -45,7 +44,7 @@ export async function startSessionMod(
   return await startFakeMod(socketPath, {
     sessionId,
     exited: run.server.exited,
-    answerWithinMs: PROCESS_WAIT_MS,
+    wrote: run.stderr,
   })
 }
 
@@ -159,6 +158,9 @@ export interface ReopenServerOptions {
    *  (the default), or once the server has written its first stderr line: a row that stops the
    *  server while it starts never sees the registration. */
   readonly awaitRegistration?: boolean
+  /** The shared `until` for a row on the command's guard. Older callers retain their per-step
+   *  `waitFor` bounds. */
+  readonly waitForStart?: (what: string, probe: () => Promise<boolean>) => Promise<unknown>
   /** Whether the gate in front of the hub starts open (the default), or shut: the server's first
    *  dial is then refused, and dialed again, until the row opens it. */
   readonly gateOpen?: boolean
@@ -278,15 +280,12 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     stderr: "pipe",
   })
   serverPid = server.pid
-  let stderr = ""
-  const decoder = new TextDecoder()
-  const stderrEnded = (async () => {
-    for await (const chunk of server.stderr) stderr += decoder.decode(chunk, { stream: true })
-  })()
+  const stderr = collected(server.stderr)
+  const stderrEnded = stderr.ended.then(() => undefined)
   const relaySubscriptions = (): number =>
     broker.subscribed.filter((subject) => subject === relay).length
   const state = (): string =>
-    `exit code ${server.exitCode}; relay subscriptions ${relaySubscriptions()}; live connections ${broker.liveConnections}; stderr:\n${stderr}`
+    `exit code ${server.exitCode}; signal ${server.signalCode}; relay subscriptions ${relaySubscriptions()}; live connections ${broker.liveConnections}; stderr:\n${stderr.text()}`
   const stop = async (): Promise<void> => {
     server.kill("SIGKILL")
     await server.exited
@@ -305,36 +304,29 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     )
     return `this server is pid ${server.pid}; ${seen.join("; ")}`
   }
+  const waitForStart =
+    options.waitForStart ?? ((what, probe) => waitFor(probe, what, state, PROCESS_WAIT_MS))
   try {
-    // The start's own fact, with no clock of its own: a start a loaded machine slows takes what it
-    // takes, a server that ends first is named with its end at once, and one that never starts is
-    // named at `PROCESS_WAIT_MS`. A fixed 30 s decided it before: a server writing Bun's transpiler
-    // cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s at a load
-    // near 1,000.
-    await waitFor(
-      async () => {
-        if (stderr.length > 0 || deliveries.length > 0) return true
-        if (server.exitCode === null && server.signalCode === null) return false
-        await stderrEnded
-        if (stderr.length > 0) return true
-        throw new Error(`the server ended before its first stderr line: ${state()}`)
-      },
-      "the server's first stderr line",
-      state,
-      PROCESS_WAIT_MS,
-    )
+    // A server that ends first is named with its exit and stderr. A server writing Bun's
+    // transpiler cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s
+    // at a load near 1,000.
+    await waitForStart("the server's first stderr line", async () => {
+      if (stderr.text().length > 0 || deliveries.length > 0) return true
+      if (server.exitCode === null && server.signalCode === null) return false
+      await stderrEnded
+      if (stderr.text().length > 0) return true
+      throw new Error(`the server ended before its first stderr line: ${state()}`)
+    })
     if (options.awaitRegistration !== false) {
       // A server that printed its first line and then ended is named with its end at once too.
-      await waitFor(
+      await waitForStart(
+        "the session's first registration and its relay subscription",
         async () => {
           if (deliveries.length > 0 && relaySubscriptions() === 1) return true
           if (server.exitCode === null && server.signalCode === null) return false
           await stderrEnded
           throw new Error(`the server ended before its first registration: ${state()}`)
         },
-        "the session's first registration and its relay subscription",
-        state,
-        PROCESS_WAIT_MS,
       )
     }
   } catch (error) {
@@ -349,7 +341,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     requests,
     sessions,
     deliveries,
-    stderr: () => stderr,
+    stderr: stderr.text,
     stderrEnded,
     relaySubscriptions,
     state,
