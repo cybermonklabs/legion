@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -43,8 +44,9 @@ import (
 // for. Each makes at most mergeStateLadderReads attempts, each with at most one read, and reads
 // again mergeStateLadderWait (mergeStateWait) later, or after GitHub's Retry-After when that is
 // longer. So a change to either number changes those reads too. mergeStateFollowWaits is the
-// longest wait between two reads after a climb, counted in the ladder's waits: twenty half
-// minutes, ten minutes.
+// longest wait between two reads after a climb, and the longest a climb waits to read again after
+// a read that failed (climbMergeState), counted in the ladder's waits: twenty half minutes, ten
+// minutes.
 const (
 	mergeStateLadderReads = 5
 	mergeStateLadderWait  = 30 * time.Second
@@ -153,10 +155,11 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 }
 
 // mergeStateRun is one running ladder's bookkeeping (workflowRuntime.mergeStateRunning): asked is
-// whether a request for a read arrived since its climb began, and wake ends a follow's wait for
-// that request (followWait). wake holds one signal at most: readMergeStates sends it without
-// blocking and mergeStateEnds drains it as it takes the request up, both under mergeStateMu, so a
-// request a climb answers leaves no signal behind to cut a later follow's wait short.
+// whether a request for a read arrived since its climb began, and wake ends a follow's wait, or a
+// climb's wait after a read that failed, for that request (followWait). wake holds one signal at
+// most: readMergeStates sends it without blocking and mergeStateEnds drains it as it takes the
+// request up, both under mergeStateMu, so a request a climb answers leaves no signal behind to cut
+// a later wait short.
 type mergeStateRun struct {
 	asked bool
 	wake  chan struct{}
@@ -207,24 +210,50 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // is still computing the state, so the climb asks again; every other answer, the read finding no
 // open pull request among them, is an answer, and the climb ends on it and answers "". After the
 // last `unknown` it ends too, and answers the head that read was made at, which the ladder then
-// follows (followMergeState). A failed read ends the climb with nothing to follow: the issue's
-// next event, its next handoff and the daemon's next start all read again.
+// follows (followMergeState).
+//
+// A read that fails, GitHub's or the read of the record before it, answers nothing about the head,
+// so the climb keeps the read it owes and makes it again: it logs the failure and waits, the
+// ladder's wait after the first failure and twice the one before after each failure that follows
+// it, up to mergeStateFollowWaits of the ladder's waits, or as long as GitHub's rate limit asks
+// when that is longer (githubrest.RetryAfter). A failed read is none of the climb's
+// mergeStateLadderReads reads, and an answer starts the waits again from the ladder's. The wait is
+// a follow's (followWait): a request for a read ends it and the ladder climbs at once
+// (mergeStateEnds), and ctx's end ends it and the ladder. A climb that ended on the failure instead
+// left mergeStateEnds to take the issue off, and nothing read the head again until another fact
+// asked, so an answer GitHub had by then - a CONFLICTING one among them - reached nothing.
+// dropFirstReadFailure, which only a test sets, ends the climb on the failure as that did.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) string {
-	for read := 1; ; read++ {
+	var backoff time.Duration
+	for read := 1; ; {
 		state, head, err := w.readMergeState(ctx, issue, "")
 		if err != nil {
-			if ctx.Err() == nil {
+			if ctx.Err() != nil {
+				return ""
+			}
+			if w.dropFirstReadFailure {
 				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
 					"issue", issue, "read", read, "error", err)
+				return ""
 			}
-			return ""
+			backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())
+			after, _ := githubrest.RetryAfter(err)
+			wait := max(backoff, after)
+			w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the read failed, and is made again after the wait",
+				"issue", issue, "read", read, "wait", wait, "error", err)
+			if !w.followWait(ctx, issue, wait) {
+				return ""
+			}
+			continue
 		}
+		backoff = 0
 		if state != record.MergeStateUnknown {
 			return ""
 		}
 		if read >= mergeStateLadderReads {
 			return head
 		}
+		read++
 		select {
 		case <-ctx.Done():
 			return ""
@@ -277,9 +306,10 @@ func (w *workflowRuntime) followMergeState(ctx context.Context, issue, head stri
 	}
 }
 
-// followWait waits wait before a read after the ladder (followMergeState), and says whether to make
-// that read: false once a request for a read of issue has arrived, before the wait or during it,
-// since the ladder then climbs at once (mergeStateEnds), and false when ctx ends.
+// followWait waits wait before a read after the ladder (followMergeState), and before a climb
+// makes a read again after it failed (climbMergeState), and says whether to make that read: false
+// once a request for a read of issue has arrived, before the wait or during it, since the ladder
+// then climbs at once (mergeStateEnds), and false when ctx ends.
 func (w *workflowRuntime) followWait(ctx context.Context, issue string, wait time.Duration) bool {
 	w.mergeStateMu.Lock()
 	run := w.mergeStateRunning[issue]
@@ -301,10 +331,10 @@ func (w *workflowRuntime) followWait(ctx context.Context, issue string, wait tim
 }
 
 // mergeStateWait is how long the ladder waits between reads of a head GitHub is still computing
-// the merge state of, the unit the reads after it wait in (followMergeState), and how long the
-// outbox's merge-queue read and second conflict read wait before they read again (mergeQueueRead,
-// conflictConfirm, which attach hands this wait): mergeStateLadderWait, which a test shortens
-// through the runtime's own field.
+// the merge state of, the unit the reads after it (followMergeState) and a climb's reads after a
+// read that failed (climbMergeState) wait in, and how long the outbox's merge-queue read and
+// second conflict read wait before they read again (mergeQueueRead, conflictConfirm, which attach
+// hands this wait): mergeStateLadderWait, which a test shortens through the runtime's own field.
 func (w *workflowRuntime) mergeStateWait() time.Duration {
 	if w.mergeStateRetry > 0 {
 		return w.mergeStateRetry
