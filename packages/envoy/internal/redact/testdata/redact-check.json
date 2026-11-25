@@ -677,105 +677,79 @@
       {
         "row": "oidc-configured-issuer-discovery-unread",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery/unread"
       },
       {
         "row": "oidc-configured-issuer-discovery-no-sign-in",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery/no-sign-in"
       },
       {
         "row": "oidc-configured-issuer-discovery-metadata",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery/metadata"
       },
       {
         "row": "oidc-configured-issuer-client-check-unanswered",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-client-check/unanswered"
       },
       {
         "row": "oidc-configured-issuer-client-check-refused",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-client-check/refused"
       },
       {
         "row": "oidc-configured-issuer-client-check-outage",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-client-check/outage"
       },
       {
         "row": "oidc-configured-issuer-client-check-no-refusal",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-client-check/no-refusal"
       },
       {
         "row": "oidc-configured-issuer-verifier",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-verifier"
       },
       {
         "row": "oidc-configured-issuer-keys-unread",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-keys/unread"
       },
       {
         "row": "oidc-configured-issuer-keys-no-jwks-uri",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-keys/no-jwks-uri"
       },
       {
         "row": "oidc-configured-issuer-discovery-wait",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery-wait"
       },
       {
         "row": "oidc-configured-issuer-discovery-log-discovered",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery-log/discovered"
       },
       {
         "row": "oidc-configured-issuer-discovery-log-failed",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
-        "files": [
-          "packages/envoy/internal/oidc/configured_issuer_test.go"
-        ],
+        "files": ["packages/envoy/internal/oidc/configured_issuer_test.go"],
         "capture": "oidc.configured-issuer-discovery-log/failed"
       },
       {
