@@ -17,6 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// launcherInvalid is the broker's 401 LAUNCHER_INVALID, its answer to a launcher proof it rejects,
+// as Broker.do reads it beside a clean address.
+func launcherInvalid() *BrokerError {
+	return newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+}
+
 // TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand covers the fail-closed contract:
 // Enroll before any Login names the login command; once a broker 401 LAUNCHER_INVALID clears the
 // credential (expired or revoked), the very next Enroll names it again, with no auto-relogin. The
@@ -94,7 +100,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	waitFor(t, func() bool { return b.cred.Load() != old && b.LoginStatus().State == "issued" })
 	fresh := b.cred.Load()
 
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := launcherInvalid()
 	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
@@ -137,7 +143,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := launcherInvalid()
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
@@ -162,7 +168,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatal(err)
 	}
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := launcherInvalid()
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
