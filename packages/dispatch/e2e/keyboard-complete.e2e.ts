@@ -125,6 +125,7 @@ import { machineSession } from "./machines";
 import { commentWithBody } from "./margin-helpers";
 import { expectHighlight, openList, openTrigger, priorityTrigger, statusTrigger } from "./menus";
 import { inboxRead, logReads, readAnsweredSince } from "./pick-writes";
+import { refPicker } from "./ref-picker";
 import {
   type ReviewedRoute,
   type ReviewSeed,
@@ -10348,7 +10349,8 @@ test("k-comment-focus: on today's issue page an Escape held down in the comment 
   const form = page.getByRole("form", { name: "Comment composer" });
   const field = form.getByLabel("Comment");
   await expect(field, step("the Conversation tab draws its comment box")).toBeVisible();
-  const suggestions = page.getByRole("listbox", { name: "Mention suggestions" });
+  // main's #3125 draws one reference picker for `[[`, `@` and `#` (`e2e/ref-picker.ts`).
+  const suggestions = refPicker(page);
   const discardAsk = page.getByText("Discard draft?", { exact: true });
   // The row's control: one press of Escape closes the list and asks nothing.
   await field.fill("Ship it now @");
