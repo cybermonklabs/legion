@@ -29,8 +29,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -575,6 +578,101 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE") {
 		t.Fatalf("err = %v, want a refusal naming DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", err)
 	}
+}
+
+// TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
+// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
+// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
+// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
+// a proof signed for either is accepted, and one for an origin neither setting names is refused.
+// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
+// scheme, each refuse the start naming it.
+func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	const (
+		public    = "https://dispatch.example"
+		inCluster = "http://dispatch.internal.example:8766"
+		elsewhere = "https://dispatch.elsewhere.example"
+		route     = "/api/v1/whoami"
+		token     = "a-session-token-the-broker-issued"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_proof_origins",
+		Person:       "alice",
+		ProjectScope: ciphertoken.ProjectScopeNamed,
+		Projects:     []string{"INFRA"},
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   caller.JKT(),
+	})
+	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
+	// start is what main does with values: the boot config, the server URL, the verifier.
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
+		t.Helper()
+		values["DISPATCH_SERVER_URL"] = public
+		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
+		values["DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"] = accountToken
+		env := bootEnvironment(values)
+		boot, err := resolveBootConfig(env)
+		if err != nil {
+			t.Fatalf("resolve boot config: %v", err)
+		}
+		envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
+		if err != nil {
+			t.Fatalf("load envoy config: %v", err)
+		}
+		serverURL := envoyConfig.Dispatch.ServerURL
+		verifier, err := brokerTokenVerifier(boot, storetest.Open(t), serverURL)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+	}
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
+		t.Helper()
+		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
+		return err
+	}
+
+	t.Run("production's shape", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "})
+		if !slices.Equal(origins, []string{public, inCluster}) {
+			t.Fatalf("the verifier's origins are %q, want %q and %q, each once", origins, public, inCluster)
+		}
+		for _, origin := range []string{public, inCluster} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{})
+		if !slices.Equal(origins, []string{public}) {
+			t.Fatalf("the verifier's origins are %q, want DISPATCH_SERVER_URL's %q alone", origins, public)
+		}
+		if err := verify(t, verifier, public); err != nil {
+			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
+		}
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
+		}
+	})
+
+	t.Run("an entry that is no origin", func(t *testing.T) {
+		for entry, naming := range map[string]string{
+			inCluster + "/dispatch":           `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + inCluster + `/dispatch"`,
+			"ftp://dispatch.internal.example": `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + redact.NotPrinted + `"`,
+		} {
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "," + entry}, naming)
+		}
+	})
 }
 
 // The issuer and the audience are one setting in two variables: half of it is a
