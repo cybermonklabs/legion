@@ -4,9 +4,11 @@ import type { Locator, Page } from "@playwright/test";
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
+  STATE_LINES,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
@@ -1147,5 +1149,82 @@ test("a change sent offline on a decision lets its Send change go within the req
       send,
       "Send change is no longer held past the request deadline"
     ).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+// The tester's red row of round 19 (27b5a621: Send change says why its document read has not
+// settled, `DecisionActions.tsx`'s `unsettled`). A Change whose read of the decisions document is
+// never answered is sent at the request deadline with no place counted, and the form says why
+// beside Send change, in the words of a read of that document that failed and then the error such
+// a read ends with. At c6dc939c it never does: the read is a direct GET (`api.getArtifactText`)
+// whose own 30 s deadline (`client.ts`'s `exchange`) is set before `readWithinBound`'s bound and
+// ends the read first, and the send takes that failure for a settled read (`() => undefined`), so
+// `readWithinBound` answers no reason. Dispatch's refusal of the change is stubbed, so the form
+// stays drawn with what it says. Measured in Chromium and Firefox.
+// SLOW(>=2s): a seeded issue whose Decisions view is loaded, and its document read left
+// unanswered past the 30 s request deadline.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a change whose document read is never answered says why beside Send change at the request deadline @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `a document read never answered: ${text}`;
+    const row = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    let pressed = false;
+    await page.route(
+      (url) => url.pathname.startsWith("/api/"),
+      async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (request.method() === "POST" && path === commentsPath) {
+          await route.fulfill({
+            body: JSON.stringify({
+              code: "TARGET_AMBIGUOUS",
+              error:
+                '"Tie it" matches 2 places; pass a zero-based occurrence, or quote more of the surrounding text',
+            }),
+            contentType: "application/json",
+            status: 409,
+          });
+          return;
+        }
+        // Once Send change is pressed, no read of a document's text is answered.
+        if (
+          pressed &&
+          request.method() === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/text$/.test(path)
+        ) {
+          return;
+        }
+        await route.fallback();
+      }
+    );
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    pressed = true;
+    await send.click();
+    await expect(send, step("Send change is held while the document is read")).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await expect(
+      row.getByText(ANSWER_LINES.change_not_sent),
+      step("the change goes at the request deadline, and its refusal is said")
+    ).toBeVisible({ timeout: 35_000 });
+    await expect(send, step("Send change lets go at the request deadline")).not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await expect(
+      row.getByText(
+        `${STATE_LINES.decisions_document_unreadable} Dispatch did not answer within 30 seconds.`
+      ),
+      step("the form says why the document read has not settled")
+    ).toBeVisible();
   });
 });
