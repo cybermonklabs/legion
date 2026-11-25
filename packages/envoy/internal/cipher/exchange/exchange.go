@@ -464,10 +464,10 @@ type ReadEntry struct {
 	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
 	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
 	// config.Load fills in, as it does an AccountEntry's. The same account name in another cluster
-	// is another ServiceAccount, and a read token reads every project's architecture, so Pod
-	// refuses a token of any other issuer, and the account's pods exchange only on the clusters of
-	// the issuers their entry names. The one issuer of a list written as a bare URL has the empty
-	// name.
+	// is another ServiceAccount, and a read token reads everything a Dispatch read route answers,
+	// across every project, so Pod refuses a token of any other issuer, and the account's pods
+	// exchange only on the clusters of the issuers their entry names. The one issuer of a list
+	// written as a bare URL has the empty name.
 	Issuers []string
 }
 
