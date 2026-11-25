@@ -122,8 +122,8 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	// the registration, which keeps the machine's record of the process true. The plugin's own
 	// declaration is read, not its header: a plugin states the same number in the header from
 	// shapedAnswersContract on, and one below that states none.
-	first := entryNumber(deploymentRolesContract)
-	if !claim.IsBuiltin(c.Role) && req.PluginContract < first {
+	if !claim.IsBuiltin(c.Role) && req.PluginContract < entryNumber(deploymentRolesContract) {
+		first := entryNumber(deploymentRolesContract)
 		s.log.Warn("api: refused the registration of a role of the deployment from a plugin below "+
 			"the contract that reads such a role", "claim", c.Token, "role", c.Role,
 			"generation", launch.Generation, "pluginContract", req.PluginContract, "contract", first)
