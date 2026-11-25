@@ -37,6 +37,7 @@ legion leak-check	hidden
 legion leak-check pre-push	hidden
 legion leak-check text	hidden
 legion legions	--json bool
+legion members-back	--config string
 legion model-token	hidden	--client-id string	--endpoint string	--region string	--service-account-token-file string	--username string
 legion probe-boot	--config string
 legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon-api-version string	--envoy-plugin-root string	--omp string	--plugin-root string	--pod-safety bool	--probe-budget duration	--provider-env-dir string	--role-config-files role=files	--role-namespaces string	--role-references string	--skip-agent-models bool	--skip-browser bool	--test-postgres string

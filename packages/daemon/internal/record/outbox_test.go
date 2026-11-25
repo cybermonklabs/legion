@@ -568,7 +568,7 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		OutboxKindGateSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
 			GateSeed{ArtifactID: "artifact-208", Step: DesignStepSpec, Version: 1}},
 		OutboxKindPendingBasisSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
-			PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1"}},
+			PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1", RegisteredAt: now}},
 		// R18's notice of a change of parent names the issue's run it tells of (dispatch://INFRA-4730's
 		// t6), and tells the architects through notices of its own. It names the phase entry too,
 		// for the words, but is told at whatever entry the issue stands, the zero entry of an issue

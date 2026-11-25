@@ -95,7 +95,9 @@ type stepVariantQueued struct {
 // stepVariantWayBackRows is an issue's pending writes as this release queues them: the start and
 // the end of a step and the retro's rating, each naming the issue's variant, the end waiting to
 // retry as an older Dispatch's NOT_FOUND of the experiment route leaves it; a step record that
-// names none; a plan; and a status write.
+// names none; a plan; and a status write, which names the run and the phase entry of its issue
+// (record.Fenced): the first fence, as record.NewFencedRow queues it for an issue the store
+// records nothing of.
 func stepVariantWayBackRows() []stepVariantQueued {
 	started := time.Date(2026, 11, 17, 20, 0, 0, 0, time.UTC)
 	ended := started.Add(42 * time.Minute)
@@ -117,7 +119,7 @@ func stepVariantWayBackRows() []stepVariantQueued {
 			Task: "default", Step: 1, Kind: "step", Role: "planner", Type: "planning", Agent: agent, Generation: 1, StartedAt: &started}},
 		{name: "the plan", payload: record.PlanRecord{ID: "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e", Generation: 1, Source: "default",
 			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer"}}}}},
-		{name: "a status write of the issue", payload: record.OrdinaryStatusWrite("retro", "in_progress", "")},
+		{name: "a status write of the issue", payload: record.Fenced(record.OrdinaryStatusWrite("retro", "in_progress", ""), record.FirstFence)},
 	}
 }
 

@@ -1367,7 +1367,10 @@ function once<T>(compute: () => T): () => T {
 // entries' alone, with the rows each entry fixture adds over them (`daemonApiRecords`), one row
 // per response schema. This census reads the client's source and fails when either side names an
 // answer the other does not. The two sides are joined by route and by nothing else: no mapping of
-// schema to row id is written here, so neither side can be taught to agree with the other.
+// schema to row id is written here, so neither side can be taught to agree with the other. The
+// client is built for its build's own contract, so each row is read with the routes it answers
+// there (`routesAtTheBuildsContract`): a route an entry's row takes from an older row is the
+// entry's alone.
 //
 // What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`
 // (the state's row its typed settings keys too, which the settings census below reads), and no
@@ -1566,11 +1569,37 @@ const clientSource = once(() => {
 /** The parse sites of the client's source, read once. */
 const clientParseSites = once(() => parseSites(clientSource()));
 
+/** The rows of `rows`, each with the routes it answers at the build's own contract, the contract
+ * the client is built for; a row left no route there, where it had one, is no answer the client
+ * parses, and is left out. A route that rows of two arrivals (`since`) name answers the later of
+ * them there: an entry adds rows and never edits a frozen one, so an entry whose answer takes a
+ * route from an older row leaves that route on the older row, for a reader below the entry's
+ * number, and names it on its own row too. So the chain entry's `status-call` row takes
+ * `POST /legion/v1/issues/status` and `POST /legion/v1/children/rerun`, which the frozen
+ * `empty-object` row still names as the numbered entries wrote it (answers.go says so on that
+ * row, and shaping.go's `shapeAnswer` serves a reader below the entry the empty object on them).
+ * Rows of one arrival that name one route are two answers a caller chooses between, as
+ * `register` and `register-controller` are on `POST /legion/v1/claims/register`, and each keeps
+ * it. */
+function routesAtTheBuildsContract(rows: readonly AnswerRow[]): AnswerRow[] {
+  const latest = new Map<string, number>();
+  for (const row of rows) {
+    for (const route of row.routes) {
+      latest.set(route, Math.max(latest.get(route) ?? row.since, row.since));
+    }
+  }
+  return rows.flatMap((row) => {
+    const routes = row.routes.filter((route) => latest.get(route) === row.since);
+    return row.routes.length > 0 && routes.length === 0 ? [] : [{ ...row, routes }];
+  });
+}
+
 /** What the table census finds wrong between the client and the table of the build whose daemon
- * API fixtures are `fixtureDir`: each answer the client parses that no row holds, and each row no
+ * API fixtures are `fixtureDir`, as that build's own contract reads it
+ * (`routesAtTheBuildsContract`): each answer the client parses that no row holds, and each row no
  * parse site of the client parses. */
 function tableMismatches(fixtureDir: string): string[] {
-  const rows = daemonApiRecords(fixtureDir).answers;
+  const rows = routesAtTheBuildsContract(daemonApiRecords(fixtureDir).answers);
   const unmatched = new Map<string, AnswerRow[]>();
   for (const row of rows) {
     const key = answerKey(row.noBody, row.routes);

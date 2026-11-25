@@ -514,8 +514,10 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 12 t"}) {
 		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
 	}
+	// The states are read in byte order (`collate "C"`), the order slices.Sorted gives want: the
+	// server's own collation may order punctuation otherwise (launching before launch_uncertain).
 	rows, err := st.Pool().Query(ctx, `select concat_ws(' ', state, published_since is null, unpublished_since is null) from claims
-		where project = 'capture' order by state`)
+		where project = 'capture' order by state collate "C"`)
 	if err != nil {
 		t.Fatal(err)
 	}
