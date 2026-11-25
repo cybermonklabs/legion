@@ -110,7 +110,7 @@ func recordHoldServed(t *testing.T, handler http.Handler, key string, contract i
 func TestAnOlderCallerIsServedNoNewHoldReason(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := heldIssues(t)
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 	newer := map[string][2]string{
 		taskStoppedIssue: {"task-stopped", "testing"},
 		childrenIssue:    {"children", "retro"},
@@ -187,7 +187,7 @@ func TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified(t *testing.T) {
 	if golden == 0 {
 		t.Fatal("the state golden holds no held row, so nothing here shows a row of another word served as it stands")
 	}
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 
 	at := heldRowsServed(t, stateStating(t, handler, remote, OwnerPlanContract))
 	if row := at[childrenIssue]; row["reason"] != string(record.HeldChildrenBeforeRetro) || !reflect.DeepEqual(row["heldBy"], []any{beneath}) {
@@ -237,11 +237,11 @@ const (
 // the variable is unset.
 const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
 
-// baseContract is the contract main declares at this branch's last forward merge (#4392's entry,
+// baseContract is the numbered contract of the previous release (#4392's entry,
 // 275): the contract a plugin of the release before this one states.
 const baseContract = 275
 
-// A caller whose plugin speaks a contract below treeInBacklogOrIceboxContract reads
+// A caller whose plugin speaks a contract below entryNumber(treeInBacklogOrIceboxContract) reads
 // `admission.held`'s `reason` as a strict list that does not hold tree_in_backlog_or_icebox, and
 // refuses the whole body for a word it does not know. So the row of a child under a tree whose
 // root stands in backlog is served to it as `unclassified` with no `heldBy`
@@ -262,7 +262,8 @@ func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T)
 	golden := len(state.Admission.Held)
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
 		HeldIssue{Issue: treeInBacklogChild, Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{treeInBacklogRoot}})
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	current := DaemonAPIVersion()
+	handler := stateServer(t, state, podClaims(current))
 	write := func(name string, body []byte) {
 		t.Helper()
 		out := os.Getenv(stateAnswerOut)
@@ -274,11 +275,15 @@ func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T)
 		}
 	}
 
-	at := stateStating(t, handler, remote, DaemonAPIVersion)
-	write(strconv.Itoa(DaemonAPIVersion), at)
+	at := stateStating(t, handler, remote, current)
+	write(strconv.Itoa(current), at)
 	want := map[string]any{"issue": treeInBacklogChild, "reason": string(record.HeldTreeInBacklogOrIcebox), "heldBy": []any{treeInBacklogRoot}}
 	if row := heldRowsServed(t, at)[treeInBacklogChild]; !reflect.DeepEqual(row, want) {
-		t.Errorf("%s is served to a caller at contract %d as %v, want %v", treeInBacklogChild, DaemonAPIVersion, row, want)
+		t.Errorf("%s is served to a caller at contract %d as %v, want %v", treeInBacklogChild, current, row, want)
+	}
+	entry := entryNumber(treeInBacklogOrIceboxContract)
+	if row := heldRowsServed(t, stateStating(t, handler, remote, entry))[treeInBacklogChild]; !reflect.DeepEqual(row, want) {
+		t.Errorf("%s is served at the entry's contract %d as %v, want %v", treeInBacklogChild, entry, row, want)
 	}
 
 	type answer struct {
@@ -302,7 +307,7 @@ func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T)
 			}
 		}
 		if bytes.Contains(served.body, []byte(record.HeldTreeInBacklogOrIcebox)) {
-			t.Errorf("%s: the answer names %s, which a reader below contract %d refuses", served.name, record.HeldTreeInBacklogOrIcebox, treeInBacklogOrIceboxContract)
+			t.Errorf("%s: the answer names %s, which a reader below contract %d refuses", served.name, record.HeldTreeInBacklogOrIcebox, entryNumber(treeInBacklogOrIceboxContract))
 		}
 	}
 	if got := state.Admission.Held[golden].Reason; got != record.HeldTreeInBacklogOrIcebox {

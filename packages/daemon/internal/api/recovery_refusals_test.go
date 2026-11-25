@@ -255,7 +255,7 @@ func workingUnderADelayedRefresh(t *testing.T, h *harness) claim.Token {
 	delay.Store(true)
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
-	stale.PluginContract = DaemonAPIVersion - 1
+	stale.PluginContract = DaemonAPIVersion() - 1
 	if err := h.store.PutClaim(h.ctx, stale); err != nil {
 		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
 	}
@@ -779,7 +779,7 @@ func workingController(t *testing.T, h *harness) claim.Token {
 	generation := m.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_controller",
-			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion},
+			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_controller"},
 		supervise.StreamTurnStart{Claim: token},
 	} {

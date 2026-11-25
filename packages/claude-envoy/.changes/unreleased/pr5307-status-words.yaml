@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 280, and its texts say what each wait is ("held", "stopped", "awaiting its background job") where one word stood for several.
+  The plugin speaks the daemon API with entry `20261125161823`, and its texts say what each wait is ("held", "stopped", "awaiting its background job") where one word stood for several.
 time: 2026-11-24T03:32:42.000000000Z
 custom:
     Issue: pr5307

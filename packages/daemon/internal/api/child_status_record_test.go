@@ -144,7 +144,7 @@ func TestAChildRouteThisDaemonDoesNotServeAnswersWithTheStatusToWrite(t *testing
 	}
 	var removed []string
 	for _, record := range onFile {
-		if strings.HasPrefix(record.Route, "POST /legion/v1/children/") && RemovedRoutes[servedPattern(record.Route)] != 0 && !slices.Contains(removed, record.Route) {
+		if strings.HasPrefix(record.Route, "POST /legion/v1/children/") && RemovedRoutes()[servedPattern(record.Route)] != 0 && !slices.Contains(removed, record.Route) {
 			removed = append(removed, record.Route)
 		}
 	}

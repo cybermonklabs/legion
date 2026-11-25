@@ -59,7 +59,7 @@ func newLeftPodRig(t *testing.T, inBacklog bool) *idleRig {
 
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion()
 	// The planner's machine reads its clock from here, so a test can stamp a turn at a moment of its
 	// own (turnedBeforeQuiet). The clock is the wall clock until a test sets one.
 	sup.deps.Clock = &heldClock{}
@@ -72,7 +72,7 @@ func newLeftPodRig(t *testing.T, inBacklog bool) *idleRig {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key,
 		Role: claim.RolePlanner, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Session: "ses-planner", SessionFile: "/tmp/planner.jsonl",
-		PluginContract: api.DaemonAPIVersion}
+		PluginContract: api.DaemonAPIVersion()}
 	if inBacklog {
 		stored.State, stored.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByDaemon
 	} else {
@@ -179,7 +179,7 @@ func resumeAsOperator(t *testing.T, rig *idleRig) {
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: rig.token, Generation: generation},
 		supervise.RequestRegister{Claim: rig.token, Generation: generation, Session: "ses-planner",
-			SessionFile: "/tmp/planner.jsonl", PluginContract: api.DaemonAPIVersion},
+			SessionFile: "/tmp/planner.jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: rig.token, Generation: generation, Session: "ses-planner"},
 	} {
 		if err := rig.machine.Handle(ctx, ev); err != nil {

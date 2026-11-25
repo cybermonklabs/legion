@@ -680,9 +680,9 @@ A document that a design gate names, with no approval, is changed like any other
 `word-rewrite/name-map.ts` holds every old name that this change renames and that Dispatch text
 can hold, each with its new name and its gate. A name that the release of a project's daemon
 carries (a file, a stored name, a Go identifier or test, a skill file) is rewritten only in a
-project whose daemon reads at or above the contract that
-`packages/contracts/fixtures/daemon-api/version.json` records, read at each run, or that the run
-names with `--no-daemon`. The child operation that the daemon removed at contract 205 waits for
+project whose daemon reads at or above this checkout's contract, computed by
+`bash scripts/daemon-contract.sh` at each run, or that the run names with `--no-daemon`. The
+child operation that the daemon removed at contract 205 waits for
 205. A name of Dispatch's API waits until the running Dispatch build holds `--merge-commit`. A
 Go test's name that holds the word and that no row names is kept, since no program can tell its
 new name.

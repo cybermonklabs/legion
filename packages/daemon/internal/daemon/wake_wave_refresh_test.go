@@ -315,7 +315,7 @@ func staleClaimsListed(t *testing.T, d *daemon) int {
 	t.Helper()
 	left := 0
 	for _, c := range d.claims() {
-		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
+		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
 			continue
 		}
 		if supervise.IsPodRound(c.UpdateRound) || c.Role == refreshNoInstallRole {

@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The daemon names each thing by what it is, in place of one word that stood for several.
   Its table of decisions kept for a tree that does not run is `kept_decisions`, and the notice kind that relays such a decision to the controller is `kept-decision`. Migration `20261124002047_kept_decisions` renames the table, its index and its constraints and moves the stored notice kind, processed-event source and held reason; `docs/kubernetes.md`, "Rolling back the release that renames the kept decisions", gives its way back.
-  The held reason of a child under a tree whose root is in backlog or icebox is `tree_in_backlog_or_icebox` from daemon API contract 280. A caller below 280 reads such a child as `unclassified`.
+  The held reason of a child under a tree whose root is in backlog or icebox is `tree_in_backlog_or_icebox` from daemon API entry `20261125161823`. A caller below that entry's number reads such a child as `unclassified`.
   Every child route the daemon does not serve answers 410 `ROUTE_REMOVED` with the status to write, through one route pattern, so no route path names a removed operation.
   A relaunch that the wake pacing delays ends with the log value `relaunch delayed`, and the notices, refusals and logs say "delayed", "waits at the pod's gate", "moved to backlog" or "out of the workflow" where each is meant.
 time: 2026-11-24T03:32:42.000000000Z

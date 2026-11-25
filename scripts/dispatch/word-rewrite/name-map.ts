@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { z } from "zod";
 import { holdsWord } from "./pattern.ts";
 
 /**
@@ -34,21 +33,27 @@ export interface MapEntry {
   readonly from: From;
 }
 
-/** Where the daemon API contract of the commit this tool runs from is recorded. */
-export const CONTRACT_FILE = "packages/contracts/fixtures/daemon-api/version.json";
-
 /** The daemon contract that removed the child operation `park_child` (cybermonklabs/legion#4573). */
 export const CHILD_OPERATION_REMOVED = 205;
 
-const ContractFile = z.looseObject({ daemonApiVersion: z.int().min(1) });
-
-/** The daemon API contract number of the checkout at `root`, read from its own fixture, never
- *  written here: the pull request that renames the daemon's names raises it. */
+/** The daemon API contract number of the working tree at `root`. */
 export function readContract(root: string): number {
-  const text = readFileSync(join(root, CONTRACT_FILE), "utf8");
-  const parsed = ContractFile.safeParse(JSON.parse(text));
-  if (!parsed.success) throw new Error(`${CONTRACT_FILE} holds no daemonApiVersion`);
-  return parsed.data.daemonApiVersion;
+  const script = join(root, "scripts/daemon-contract.sh");
+  let text: string;
+  try {
+    text = execFileSync("bash", [script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot read this checkout's daemon API contract: ${reason}`, { cause: error });
+  }
+  const output = text.trim();
+  const contract = Number(output);
+  if (!/^[1-9][0-9]*$/.test(output) || !Number.isSafeInteger(contract)) {
+    throw new Error(
+      `${script} did not print a positive integer contract: ${JSON.stringify(output)}`
+    );
+  }
+  return contract;
 }
 
 const dispatchMerge = { dispatchHolds: "merge" } as const;

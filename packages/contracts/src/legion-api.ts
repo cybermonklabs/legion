@@ -1013,9 +1013,9 @@ const legionBlockedIssue = z.object({
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
  * `children_before_retro` and `task_stopped` came with contract 219, and
- * `tree_in_backlog_or_icebox` with contract 280; a caller below the contract a word came with is
- * served each such row as `unclassified` with no `heldBy` (the daemon's value strip
- * `withoutUnadmittedHeldWords`).
+ * `tree_in_backlog_or_icebox` with entry `20261125161823`. A caller below the contract
+ * that added a word is served each such row as `unclassified` with no `heldBy` (the
+ * daemon's value strip `withoutUnadmittedHeldWords`).
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
  */

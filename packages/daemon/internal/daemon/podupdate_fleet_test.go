@@ -165,7 +165,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 			tokens[fleetClaim{issue: issue.key, role: role}] = token
 			seeded := supervise.Claim{
 				Token: token, Project: podUpdateProject, Tree: issue.key, Issue: issue.key, Role: role,
-				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 				Session: "ses_" + issue.key + "_" + string(role), SessionFile: "/sessions/" + issue.key + "-" + string(role) + ".jsonl",
 				CapabilityHash: []byte(issue.key + ":" + string(role)), ServingGeneration: 1,
 				Locator: podUpdateLocator(token, issue.key, issue.pod),
@@ -200,7 +200,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 		// Each goroutine a machine starts — a timer's firing, a prompt's send — takes a mark of its
 		// own, as the daemon gives it (daemon.go's supervise.Deps). A restart copies these Deps
@@ -825,7 +825,7 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 	// deployment's own release leaves running until each pod is replaced.
 	if err := m.Handle(rig.ctx, supervise.RequestRegister{
 		Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
-		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion - 1,
+		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion() - 1,
 	}); err != nil {
 		t.Fatalf("register the planner on the previous contract: %v", err)
 	}

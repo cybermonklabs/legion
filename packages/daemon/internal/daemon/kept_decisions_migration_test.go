@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -806,8 +807,8 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn, project string, issues ...s
 		t.Fatalf("step 5: %v", err)
 	}
 	repository := filepath.Join("..", "..", "..", "..")
-	legionManifest, contract := keptDecisionsManifest(t, filepath.Join(repository, "packages", "pi-legion", "package.json"), true)
-	envoyManifest, _ := keptDecisionsManifest(t, filepath.Join(repository, "packages", "pi-envoy", "package.json"), false)
+	legionManifest := keptDecisionsManifest(t, filepath.Join(repository, "packages", "pi-legion", "package.json"))
+	envoyManifest := keptDecisionsManifest(t, filepath.Join(repository, "packages", "pi-envoy", "package.json"))
 	plugins := filepath.Join(home, ".omp", "plugins", "node_modules", "@sjawhar")
 	writeManifest := func(name string, manifest map[string]any) {
 		t.Helper()
@@ -847,6 +848,7 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn, project string, issues ...s
 		_ = stop.Run()
 	})
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	contract := api.DaemonAPIVersion()
 	for attempt := 1; ; attempt++ {
 		legionManifest["legion"] = map[string]any{"daemonApiVersion": contract}
 		writeManifest("pi-legion", legionManifest)
@@ -936,10 +938,9 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn, project string, issues ...s
 	}
 }
 
-// keptDecisionsManifest is the manifest scripts/e2e/stage1-skeleton.sh writes from the checkout's
-// package.json at path: its name and version, and, where withContract, the contract its `legion`
-// block declares, which it answers beside.
-func keptDecisionsManifest(t *testing.T, path string, withContract bool) (map[string]any, int) {
+// keptDecisionsManifest reads the name and version for a stub plugin manifest from the
+// checkout's package.json. The boot test supplies the required contract separately.
+func keptDecisionsManifest(t *testing.T, path string) map[string]any {
 	t.Helper()
 	encoded, err := os.ReadFile(path)
 	if err != nil {
@@ -948,17 +949,11 @@ func keptDecisionsManifest(t *testing.T, path string, withContract bool) (map[st
 	var read struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
-		Legion  struct {
-			DaemonAPIVersion int `json:"daemonApiVersion"`
-		} `json:"legion"`
 	}
 	if err := json.Unmarshal(encoded, &read); err != nil {
 		t.Fatalf("step 5: parse %s: %v", path, err)
 	}
-	if withContract && read.Legion.DaemonAPIVersion == 0 {
-		t.Fatalf("step 5: %s declares no legion.daemonApiVersion", path)
-	}
-	return map[string]any{"name": read.Name, "version": read.Version}, read.Legion.DaemonAPIVersion
+	return map[string]any{"name": read.Name, "version": read.Version}
 }
 
 // waitForKeptDecisionsReady polls url until it answers 200, the daemon ends (exited), or within

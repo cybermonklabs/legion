@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  `LEGION_HELD_REASONS` names `tree_in_backlog_or_icebox` for a child under a tree whose root is in backlog or icebox (daemon API contract 280). Dispatch's priorities answer names its field `priority_work_in_backlog_or_icebox` (`PriorityWorkInBacklogOrIcebox`), and the test-hook answer of a paused live write names its field `paused`. The Dispatch tools' text says "hold a question" where it meant to keep a question for later.
+  `LEGION_HELD_REASONS` names `tree_in_backlog_or_icebox` for a child under a tree whose root is in backlog or icebox (daemon API entry `20261125161823`). Dispatch's priorities answer names its field `priority_work_in_backlog_or_icebox` (`PriorityWorkInBacklogOrIcebox`), and the test-hook answer of a paused live write names its field `paused`. The Dispatch tools' text says "hold a question" where it meant to keep a question for later.
 time: 2026-11-24T03:32:42.000000000Z
 custom:
     Issue: pr5307

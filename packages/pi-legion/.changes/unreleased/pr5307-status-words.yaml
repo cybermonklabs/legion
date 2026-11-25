@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 280. The `legion` tool's description says "a relaunch the wake pacing delayed". The controller skill writes its marks with the status words (`Moved to backlog by Legion while it waits on:`, `Kept decision read:`, the option `Move it to backlog`) and finds its old and new marks by the words they share; its references are `backlog-asks.md` and `kept-decisions.md`, and its wake table has a row for the notice kind `kept-decision`.
+  The plugin speaks the daemon API with entry `20261125161823`. The `legion` tool's description says "a relaunch the wake pacing delayed". The controller skill writes its marks with the status words (`Moved to backlog by Legion while it waits on:`, `Kept decision read:`, the option `Move it to backlog`) and finds its old and new marks by the words they share; its references are `backlog-asks.md` and `kept-decisions.md`, and its wake table has a row for the notice kind `kept-decision`.
 time: 2026-11-24T03:32:42.000000000Z
 custom:
     Issue: pr5307

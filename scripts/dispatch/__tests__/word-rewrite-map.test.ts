@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { daemonContract } from "../../../packages/contracts/src/daemon-contract.ts";
 import {
   applies,
   builtInMap,
   CHILD_OPERATION_REMOVED,
-  CONTRACT_FILE,
   type MapEntry,
   MapFileError,
   nameAt,
@@ -15,10 +16,22 @@ import {
 } from "../word-rewrite/name-map.ts";
 
 const ROOT = join(import.meta.dir, "..", "..", "..");
-const recorded: { daemonApiVersion: number } = JSON.parse(
-  readFileSync(join(ROOT, CONTRACT_FILE), "utf8")
-);
-const RECORDED = recorded.daemonApiVersion;
+const RECORDED = daemonContract({}, ROOT);
+
+test("readContract refuses a failed script or invalid output", () => {
+  const root = mkdtempSync(join(tmpdir(), "word-rewrite-contract-"));
+  try {
+    const scripts = join(root, "scripts");
+    mkdirSync(scripts);
+    const script = join(scripts, "daemon-contract.sh");
+    writeFileSync(script, "echo 42; echo 'fixture missing' >&2; exit 1\n");
+    expect(() => readContract(root)).toThrow(/Cannot read.*[\s\S]*fixture missing/);
+    writeFileSync(script, "echo 42-extra\n");
+    expect(() => readContract(root)).toThrow("did not print a positive integer contract");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
 
 function reach(daemon: number | "none" | null, dispatchHoldsMerge = false): Reach {
   return {
@@ -84,7 +97,7 @@ describe("the map", () => {
     }
   });
 
-  test("a renamed Go test's name is gated at the contract version.json records, read and not written down", () => {
+  test("a renamed Go test's name is gated at this checkout's contract", () => {
     for (const old of [
       "TestAParkedDecisionKeepsItsDecisionThroughTheRow",
       "TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn",
