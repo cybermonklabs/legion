@@ -35,21 +35,23 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
-    # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
-    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s, and the API's
-    # claim model is not among them, running in envoy-go-claim-model) the unit step's
-    # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
-    # measured before the race lane's left it and so cannot exceed that, the store-form count's
-    # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
-    # bounds the step); after that step's seconds, the skip counter's test's own timeout-minutes
-    # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
-    # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
-    # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5, the auth service's own 5, the edge grant's own 5 and the edge
-    # listener's own 10 (its relay socket's rows wait out a 30 s token twice and a consumer's 60 s
-    # ack wait) are 121, the integration step's 5 is less, and the callout check's own 6, after the
-    # seconds those two steps measure, is less too.
+    # pg_stat_statements Postgres's own timeout-minutes of 3, which is 4; after that step's
+    # seconds, the plain race-impossible step's seven 10-minute runs, which is 71; after that
+    # step's measured 5 minutes (about 2 before the API's and delivery's xid window tests joined
+    # it, which took 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s,
+    # and the API's claim model is not among them, running in envoy-go-claim-model) and about 2
+    # more for the priorities read's three tests (114 s on a four-CPU build pod, INFRA-5791), the
+    # unit step's own 20 is 28; after the unit step, which runs strictly fewer packages than the
+    # 35 minutes it measured before the race lane's left it and so cannot exceed that, the
+    # store-form count's own 5 is 48 (two packages, which go test starts at once with -p at least
+    # 2, so its -timeout bounds the step); after that step's seconds, the skip counter's test's own
+    # timeout-minutes of 15 is 58; after that step's 15 at most, the database skip count's own
+    # timeout-minutes of 30 is 88 (its -timeout bounds each package, not the step, so the step has
+    # a limit of its own, and its comment below says why 30); after that step's 30 at most,
+    # natslive's default 10, the bus matrix's own 5, the auth service's own 5, the edge grant's own
+    # 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token twice and a
+    # consumer's 60 s ack wait) are 123, the integration step's 5 is less, and the callout check's
+    # own 6, after the seconds those two steps measure, is less too.
     timeout-minutes: 125
     services:
       postgres:
@@ -112,6 +114,20 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
+      # The priorities read's three tests over its corpus of production's counts run on a Postgres
+      # that preloads pg_stat_statements (PG_STAT_STATEMENTS_TESTS in
+      # .github/scripts/ci_job_reads.py): the bound's test reads each statement's database time from
+      # it, and INFRA-5791's checks run the three on such a server. A server loads that module only
+      # at its start, and the service above takes no arguments for its server, so this step starts
+      # one more Postgres, from the service's own image, which the runner already holds, on port
+      # 5433, with the settings those checks name, and holds it to preloading the module before the
+      # step below runs the three on it. Its 3 minutes bound the seconds a server takes to start.
+      - name: Start a Postgres that preloads pg_stat_statements
+        timeout-minutes: 3
+        run: |
+          docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
+          for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
+          docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
@@ -134,26 +150,29 @@ jobs:
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
+      # delays. The -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
       # either and missing here fails the ci-filters job naming this step. The restart storm took
       # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
-      # delivery 4.106 s (INFRA-636). The API line also runs the priorities read's three tests over
-      # its corpus of production's counts (13,298 issues, 678,943 events), each of which seeds its
-      # own: on a four-CPU build pod, at the head of cybermonklabs/legion#5316, the bound's test
-      # (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 84.5 s for its 840 reads,
-      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 28.1 s and
-      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 24.8 s (INFRA-5791). 10 minutes each is
-      # ample.
+      # delivery 4.106 s (INFRA-636). The API's last line runs the priorities read's three tests
+      # over its corpus of production's counts (13,298 issues, 678,943 events), each of which seeds
+      # its own, on the Postgres the step above starts (DISPATCH_TEST_DATABASE_URL), the API's other
+      # tests staying on the service: on a four-CPU build pod, with the read in one statement for
+      # each form (INFRA-5791), the bound's test
+      # (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 62.2 s for its 840 reads,
+      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 26.3 s and
+      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 25.2 s, about 2 minutes together.
+      # 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).

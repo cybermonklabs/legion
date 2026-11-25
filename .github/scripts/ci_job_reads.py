@@ -2084,6 +2084,42 @@ def by_name_job(path: Path) -> str:
     return "the envoy-go-claim-model job" if path.as_posix() in CLAIM_MODEL_TESTS else "the text-check job"
 
 
+# The priorities read's three tests over its corpus of production's counts (internal/dispatch/api,
+# INFRA-5791), keyed by path as TEXT_CHECK_TESTS is. Each carries `//go:build !race`, so the walk
+# below puts them in envoy-go's plain step, where they stay. The bound's test reads each
+# statement's database time from pg_stat_statements and stops where the server does not preload
+# it, and the three are checks whose server is a Postgres of the image CI pins started with
+# shared_preload_libraries=pg_stat_statements and max_connections=200 (INFRA-5791's
+# verification). A server loads that module only at its start, and a service container takes no
+# arguments for its server, so the job's service cannot be that server. So the plain step runs
+# these tests in a go test of their own on PG_STAT_STATEMENTS_URL, a Postgres of the service's own
+# image that the step before it starts so (PG_STAT_STATEMENTS_STEP), and the package's other tests
+# on the service as before. They are held to the files they are about as TEXT_CHECK_TESTS' are: a
+# file named here that does not carry the tag, or whose tests are not exactly the names here, is
+# refused (race_impossible_tests_of), and so is a row whose file the lane's walk never reads
+# (race_impossible_tests).
+PG_STAT_STATEMENTS_TESTS = {
+    f"{ENVOY}/internal/dispatch/api/priority_read_bound_test.go": {
+        "TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan"},
+    f"{ENVOY}/internal/dispatch/api/priority_read_merge_base_test.go": {
+        "TestThePrioritiesReadAnswersAsTheMergeBaseAnswers"},
+    f"{ENVOY}/internal/dispatch/api/priority_read_plan_stable_test.go": {
+        "TestThePrioritiesReadKeepsItsPlansWithAProjectNamed"},
+}
+PG_STAT_STATEMENTS_STEP = "Start a Postgres that preloads pg_stat_statements"
+PG_STAT_STATEMENTS_URL = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
+
+
+def pg_stat_statements_packages() -> dict:
+    """PG_STAT_STATEMENTS_TESTS by package, as race_impossible_tests() keys a package: its
+    directory under packages/envoy, and the names of its tests the row of each of its files holds."""
+    packages = {}
+    for path, names in PG_STAT_STATEMENTS_TESTS.items():
+        under = Path(path).parent.relative_to(ENVOY).as_posix()
+        packages[under] = packages.get(under, set()) | names
+    return packages
+
+
 def race_impossible_tests_of(path: Path) -> set:
     """The tests of one _test.go file that only a plain run covers: every test of a file the race
     build does not compile (`//go:build !race`), and every test whose body reads raceEnabled, the
@@ -2098,7 +2134,9 @@ def race_impossible_tests_of(path: Path) -> set:
     the plain run and dropping the one that does. A file BY_NAME_TESTS names is the exception:
     it names no test here, since a job of its own runs its tests by name (the text-check job, or
     the claim model's), and it is refused unless it carries the tag and its tests are exactly the
-    names that list holds for it."""
+    names that list holds for it. A file PG_STAT_STATEMENTS_TESTS names keeps its tests here, and
+    is refused on the same two counts, since race_impossible_script() runs the names that list
+    holds on another Postgres."""
     text = path.read_text()
     found = GO_BUILD_LINE.search(text)
     constraint = found.group(1) if found else ""
@@ -2110,6 +2148,11 @@ def race_impossible_tests_of(path: Path) -> set:
         raise ValueError(f"{path}: {by_name_list(path)} leaves this file's tests out of the plain step because "
                          f"{by_name_job(path)} runs them by name, but the file does not carry `//go:build !race`, "
                          "so the race build still compiles and runs them; restore the tag, or drop the row")
+    preloaded = PG_STAT_STATEMENTS_TESTS.get(path.as_posix())
+    if preloaded is not None and constraint != "!race":
+        raise ValueError(f"{path}: PG_STAT_STATEMENTS_TESTS runs this file's tests in the plain step on a Postgres "
+                         "that preloads pg_stat_statements, but the file does not carry `//go:build !race`, so the "
+                         "plain step does not run them; restore the tag, or drop the row")
     # A file the race build compiles and that nowhere writes raceEnabled, in code or in a comment,
     # names no test here and refuses nothing, so it never reaches the blanking pass below. That is
     # almost every file of the lane: 610 of them, 10.9 MB, which this guard takes from 3.0 s to
@@ -2148,6 +2191,12 @@ def race_impossible_tests_of(path: Path) -> set:
                              f"file: {stale or 'none'}. A test {by_name_job(path)} does not run by name "
                              "belongs in the plain step, so name it in both places or in neither")
         return set()
+    if preloaded is not None and names != preloaded:
+        raise ValueError(f"{path}: PG_STAT_STATEMENTS_TESTS does not name this file's tests exactly - in the file "
+                         f"and not in the list: {', '.join(sorted(names - preloaded)) or 'none'}; in the list and "
+                         f"not in the file: {', '.join(sorted(preloaded - names)) or 'none'}. A test of the file runs "
+                         "on the Postgres that preloads pg_stat_statements only where the list names it, so name it "
+                         "in both places or in neither")
     return names
 
 
@@ -2181,9 +2230,9 @@ def race_impossible_tests(root, packages=None) -> dict:
     """Per package under `root`, in the order `packages` lists them, the tests only a plain run
     covers (race_impossible_tests_of). `packages` is each (path under `root`, directory) to read,
     and the envoy lane's (race_lane_packages) when it is not given. A package that has none is left
-    out. A file BY_NAME_TESTS names under `root` that this walk never reads is refused: the row
-    would otherwise go on exempting a file that has moved out of the lane, or been deleted, and say
-    nothing."""
+    out. A file BY_NAME_TESTS or PG_STAT_STATEMENTS_TESTS names under `root` that this walk never
+    reads is refused: the row would otherwise go on exempting a file that has moved out of the lane,
+    or been deleted, and say nothing."""
     found, read = {}, set()
     for under, directory in race_lane_packages(root) if packages is None else packages:
         names = set()
@@ -2197,22 +2246,36 @@ def race_impossible_tests(root, packages=None) -> dict:
         raise ValueError(f"{', '.join(sorted({by_name_list(Path(f)) for f in gone}))} names {', '.join(gone)}, "
                          f"which the lane's walk of {root} does not read: the file moved out of the lane or is "
                          "gone, and its row now exempts nothing; follow the file, or drop the row")
+    gone = sorted(f for f in PG_STAT_STATEMENTS_TESTS if f.startswith(f"{root}/") and f not in read)
+    if gone:
+        raise ValueError(f"PG_STAT_STATEMENTS_TESTS names {', '.join(gone)}, which the lane's walk of {root} does "
+                         "not read: the file moved out of the lane or is gone, and its row now runs nothing on the "
+                         "Postgres that preloads pg_stat_statements; follow the file, or drop the row")
     return found
 
 
-def race_impossible_script(packages) -> str:
+def race_impossible_script(packages, preloaded=None) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout."""
-    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
-                     for under, names in packages.items())
+    sorted, in its -run, under a 10-minute timeout. `preloaded` maps a package to those of its
+    tests that run on PG_STAT_STATEMENTS_URL (pg_stat_statements_packages): they are a `go test`
+    of their own, after the package's other tests, with DISPATCH_TEST_DATABASE_URL naming that
+    Postgres."""
+    preloaded = preloaded or {}
+    lines = []
+    for under, names in packages.items():
+        own = names & preloaded.get(under, set())
+        for selected, database in ((names - own, ""), (own, f"DISPATCH_TEST_DATABASE_URL='{PG_STAT_STATEMENTS_URL}' ")):
+            if selected:
+                lines.append(f"{database}go test -count=1 -timeout 10m -run '^({'|'.join(sorted(selected))})$' ./{under}")
+    return "\n".join(lines)
 
 
 # The step as the lane and packages/envoy's own source make it, so a test added under
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES, pg_stat_statements_packages())
 
 
 def daemon_race_packages() -> list:
@@ -3439,10 +3502,15 @@ GATES = [
         ceiling_run("envoy-go"),
     ], exact=[
         # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
-        # each selecting that package's own tests with -run.
+        # each selecting that package's own tests with -run, and one more for the tests of a
+        # package that run on the Postgres the step before it starts (PG_STAT_STATEMENTS_TESTS).
         pinned_step("envoy-go", RACE_IMPOSSIBLE_STEP, ENVOY, RACE_IMPOSSIBLE_SCRIPT, [
             (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in RACE_IMPOSSIBLE_PACKAGES
+        ] + [
+            (ENVOY, [f"./{under}"], f"go test -run of the tests of ./{under} that run on the Postgres "
+                                    f"{at('envoy-go', PG_STAT_STATEMENTS_STEP)} starts", {})
+            for under in pg_stat_statements_packages()
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
         # step tests, the text checks, which the text-check job runs, the architecture-note and
