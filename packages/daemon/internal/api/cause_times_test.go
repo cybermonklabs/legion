@@ -222,9 +222,7 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // implementer, so the band is read on a worker's view as well as the architect's (it narrows
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
-// The daemon's log names what the narrowed body lost. Such a caller stands below the band of
-// each entry too, stateSeqContract's among them, so the log holds each such band's line after the
-// cause times' line and the Dispatch credential's.
+// The daemon's log names what the narrowed body lost.
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect

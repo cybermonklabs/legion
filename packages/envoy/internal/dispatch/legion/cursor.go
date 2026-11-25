@@ -49,9 +49,8 @@ const holdAtLeast = time.Second
 // floor below it for about 11 minutes at the most, however many take-overs and writes of the
 // setting there are, and a take-over replays at most that long of messages (consumerConfig). One
 // case is past that bound: a write of another URL or a delete that ends a hold while
-// maxReleasedHolders messages released before it are all still out. The oldest record then goes,
-// and that message is judged as any message at its next delivery: it may hold a read again from a
-// count of 1, for about 11 minutes more.
+// maxReleasedHolders messages released before it are all still out, whose oldest record then goes
+// (cursor.reset), so that message may hold a read again for about 11 minutes more.
 const stateMaxHolds = 10
 
 // owedRead is a whole read to make: the setting whose daemon it reads, the reason its legion_reads
@@ -755,7 +754,7 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 //     (cursor.releases, endHold). While the project has no setting, its messages are dropped
 //     before the cursor is read, so after a delete a record can stay until maxReleasedHolders
 //     newer records push it out; a take-over's replay can deliver its message again after a new
-//     setting, and that delivery takes the record out (applyBatch). Past maxReleasedHolders
+//     setting, and that delivery takes the record out (endHold). Past maxReleasedHolders
 //     the oldest record goes (marked): that message is judged as any message at its next
 //     delivery, which applies nothing of a store other than the cursor's, and it may hold a read
 //     again from a count of 1.

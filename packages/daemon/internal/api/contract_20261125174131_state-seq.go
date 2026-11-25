@@ -39,10 +39,6 @@ package api
 // the whole state too, and the daemon logs a warning that names the values given and the one view
 // the route serves, because a later version may refuse such a request.
 // `packages/contracts/src/legion-api.ts` reads the view as LegionObservedStateResponse.
-//
-// stateSeqContract is this entry's id, which its band of stateNarrowings names; code that
-// compares a contract with this entry's reads entryNumber(stateSeqContract). For a caller built
-// after sjawhar/legion#2788 the strip keeps keys it did not ask for out of its body.
 const stateSeqContract = 20261125174131
 
 func init() {

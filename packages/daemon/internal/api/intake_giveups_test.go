@@ -738,20 +738,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	// The caller stands below every row of stateNarrowings above it, podHoldContract's and each
-	// entry's band included, stateSeqContract's among them, so the log holds the line of each of
-	// those rows, the give-ups' line among them, and no other.
-	expected := narrowingsExpected(carriedState(t), intakeGiveUpsContract-1)
-	if !slices.Contains(expected, "intakeGiveUps") {
-		t.Fatalf("a caller at %d expects the lines %v, want the give-ups' among them", intakeGiveUpsContract-1, expected)
+	if len(narrowings) == 0 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
+		t.Errorf("the daemon logged %+v for a caller at %d, want its first line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
-	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, expected)
-	for i, line := range narrowings {
-		if line.PluginContract != intakeGiveUpsContract-1 {
-			t.Errorf("line %d of a caller at %d names contract %d, want %d",
-				i, intakeGiveUpsContract-1, line.PluginContract, intakeGiveUpsContract-1)
-		}
-	}
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(carriedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")
