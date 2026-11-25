@@ -227,7 +227,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: slog.New(slog.NewTextHandler(logs, nil)),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar:      registrar,
 		RefreshGate:    supervise.NewRefreshGate(0),
@@ -262,7 +262,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	handle(
 		supervise.RequestSpawn{Claim: token},
 		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: keyThumbprint(t, key), PodToken: podToken}},
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: releaseSession, SessionFile: releaseFile, PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: releaseSession, SessionFile: releaseFile, PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: releaseSession},
 	)
 	r := &releaseRig{t: t, ctx: ctx, broker: broker, proxy: proxy, st: st, token: token, key: key, logs: logs, clock: clock,

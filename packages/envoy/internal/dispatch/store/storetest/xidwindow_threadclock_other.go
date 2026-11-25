@@ -18,5 +18,9 @@ func xidWatchThreadClock() (stop func(), ok bool) { return func() {}, false }
 // xidDropThreadClock drops nothing: this build holds no thread's clock.
 func xidDropThreadClock(int) {}
 
-// xidHoldMemory holds nothing: a build that judges no gap has no window's memory to keep still.
+// xidHoldWindowMemory holds nothing: a build that judges no gap has no window's memory to keep
+// still.
+func xidHoldWindowMemory() (unheld string) { return "" }
+
+// xidHoldMemory holds nothing either: with nothing to hold, it answers held.
 func xidHoldMemory() bool { return true }

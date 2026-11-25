@@ -6,4 +6,4 @@ GATE = gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-g
     ]),
 ], reads=reads(
     (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod"))
+) + ceiling_reads("envoy-go-race-api") + crash_safety_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod"))

@@ -57,9 +57,17 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
         for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
     ], workflow=DAEMON_FILE),
+    # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
+    # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
+    # internal/api's test build, which plain leg 2's step compiles too; the stamp changes the link
+    # alone.
+    pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
+        (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
+    ], workflow=DAEMON_FILE),
 ], reads=reads(
     (GO_LEGS_SCRIPT, at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
+    ("scripts/daemon-contract-order.sh", at(DAEMON_PLAIN_LEGS_JOB, DAEMON_CONTRACT_ORDER_STEP, DAEMON_FILE)),
     ("scripts/e2e/stage1-skeleton.sh", at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE)),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
@@ -67,23 +75,26 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh's keep_port and _held_exec (start_held, start_kept) run it to hold a port for the daemon"),
     ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` line, the last)"),
     ("scripts/e2e/lib/built-from.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/built-from.sh` runs it over the checkout"),
-    ("packages/pi-legion/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version, legion}'` copies its name, version "
-                                        "and legion block into the pi-legion plugin the proof's home holds"),
+    ("packages/pi-legion/package.json", "`scripts/e2e/stage1-skeleton.sh#{name, version, legion}` copies its name, version "
+                                        "and legion block, with this tree's contract written in it, into the pi-legion plugin the proof's home holds"),
     ("packages/pi-envoy/package.json", "`scripts/e2e/stage1-skeleton.sh#jq '{name, version}'` copies its name and version "
                                        "into the pi-envoy plugin the proof's home holds"),
     (".github/actions/install-uv/**", at(DAEMON_PLAIN_LEGS_JOB, "./.github/actions/install-uv", DAEMON_FILE)),
     (".github/ci-tools.yaml", "`.github/actions/install-uv/action.yml#ci_tools_fetch uv` installs the uv row's binary"),
     (".github/scripts/ci-tools.sh", "`.github/actions/install-uv/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
-    (".github/actions/pull-test-images/**", at(DAEMON_PLAIN_LEGS_JOB, "Pull the NATS test container images", DAEMON_FILE)),
-    (f"{DAEMON}/internal/testnats/nats.go", f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
+    (".github/actions/pull-test-images/**", at(DAEMON_PLAIN_LEGS_JOB, "Pull the NATS and PgBouncer test container images", DAEMON_FILE)),
+    (f"{DAEMON}/internal/testnats/nats.go", f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the NATS and PgBouncer test container images', DAEMON_FILE)} "
                                             f"const Image, "
                                             f"{at(DAEMON_RACE_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at(DAEMON_RACE_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
                                            f"const HubImage"),
+    (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the NATS and PgBouncer test container images', DAEMON_FILE)} "
+                                                          f"const PoolImage"),
 ) + forced_order_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FORCED_ORDER_STEP, DAEMON_FILE)
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
+  + crash_safety_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + crash_safety_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
   + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
 GATE = with_reads(GATE, [

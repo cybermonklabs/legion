@@ -9,7 +9,8 @@ name: CI job daemon-go
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
-# the race step over those five packages, the forced-order step over the daemon's TestForcedOrder
+# the shape gate of internal/api a second time, stamped with HEAD's merge order, the race step
+# over those five packages, the forced-order step over the daemon's TestForcedOrder
 # tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left `.github/workflows/ci.yaml#test` job, which runs
 # the shell-script harnesses and a handful of Bun suites behind one filter: that filter
@@ -99,9 +100,12 @@ jobs:
     # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
     # ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own counts: the setup's 1.7 min at
     # most, the plain step's 15.0 and its 15 minutes, the race-impossible step's 0.5 and its 10,
-    # then Stage 1's 0.2 and the report. That is under 43 minutes. The forced-order step adds its
-    # compile of a hooked nats-server under the detector, up to 5 minutes, and forced-order.sh's
-    # 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg needs more.
+    # then Stage 1's 0.2 and the report. The stamped shape gate, new since, adds its fetch and its
+    # link, under 1 minute (a whole blobless clone of this repository from GitHub took about 30 s
+    # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
+    # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
+    # forced-order.sh's 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg
+    # needs more.
     timeout-minutes: 60
     services:
       postgres:
@@ -153,6 +157,7 @@ jobs:
           cache: false
 
       # go-daemon, shared with typecheck and pi-legion.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -185,13 +190,21 @@ jobs:
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
-      # pulled first for the reason the action gives. The two other images the module's tests
-      # start are the race packages' (daemon-go-race-legs below).
-      - name: Pull the NATS test container images
+      # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
+      # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
+      # NATS images the module's tests start are the race packages' (daemon-go-race-legs below).
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # Each leg runs the packages .github/go-legs.yaml lists for its number under daemon-go: every
       # package of the module but the five the race legs test and internal/textcheck, whose tests
@@ -214,6 +227,38 @@ jobs:
         run: |
           set -o pipefail
           python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+        working-directory: packages/daemon
+
+      # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
+      # order (scripts/daemon-contract-order.sh), as every build of main that production runs is
+      # stamped: the plain step of the leg that runs internal/api (go-legs.yaml's leg 2) runs it
+      # unstamped, which numbers the entries by id, so these two steps run in that leg alone. On a
+      # pull request the stamp is main's order with the branch's entries after it, the order main
+      # takes if the branch merges next; in a merge group it is the order main takes. So the
+      # order a production build numbers its entries in is tested before it reaches main. The
+      # checkout is one commit deep, and the order needs HEAD's history back to main's
+      # first-parent line and main's own, so the first step fetches both, with no blob (the script
+      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
+      # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
+      # merge queue's test job runs, reads every go test step. The plain step compiled this test
+      # binary already, so the gate's run is the link and the two tests, which took 2 s past the
+      # fetch on 2026-11-24; the 1-minute -timeout is its share of the job's timeout-minutes, and
+      # the step's own duration in the job's log is how long the gate took.
+      - name: Stamp HEAD's contract entries in main's merge order
+        if: matrix.leg == 2
+        id: contract-order
+        run: |
+          head=$(git rev-parse HEAD)
+          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
+          echo "$stamp"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+        working-directory: packages/daemon
+
+      - name: Test the shape gate in main's merge order
+        if: matrix.leg == 2
+        run: go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -364,6 +409,7 @@ jobs:
           cache: false
 
       # go-daemon, which holds the race build of these five packages too (ci-caches.yaml).
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -383,6 +429,12 @@ jobs:
       # so that it reads the restored module cache.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
