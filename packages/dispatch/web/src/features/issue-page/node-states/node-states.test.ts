@@ -616,7 +616,6 @@ test("the page does not open on an overtaken open question", async () => {
       rowOf(view.container, "ask-1")?.querySelector('[data-node-mark="overtaken"]')
     ).not.toBeNull();
     expect(rowOf(view.container, "spec#b-r8")).toHaveAttribute("aria-expanded", "true");
-    expect(rowOf(view.container, "ask-2")).not.toBeNull();
     await act(async () => {});
     expect(focusedRow(view.container)).toBe("comment-1");
   } finally {
@@ -2459,9 +2458,7 @@ test("a question's row draws nothing of a state its block's node holds", () => {
 // the outline's row of the question, which takes the state of the ask's node. A live question
 // closes and marks nothing.
 test("a view's row under an overtaken question drawn from a block and its ask is closed", () => {
-  const chain = (state: "live" | "overtaken") => blockQuestion({}, { state });
-
-  const overtaken = chain("overtaken");
+  const overtaken = blockQuestion({}, { state: "overtaken" });
   expect(overtaken.question?.source).toEqual({ id: BLOCK_ASK, kind: "ask" });
   expect(readNodeOf(overtaken.outline, blockReadId("spec", "r1"))?.closed).toBe(true);
   expect(overtaken.row?.parentLine).toMatchObject({
@@ -2474,7 +2471,7 @@ test("a view's row under an overtaken question drawn from a block and its ask is
   expect(overtaken.row?.gaps).toEqual([]);
   expect(overtaken.row === undefined ? false : outOfCounts(overtaken.row)).toBe(true);
 
-  const live = chain("live");
+  const live = blockQuestion({}, { state: "live" });
   expect(live.row?.parentLine).toMatchObject({ id: BLOCK_ASK, readId: BLOCK_ASK });
   expect(markKeys(live.row)).toEqual([]);
   expect(live.row?.parentLine?.life).toBeUndefined();

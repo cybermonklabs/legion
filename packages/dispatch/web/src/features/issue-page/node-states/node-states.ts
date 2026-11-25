@@ -7,10 +7,10 @@ import type { TreeAnswer } from "../tree-read/tree-read";
 /**
  * A node's life and who may read it, on the issue's tree.
  * Pure, over the tree `issue-tree.ts` assembles, which holds neither: the tree read answers each
- * node's state and visibility by the read's own id (`TreeNode.readId`), and `closeOvertaken`
- * puts them on every placement of that node and on every chip and parent line that names it, and
- * closes each overtaken node with every node under it, so the rows, the fold and the counts all
- * read one tree.
+ * node's state and visibility by the read's own id (`TreeNode.readId`), a question's row takes
+ * them by its ask's (`stateIdOf`), and `closeOvertaken` puts them on every placement of that
+ * node and on every chip and parent line that names it, and closes each overtaken node with every
+ * node under it, so the rows, the fold and the counts all read one tree.
  *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: a node's life is read through
