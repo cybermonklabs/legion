@@ -963,7 +963,9 @@ func countedTask(tasks []record.PlanTask, running string) (record.PlanTask, bool
 
 // taskViews is tasks, the tasks of issue's plan in task id order, as the state serves them
 // (api.TaskView), from two reads of the issue: the act each task stands at
-// (record.Store.TaskActs) and each task's own pull request (record.Store.TaskPullRequests).
+// (record.Store.TaskActs) and each task's own pull request as its row alone
+// (record.Store.TaskPullRequestRows), one statement whatever the count of tasks, since the state
+// reads no settled head.
 // reviewer is the issue's reviewer's row, which bears on the pull request of the task whose step
 // it runs (reviewerOf).
 func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []record.PlanTask, reviewer record.PhaseRow) ([]api.TaskView, error) {
@@ -971,7 +973,7 @@ func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []recor
 	if err != nil {
 		return nil, err
 	}
-	prs, err := in.Store.TaskPullRequests(ctx, in.Tx, issue.Key)
+	prs, err := in.Store.TaskPullRequestRows(ctx, in.Tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}

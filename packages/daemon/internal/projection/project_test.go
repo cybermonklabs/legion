@@ -124,7 +124,7 @@ func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]re
 
 // PullRequestsOf answers the pull request of each of issues the store holds, by key, as the real
 // store reads them in one statement: an issue it holds none for has no entry. The fake's one pull
-// request of an issue is its merge's, and TaskPullRequests answers that same row as the issue's
+// request of an issue is its merge's, and TaskPullRequestRows answers that same row as the issue's
 // only one.
 func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
 	of := make(map[string]record.PullRequest, len(issues))
@@ -135,7 +135,7 @@ func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []st
 	}
 	return of, nil
 }
-func (s projectionStore) TaskPullRequests(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
+func (s projectionStore) TaskPullRequestRows(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
 	if pr := s.pullRequests[issue]; pr != nil {
 		return []record.PullRequest{*pr}, nil
 	}

@@ -886,6 +886,55 @@ func (s *Postgres) TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string
 	return prs, nil
 }
 
+// TaskPullRequestRows, PullRequestRowOfTask and MergePullRequestRow read what TaskPullRequests,
+// PullRequestOfTask and MergePullRequest read, by the same query and in the same order, as rows
+// alone: with none of what each remembers of its settled heads, and each marked with the read that
+// made it (PullRequest.readBy), so PutPullRequest refuses it. They are a reader's that never writes
+// a record back and reads neither SettledHeads nor its head run's Settled. The rows are one
+// statement whatever the issue's count of tasks, where the whole read adds one read of settled
+// heads, and the decode of each fence, for each task's row.
+func (s *Postgres) TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error) {
+	describe := fmt.Sprintf("read the pull request rows of %s", issue)
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1 order by branch", issue)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	prs, err := collectPullRequests(rows, describe, "TaskPullRequestRows")
+	if err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(prs, func(a, b PullRequest) int { return strings.Compare(a.Task, b.Task) })
+	return prs, nil
+}
+
+func (s *Postgres) PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {
+	prs, err := s.TaskPullRequestRows(ctx, tx, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull request row of task %q of %s: %w", task, issue, err)
+	}
+	if at := slices.IndexFunc(prs, func(pr PullRequest) bool { return pr.Task == task }); at >= 0 {
+		prs[at].readBy = "PullRequestRowOfTask"
+		return &prs[at], nil
+	}
+	return nil, nil
+}
+
+func (s *Postgres) MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
+	plans, err := mergePlans(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, fmt.Errorf("read the merge pull request row of %s: %w", issue, err)
+	}
+	task, ok := issueMergeTask(plans[issue])
+	if !ok {
+		return nil, nil
+	}
+	pr, err := s.PullRequestRowOfTask(ctx, tx, issue, task)
+	if pr != nil {
+		pr.readBy = "MergePullRequestRow"
+	}
+	return pr, err
+}
+
 // issueMergeTask is the task whose pull request is the merge of an issue whose plan at its
 // generation is stored: the one rule MergePullRequest and PullRequestsOf read by. An issue with no
 // plan rows (stored nil) has the task "", whose row is the issue's own. For a plan it is the first

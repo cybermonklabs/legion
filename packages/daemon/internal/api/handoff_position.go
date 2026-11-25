@@ -106,7 +106,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		}
 		position.pass = counts.Pass
 		if !position.noStep {
-			if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, position.task); err != nil {
+			if position.pullRequest, err = s.records.PullRequestRowOfTask(ctx, tx, key, position.task); err != nil {
 				return err
 			}
 		}

@@ -275,7 +275,7 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 		implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 		task, judged := judgedTask(stored, implementer, named)
 		read.task, read.branch, read.judged, read.planned, read.handoff = task.Task, task.BranchOf(key), judged, stored != nil, implementer.HandoffCommit
-		read.prs, err = records.TaskPullRequests(ctx, tx, key)
+		read.prs, err = records.TaskPullRequestRows(ctx, tx, key)
 		return err
 	}); err != nil {
 		return issueRecords{}, fmt.Errorf("read the record of %s: %w", key, err)

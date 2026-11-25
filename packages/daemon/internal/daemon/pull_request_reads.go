@@ -94,7 +94,7 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 	var current *record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequestOfTask(ctx, tx, pr.Issue, pr.Task)
+		current, err = w.records.PullRequestRowOfTask(ctx, tx, pr.Issue, pr.Task)
 		return err
 	}); err != nil {
 		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)

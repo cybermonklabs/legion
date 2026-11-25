@@ -2266,6 +2266,14 @@ type Store interface {
 	// every reader that never writes the record back.
 	PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
+	// TaskPullRequestRows, PullRequestRowOfTask and MergePullRequestRow read what TaskPullRequests,
+	// PullRequestOfTask and MergePullRequest read, by the same query, as rows alone, for every
+	// reader that never writes a record back: one statement for an issue's rows whatever its count
+	// of tasks, where the whole read adds a read of settled heads for each task's row. PutPullRequest
+	// refuses their records, naming the read.
+	TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
+	PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
+	MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
 	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
 	// repo compared without case as PullRequestByNumber compares it, and the zero time when no clear

@@ -102,7 +102,7 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 			return err
 		}
 		for _, issue := range unfilled {
-			if pulls[issue.Key], err = records.TaskPullRequests(ctx, tx, issue.Key); err != nil {
+			if pulls[issue.Key], err = records.TaskPullRequestRows(ctx, tx, issue.Key); err != nil {
 				return err
 			}
 		}
