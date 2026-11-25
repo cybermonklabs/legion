@@ -12,8 +12,10 @@ export interface RecordedEditors {
   readonly handles: EditorHandle[];
   /** Whether an editor it built is still binding: built or being built, and neither bound,
    *  refused nor torn down yet. The bind ends tasks after a page drew the editor
-   *  (`@legion/proof-editor`'s `bind`), so a row that ends then would have the page take the
-   *  handle outside `act`: a fixture's teardown turns the event loop until this is false. */
+   *  (`@legion/proof-editor`'s `bind`), and the page takes its handle then, so the row itself
+   *  waits, inside `act`, until this is false before it ends (`PriorityPage.test.tsx`'s
+   *  `endingBound`). A wait in a teardown comes too late: the handle has landed outside `act`
+   *  by then. */
   binding(): boolean;
   /** The editor named `name` once it holds its text, among the elements of `scope` (the whole
    *  document where none is given), with its handle. */

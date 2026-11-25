@@ -14,9 +14,10 @@ import {
 import type { IssueDrafts } from "./useIssueDrafts";
 
 /** What the issue's message route is, said beside its value and its editor. The header draws it
- *  once, as `issue-route-hint`, which each of them names. */
+ *  once, with the id `routeHintId`, which each of them names. */
 export const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
+export const routeHintId = "issue-route-hint";
 
 const saveButton = `min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`;
 const cancelButton = `min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`;
@@ -57,7 +58,7 @@ export function IssueRouteForm({ drafts, isClosed, onClose, saving }: HeaderForm
   return (
     <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={save}>
       <label
-        aria-describedby="issue-route-hint"
+        aria-describedby={routeHintId}
         className={`text-sm font-medium ${textSecondaryOnSurface}`}
         htmlFor="issue-route"
         title={routeHint}
@@ -66,7 +67,7 @@ export function IssueRouteForm({ drafts, isClosed, onClose, saving }: HeaderForm
       </label>
       <input
         aria-label="Message route"
-        aria-describedby="issue-route-hint issue-route-help"
+        aria-describedby={`${routeHintId} issue-route-help`}
         className={fieldBox}
         disabled={isClosed}
         id="issue-route"

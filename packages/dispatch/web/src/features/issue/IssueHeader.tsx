@@ -68,7 +68,7 @@ import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
-import { IssueParentForm, IssueRouteForm, routeHint } from "./IssueHeaderForms";
+import { IssueParentForm, IssueRouteForm, routeHint, routeHintId } from "./IssueHeaderForms";
 import { IssueLabels } from "./IssueLabels";
 import {
   issueClosedCalloutClassName,
@@ -678,7 +678,7 @@ export function IssueHeader({
           </div>
           {routeEditing ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
+              <span aria-describedby={routeHintId} className="font-medium" title={routeHint}>
                 Message route:
               </span>
               {routeSession === undefined ? (
@@ -765,7 +765,7 @@ export function IssueHeader({
           </ReaderIsHere>
         ) : null}
       </div>
-      <span className="sr-only" id="issue-route-hint">
+      <span className="sr-only" id={routeHintId}>
         {routeHint}
       </span>
       {routeEditing ? (

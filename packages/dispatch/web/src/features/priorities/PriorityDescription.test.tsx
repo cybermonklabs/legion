@@ -41,8 +41,8 @@ afterEach(() => {
  * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
  * (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the editor cannot take in:
  * `setMarkdown` throws for it, as for a text holding what it may not create yet. `builds` holds
- * every editor the description built, bound or not, and an error a row puts in `refusal.bind`
- * is what the next bind is refused with. `beforeEffects` runs a step in the next commit
+ * every editor the description built, bound or not, and while a row holds an error in
+ * `refusal.bind`, every bind is refused with it. `beforeEffects` runs a step in the next commit
  * `rerender` makes, before the editor's effects take in what it drew. Queries are scoped to this
  * render's container, since bun runs every test file in one document.
  */
