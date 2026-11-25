@@ -47,6 +47,11 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
   }, 1_100_000);
   afterAll(async () => {
     await stopStack?.();
+    // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
+    // makes too. A stop that hangs to this limit fits the room the `beforeAll` above names:
+    // 1 130 s less the stack's worst start (249 s) and the three rows' worst (101.3 s) leaves
+    // 779.7 s, and 60 s is inside it. This limit takes the place of the 30 s the other limits
+    // keep for this hook.
   }, 60_000);
 
   // The row running: its signal, which each of its waits checks on every poll, and the close of

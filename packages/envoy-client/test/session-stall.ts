@@ -562,6 +562,11 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     await child?.kill();
     await nats?.close();
     await stopStack?.();
+    // A hang guard: what can hang is the wait for the child's exit, the observer's NATS close, or
+    // the stop of natsd or the listener. An `afterAll` that hangs to this limit fits the room the
+    // `beforeAll` above names: 962 s less the start's worst (249 s) and the three rows' worst
+    // (10.3 s, 11.1 s and 60.5 s) leaves 631.1 s, and 60 s is inside it. This limit takes the
+    // place of the 30 s the other limits keep for this hook.
   }, 60_000);
 
   beforeEach(() => {
@@ -616,7 +621,10 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // A hang guard, not a bound on work: what can hang is a wait for a state that never comes.
     // Worst measured cost: 10 277.13 ms, bun's time for this row, in the twelve green runs of the
     // `envoy-session-stall` job on this branch from d62604fd to a467c066 (the run at f3ff8793),
-    // on the job's own GitHub Actions runner. 180_000 is 17.5 times the worst.
+    // on the job's own GitHub Actions runner. 180_000 is 17.5 times the worst. A row that hangs
+    // to this limit fits the room the `beforeAll` above names: 962 s less the start's worst
+    // (249 s), the other two rows' worst (11.1 s and 60.5 s) and the 30 s kept for the
+    // `afterAll` leaves 611.4 s, and this row's 180 s is inside it.
   }, 180_000);
 
   // Properties 4 and 5. A listener that read the stall as death releases this claim on the first
@@ -687,7 +695,10 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // A hang guard, not a bound on work: what can hang is a wait for a state or a message that
     // never comes. Worst measured cost: 11 101.66 ms, bun's time for this row, in the twelve green
     // runs of the `envoy-session-stall` job on this branch from d62604fd to a467c066 (the run at
-    // f3ff8793), on the job's own GitHub Actions runner. 240_000 is 21.6 times the worst.
+    // f3ff8793), on the job's own GitHub Actions runner. 240_000 is 21.6 times the worst. A row
+    // that hangs to this limit fits the room the `beforeAll` above names: 962 s less the start's
+    // worst (249 s), the other two rows' worst (10.3 s and 60.5 s) and the 30 s kept for the
+    // `afterAll` leaves 612.2 s, and this row's 240 s is inside it.
   }, 240_000);
 
   // Property 6. The horizon is the whole point: a listener that read the missed heartbeats as

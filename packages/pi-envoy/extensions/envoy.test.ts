@@ -853,7 +853,11 @@ afterAll(() => resetNatsConnectForTests());
 // A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
 // scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 122.19 ms over
 // 10 runs of the `session_shutdown` budget row at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB
-// pod; 80.06 ms idle over 3 174 invocations.
+// pod; 80.06 ms idle over 3 174 invocations. In the `envoy-session-stall` job's step, which runs
+// the freeze row alone, a hook charged to this limit fits that step's room (879 s, the header of
+// the describe `against a real natsd and Envoy listener`): 879 s less the stack's slowest start
+// (249 s), the freeze row's worst (62.9 s), this file's `afterEach` at its worst (7.3 s) and the
+// 30 s kept leaves 529.8 s, and 60 s is inside it.
 beforeEach(() => {
   rowGeneration += 1;
   jest.useRealTimers();
@@ -1096,7 +1100,11 @@ function resetFileState(): void {
 // which the first `await` below waits for; the second, a session's shutdown (`rowStops`), ends at
 // that shutdown's own 1 s deadline (`SHUTDOWN_DEADLINE_MS` in `envoy.ts`). 60_000. Worst measured
 // cost: 7 275.17 ms, in a whole-file run at 96 busy loops (48 per CPU) on a two-CPU, 8 GiB pod,
-// stopped by its 3 000 s timeout after 359 rows.
+// stopped by its 3 000 s timeout after 359 rows. In the `envoy-session-stall` job's step, which
+// runs the freeze row alone, a hook that hangs to this limit fits that step's room (879 s, the
+// header of the describe `against a real natsd and Envoy listener`): 879 s less the stack's
+// slowest start (249 s), the freeze row's worst (62.9 s), this file's `beforeEach` at its worst
+// (0.1 s) and the 30 s kept leaves 537 s, and 60 s is inside it.
 afterEach(async () => {
   rowGeneration += 1;
   // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
@@ -28356,7 +28364,11 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     await stopStack?.();
     // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
     // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
-    // is 12.8 times the worst.
+    // is 12.8 times the worst. A stop that hangs to this limit fits the room above: 879 s less
+    // the stack's slowest start (249 s, the `beforeAll` above), the freeze row's worst (62.9 s)
+    // and the file's `beforeEach` and `afterEach` at their worst (0.1 s and 7.3 s, their comments
+    // at the top of the file) leaves 559.7 s, and 60 s is inside it. This limit takes the place
+    // of the 30 s kept.
   }, 60_000);
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
@@ -28479,9 +28491,12 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     // calibration's 31.2 s), 2026-11-22T18:18Z to 19:59Z; 55 599.76 ms in the Job
     // infra-1580-krows-kf2-9tp5g (152 busy loops, row A at 37.7 s), 2026-11-22T11:58Z to 13:44Z,
     // and 53 995.87 ms in the Job infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s),
-    // 2026-11-22T08:32Z to 09:41Z. 390_000 is 6.2 times the worst, and with the stack's slowest
-    // start (249 s, the `beforeAll` above) and the 30 s kept it stays inside the room above,
-    // 879 s.
+    // 2026-11-22T08:32Z to 09:41Z. 390_000 is 6.2 times the worst. The step's
+    // `-t "NATS path freezes"` selects this row alone, so no other row of the file runs in that
+    // step. A row that hangs to this limit fits the room above: 879 s less the stack's slowest
+    // start (249 s, the `beforeAll` above), the file's `beforeEach` and `afterEach` at their
+    // worst (0.1 s and 7.3 s, their comments at the top of the file) and the 30 s kept leaves
+    // 592.6 s, and 390 s is inside it.
   }, 390_000);
 });
 

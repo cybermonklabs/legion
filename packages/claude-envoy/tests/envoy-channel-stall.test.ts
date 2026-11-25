@@ -264,7 +264,9 @@ describe.skipIf(!envoyStackEnabled)(
       await stopStack?.()
       // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
       // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
-      // is 12.8 times the worst.
+      // is 12.8 times the worst. A stop that hangs to this limit fits the room above: 847 s less
+      // the stack's slowest start (249 s, the `beforeAll` above) and the two rows' worst (189.7 s
+      // each) leaves 218.6 s, and 60 s is inside it. This limit takes the place of the 30 s kept.
     }, 60_000)
     afterEach(async () => {
       // A row its limit abandoned never reaches its own `finally`: its host is stopped here, so
@@ -285,7 +287,10 @@ describe.skipIf(!envoyStackEnabled)(
       // `stop`, 2026-11-25T04:47Z to 04:52Z, at 353017d0 with these edits. The server exited on
       // its SIGTERM each time, so no run reached the SIGKILL. No reading under load exists.
       // 30_000 is three times `STOP_GRACE_MS`. A server that ignores its SIGTERM holds the stop
-      // 10 s of it, and the 20 s left for the rest are 349 times the whole stop's idle worst.
+      // 10 s of it, and the 20 s left for the rest are 349 times the whole stop's idle worst. A
+      // stop that hangs to this limit fits the room above: 847 s less the stack's slowest start
+      // (249 s, the `beforeAll` above), the two rows' worst (189.7 s each) and the 30 s kept
+      // leaves 188.6 s, and 30 s is inside it.
     }, 30_000)
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
