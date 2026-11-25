@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -170,7 +169,7 @@ func TestAReadmittedMemberWithAnOpenChildComesBackWaitingOnIt(t *testing.T) {
 // The tree of the carried-root case: a root another tree handed to Legion carrying its slot in
 // implementing (record.QueuedRoot), and a member under it in the middle of implementing.
 const (
-	crRoot      = spParent // pwDeliver finishes starts of spParent.
+	crRoot      = "LEGION-400"
 	crMember    = "LEGION-401"
 	crOpenChild = "LEGION-402"
 )
@@ -285,7 +284,7 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 				// that has an open child, its worker told that the phase ended; the control row's root
 				// stays in implementing, told nothing.
 				token := putWorkerClaim(t, pool, crRoot, crRoot, claim.RoleImplementer, root.Generation, supervise.StateWorking, "")
-				pwDeliver(t, pool, token, pnWorkerStart(t, pool, crRoot, claim.RoleImplementer))
+				pwDeliver(t, pool, crRoot, token, pnWorkerStart(t, pool, crRoot, claim.RoleImplementer))
 				spPass(t, pool, admission)
 
 				root = issue(t, pool, crRoot)
@@ -335,8 +334,14 @@ func TestAMemberOfARootAnEarlierReleasePromotedStopsOnItsOpenChildOnTheFirstPass
 			readmittedTree(t, pool, admission, false)
 			earlierReleasePromotes(t, pool, admission)
 			// The member's worker took the start that promotion queued, so it is in the middle of
-			// implementing when its child is filed.
-			workerTakesItsStart(t, pool, rmImplementing, claim.RoleImplementer)
+			// implementing when its child is filed: the outbox delivered that start to the
+			// implementer's claim, which works it.
+			token := pwRoleToken(t, rmImplementing, claim.RoleImplementer)
+			pwDeliver(t, pool, rmImplementing, token, pnWorkerStart(t, pool, rmImplementing, claim.RoleImplementer))
+			if _, err := pool.Exec(context.Background(), `update claims set state = $2, suspended_by = '' where token = $1`,
+				string(token), string(supervise.StateWorking)); err != nil {
+				t.Fatalf("set the implementer of %s working: %v", rmImplementing, err)
+			}
 			takeSlot(t, pool, rmImplementing)
 			if row.child {
 				seedMirrorChild(t, pool, rmOpenChild, "backlog", rmImplementing)
@@ -372,52 +377,5 @@ func TestAMemberOfARootAnEarlierReleasePromotedStopsOnItsOpenChildOnTheFirstPass
 				t.Fatalf("phase-ended messages to the member %s = %+v, want one to its implementer, into awaiting_children", rmImplementing, ended)
 			}
 		})
-	}
-}
-
-// workerTakesItsStart leaves key's worker of role in the middle of its phase, as the outbox does
-// once it has run the starts that were queued for it: each of them is finished, and the role's
-// claim works, given the entry its phases row names.
-func workerTakesItsStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) {
-	t.Helper()
-	ctx := context.Background()
-	inTx(t, pool, func(tx pgx.Tx) {
-		rows, err := tx.Query(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-			and payload->>'role' = $2 order by id`, key, string(role))
-		if err != nil {
-			t.Fatalf("list the starts of the %s of %s: %v", role, key, err)
-		}
-		var ids []int64
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				t.Fatalf("scan a start of the %s of %s: %v", role, key, err)
-			}
-			ids = append(ids, id)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			t.Fatalf("read the starts of the %s of %s: %v", role, key, err)
-		}
-		if len(ids) == 0 {
-			t.Fatalf("the %s of %s has no start queued, want the one the promotion wrote", role, key)
-		}
-		for _, id := range ids {
-			if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
-				t.Fatalf("finish the start %d of the %s of %s: %v", id, role, key, err)
-			}
-		}
-	})
-	project, err := claim.ProjectToken(testProject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(project, key, role)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `update claims set state = $2, suspended_by = '', given_entry = $3 where token = $1`,
-		string(token), string(supervise.StateWorking), spPhaseRow(t, pool, key, role).Entry); err != nil {
-		t.Fatalf("set the %s of %s working: %v", role, key, err)
 	}
 }

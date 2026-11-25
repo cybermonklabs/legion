@@ -1953,8 +1953,14 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	owed := owedStartsByIssue(facts.OwedRows)
 	// Let the return decide how to hold these members, but only if the pass will reach it and the
 	// return will start them. A root's catch-up hold does not keep a member's own queued start from
-	// being delivered. The slots are the pass's own as it holds them here, the same read the return
-	// makes of them.
+	// being delivered. These slots are read before the pass releases any, and the return reads them
+	// after releaseSlots and releaseSlotsForWaits. For every root whose return runs
+	// (returnsMembersThisPass) both reads still give one answer of promotedByEarlierRelease, the one
+	// term of startsMembersThisPass that reads the slots: nothing between them grants a slot;
+	// releaseSlots takes a root's slot, or clears its record.Issue.ReleasedForWaitAt, only where the
+	// root needs none (record.NeedsSlot), which for a root whose tree runs is a phase past admitted,
+	// where the term is true either way; and releaseSlotsForWaits writes that mark in the statement
+	// that takes the slot, and the return reads the mark again.
 	slotted := slottedIssues(slots)
 	returning := make(map[string]bool)
 	for _, root := range issues {
@@ -3100,7 +3106,8 @@ func returnsMembersThisPass(root record.Issue, facts record.LineFacts, held func
 // decide whether to hold those members (childrenWaits): the return runs for root
 // (returnsMembersThisPass) and root's promotion is not one an earlier release already made
 // (promotedByEarlierRelease), whose pass clears the mark and starts nothing. slotted is
-// slottedIssues of the pass's slots, which both read as the return does.
+// slottedIssues of the caller's slots: the stop reads them before the pass's releases and the
+// return after them, and childrenWaits says why both give one answer.
 func startsMembersThisPass(root record.Issue, facts record.LineFacts, held func(string) bool, slotted map[string]struct{}) bool {
 	_, holds := slotted[root.Key]
 	return returnsMembersThisPass(root, facts, held) && !promotedByEarlierRelease(root, holds)
