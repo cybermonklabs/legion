@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -52,9 +53,19 @@ func killRecordedHelper(t *testing.T, pidFile, seconds string) {
 // written whole by a rename, and becomes `sleep <seconds>` under that pid, with a command line
 // helperRunning tells from a pid the kernel has reused. Each row gives its stand-in a sleep of its
 // own, of about a day: longer than any test binary's deadline, so that the rows' waits, which the
-// deadline alone bounds, never see the stand-in end by itself and read that as the stop.
+// deadline alone bounds, never see the stand-in end by itself and read that as the stop. Each
+// path is one literal shell word (shellprefix.Literal), whatever the temporary directory holds.
 func holdsStandIn(pidFile, seconds string) string {
-	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
+	return "echo $$ >" + shellprefix.Literal(pidFile+".new") + "\nmv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile) + "\nexec sleep " + seconds + "\n"
+}
+
+// recordsChild is a stand-in's line of shell that starts `sleep <seconds>` in the background and
+// writes its pid to pidFile whole, by a rename, so a reader polling pidFile (recordedHelper) sees
+// no pid or the whole one. The child inherits the stand-in's descriptors, its output pipe among
+// them. It ends with no separator, so a caller adds its own next command after "\n" or "; ". Each
+// path is one literal shell word (shellprefix.Literal).
+func recordsChild(pidFile, seconds string) string {
+	return "sleep " + seconds + " & echo $! >" + shellprefix.Literal(pidFile+".new") + "; mv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile)
 }
 
 // signalWhileHeld starts command, the `legion` command name names, as the leader of a process
@@ -111,6 +122,12 @@ func signalWhileHeld(t *testing.T, command *exec.Cmd, name, pidFile, seconds, wh
 		pid, running = recordedHelper(pidFile, seconds)
 		return running
 	})
+	// The signal must come while the stand-in holds the work: with no running pid recorded, the
+	// end check below would pass a signal that came before the work was ever held (a pid of 0 is
+	// never running), so the row fails here by name instead.
+	if pid <= 0 || !helperRunning(pid, seconds) {
+		t.Fatalf("the stand-in holding %s had recorded no running pid (%d) in %s when the signal was to be sent: want the signal while %s is held", what, pid, pidFile, what)
+	}
 	if err := syscall.Kill(-command.Process.Pid, sig); err != nil {
 		t.Fatal(err)
 	}

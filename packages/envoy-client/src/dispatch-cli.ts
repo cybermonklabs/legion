@@ -350,8 +350,13 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId, tokenFiles: true })
-            .dispatch;
+        : (
+            await sessionDispatchSettings(file, env, {
+              cwd: io.cwd,
+              session: sessionId,
+              tokenFiles: true,
+            })
+          ).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -367,7 +372,7 @@ export async function runDispatchCli(
   }
   // The session this call acts as is the session a broker trade writes under, and the command
   // takes the token files (hostedDispatch).
-  const resolved = hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
+  const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
   // standard error, so its standard output is the object alone.
   const wholeJson = printsJson(parsed.tool, parsed.args);
@@ -516,7 +521,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,

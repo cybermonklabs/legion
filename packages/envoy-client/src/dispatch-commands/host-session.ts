@@ -98,13 +98,13 @@ export type HostedDispatch = { readonly warnings: readonly string[] } & (
  * not be worked out, and a Dispatch that is off, are the usage error the command refuses with.
  * Each caller prints the lines to its own stream.
  */
-export function hostedDispatch(
+export async function hostedDispatch(
   file: SessionConfigFile,
   env: DispatchEnvironment,
   options: { readonly cwd: string; readonly session: string }
-): HostedDispatch {
+): Promise<HostedDispatch> {
   if (file.path === null) return { problem: `dispatch: ${file.error}`, warnings: [] };
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     ...options,
     tokenFiles: true,
   });
