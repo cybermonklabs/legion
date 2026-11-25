@@ -768,6 +768,17 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
       `the tree read does not stand the ${what} under the overtaken question's ask`
     ).toBe(overtakenAskId);
   }
+  // The coverage read draws no requirement's gap while a document of the issue owes its block
+  // index (the server's `owedGap`, which writes one line in place of every missing check), and
+  // the block-index reconciliation writes an owed index on its own tick. So the seed waits until
+  // no document owes one, and each row reads a coverage read that holds every gap: statement 9's
+  // "No check" among them.
+  await expect
+    .poll(async () => (await getIssueCoverage(key)).owed_documents ?? [], {
+      message: "a document of the seeded issue still owes its block index",
+      timeout: 90_000,
+    })
+    .toEqual([]);
   return {
     addresses,
     answer,
