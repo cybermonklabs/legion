@@ -19849,7 +19849,7 @@ console.log(JSON.stringify(args));
       );
       const fixture = createPi();
       let sideTurns = 0;
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.(
         {},
         {
@@ -19873,10 +19873,14 @@ console.log(JSON.stringify(args));
           event_id: eventID,
         });
 
-      const context = await onTestClock(async () => {
-        agent.push(btw("evt-btw-first"));
-        return await followed.promise;
-      });
+      // The clock moves once the first reply reached Dispatch, past the session's settings read.
+      const context = await onTestClock(
+        async () => {
+          agent.push(btw("evt-btw-first"));
+          return await followed.promise;
+        },
+        () => replies.length > 0
+      );
 
       // The one reply under its one key, and no error reply after it.
       const key = replies[0]?.key;
