@@ -109,6 +109,15 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 // relations, and the planner then scans issues at each step, where on a deployment's relations
 // it hashes issues once. The walk keyed through issues_parent_key (priorityNewestEventKeyedWalkQuery)
 // is the control both walk holds must fail under each plan (explaintest.RequireControlFails).
+//
+// Both plans of each text run on one connection, the plan for its values right after the generic
+// plan of the same text, so each count is what the plan reads on a connection that has run the
+// text. A node's shared buffers count whatever the backend read while the node ran, the catalog
+// pages its first lookup on a connection loads among them: on its first run on a connection of the
+// pool, the sort of the relations under the plan for its values read three buffers more than the
+// scan of priority_tuples below it, 41 against 38, and 38 when the same plan ran again on that
+// connection (PostgreSQL 18.6, 2026-11-25). Those three were neither the relations' read nor the
+// walk's, and the hold counted them as the walk's.
 func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 	// Not parallel: it holds shared-buffer counts, as the other two tests over the corpus do.
 	if !strings.Contains(priorityReadQuery, mainNewestEventWalk) {
@@ -130,7 +139,7 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("acquire a connection for the generic plans: %v", err)
+		t.Fatalf("acquire a connection for the plans: %v", err)
 	}
 	defer connection.Release()
 
@@ -152,7 +161,7 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 		parameters, literals := benchtime.PreparedArguments(t, text.name, text.arguments...)
 		plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
 			fmt.Sprintf("corpus_walk_%d", textNumber), text.statement, parameters, literals))
-		plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+		plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, connection,
 			text.statement, nil, text.arguments...))
 	}
 	for _, plan := range plans {
