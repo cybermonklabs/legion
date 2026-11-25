@@ -254,10 +254,20 @@ func probeOptions(t *testing.T) ImageProbe {
 }
 
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
-// runs out. A row whose probe is refused keeps probeOptions' budget, even beside rows of its test
-// that run out: a refusal ends its attempt as soon as the attempt reads the status the row
-// planted, and on a loaded machine this budget could run out before that read.
+// runs out.
 const unfinishedBudget = 300 * time.Millisecond
+
+// rowProbe is probeOptions for a row of a table whose rows are refused or run out: a row whose
+// probe must run out takes unfinishedBudget, and a refused row keeps probeOptions' budget, since a
+// refusal ends its attempt as soon as the attempt reads the status the row planted and, on a
+// loaded machine, unfinishedBudget could run out before that read.
+func rowProbe(t *testing.T, refused bool) ImageProbe {
+	p := probeOptions(t)
+	if !refused {
+		p.Budget = unfinishedBudget
+	}
+	return p
+}
 
 // probe runs the image probe through the rig's Prober when it has one, else its runtime.
 func (g *probeRig) probe(p ImageProbe) error {
@@ -435,8 +445,10 @@ func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
 	if phase := <-phases; phase != "startup" {
 		t.Fatalf("first phase = %q, want startup", phase)
 	}
-	g.eventually("the probe pod pending before the startup bound", func() bool {
-		pod := g.pod(probeSandboxName)
+	// The verdict is read from the runtime's store (unstarted), so the startup is released only once
+	// the store, not merely the tracker, holds the waiting pod: then nothing is left to the 100 ms.
+	g.eventually("the runtime's store to hold the probe pod pending before the startup bound", func() bool {
+		pod := g.r.storedPod(probeSandboxName)
 		return pod != nil && pod.Status.Phase == corev1.PodPending && probeWaiting(pod) != nil
 	})
 	close(releaseStartup)
@@ -1028,10 +1040,7 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 			}, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			p := probeOptions(t)
-			if !testCase.refused {
-				p.Budget = unfinishedBudget
-			}
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 
@@ -1124,10 +1133,7 @@ func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
 			}, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			p := probeOptions(t)
-			if !testCase.refused {
-				p.Budget = unfinishedBudget
-			}
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 
@@ -1234,8 +1240,7 @@ func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.waitsSaying("CreateContainerConfigError", testCase.message)
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 
@@ -1358,10 +1363,7 @@ Output: mount.nfs: Connection timed out for ` + export + ` on /var/lib/kubelet/p
 					t.Fatal(err)
 				}
 			}
-			p := probeOptions(t)
-			if !testCase.refused {
-				p.Budget = unfinishedBudget
-			}
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 
@@ -1420,10 +1422,7 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
 			}))
 			g.finishes(unplaced(testCase.message, testCase.age))
-			p := probeOptions(t)
-			if !testCase.refused {
-				p.Budget = unfinishedBudget
-			}
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 
@@ -1475,10 +1474,7 @@ func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 			}, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			p := probeOptions(t)
-			if !testCase.refused {
-				p.Budget = unfinishedBudget
-			}
+			p := rowProbe(t, testCase.refused)
 
 			err := g.probe(p)
 

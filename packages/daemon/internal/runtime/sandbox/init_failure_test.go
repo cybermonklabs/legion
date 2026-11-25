@@ -433,7 +433,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			spec := workerSpec(t)
 			spec.Generation = 2
 			g.launcher(spec.Claim)
-			if err := failedLaunchOn(t, g, g.ctx, spec); err == nil || !strings.Contains(err.Error(), "set its sandbox running") {
+			if err := failedLaunch(t, g, spec); err == nil || !strings.Contains(err.Error(), "set its sandbox running") {
 				t.Fatalf("the launch = %v, want it to fail at its Running patch", err)
 			}
 			value, marked := mark(g)

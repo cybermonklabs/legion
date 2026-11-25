@@ -295,9 +295,11 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
+	// The write's deadline is apiTimeout's, or ctx's when ctx ends first (ctxBound).
 	deadline := time.Now().Add(apiTimeout)
+	ctxBound := false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, ctxBound = until, true
 	}
 	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -314,13 +316,13 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	}()
 	if err != nil {
 		session.close()
-		// The write's deadline is ctx's when ctx ends first, so a write the launcher never took
-		// ends at that moment with the connection's timeout rather than ctx's error, and ctx's own
-		// timer, set for the same instant, may not have ended ctx yet. Such a write ended because
-		// ctx did: it is reported as ctx's end, as the wait for the answer below reports it, so a
-		// caller telling its own bound from another (serveLeakCheck's hop, boundRanOut) reads the
-		// same error whichever of the two the bound caught.
-		if until, bounded := ctx.Deadline(); bounded && errors.Is(err, os.ErrDeadlineExceeded) && !time.Now().Before(until) {
+		// A write the launcher never took ends at its deadline with the connection's timeout
+		// rather than ctx's error, and when that deadline is ctx's, ctx's own timer, set for the
+		// same instant, may not have ended ctx yet. Such a write ended because ctx did: it is
+		// reported as ctx's end, as the wait for the answer below reports it, so a caller telling
+		// its own bound from another (serveLeakCheck's hop, boundRanOut) reads the same error
+		// whichever of the two the bound caught.
+		if ctxBound && errors.Is(err, os.ErrDeadlineExceeded) {
 			<-ctx.Done()
 			return nil, nil, fmt.Errorf("%w: %w", ctx.Err(), err)
 		}

@@ -1359,7 +1359,10 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
+	// The rig's 2 s boot timeout, not a shorter one: the pod never comes, so the wait still runs
+	// out, and the error reads the condition from the runtime's store (waitedOut), which must
+	// have caught up with the controller's patch by then.
+	g := newRig(t, nil)
 	g.hold.Store(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
@@ -1522,14 +1525,10 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 // end the launch with that bound's error instead of the row's.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
-	launching, cancel := context.WithCancel(g.ctx)
-	defer cancel()
-	defer context.AfterFunc(testwait.Context(t), cancel)()
-	return failedLaunchOn(t, g, launching, spec)
+	return failedLaunchOn(t, g, testwait.Context(t), spec)
 }
 
-// failedLaunchOn is failedLaunch for a row that bounds the launch itself: it runs on launching,
-// the context the row cancels once what it waits on has happened, and turns a panic into the
+// failedLaunchOn is failedLaunch on launching, a context of the row's own, turning a panic into the
 // test's failure the same way.
 func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
 	t.Helper()

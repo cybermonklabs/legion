@@ -35,24 +35,30 @@ func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observa
 	return runtime.Observation{}
 }
 
-// nextChange is the next observation that is not an Alive of loc: Observe evaluates a claim again
-// whenever anything about its Sandbox or pod reaches the runtime (Observe's doc), so a claim a
-// test has seen Alive may be reported Alive again, at its recorded locator, before the change the
-// test then makes reaches the runtime. A loaded machine makes that more likely, never wrong.
-func nextChange(t *testing.T, observations <-chan runtime.Observation, loc runtime.Locator) runtime.Observation {
+// sameReport is whether b is a repeat of a: the same verdict about the same incarnation. Observe
+// evaluates a claim again whenever anything about its Sandbox or pod reaches the runtime (Observe's
+// doc), and only Gone and NotRecordedProcess take a claim out of the watch, so an Alive, an
+// Uncertain or a StaleAddress may come again at its recorded locator: before a change a test makes
+// reaches the runtime, or, since the runtime evaluates the smallest marked claim first
+// (nextDirty), before another claim's first report. A loaded machine makes a repeat more likely,
+// never wrong. nextChange, firstOfEach and the wait of TestAVerdictEvaluatedAcrossSuspendIsNotDelivered
+// skip a repeat by this rule.
+func sameReport(a, b runtime.Observation) bool { return a.Kind == b.Kind && a.Locator == b.Locator }
+
+// nextChange is the next observation that is not a repeat of seen (sameReport).
+func nextChange(t *testing.T, observations <-chan runtime.Observation, seen runtime.Observation) runtime.Observation {
 	t.Helper()
 	for {
-		obs := next(t, observations)
-		if obs.Kind != runtime.Alive || obs.Locator != loc {
+		if obs := next(t, observations); !sameReport(seen, obs) {
 			return obs
 		}
 	}
 }
 
 // firstOfEach is the first observation of each of claims, in the order the runtime emitted them,
-// read until every claim has one. An observation of a claim that already has one is skipped when
-// both are Alive at one locator, the same report again (nextChange), and fails the test otherwise,
-// since a second verdict about a claim is not what a first observation reads.
+// read until every claim has one. A repeat of a claim's first observation (sameReport) is skipped,
+// and any other second observation of a claim fails the test, since a second verdict about a claim
+// is not what a first observation reads.
 func firstOfEach(t *testing.T, observations <-chan runtime.Observation, claims ...claim.Token) []runtime.Observation {
 	t.Helper()
 	var seen []runtime.Observation
@@ -62,7 +68,7 @@ func firstOfEach(t *testing.T, observations <-chan runtime.Observation, claims .
 		switch {
 		case i < 0 && slices.Contains(claims, obs.Locator.Claim):
 			seen = append(seen, obs)
-		case i >= 0 && seen[i].Kind == runtime.Alive && obs.Kind == runtime.Alive && seen[i].Locator == obs.Locator:
+		case i >= 0 && sameReport(seen[i], obs):
 		default:
 			t.Fatalf("%s of %s at %+v after %+v, want one first observation of each of %v", obs.Kind, obs.Locator.Claim, obs.Locator, seen, claims)
 		}
@@ -105,13 +111,14 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		if obs := next(t, observations); obs.Kind != runtime.Alive || obs.Locator != loc {
-			t.Fatalf("%s at %+v, want Alive at the recorded locator", obs.Kind, obs.Locator)
+		first := next(t, observations)
+		if first.Kind != runtime.Alive || first.Locator != loc {
+			t.Fatalf("%s at %+v, want Alive at the recorded locator", first.Kind, first.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")}}
 		})
-		if obs := nextChange(t, observations, loc); obs.Kind != runtime.Gone || obs.Locator != loc {
+		if obs := nextChange(t, observations, first); obs.Kind != runtime.Gone || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want Gone at the recorded locator", obs.Kind, obs.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Labels["touched"] = "yes" })
@@ -129,13 +136,13 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		next(t, observations)
+		first := next(t, observations)
 		// One write that swaps the pod under the name, as a store sees a delete and a create it
 		// caught up on at once.
 		if err := g.kube.Tracker().Update(podsGVR, runningPod(workerToken, "uid-pod-recreated", claim.RoleTester), testNamespace); err != nil {
 			t.Fatal(err)
 		}
-		obs := nextChange(t, observations, loc)
+		obs := nextChange(t, observations, first)
 		if obs.Kind != runtime.NotRecordedProcess || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want NotRecordedProcess at the recorded locator", obs.Kind, obs.Locator)
 		}
@@ -293,8 +300,9 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if obs := next(t, observations); obs.Kind != runtime.Alive {
-		t.Fatalf("%s, want Alive", obs.Kind)
+	first := next(t, observations)
+	if first.Kind != runtime.Alive {
+		t.Fatalf("%s, want Alive", first.Kind)
 	}
 	reading, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -309,7 +317,22 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 143, "Error")}}
 	})
-	testwait.Receive(t, "Observe to begin evaluating the ended pod", reading)
+	// Observe sends on an unbuffered channel and evaluates one claim at a time, so a repeat of the
+	// first Alive (sameReport) waits on this test to be read before the ended pod is evaluated:
+	// the wait reads it, and fails on anything else.
+	ended := testwait.Context(t)
+	for evaluating := false; !evaluating; {
+		select {
+		case <-reading:
+			evaluating = true
+		case obs, ok := <-observations:
+			if !ok || !sameReport(first, obs) {
+				t.Fatalf("%s at %+v (open %t) before Observe began evaluating the ended pod, want only a repeat of the first Alive", obs.Kind, obs.Locator, ok)
+			}
+		case <-ended.Done():
+			t.Fatal("Observe never began evaluating the ended pod before the test binary's deadline")
+		}
+	}
 	if err := g.r.Suspend(g.ctx, loc); err != nil {
 		t.Fatal(err)
 	}
