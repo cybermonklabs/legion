@@ -28,8 +28,9 @@ import (
 //
 // The controls: a pinIf that ignores its ch argument lets a stale life pin, so the second row's
 // window is refused. A check that never ends a pinned life fails the first; a >= rather than > in
-// endReconnected fails both the second and the third. The tests' 30 s waits only guard against NATS
-// not changing state.
+// endReconnected fails both the second and the third. The tests' waits end on what they wait for,
+// and their one bound, the test binary's deadline (testwait), only guards against NATS not changing
+// state.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
@@ -64,11 +65,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			})
 		}
 		releaseAfterCount := func() {
-			select {
-			case <-held:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the reconnect handshake did not reach the hold")
-			}
+			testwait.Receive(t, "the reconnect handshake to reach the hold", held)
 			hold.Release()
 		}
 		w.afterConnected.Store(&startDrop)

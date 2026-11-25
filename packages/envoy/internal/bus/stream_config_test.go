@@ -357,20 +357,12 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	}
 	t.Cleanup(func() { _ = restartedSub.Unsubscribe() })
 
-	// Nothing is left to deliver again, which the stream's and the consumer's own state say with no
-	// span. The legacy message was delivered once and never acknowledged, and the server sends such a
-	// message again only once its ack wait (30 s by default) has passed, so a 500 ms window after the
-	// restart (before) could never see that redelivery. A redelivery needs the stream's copy, and the
-	// purge left the stream holding none (:335); the durable still counts the purged message as
-	// awaiting an ack (NumAckPending 1, nats-server v2.15.1), which it cannot send again, and holds
-	// nothing new to deliver.
-	restarted, err := client.JS().ConsumerInfo(Stream, "legacy-role-replay")
-	if err != nil {
-		t.Fatalf("read the restarted durable consumer: %v", err)
-	}
-	if restarted.NumPending != 0 {
-		t.Fatalf("the restarted durable consumer holds %d message(s) to deliver; want nothing, the purge having left the stream empty", restarted.NumPending)
-	}
+	// The row's proof of the purge is the empty stream read above (:335), before the durable comes
+	// back: a redelivery needs the stream's copy. The restart itself shows nothing more. The legacy
+	// message was delivered once and never acknowledged, so the server would send it again only once
+	// its ack wait (30 s by default) had passed, which the 500 ms window this row once watched after
+	// the restart could never see; and the durable's count of messages left to deliver (NumPending)
+	// is 0 whether or not the purge ran, since the message was delivered before it.
 }
 
 func TestStreamConfigExcludesRoleLanes(t *testing.T) {

@@ -3,7 +3,6 @@ package bus_test
 import (
 	"os"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -124,5 +123,5 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
+	waitFor(t, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
 }

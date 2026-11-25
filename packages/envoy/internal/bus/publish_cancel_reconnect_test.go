@@ -72,7 +72,7 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	t.Helper()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
 	f.onTick.Store(&onTick)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
@@ -136,7 +136,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		waitFor(t, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 

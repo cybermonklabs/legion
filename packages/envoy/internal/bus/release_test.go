@@ -49,7 +49,7 @@ func drainSubscription(t *testing.T, sub *natsgo.Subscription) {
 	if err := sub.Drain(); err != nil {
 		t.Fatalf("drain the subscription: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !sub.IsValid() })
+	waitFor(t, "the drain to end", func() bool { return !sub.IsValid() })
 }
 
 // awaitHook waits for the reconnect hook to report a run, which comes after the client's restore of
@@ -67,7 +67,7 @@ func awaitHook(t *testing.T, hooked <-chan struct{}) {
 // that the server has applied one.
 func awaitPushBound(t *testing.T, client *bus.Client, consumer string, want bool, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.PushBound == want
 	})
@@ -143,7 +143,7 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 			if drained != sub {
 				t.Fatalf("DrainSubscription drained %p, want the handle Subscribe returned (%p)", drained, sub)
 			}
-			waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+			waitFor(t, "the drain to end", func() bool { return !drained.IsValid() })
 			// The server lets the drained subscriber go on the consumer's own goroutine, after the
 			// drain's UNSUB is answered: a probe published before it has is delivered to an inbox
 			// nothing reads, and is handed to the fresh subscription below only after the ack wait.
@@ -269,7 +269,7 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 
 	relay.refuse.Store(true)
 	relay.drop()
-	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", client.Conn.IsReconnecting)
 	// The client sees its socket close before the server lets the durable go: a message published
 	// while the server still holds it bound is delivered down the dead link, and its redelivery
 	// waits out the durable's ack wait. So the probe goes out once the server reads the durable
@@ -392,12 +392,12 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 
 	relay.refuse.Store(true)
 	relay.drop()
-	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", client.Conn.IsReconnecting)
 	// The client sees its socket close before the server lets the durable go: a message published
 	// while the server still holds it bound is delivered down the dead link, and its redelivery
-	// waits out the durable's ack wait, the server's default 30 s (releaseDurable sets none), past
-	// the 10 s the second client is given below. So the probe goes out once the server reads the
-	// durable unbound; the check this test exists for, after the reconnect's resend, is unchanged.
+	// waits out the durable's ack wait, the server's default 30 s (releaseDurable sets none). So the
+	// probe goes out once the server reads the durable unbound; the check this test exists for,
+	// after the reconnect's resend, is unchanged.
 	awaitPushBound(t, direct, consumer, false, "the server to let the durable go once the link dropped")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
@@ -411,14 +411,14 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	}
 
 	letGo()
-	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+	waitFor(t, "the drain to end", func() bool { return !drained.IsValid() })
 	if got := stopped.Load(); got != 1 {
 		t.Fatalf("the given-up subscription's handler was handed %d message(s), want only the one it was held inside", got)
 	}
 
 	var fresh atomic.Int32
 	bindCounting(t, direct, consumer, &fresh)
-	waitFor(t, 10*time.Second, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
+	waitFor(t, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
 	if got := stopped.Load(); got != 1 {
 		t.Fatalf("the given-up subscription's handler was handed %d message(s) after the drain ended", got)
 	}
@@ -459,7 +459,7 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	if drained != sub {
 		t.Fatalf("DrainSubscription returned %p to wait on, want the handle Subscribe returned (%p)", drained, sub)
 	}
-	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+	waitFor(t, "the drain to end", func() bool { return !drained.IsValid() })
 	if got := handled.Load(); got != 1 {
 		t.Fatalf("the drained subscription's handler was handed %d message(s), want the one published before the drain", got)
 	}
@@ -495,9 +495,9 @@ func TestDrainSubscriptionOfAReplacedSubscriptionKeepsTheReplacement(t *testing.
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the recovery to bind the replacement again", client.SubOK)
+	waitFor(t, "the recovery to bind the replacement again", client.SubOK)
 	publishReleaseProbe(t, client, "notifications.github.test.replaced")
-	waitFor(t, 10*time.Second, "the replacement to be handed the message", func() bool { return second.Load() == 1 })
+	waitFor(t, "the replacement to be handed the message", func() bool { return second.Load() == 1 })
 	if got := first.Load(); got != 0 {
 		t.Fatalf("the replaced subscription's handler was handed %d message(s)", got)
 	}
@@ -576,7 +576,7 @@ func TestAFailedSubscriptionReleasedIsNotBoundByAReconnect(t *testing.T) {
 
 			var fresh atomic.Int32
 			bindCounting(t, client, consumer, &fresh)
-			waitFor(t, 10*time.Second, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
+			waitFor(t, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
 			if !client.SubOK() {
 				t.Fatal("SubOK reports the fresh subscription unbound")
 			}
@@ -633,7 +633,7 @@ func TestReleaseFailedUnsubscribesWhatARestoreBound(t *testing.T) {
 
 	var fresh atomic.Int32
 	bindCounting(t, client, consumer, &fresh)
-	waitFor(t, 10*time.Second, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
+	waitFor(t, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
 }
 
 // ReleaseFailed gives up only a registration whose Subscribe failed: not the one a later Subscribe
@@ -667,9 +667,9 @@ func TestReleaseFailedKeepsASubscriptionThatBound(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the recovery to bind the kept subscription again", client.SubOK)
+	waitFor(t, "the recovery to bind the kept subscription again", client.SubOK)
 	publishReleaseProbe(t, client, "notifications.github.test.later")
-	waitFor(t, 10*time.Second, "the kept subscription to be handed the message", func() bool { return bound.Load() == 1 })
+	waitFor(t, "the kept subscription to be handed the message", func() bool { return bound.Load() == 1 })
 	if got := failed.Load(); got != 0 {
 		t.Fatalf("the failed subscription's handler was handed %d message(s)", got)
 	}
@@ -699,7 +699,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 
 	client.Conn.Close()
 	awaitHook(t, hooked)
-	waitFor(t, 30*time.Second, "the recovery to bind the registration again", client.SubOK)
+	waitFor(t, "the recovery to bind the registration again", client.SubOK)
 	if sub.IsValid() {
 		t.Fatal("the handle Subscribe returned is still valid after its connection closed; the test proves nothing")
 	}
@@ -714,7 +714,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 	if drained == nil || drained == sub {
 		t.Fatalf("DrainSubscription drained %p, want the handle the recovery bound, not the one Subscribe returned (%p)", drained, sub)
 	}
-	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+	waitFor(t, "the drain to end", func() bool { return !drained.IsValid() })
 	awaitPushBound(t, client, consumer, false, "the durable to lose its subscriber")
 
 	client.Conn.Close()
@@ -739,7 +739,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 
 	var fresh atomic.Int32
 	bindCounting(t, client, consumer, &fresh)
-	waitFor(t, 10*time.Second, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
+	waitFor(t, "the fresh subscription to be handed the message", func() bool { return fresh.Load() == 1 })
 	if got := stopped.Load(); got != 0 {
 		t.Fatalf("the drained subscription's handler was handed %d message(s)", got)
 	}
