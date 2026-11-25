@@ -1545,8 +1545,10 @@ func (r *keptRun) readmit() {
 // of its own, where a failure is the step's to report.
 func (r *keptRun) readmitRoot() error {
 	r.root.issue.Generation++
+	r.root.issue.TreeGeneration = r.root.issue.Generation
 	r.root.issue.Status, r.root.issue.Phase, r.root.issue.LingerUntil = "in_progress", phase.Admitted, nil
-	if err := r.putIssueErr(r.root.issue); err != nil {
+	// The re-admission's clear of the whole tree raises the tree's run with the root's generation.
+	if err := putReadmittedRoot(r.ctx, r.pool, r.records, r.root.issue); err != nil {
 		return err
 	}
 	if err := r.takeSlot(keptRoot); err != nil {

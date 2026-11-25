@@ -309,7 +309,7 @@ func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.Pr
 	if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: production check waits", "issue", issue.Key, "mergeCommit", check.MergeSHA, "look", check.Looks)
@@ -380,7 +380,7 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 		Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check closed as %s", issue.Key, outcome)}); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
 	}
 	if root.LingerUntil == nil || e.now().Before(*root.LingerUntil) {

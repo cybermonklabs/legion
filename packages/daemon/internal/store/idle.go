@@ -917,13 +917,15 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // which this project's outbox never runs (record's DueRows), under a mark that would never
 // clear. The root is read through the issue's own tree and needs no check of its own: a record
 // takes its root's project when the workflow writes it, so the root of a record of this project
-// is this project's too.
+// is this project's too. The root's generation the view carries is the tree's run (its
+// tree_generation), which fences the release and the close it decides: a root's next change raises
+// the root's own generation and ends no member's pod.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
-		root.phase, root.status, root.generation, root.linger_until,
+		root.phase, root.status, root.tree_generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,

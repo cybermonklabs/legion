@@ -33,7 +33,7 @@ type architectStall struct {
 
 // mark is the stall as the mark that keeps its arm to one wake keys it (record.ArchitectStall).
 func (s architectStall) mark() record.ArchitectStall {
-	return record.ArchitectStall{Issue: s.root.Key, Tree: s.root.Tree, Generation: s.root.Generation, Arm: s.arm, At: s.at}
+	return record.ArchitectStall{Issue: s.root.Key, Tree: s.root.Tree, Generation: s.root.TreeRun(), Arm: s.arm, At: s.at}
 }
 
 // stallMarks is the mark of each of stalls, in their order.
@@ -291,7 +291,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: the controller was told a root's architect has stalled",
 				"issue", stall.root.Key, "arm", string(stall.arm), "phase", stall.root.Phase,
-				"generation", stall.root.Generation, "reason", reason)
+				"generation", stall.root.TreeRun(), "reason", reason)
 		})
 	}
 	return nil
@@ -341,7 +341,7 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		return "", nil
 	}
 	task := held.Pending
-	if task.Entry == 0 || task.Entry != row.Entry || task.Generation != root.Generation || !task.ConfirmedAt.IsZero() ||
+	if task.Entry == 0 || task.Entry != row.Entry || task.Generation != root.TreeRun() || !task.ConfirmedAt.IsZero() ||
 		task.QueuedAt.IsZero() {
 		return "", nil
 	}
@@ -589,7 +589,7 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 			letOut.UTC().Format(time.RFC3339), floor.pause)
 	}
 	if held := run.Claim; held != nil && row.Entry != 0 && held.Handshake.Entry == row.Entry &&
-		held.Handshake.Generation == root.Generation && held.Handshake.ConfirmedAt.After(from) {
+		held.Handshake.Generation == root.TreeRun() && held.Handshake.ConfirmedAt.After(from) {
 		from, counted = held.Handshake.ConfirmedAt, fmt.Sprintf(" That time is counted from %s, when a turn of its architect first confirmed a task of phase entry %d.",
 			held.Handshake.ConfirmedAt.UTC().Format(time.RFC3339), row.Entry)
 	}
