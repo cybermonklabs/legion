@@ -379,7 +379,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "controller_turn_bound_minutes", Default: "`90`", RequiredBy: "no",
-			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
+			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and, once the session has finished a turn, a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
 			Read:        reads(readMinutesOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerTurnBound = v }),
 		},
 		{

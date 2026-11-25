@@ -195,8 +195,9 @@ type Claim struct {
 	// session of "".
 	Abandoned AbandonedSession
 	// SessionRun is what the record says of the recorded session since it last finished a turn:
-	// how many of its launches ended in a way the machine charges, how the last of them ended,
-	// and whether the session has finished a turn at all (SessionRun, dispatch://INFRA-2045 R1).
+	// how many of its launches ended in one of the three ways counted (SessionRun's doc), how the
+	// last of them ended, and whether the session has finished a turn at all (dispatch://INFRA-2045
+	// R1).
 	// It is persisted, so a daemon restart reads the count the daemon before it kept, and it goes
 	// with the session it is of (forgetSession).
 	SessionRun SessionRun
@@ -811,6 +812,14 @@ func (c Claim) LeftPodRound(round string) bool {
 // — an API request's, a notice's recipient — which no Handle has given through the rule, and an
 // agent whose session id holds a NUL is the claim's own agent before a restart and after one.
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
+
+// OpenTurn is the start of the turn the claim's times show open, and whether they show one: its
+// last turn began after its last turn ended (Claim.LastTurnStart, Claim.LastTurnEnd). A start and
+// an end at the same moment read as closed. This is the one reading of the two times; the
+// machine's own turnOpen adds the working state to it.
+func (c Claim) OpenTurn() (start time.Time, open bool) {
+	return c.LastTurnStart, c.LastTurnStart.After(c.LastTurnEnd)
+}
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
 // operator's, which holds until an operator resumes the claim.

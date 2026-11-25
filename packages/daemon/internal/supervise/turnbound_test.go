@@ -15,11 +15,13 @@ import (
 // default, dispatch://INFRA-2045 R2).
 const turnBound = 90 * time.Minute
 
-// inATurn is the controller handed its start message and in the turn that message began, at the
-// harness clock's moment: the turn whose start a TurnPastBound names.
+// inATurn is the controller handed its start message and in the turn that message began, a second
+// after the harness clock's moment, so its start is after the last turn's end (Claim.OpenTurn
+// reads a start and an end at one moment as closed): the turn whose start a TurnPastBound names.
 func (h *harness) inATurn() time.Time {
 	h.t.Helper()
 	h.must(RequestDeliver{Claim: h.token, Task: controllerStart})
+	h.advance(time.Second)
 	h.must(StreamTurnStart{Claim: h.token})
 	h.wantState(StateWorking)
 	return h.claim().LastTurnStart
@@ -90,6 +92,7 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.advance(turnBound + time.Minute)
 		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
 		h.relaunched()
+		h.advance(time.Second)
 		h.must(StreamTurnStart{Claim: h.token})
 		start = h.claim().LastTurnStart
 		h.advance(turnBound + time.Minute)

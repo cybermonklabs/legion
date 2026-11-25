@@ -228,7 +228,8 @@ func (m *Machine) chargeDeath() bool {
 // say so. Both are persisted, so the answer survives the restart that rebuilt the machine, and
 // the times answer for a claim whose state has already moved on.
 func (m *Machine) turnOpen() bool {
-	return m.claim.State == StateWorking || m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
+	_, open := m.claim.OpenTurn()
+	return m.claim.State == StateWorking || open
 }
 
 // chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the

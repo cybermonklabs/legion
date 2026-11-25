@@ -34,8 +34,48 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	if err != nil {
 		return err
 	}
+	if ev.(RequestSuspend).BetweenTurns {
+		if err := m.betweenTurns(ctx); err != nil {
+			return err
+		}
+	}
 	return m.suspendNow(ctx, request, false)
 }
+
+// betweenTurns is the test a BetweenTurns suspension must pass where it arrives
+// (RequestSuspend.BetweenTurns): the claim is ready or idle with no task waiting, its shim has
+// connected to this daemon, and its agent answers that it is not streaming. The answer is asked
+// here, under the machine's lock, because the asker read the claim from outside: a daemon
+// restarted over a claim stored ready or idle reads a turn the agent began while it was down only
+// from the frames the shim replays after its hello, and before that hello the claim has no
+// connection to ask through. Each failure refuses with a *RefusedError naming why, and records
+// nothing.
+func (m *Machine) betweenTurns(ctx context.Context) error {
+	refuse := func(why string) error {
+		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: why}
+	}
+	if m.claim.State != StateReady && m.claim.State != StateIdle {
+		return refuse("the claim is not ready or idle, so it is not known to be between turns")
+	}
+	if m.claim.Pending != nil {
+		return refuse("a task waits for the claim's agent, and a suspension between turns would stop the agent before that task's turn")
+	}
+	conn, ok := m.deps.Conns.Conn(m.claim.Token)
+	if !ok {
+		return refuse("the claim's shim has not connected to this daemon, so whether its agent is in a turn is not known")
+	}
+	switch streaming, answered := m.streaming(ctx, conn); {
+	case !answered:
+		return refuse("the claim's agent did not say whether it is in a turn")
+	case streaming:
+		return refuse("the claim's agent is in a turn this daemon has not yet read the start of")
+	}
+	return nil
+}
+
+// mayNotHold is whether this suspension may not be held: NeverHold, or BetweenTurns, which implies
+// it (RequestSuspend).
+func (r RequestSuspend) mayNotHold() bool { return r.NeverHold || r.BetweenTurns }
 
 // holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
 // statement of what a held suspension (Machine.held) does.
@@ -111,7 +151,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// The flag and the deadline are the asker's own: suspendRequest hands a daemon's request under
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
 	// too, nor hold a request whose asker reports a refusal as nothing having happened.
-	if ev.(RequestSuspend).NeverHold {
+	if ev.(RequestSuspend).mayNotHold() {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
 	}
@@ -220,7 +260,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
 		return m.suspendedFor(ctx, request, true)
 	}
-	if ev.(RequestSuspend).NeverHold {
+	if ev.(RequestSuspend).mayNotHold() {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}

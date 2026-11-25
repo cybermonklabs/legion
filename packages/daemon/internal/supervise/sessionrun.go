@@ -31,16 +31,16 @@ const (
 )
 
 // SessionRun is the run of the recorded session's launches since that session last finished a
-// turn (Claim.SessionRun, dispatch://INFRA-2045 R1): how many of them ended in a way the machine
-// charges, how the last of them ended, and whether the session has finished a turn under this
+// turn (Claim.SessionRun, dispatch://INFRA-2045 R1): how many of them ended in one of the three
+// ways counted, how the last of them ended, and whether the session has finished a turn under this
 // claim at all.
 //
-// An end is counted where the machine charges it (sessionEnded's callers): a process that died,
-// before or after its agent said ready, which is charged a launch failure or a death (died); a
+// Three ends are counted (countEnd), and nothing else: a process that died, before or after its
+// agent said ready, where the machine charges the death a launch failure or a death (died); a
 // process whose agent never registered or never said ready, retired at its deadline and charged a
 // launch failure (registrationDeadline); and a controller turn the daemon ended because it stayed
-// open past its bound (turnPastBound). An end the machine charges nothing is not counted: an
-// operator's suspension, the stale-plugin relaunch, a process found at a stale address or
+// open past its bound (endTurnPastBound), which charges no budget. Not counted: an operator's
+// suspension, a held suspension, the stale-plugin relaunch, a process found at a stale address or
 // displaced, a death the roll edge or a resume by Oh My Pi's own lookup leaves uncharged
 // (endUncharged), and a start the runtime refused, which is retried inside its own launch
 // (launchTries) and says nothing of the session — a pod the cluster cannot place is not the
@@ -58,7 +58,8 @@ const (
 // fresh session that fails the same way shows the cause is not the session, and it is left to the
 // controller keeper's retries, with one Error line (sessionEnded).
 type SessionRun struct {
-	// Ends is how many launches of the session ended, charged, since it last finished a turn.
+	// Ends is how many launches of the session ended in one of the three ways counted since it
+	// last finished a turn.
 	Ends int `json:"ends,omitempty"`
 	// Endings is how the last of those ends came about, the oldest first, at most
 	// controllerSessionEnds of them: what the replacement's line and the fresh session's first
@@ -154,20 +155,21 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // open, begun at the moment the keeper read, and still past the bound now, since a turn that ended
 // and one that began since are the controller working. What is a turn is the machine's own answer:
 // the claim reads working at a let-go (endState), which a claim working for a compaction with no
-// turn under it does not, and the turn began no earlier than the last turn's end, which every turn
-// that runs does (Claim.LastTurnStart). No wake can be waiting to replace the process first: the
-// controller's launch is never parked, since the wake gate, the project pause and the pod-start
-// gate each pass it (gatePaces, pauseHolding, gated).
+// turn under it does not, and the claim's times show the turn open (Claim.OpenTurn), which every
+// turn that runs does. No wake can be waiting to replace the process first: the controller's
+// launch is never parked, since the wake gate, the project pause and the pod-start gate each pass
+// it (gatePaces, pauseHolding, gated).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still
 // arrive in the turn (replaceProcess): the task the turn served goes back to waiting and is sent to
 // the relaunched agent again, a held suspension ends in a suspension, and the recorded session is
 // resumed on a new process — unless this end is the session's second in a row, when the relaunch
-// starts a fresh one (sessionEnded, replaceEndedSession). The end itself charges no budget, as the
+// starts a fresh one (countEnd, replaceEndedSession). The end itself charges no budget, as the
 // backstop's does not, so a controller ended past its bound does not spend its launch budget.
 func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error {
-	start, now := m.claim.LastTurnStart, m.deps.Clock.Now()
-	if m.endState() != StateWorking || start.Before(m.claim.LastTurnEnd) || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
+	start, open := m.claim.OpenTurn()
+	now := m.deps.Clock.Now()
+	if m.endState() != StateWorking || !open || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
 		m.log.Info("supervise: the controller turn the keeper read open past its bound has ended, or another began; it is left alone",
 			"turnStartedAt", start, "read", ev.TurnStart, "bound", ev.Bound)
 		return nil
@@ -188,7 +190,7 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	// relaunched agent is then judged on the turn it finds rather than charged against this one
 	// (turnOpen).
 	m.claim.LastTurnEnd = now
-	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endTurnPastBound(ev.Bound))
+	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endedPastBound(ev.Bound))
 	switch {
 	case end == EndNotMade:
 		// The take-back can have written the claim with the end counted and the turn closed before

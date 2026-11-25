@@ -30,13 +30,15 @@ func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error
 		// A working claim never reaches replaceOld: the age rule interrupts neither a turn nor a
 		// compaction, and a claim working for a compaction with no turn under it is between turns
 		// but compacting (replaceOld's NeverHold suspension is refused for a working claim too).
-		// Whether it is in a turn, and that turn the one read here, is the machine's to say
-		// (supervise's endTurnPastBound): it leaves alone a compaction with no turn under it, a
-		// turn that ended and a new one.
-		if k.turnBound <= 0 || c.LastTurnStart.IsZero() || !c.LastTurnStart.Add(k.turnBound).Before(now) {
+		// The machine is asked only about a turn the claim's times show open (Claim.OpenTurn): a
+		// claim working for a compaction with no turn under it has its turn closed (compactStart),
+		// and is asked nothing at each look of the compaction. Whether the turn is the one read
+		// here is the machine's to say (supervise's Machine.endTurnPastBound).
+		start, open := c.OpenTurn()
+		if k.turnBound <= 0 || !open || !start.Add(k.turnBound).Before(now) {
 			return nil
 		}
-		return m.Handle(ctx, supervise.TurnPastBound{Claim: c.Token, Bound: k.turnBound, TurnStart: c.LastTurnStart})
+		return m.Handle(ctx, supervise.TurnPastBound{Claim: c.Token, Bound: k.turnBound, TurnStart: start})
 	case c.Pending != nil:
 		// A task waiting is work the controller has not done yet; its session is kept until it
 		// has, and the next look between turns asks again.
@@ -49,12 +51,20 @@ func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error
 // than maxAge (dispatch://INFRA-2045 R3): its start is the time its id records (sessionStarted, a
 // UUIDv7), so it survives a daemon restart and a new pod. The keeper suspends the claim as the
 // daemon, not as the operator, since a resume by rule refuses an operator's suspension
-// (supervise.Claim.RuleMayResume), and with NeverHold, so a turn that began since the keeper's read
-// refuses the suspension and the session is kept until the next look; it then forgets the session
-// with the rule's reason, which the fresh session is told in its first prompt, and resumes the
-// claim by rule, which launches a fresh agent. That is the order api's freshSession follows for a
-// live claim. One Warn line names the claim, the old session and the reason (R4); the old
-// session's transcript stays in its store. A forget the machine refuses leaves the claim
+// (supervise.Claim.RuleMayResume), and between turns (RequestSuspend.BetweenTurns): the machine,
+// under its own lock, refuses the suspension unless the claim is ready or idle with no task
+// waiting, its shim has connected to this daemon, and its agent says it is not streaming. This
+// keeper's read of the claim says only what the store held: after a daemon restart a turn an Envoy
+// message started while the daemon was down is read only from the frames the shim replays after
+// its hello, and a task can arrive between this read and the suspension. A refusal keeps the
+// session until the next look. The keeper then forgets the session with the rule's reason, which
+// the fresh session is told in its first prompt, and resumes the claim by rule, which launches a
+// fresh agent. That is the order api's freshSession follows for a live claim.
+//
+// One Warn line names the claim, the old session and the reason (R4), once the session is
+// forgotten: where the forget's write fails after the machine dropped the session, the line is
+// written all the same, since the next look's resume by rule launches the fresh agent anyway. The
+// old session's transcript stays in its store. A forget the machine refuses leaves the claim
 // suspended by the daemon, which this keeper's next look resumes by rule on the old session.
 func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine, c supervise.Claim, now time.Time) error {
 	if k.maxAge <= 0 || c.Session == "" {
@@ -76,21 +86,25 @@ func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine,
 	}
 	why := fmt.Sprintf("the session is older than controller_session_max_age_hours (%s): it started at %s, %s before the keeper's look",
 		k.maxAge, started.UTC().Format(time.RFC3339), now.Sub(started).Round(time.Minute))
-	suspend := supervise.RequestSuspend{Claim: c.Token, Reason: why, By: supervise.SuspendedByDaemon, NeverHold: true}
+	suspend := supervise.RequestSuspend{Claim: c.Token, Reason: why, By: supervise.SuspendedByDaemon, NeverHold: true, BetweenTurns: true}
 	if err := m.Handle(ctx, suspend); err != nil {
 		var refused *supervise.RefusedError
 		if errors.As(err, &refused) {
-			k.log.Info("controller: the old controller session is not replaced at this look: the claim moved before the keeper's suspension",
+			k.log.Info("controller: the old controller session is not replaced at this look: the claim is not known to be between turns",
 				"claim", c.Token, "session", c.Session, "reason", err)
 			return nil
 		}
 		return fmt.Errorf("suspend the controller to replace its old session: %w", err)
 	}
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: c.Token, Session: c.Session, Why: why}); err != nil {
-		return fmt.Errorf("forget the controller's old session %s: %w", c.Session, err)
+	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: c.Token, Session: c.Session, Why: why})
+	if forgot != nil && m.Claim().Session != "" {
+		return fmt.Errorf("forget the controller's old session %s: %w", c.Session, forgot)
 	}
 	k.log.Warn(controllerSessionReplacedLine, "claim", c.Token, "session", c.Session, "requirement", "R3", "reason", why,
 		"sessionStartedAt", started)
+	if forgot != nil {
+		return fmt.Errorf("write the forget of the controller's old session %s: %w", c.Session, forgot)
+	}
 	return m.Handle(ctx, supervise.RequestRuleResume{Claim: c.Token, Reason: "the keeper replaced the controller's old session"})
 }
 

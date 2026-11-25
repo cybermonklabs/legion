@@ -514,6 +514,15 @@ type RequestReady struct {
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
 //
+// BetweenTurns is a suspension that must find the claim between turns: ready or idle with no task
+// waiting, its shim connected to this daemon, and its agent answering that it is not streaming
+// (suspendBetweenTurns). A claim that fails any of these refuses it with a *RefusedError and
+// records nothing. It is for a caller that read the claim idle from outside the machine — the
+// controller keeper's replacement of an old session (dispatch://INFRA-2045 R3) — where that read
+// can be stale: a task delivered since, or a turn an Envoy message started while the daemon was
+// down, which a restarted daemon reads only from the frames its shim replays after its hello. It
+// implies NeverHold.
+//
 // Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
 // dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
 // `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
@@ -524,12 +533,13 @@ type RequestReady struct {
 // decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
 // them.
 type RequestSuspend struct {
-	Claim     claim.Token
-	Reason    string
-	By        SuspendSource
-	Deadline  time.Time
-	NeverHold bool
-	Pause     int64
+	Claim        claim.Token
+	Reason       string
+	By           SuspendSource
+	Deadline     time.Time
+	NeverHold    bool
+	BetweenTurns bool
+	Pause        int64
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
@@ -2146,7 +2156,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 }
 
 // turnStartedWhileBusy is a turn starting in a claim that is already working. A claim working a
-// turn is in the turn it is already in and nothing moves, except in two claims.
+// turn is in the turn it is already in and nothing moves, except in three claims.
 //
 // One is a claim a busy answer recorded working (busyTurn, recordBusyTurn): the start is the start
 // of the turn the record stands for, the first frame of it this daemon reads. It is decided and
@@ -2159,44 +2169,37 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // second start line, since recordBusyTurn wrote the turn's one, and names the delivery it confirms
 // in a line of its own instead (busyTurnBegun).
 //
-// The other is a claim working because its session is being compacted: a turn of Oh My Pi's own
-// starting under the compaction — a follow-up an Envoy delivery queued while the session was being
-// compacted — is recorded on the compaction: its end would otherwise reach an idle claim, where it
-// means nothing, and the compaction's end would send the owed task into a running agent
-// (compactEnded). That turn's start line is written here (startTurn), because its end writes the
-// end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
-// begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery. startTurn dates it (Claim.LastTurnStart), as it dates every
-// turn: the start of the turn before it would leave this one timed from that turn, so the
-// controller keeper would read a turn that never ends as no turn at all, and one it read before a
-// displacement as this one (dispatch://INFRA-2045 R2). The claim is written at once, as
-// compactStart writes it: the compaction's own record is memory only, so a daemon restarted while
-// this turn runs reads the turn's date from the store alone.
+// The other two are a claim working for a compaction with no turn under it: the one this daemon
+// took (Machine.compacting), and one a daemon restart restored working with its times showing no
+// turn open (Claim.OpenTurn), which is a claim stored working for a compaction that restart forgot
+// (compactStart closed any turn its times showed open). A turn of Oh My Pi's own starting there —
+// a follow-up an Envoy delivery queued while the session was being compacted, which the new
+// daemon's hello may already have found streaming (askTurnOver) — is dated and its start line
+// written (startTurn): no task's turn, so its line names no delivery, and its end writes the end
+// line (turnEnded). The claim is written at once, as compactStart writes it, so a daemon restarted
+// while this turn runs reads its date from the store, and the controller keeper ends it past its
+// bound rather than reading it as no turn (dispatch://INFRA-2045 R2). Under this daemon's own
+// compaction the turn is recorded on the compaction too: its end would otherwise reach an idle
+// claim, where it means nothing, and the compaction's end would send the owed task into a running
+// agent (compactEnded). A restored claim whose times show a turn open is in the turn an earlier
+// daemon saw start, and a start read again changes nothing.
 //
-// The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
-// busy answer records only a ready or idle one.
+// A busy answer and a compaction never meet: a compaction is taken only from a ready or idle claim
+// (compactStart), and a busy answer records only a ready or idle one.
 func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	if m.busyTurn {
 		m.busyTurn = false
 		return m.beginTurn(ctx, ev.(StreamTurnStart), m.busyTurnBegun)
 	}
-	if m.compacting == nil {
-		if m.claim.LastTurnStart.After(m.claim.LastTurnEnd) {
-			return nil
-		}
-		// A claim a restart restored working with no turn dated is one working for a compaction
-		// the restart forgot (compactStart closed any turn its times showed open). A turn Oh My
-		// Pi starts there is dated and written here, or the controller keeper would read it as no
-		// turn and never end it (dispatch://INFRA-2045 R2).
-		m.startTurn("")
-		m.log.Info("supervise: a turn started in a claim a restart restored working with no turn dated; the turn is dated from this start",
-			"generation", m.claim.Generation)
-		return m.persist(ctx)
+	if _, open := m.claim.OpenTurn(); m.compacting == nil && open {
+		return nil
 	}
 	m.startTurn("")
-	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
-		"generation", m.claim.Generation)
-	m.compacting.inTurn, m.compacting.back = true, StateIdle
+	if m.compacting != nil {
+		m.compacting.inTurn, m.compacting.back = true, StateIdle
+	}
+	m.log.Info("supervise: a turn started while this claim works for a compaction; the claim is left working for it",
+		"generation", m.claim.Generation, "compactionKnown", m.compacting != nil)
 	return m.persist(ctx)
 }
 

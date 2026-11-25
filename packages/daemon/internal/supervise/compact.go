@@ -363,7 +363,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	// compaction, which knows nothing of it, reads the claim stored working as in no turn rather
 	// than in the turn that was cut off, and ends nothing for it (the controller keeper's
 	// TurnPastBound, dispatch://INFRA-2045 R2).
-	if m.claim.LastTurnStart.After(m.claim.LastTurnEnd) {
+	if _, open := m.claim.OpenTurn(); open {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
 	}
 	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",

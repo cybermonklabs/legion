@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -26,25 +27,69 @@ func sessionAged(now time.Time, age time.Duration) string {
 }
 
 // keptController is the daemon's own controller claim c, stored with a process the fake runtime
-// runs, and its keeper with the shipped bounds (90 minutes, 72 hours) and the real clock the
-// supervisor's machines read (stillClock). The keeper's and the machines' lines are both written
-// to logs, as JSON.
+// runs and a shim connected to this daemon whose agent is not streaming, and its keeper with the
+// shipped bounds (90 minutes, 72 hours) and the real clock the supervisor's machines read
+// (stillClock). The keeper's and the machines' lines are both written to logs, as JSON.
 func keptController(t *testing.T, c supervise.Claim) (*controllerKeeper, *supervisor, *fake.Runtime, *syncBuffer) {
+	t.Helper()
+	return keptControllerWith(t, c, nil)
+}
+
+// keptControllerWith is keptController with before run on the supervisor before the claim is
+// created: a row that needs another store sets it there.
+func keptControllerWith(t *testing.T, c supervise.Claim, before func(*supervisor)) (*controllerKeeper, *supervisor, *fake.Runtime, *syncBuffer) {
 	t.Helper()
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
 	sup.deps.Log = log
+	if before != nil {
+		before(sup)
+	}
 	token := claim.ControllerToken("legion")
 	c.Token, c.Project, c.Role, c.Generation = token, "legion", claim.RoleController, 1
 	c.SessionFile = controllerSessionFile
 	c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "31999:999999",
 		Tmux: &runtime.TmuxLocator{Window: "@99", Pane: "%99"}}
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the controller's claim: %v", err)
 	}
 	k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 90*time.Minute, 72*time.Hour, log)
 	return k, sup, rt, logs
+}
+
+// shimOf is the fake connection the controller's shim holds to this daemon, and whether it holds
+// one.
+func shimOf(sup *supervisor) (*fake.Conn, bool) {
+	conn, ok := sup.deps.Conns.(*fake.Conns).Conn(claim.ControllerToken("legion"))
+	if !ok {
+		return nil, false
+	}
+	return conn.(*fake.Conn), true
+}
+
+// forgetRefusingStore is the test supervisor's store with the write of a forgotten session refused
+// while refuseForgets is set: a claim write that records no session is the forget's
+// (supervise's forgetSession), and the store answers it with an error, as a database that went
+// away between two writes would.
+type forgetRefusingStore struct {
+	*outboxClaimStore
+	refuseForgets bool
+}
+
+func (s *forgetRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if s.refuseForgets && c.Session == "" {
+		return errors.New("the store did not answer the forget's write")
+	}
+	return s.outboxClaimStore.PutClaim(ctx, c)
+}
+
+func (s *forgetRefusingStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	if s.refuseForgets && c.Session == "" {
+		return nil, errors.New("the store did not answer the forget's write")
+	}
+	return s.outboxClaimStore.ReleaseHolds(ctx, c, holds)
 }
 
 // controllerOf is the controller's claim as its machine holds it now.
@@ -162,6 +207,19 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		keepOnce(t, k)
 		wantUntouched(t, sup, rt, supervise.StateWorking, "ses_controller")
 	})
+
+	t.Run("a compaction with no turn under it, its last turn begun past the bound, is asked nothing at each look", func(t *testing.T) {
+		// compactStart closed the last turn, so the claim stored working shows none open.
+		c := working(now.Add(-3*time.Hour), supervise.SessionRun{TurnFinished: true})
+		c.LastTurnEnd = now.Add(-2 * time.Hour)
+		k, sup, rt, logs := keptController(t, c)
+		keepOnce(t, k)
+		keepOnce(t, k)
+		wantUntouched(t, sup, rt, supervise.StateWorking, "ses_controller")
+		if lines := linesOf(t, logs, "supervise: the controller turn the keeper read open past its bound has ended, or another began; it is left alone"); len(lines) != 0 {
+			t.Fatalf("the machine was asked about the compaction %d times, want never", len(lines))
+		}
+	})
 }
 
 // dispatch://INFRA-2045 R3: at each look of the keeper, a controller that is idle, with no turn
@@ -251,6 +309,55 @@ func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
 		lines := linesOf(t, logs, "controller: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and the session is not replaced for it")
 		if len(lines) != 1 || lines[0]["level"] != "WARN" {
 			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn over two looks", lines)
+		}
+	})
+
+	t.Run("after a daemon restart, an old session is kept before its shim's hello and while its agent streams", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		// The claim is restored from the store idle, and the keeper's first look comes before the
+		// controller's shim has said hello to this daemon.
+		k, sup, rt, logs := keptController(t, idle(old))
+		conn, _ := shimOf(sup)
+		sup.deps.Conns.(*fake.Conns).Remove(claim.ControllerToken("legion"))
+		keepOnce(t, k)
+		wantUntouched(t, sup, rt, supervise.StateIdle, old)
+
+		// The shim says hello while its agent is in a turn an Envoy message began while the daemon
+		// was down, and whose agent_start this daemon has not read yet.
+		conn.SetStreaming(true)
+		sup.deps.Conns.(*fake.Conns).Register(claim.ControllerToken("legion"), conn)
+		keepOnce(t, k)
+		wantUntouched(t, sup, rt, supervise.StateIdle, old)
+		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
+			t.Fatalf("the keeper wrote %d replacement lines for a controller it kept, want none", len(lines))
+		}
+
+		// The turn ends, and the next look finds the controller between turns.
+		conn.SetStreaming(false)
+		keepOnce(t, k)
+		wantFresh(t, sup, rt, old)
+	})
+
+	t.Run("the replacement's Warn line is written once when the forget's write fails, and the next look launches the fresh session", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		var store *forgetRefusingStore
+		k, sup, rt, logs := keptControllerWith(t, idle(old), func(sup *supervisor) {
+			store = &forgetRefusingStore{outboxClaimStore: sup.deps.Store.(*outboxClaimStore)}
+			sup.deps.Store = store
+		})
+		store.refuseForgets = true
+		if err := k.keep(); err == nil {
+			t.Fatal("the look whose forget the store would not write answered nil, want the write's error")
+		}
+		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 1 || lines[0]["session"] != old {
+			t.Fatalf("the replacement lines after the failed forget are %+v, want one naming %s", lines, old)
+		}
+
+		store.refuseForgets = false
+		keepOnce(t, k)
+		wantFresh(t, sup, rt, old)
+		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 1 {
+			t.Fatalf("the replacement lines after the fresh launch are %d, want the one", len(lines))
 		}
 	})
 }

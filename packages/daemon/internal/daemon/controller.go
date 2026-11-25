@@ -110,7 +110,9 @@ func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// keep is one look at the controller's claim, and the one request its state calls for.
+// keep is one look at the controller's claim, and the requests its state calls for: one for most
+// states, and the three of an old session's replacement for a controller between turns (mind,
+// replaceOld: a suspension, a forget and a resume by rule).
 func (k *controllerKeeper) keep() error {
 	// Each look is a fresh call on k.ctx, beside the ready route, so it takes a hold mark of its
 	// own, which its create and its request share as they run one after another.

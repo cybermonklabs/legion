@@ -158,9 +158,10 @@ func endStalled(bound time.Duration, inTurn bool) string {
 	return fmt.Sprintf("its claim showed no progress for %s", bound)
 }
 
-// endTurnPastBound is the cause of the controller keeper's end of a controller turn open longer
-// than its bound (turnPastBound, dispatch://INFRA-2045 R2), with that bound.
-func endTurnPastBound(bound time.Duration) string {
+// endedPastBound is the cause of the controller keeper's end of a controller turn open longer
+// than its bound (Machine.endTurnPastBound, dispatch://INFRA-2045 R2), with that bound, as
+// endStalled is the stall backstop's.
+func endedPastBound(bound time.Duration) string {
 	return fmt.Sprintf("its turn stayed open longer than %s, so the daemon ended it", bound)
 }
 
