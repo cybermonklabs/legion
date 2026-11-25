@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"os"
@@ -76,6 +77,14 @@ type fixtureExpect struct {
 	Rules     map[string]Scorecard            `json:"rules,omitempty"`
 	Scenarios map[string]map[string]Scorecard `json:"scenarios,omitempty"`
 	Moves     map[string][]fixtureMove        `json:"moves,omitempty"`
+	// Checks supplements the scorecard with fields from run.json and structured log lines.
+	// Keys are rule names. In a log line only the named attributes have to match.
+	Checks map[string]fixtureChecks `json:"checks,omitempty"`
+}
+
+type fixtureChecks struct {
+	Run map[string]json.RawMessage `json:"run,omitempty"`
+	Log []map[string]any           `json:"log,omitempty"`
 }
 
 // fixtureMove is one recorded move of an issue's phase, as a `workflow: phase changed` line names
@@ -119,7 +128,7 @@ var refusingNoMove = map[string]string{"conflict-from-fitted-rate": "legion-v20.
 // is replayed.
 func TestFixtureWindows(t *testing.T) {
 	dsn := replayDSN(t)
-	names := fixtureWindowNames(t)
+	names := allFixtureWindowNames(t)
 	if len(names) == 0 {
 		t.Fatalf("%s holds no fixture window, so nothing was replayed", fixtureWindowsDir)
 	}
@@ -142,6 +151,7 @@ func TestFixtureWindows(t *testing.T) {
 					for _, diff := range scorecardDiffs(result.Scorecard, run.want) {
 						t.Errorf("window %s, rule %s, branch %s: %s", name, run.rule, run.branch.Name, diff)
 					}
+					checkFixtureOutput(t, out, expect.Checks[run.rule])
 					if refused := result.Divergence.Refused; refusingNoMove[name] == run.rule && len(refused) > 0 {
 						t.Errorf("window %s, rule %s, branch %s: the replay refused %+v", name, run.rule, run.branch.Name, refused)
 					}
@@ -161,6 +171,54 @@ func TestFixtureWindows(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func checkFixtureOutput(t *testing.T, out string, want fixtureChecks) {
+	t.Helper()
+	if len(want.Run) != 0 {
+		var got map[string]any
+		if err := readJSON(filepath.Join(out, runFile), &got); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range slices.Sorted(maps.Keys(want.Run)) {
+			var value any
+			if err := json.Unmarshal(want.Run[name], &value); err != nil {
+				t.Fatalf("invalid expectation for run.json %s: %v", name, err)
+			}
+			if measured, ok := got[name]; !ok {
+				t.Errorf("run.json has no %q field", name)
+			} else if !reflect.DeepEqual(measured, value) {
+				t.Errorf("run.json %s = %v, want %v", name, measured, value)
+			}
+		}
+	}
+	if len(want.Log) == 0 {
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(out, logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		var fields map[string]any
+		if err := json.Unmarshal(line, &fields); err != nil {
+			t.Fatalf("read replay log: %v", err)
+		}
+		lines = append(lines, fields)
+	}
+	for _, fields := range want.Log {
+		if !slices.ContainsFunc(lines, func(line map[string]any) bool {
+			for name, value := range fields {
+				if got, ok := line[name]; !ok || !reflect.DeepEqual(got, value) {
+					return false
+				}
+			}
+			return len(fields) != 0
+		}) {
+			t.Errorf("replay log has no line with fields %v", fields)
+		}
 	}
 }
 
@@ -212,8 +270,18 @@ func readFixture(t *testing.T, name string) (Window, fixtureExpect) {
 	return window, expect
 }
 
-// fixtureWindowNames is the name of every directory in fixtureWindowsDir, in order.
+// fixtureWindowNames is the original format-1 corpus for the record, seed and trace
+// cross-checks. TestFixtureWindows discovers every directory, including windows that
+// deliberately require a reader or rule that does not exist yet.
 func fixtureWindowNames(t *testing.T) []string {
+	t.Helper()
+	names := slices.Concat(k1Facts, []string{"every-trigger"})
+	slices.Sort(names)
+	return names
+}
+
+// allFixtureWindowNames is every directory in fixtureWindowsDir, in order.
+func allFixtureWindowNames(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(fixtureWindowsDir)
 	if err != nil {
@@ -240,6 +308,9 @@ func readFixtureExpect(dir string) (fixtureExpect, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&expect); err != nil {
 		return fixtureExpect{}, fmt.Errorf("read %s: %w", filepath.Join(dir, fixtureExpectFile), err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return fixtureExpect{}, fmt.Errorf("read %s: expected end of file after the fixture expectations", filepath.Join(dir, fixtureExpectFile))
 	}
 	return expect, nil
 }
@@ -270,6 +341,11 @@ func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	}
 	if len(runs) == 0 {
 		return nil, fmt.Errorf("%s names no rule to replay the window under", fixtureExpectFile)
+	}
+	for _, rule := range slices.Sorted(maps.Keys(e.Checks)) {
+		if !slices.ContainsFunc(runs, func(run fixtureRun) bool { return run.rule == rule }) {
+			return nil, fmt.Errorf("%s has output checks for %q but no replay under that rule", fixtureExpectFile, rule)
+		}
 	}
 	return runs, nil
 }

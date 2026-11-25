@@ -24,6 +24,13 @@ This file gives the conventions every window is written and worked by, once: the
 | `every-trigger` | a root and two children through every trigger keep their recorded moves | `main` |
 | `one-minute-wait` | a wait on another issue that lasts one minute gives the slot back, or keeps it for a grace | `main`, `wait-grace` |
 | `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run | `main` |
+| `p0-at-a-full-cap` | a P0 starts at a full regular cap with no P0 bound, but waits under the reference rule | `main`, `before-p0` |
+| `p0-at-its-bound` | the first P0 fills a bound of one, and the pass refuses the second P0 in first place | `main` |
+| `urgent-work-waits` | the first `todo`, a priority raise and the run-out determine the waits of P0 and P1 work | `main` |
+| `conflict-in-accepting` | a conflict in accepting returns work to implementing | `legion-v20.42.5` |
+| `conflict-in-retro` | a conflict in retro returns work to implementing | `legion-v20.42.5` |
+| `signal-crosses-with-no-event` | the tick still starts P0 and returns a slot, but only the signal deadline starts lower-priority work | `main`, `signals` |
+| `no-crossing-due` | no deadline is due at first, and a new kill moves the pending deadline before it fires | `signals` |
 
 ## What a directory holds
 
@@ -45,9 +52,11 @@ This file gives the conventions every window is written and worked by, once: the
     <Scorecard>}}`, one set for each value of `NeverStarted`; the scenario `none` runs on `main`,
     the others on `main+neverStarted=<scenario>`.
 
-  - `moves` (`every-trigger` alone): `{"<KEY>": [{"from", "to", "trigger"}, …]}`, each issue's
+  - `moves` (optional): `{"<KEY>": [{"from", "to", "trigger"}, …]}`, each issue's
     recorded moves in order.
     A replay under the window's recorded rule must write the same `workflow: phase changed` lines in its own log, issue by issue, which a move the replay refuses breaks.
+
+  - `checks`: optional additional assertions by rule. `run` lists exact fields in `run.json`. A missing field fails even if its expected value is zero or an empty array. `log` lists structured lines, comparing each named attribute. These assertions cover the bound refusal, deadline history, slot pass kinds and timed signal values.
 
 The values of `expect.json` are those of `scorecard.json`, the snapshot timeline (`replay.md`, the files of `legion replay run`): the timeline the replay builds from the store as each admission pass leaves it, not `scorecard-line.json`, the one `BuildTrace` builds again from the replay's own log lines.
 The two may differ by the reconstruction error the tool reports; these windows hold the exact one.
@@ -55,16 +64,15 @@ The two may differ by the reconstruction error the tool reports; these windows h
 ## How a window is written
 
 - Every window is one day, 2001-03-05 (`clock-far-from-now` too), a few hours long, with an admission cap of 1 to 3 (43 in `forty-two-more-in-flight`), so each value is a sum of a few whole minutes.
-  Its start state is empty: the daemon boots at the window's start (`daemon:
-  opening the store; …`), nothing came before, and no issue is unplaced.
+  Most windows start at the daemon's boot, with an empty start state. The conflict windows in accepting and retro and the signal window with a crossing start after boot and seed the state from the earlier record.
 
-- Issue keys are `ACME-<n>`.
+- Issue keys are `ACME-<n>`. `ACMEAUX-1` is a synthetic blocker from a different project.
   A root handed to Legion is filed `todo` with the label `legion` by a person (`user:acme-person`);
   a child is filed under its parent by the role that files it (its claim token as a session) with no label, `todo` (recorded at once under a live tree) or `backlog` (not released, which Dispatch still counts as an open child).
   An issue Legion does not work has no label.
   Ranks are short strings compared as bytes (`a0` < `a1` < `b01`).
 
-- The record follows the daemon's own code under the rule it ran: `window.json`'s `parts` name that rule (`main`, `keep-past-review` or `legion-v20.42.5`), its `commit`, like `collector`, is the commit the rule `main` names (`legion replay rules`), and its `release` is `fixture`.
+- The record follows the daemon's own code under the rule it ran. `window.json`'s `parts` name the recorded rule and commit, `collector` names the collector's commit, and `release` is `fixture`.
   The log holds each line kind of the code the window's facts make, with the code's msgs and attribute keys (`window_builder_test.go` writes the same shapes): the admission pass's slot lines (`admission: slot taken|released`, the in-transaction `admission gives a slot back to …` and `admission: an issue waits for the Dispatch children under it`), the engine's `workflow:` lines, and the supervisor's `supervise: launched`, `a turn started` and `a turn ended`.
   Within one instant, a pass's in-transaction lines come before its after-commit lines.
   `window.json`'s `lines` lists every msg the log holds; a kind left out is a kind the window does not hold.
@@ -74,8 +82,8 @@ The two may differ by the reconstruction error the tool reports; these windows h
   These windows write each one at the instant of the move that queued it; `clock-far-from-now` writes them a second later.
   A replay leaves them out and applies the echo of its own status write at the instant of the fact that queued it, which matters where a Legion issue's `done` ends another issue's wait (`two-waiters-one-blocker`).
 
-- Settings: `gateSteps` empty (the registration opens the gate at once; `gate-holds-child-first-phase` gates `spec`), `linger` 2 h, `tickInterval` 1 h (30 min in `clock-far-from-now`), `reviewRoundCap` 3, `workerSilence` and `workerBackground` 4 h, no experiment.
-  A tick changes nothing in any window: no blocker is in another project and every wait ends on an event.
+- Defaults: `gateSteps` empty (the registration opens the gate at once; `gate-holds-child-first-phase` gates `spec`), `linger` 2 h, `tickInterval` 1 h, `reviewRoundCap` 3, `workerSilence` and `workerBackground` 4 h, no experiment.
+  The tick changes nothing in the original windows. `signal-crosses-with-no-event` checks admission at a tick.
 
 ## Work segments and their replayed length
 

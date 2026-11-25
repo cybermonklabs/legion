@@ -541,8 +541,10 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	}
 	before := recorded("window-two", 0, "legion-v19.57.3", "1111111111111111111111111111111111111111")
 	before.Stretches = 4
+	before.Scorecard.Priorities = comparisonUrgentIssues()
 	after := recorded("window-one", 1, "legion-v20.42.5", "2222222222222222222222222222222222222222")
 	after.Stretches, after.Conflicted = 10, 3
+	after.Scorecard.Priorities = comparisonUrgentIssues()
 	after.Conflicts = ConflictModel{Stretches: 10, Conflicts: 3, Base: Coefficient{Estimate: -2, Low: -3, High: -1},
 		Term: Coefficient{Estimate: 0.5, Low: -0.25, High: 1.25}, Level: conflictLevel, Phases: map[phase.Phase]PhaseFit{
 			phase.Merging: {Stretches: 6, Conflicts: 1}, phase.Testing: {Stretches: 4, Conflicts: 2, Term: &Coefficient{Estimate: 1.5, Low: 0.5, High: 2.5}}}}
@@ -555,20 +557,62 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		after.Name: {commit: "4444444444444444444444444444444444444444", started: compareFrom.Add(24 * time.Hour)}}
 	plan := fullPlan()
 	var cards []Scorecard
-	writeMadeUpRuns(t, dir, []windowRecord{before, after}, record.SlotRules(), plan,
+	rules := record.SlotRules()
+	var noWorkRows, signalRows []string
+	// Only the synthetic comparison uses these additional run.json fields. The limit test
+	// will supply the same readings from its sweep, rather than from the ordinary branches.
+	signalReadings := map[string]map[string]any{}
+	branchIndex := map[string]int{}
+	for index, at := range plan.branches {
+		branchIndex[at.Label()] = index
+	}
+	writeMadeUpRuns(t, dir, []windowRecord{before, after}, rules, plan,
 		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
 			snapshot := sampleCard(compareHours)
 			snapshot.Rule, snapshot.Branch, snapshot.Seed, snapshot.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
 			snapshot.Done += r
 			snapshot.PriorityTaken += 0.001 * float64(seed)
+			snapshot.Priorities = comparisonUrgentIssues()
+			slotWait := comparisonSlotWait(w.Order, r, branchIndex[at.Label()])
+			snapshot.FirstSlot["ACME-2"] = compareFrom.Add(time.Duration(slotWait * float64(time.Hour)))
 			line := snapshot
 			line.SlotHoursInTurn += 0.5
 			cards = append(cards, snapshot)
 			b := builds[w.Name]
 			b.runs++
+			noWork := (int(seed) + r + branchIndex[at.Label()] + w.Order) % 4
+			noWorkHours := float64(noWork) / 4
+			noWorkRows = append(noWorkRows, fmt.Sprintf("| %s | `%s` | `%s` | %d | %d | %s |",
+				w.Name, rule.Name, at.Label(), seed, noWork, formatNumber(noWorkHours)))
+			if w.Name == after.Name && rule.Name == "main" && (at.Label() == "main@1" || at.Label() == "main@1.2") && seed == 1 {
+				readings := map[string]any{}
+				for i, name := range []string{"idle", "queue", "provider", "kills", "approvals"} {
+					scale := map[string]float64{"idle": 0.1, "provider": 0.1}[name]
+					if scale == 0 {
+						scale = 1
+					}
+					limit := float64(i+1) * scale
+					if at.Slowdown == 1.2 {
+						limit *= 2
+					}
+					value := limit + scale
+					readings[name] = map[string]float64{"limit": limit, "value": value}
+					signalRows = append(signalRows, fmt.Sprintf("| `%s` | %s | %s |", name, formatNumber(limit), formatNumber(value)))
+				}
+				signalReadings[runDir(dir, w.Name, rule.Name, at, seed)] = readings
+			}
 			return snapshot, line, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed,
 				Slowdown: at.Slowdown, Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4},
-				StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
+				Divergence: Divergence{NoWorkAdmissions: noWork, NoWorkSlotHours: noWorkHours},
+				StartedAt:  b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
+		}, func(directory string, ran runRecord) any {
+			if readings := signalReadings[directory]; readings != nil {
+				return struct {
+					runRecord
+					Signals map[string]any `json:"signals"`
+				}{ran, readings}
+			}
+			return ran
 		})
 	runs, err := ReadRuns(dir)
 	if err != nil {
@@ -612,10 +656,12 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			t.Errorf("the document holds no %q", line)
 		}
 	}
+	assertComparisonRows(t, document, "no-work admissions and slot-hours", noWorkRows)
+	assertComparisonRows(t, document, "signal values at their limits", signalRows)
 	names := measureNames(cards...)
 	head := tableHead("measure", coded(namesOf(record.SlotRules())))
 	for _, w := range []windowRecord{before, after} {
-		for _, at := range Branches() {
+		for index, at := range plan.branches {
 			heading := "### " + w.Name + ", `" + at.Label() + "` ("
 			start := strings.Index(document, heading)
 			if start < 0 {
@@ -634,6 +680,35 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 					t.Errorf("the table of %s on %s holds no row of %s", w.Name, at.Label(), name)
 				}
 			}
+			var urgentRows []string
+			// P0: first slots at 0 and slotWait, done at 2 and 6 (one cut).
+			// P1: first todo at hour 1, no slot or done (both waits cut at hour 6).
+			for _, measure := range []struct {
+				name  string
+				value func(slotWait float64) float64
+			}{
+				{"P0 issues", func(float64) float64 { return 2 }},
+				{"P0 to first slot, median", func(wait float64) float64 { return wait / 2 }},
+				{"P0 to first slot, 90th percentile", func(wait float64) float64 { return wait }},
+				{"P0 to first slot, cut waits", func(float64) float64 { return 0 }},
+				{"P0 to done, median", func(float64) float64 { return 4 }},
+				{"P0 to done, 90th percentile", func(float64) float64 { return 6 }},
+				{"P0 to done, cut waits", func(float64) float64 { return 1 }},
+				{"P1 issues", func(float64) float64 { return 1 }},
+				{"P1 to first slot, median", func(float64) float64 { return 5 }},
+				{"P1 to first slot, 90th percentile", func(float64) float64 { return 5 }},
+				{"P1 to first slot, cut waits", func(float64) float64 { return 1 }},
+				{"P1 to done, median", func(float64) float64 { return 5 }},
+				{"P1 to done, 90th percentile", func(float64) float64 { return 5 }},
+				{"P1 to done, cut waits", func(float64) float64 { return 1 }},
+			} {
+				row := "| " + measure.name + " |"
+				for r := range rules {
+					row += " " + formatNumber(measure.value(comparisonSlotWait(w.Order, r, index))) + " |"
+				}
+				urgentRows = append(urgentRows, row)
+			}
+			assertComparisonRows(t, table, fmt.Sprintf("%s on %s: urgent waits in hours", w.Name, at.Label()), urgentRows)
 		}
 	}
 	t.Run("whole or in parts", func(t *testing.T) {
@@ -694,12 +769,42 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	})
 }
 
+func comparisonUrgentIssues() map[string]IssuePriority {
+	return map[string]IssuePriority{
+		"ACME-1": {"P0", compareFrom}, "ACME-2": {"P0", compareFrom},
+		"ACME-3": {"P1", compareFrom.Add(time.Hour)},
+	}
+}
+
+func comparisonSlotWait(window, rule, branch int) float64 {
+	return 0.5 + 0.5*float64((window+rule+branch)%2)
+}
+
+func assertComparisonRows(t *testing.T, text, label string, want []string) {
+	t.Helper()
+	lines := make(map[string]bool)
+	for line := range strings.SplitSeq(text, "\n") {
+		lines[line] = true
+	}
+	var missing []string
+	for _, row := range want {
+		if !lines[row] {
+			missing = append(missing, row)
+		}
+	}
+	if len(missing) != 0 {
+		examples := missing[:min(14, len(missing))]
+		t.Errorf("%s: %d of %d rows absent or wrong:\n%s", label, len(missing), len(want), strings.Join(examples, "\n"))
+	}
+}
+
 // writeMadeUpRuns writes under dir the record of each of windows and, for each window under each of
 // rules, the part plan runs with each of its runs, whose snapshot and line scorecards and run.json
 // run makes up from the window, the rule's place among rules, the rule, the branch and the seed:
 // the directory of runs a comparison reads (ReadRuns), made with no replay.
 func writeMadeUpRuns(t *testing.T, dir string, windows []windowRecord, rules []record.SlotRule, plan runPlan,
-	run func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (snapshot, line Scorecard, ran runRecord)) {
+	run func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (snapshot, line Scorecard, ran runRecord),
+	wire ...func(directory string, ran runRecord) any) {
 	t.Helper()
 	for _, w := range windows {
 		if err := writeJSON(filepath.Join(dir, w.Name, recordFile), w); err != nil {
@@ -712,7 +817,11 @@ func writeMadeUpRuns(t *testing.T, dir string, windows []windowRecord, rules []r
 				for _, seed := range seeds {
 					snapshot, line, ran := run(w, r, rule, at, seed)
 					runDirectory := runDir(dir, w.Name, rule.Name, at, seed)
-					for name, value := range map[string]any{runFile: ran, scorecardFile: snapshot, lineScorecardFile: line} {
+					var runJSON any = ran
+					if len(wire) != 0 {
+						runJSON = wire[0](runDirectory, ran)
+					}
+					for name, value := range map[string]any{runFile: runJSON, scorecardFile: snapshot, lineScorecardFile: line} {
 						if err := writeJSON(filepath.Join(runDirectory, name), value); err != nil {
 							t.Fatal(err)
 						}

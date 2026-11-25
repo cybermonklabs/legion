@@ -1,0 +1,1 @@
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"daemon: opening the store; a connection error that the next attempt can clear is tried again","attempts":10,"attemptLimit":"10s","firstWait":"1s","longestWait":"16s","longestTotal":"3m15s"}

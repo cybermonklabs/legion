@@ -25,10 +25,8 @@ func listsAssumption(number int) bool {
 	return slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number })
 }
 
-// specAssumptions is the list a replay's assumptions start from: the eighteen of the tool's spec
-// (its Design, "The assumptions"), each with what it assumes and the direction it moves a result if
-// it is wrong, the seven its plan adds, 19 to 25, and the seven its plan's addition D10 adds from a
-// review of the tool's replays of a recorded window, 38 to 44 (that review's findings 6 to 12).
+// specAssumptions starts with the eighteen assumptions in the spec's Design and includes the
+// plan's assumptions 19 to 25, D10's 38 to 44 and the signal assumptions 45 to 48.
 // Assumption 3 is as the plan's D7 restates it, with a term for each phase a stretch can end in, and
 // as plan t22 gives it its moment, a stretch under way at a boot drawing there in the share of the
 // window's conflicts after a boot of the phase it stands in, and what a run-out leaves of it.
@@ -67,8 +65,8 @@ var specAssumptions = []Assumption{
 		Text:      "A slot that comes free is given out in the same pass.",
 		Direction: "Sound for the record, where the median was 18 microseconds and the longest 88 seconds: a slower hand-out would lengthen every rule's waits for a slot alike."},
 	{Number: 12,
-		Text:      "A waiting slot costs no pod after the idle release.",
-		Direction: "Sound after 10 minutes: a pod kept longer would cost a rule that holds idle slots more than the replay counts."},
+		Text:      "A waiting issue costs no pod after the idle release.",
+		Direction: "Doubtful: on 2026-11-24, 43 of 110 waiting issues with a pod had had no role turn for more than 10 minutes. The replay counts no pod, so the result names the pods of waiting issues as a cost that it does not measure."},
 	{Number: 13,
 		Text:      "Work after a send-back takes its recorded time, or that time less its wait for a slot.",
 		Direction: "Doubtful: the recorded time holds the recorded rule's own wait for a slot, which favours that rule. The tool runs both as branches."},
@@ -109,8 +107,8 @@ var specAssumptions = []Assumption{
 		Text:      "An outside blocker's close is seen at the next tick or boot, as the daemon sees it.",
 		Direction: "A close the daemon saw sooner would end link waits sooner, so reading it at the tick lengthens link waits, which disfavours a rule that keeps its slot through a wait."},
 	{Number: 38,
-		Text:      "Merging is no queue: a stretch in merging keeps its recorded length and its outcome, however many pull requests wait in the merge queue with it.",
-		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. The tool keeps each stretch in merging as recorded."},
+		Text:      "A stretch in merging keeps its recorded length and outcome. The merge queue's wait under another rule comes from the fitted model, which only a signal rule reads.",
+		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. A signal rule reads the modelled wait for admission, not to change the stretch."},
 	{Number: 39,
 		Text:      "A person answers at any hour of the day, and answers any number of questions at once.",
 		Direction: "Doubtful: in the record no answer came in some hours of each day, a question asked then waited many hours, and a question waited longer where many waited, so a rule that moves questions into those hours or asks more of them at once is favoured. The tool places each answer at its recorded time or offset (assumption 5)."},
@@ -129,14 +127,22 @@ var specAssumptions = []Assumption{
 	{Number: 44,
 		Text:      "A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise.",
 		Direction: "Doubtful: two seeds differ in an issue's first slot by about half as much as the replay differs from the record, so the first-slot test can pass or fail on the draws alone. The tool runs the diagnostic branch main+conflicts=recorded beside R5's tests, which keeps the record's conflicts and draws none, and never reads it in place of the main branch."},
+	{Number: 45,
+		Text:      "The three modelled signals depend on the work in flight alone.",
+		Direction: "Doubtful: even at a full cap, one window had 299, 88, 57 and 110 memory kills on successive days. Unmodelled changes can favour or disfavour a signal rule. Compare each model's daily reading with the record at the recorded work in flight."},
+	{Number: 46,
+		Text:      "A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says.",
+		Direction: "A provider refusal stays as recorded. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
+	{Number: 47,
+		Text:      "A signal with no record in a span does not bind there.",
+		Direction: "If an unrecorded signal would exceed its limit, the replay favours a rule that starts work in that span. Check the decision on a span where that signal is recorded."},
+	{Number: 48,
+		Text:      "The provider's limit holds from one observation to the next.",
+		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded, does not bind and is not fitted. Check any recorded limit change against the next 429's N."},
 }
 
-// Every assumption a replay makes is the tool's to state (spec R3), starting from its spec's list:
-// the tool's list (Assumptions) holds each of the spec's eighteen, the plan's seven and the seven of
-// its addition D10 by its number, with the text and the direction this test holds, and numbers none
-// twice. It fails for a number the tool's list lacks and for a text or a direction that differs. A
-// number the tool adds past these is the tool's own, which TestTheDocsPageGivesEveryAssumption still
-// requires a section for.
+// The list must hold each numbered assumption above with its text and direction, and cannot
+// repeat a number. TestTheDocsPageGivesEveryAssumption also checks assumptions the tool adds.
 func TestTheAssumptionsHoldTheSpecsList(t *testing.T) {
 	byNumber := make(map[int]Assumption, len(Assumptions))
 	for _, assumption := range Assumptions {
