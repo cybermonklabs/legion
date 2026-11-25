@@ -75,7 +75,8 @@ const (
 //     arms and joins stay, since that release writes a document's node with no row values, the log
 //     names the announcement and stores_moved as what it lacks, every read equals the read before,
 //     and a document written after the boot as that release writes it, its node holding no
-//     artifact_id and no created_at, still answers its mentions and its attached_to;
+//     artifact_id and no created_at, still answers its mentions (including one past the store's
+//     address bound) and its attached_to;
 //   - roll window: a build of the release before wrote an issue link with no marker and a reply the
 //     comment writer marked as INFRA-1149's writer marks every comment: the step's backfill brings
 //     the link in, then the arms go, and every read equals the read before;
@@ -869,15 +870,19 @@ func requireTheChildrensReleaseKeepsTheIssueTreeArms(t *testing.T, rootBuild str
 	requireChildrenArms(t, d, false, true)
 	requireReadsEqual(t, before, readView(t, database, before.targets))
 	requireServes(t, d.process)
+	// Finish the boot's backfill before writing the document, so it cannot add row values
+	// to the node between the write and the read.
+	d.process.WaitForOutput(t, bootBackfillDoneLine)
 	document := writeAsTheIssueRoom(t, database)
 	requireGraphEdgeAnswered(t, database, "artifact "+document+" -mentions-> issue ARMS-4")
+	requireGraphEdgeAnswered(t, database, "artifact "+document+" -mentions-> artifact "+pastBoundAddress)
 	requireGraphEdgeAnswered(t, database, "artifact "+document+" -attached_to-> issue ARMS-3")
 }
 
 // writeAsTheIssueRoom writes, as a build of dispatch://INFRA-1253's release (810aa47bac) uploads it,
-// a document of ARMS-3 that mentions ARMS-4, and answers its uuid: the document's node with no row
-// values (graphstore.ArtifactRow first appears in this release), its part_of to ARMS-3, its mentions
-// tuple, its artifacts row naming its node, and the refs row of the mention.
+// a document of ARMS-3 that mentions ARMS-4 and an address past the store's bound. It returns the
+// document's UUID. The node has no row values. It has part_of and an in-bound mentions tuple,
+// but only a refs row for the mention past the bound, which the store does not take as a tuple.
 func writeAsTheIssueRoom(t *testing.T, database *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
@@ -899,7 +904,8 @@ func writeAsTheIssueRoom(t *testing.T, database *store.Store) string {
 			returning id::text`, refKey).Scan(&id); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('artifact', $1, 'issue', 'ARMS-4')`, id)
+		_, err := tx.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id)
+			values ('artifact', $1, 'issue', 'ARMS-4'), ('artifact', $1, 'artifact', $2)`, id, pastBoundAddress)
 		return err
 	}); err != nil {
 		t.Fatalf("write the document as the issue-room release writes it: %v", err)
