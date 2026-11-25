@@ -8,9 +8,9 @@
 # both succeeded, the cases cover a leg's blob or count absent, every leg's blob absent, a count
 # that holds no number, a merged report that is absent, not JSON, JSON whose stats jq cannot sum,
 # or stats that sum to no whole number, and a merged total equal to, under or over the legs'. One
-# case holds the script to its caller's jobs: a run of a pull request labelled full-ci runs both of
-# ci.yaml's callers of dispatch-browser.yaml, and the pull-request lane's reading must not read
-# the full lane's legs as its own.
+# case holds the script to its caller's jobs: a run of a pull request labelled full-ci runs the
+# full and the pull-request lanes, two of ci.yaml's three callers of dispatch-browser.yaml, and the
+# pull-request lane's reading must not read the full lane's legs as its own.
 #
 # The case it was written for is run 44754426131, attempt 1. There the job's time limit
 # cancelled the merge job's `bun install`, both steps were skipped, and this reading said "no
@@ -143,10 +143,11 @@ merged() {
     '{stats: {expected: $e, unexpected: $u, flaky: $f, skipped: $s}}' > "$1/temp/report.json"
 }
 
-# two_callers <root>: the jobs of a run that runs both of ci.yaml's callers of
-# dispatch-browser.yaml, as one of a pull request labelled full-ci does. dispatch-browser-pr, the
-# pull-request lane, has the fixture's legs under its own name, its alone leg skipped; the full
-# lane's alone leg ran, so dispatch-browser's jobs owe its blob report.
+# two_callers <root>: the jobs of a run that runs two of ci.yaml's three callers of
+# dispatch-browser.yaml, the full and the pull-request lanes, as one of a pull request labelled
+# full-ci does. dispatch-browser-pr, the pull-request lane, has the fixture's legs under its own
+# name, its alone leg skipped; the full lane's alone leg ran, so dispatch-browser's jobs owe its
+# blob report.
 two_callers() {
   local scripts="$1/.github/scripts"
   jq 'map(.name |= sub("^dispatch-browser / "; "dispatch-browser-pr / "))' \
