@@ -613,6 +613,7 @@ func (r *sessionsRun) boot() {
 			return gated, nil
 		},
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: &workflowTokenRecorder{},
 	}, slog.New(r.daemon), 2*time.Minute)
 	r.deadline = time.Now().Add(sessionsRunBound)

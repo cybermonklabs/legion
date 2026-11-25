@@ -378,6 +378,7 @@ func (r *lateCompletionLive) overrides() overrides {
 			return r.rt, nil
 		},
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: r.tokens,
 		githubAPI:      r.github.url,
 	}

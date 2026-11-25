@@ -272,6 +272,7 @@ func (r *providerErrorLive) overrides() overrides {
 		},
 		clock:          r.clock,
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: &workflowTokenRecorder{},
 	}
 }

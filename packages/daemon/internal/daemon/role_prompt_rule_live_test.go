@@ -310,6 +310,7 @@ func (r *rolePromptRuleLive) overrides() overrides {
 			return r.rt, nil
 		},
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: &workflowTokenRecorder{},
 	}
 }

@@ -327,6 +327,7 @@ func (r *claimCompactionLive) overrides() overrides {
 			return r.rt, nil
 		},
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: &workflowTokenRecorder{},
 	}
 }

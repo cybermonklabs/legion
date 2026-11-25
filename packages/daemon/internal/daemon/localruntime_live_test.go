@@ -421,7 +421,10 @@ func (r *localRuntime) workDir(issue string) string {
 // daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
 // itself (environment). Nothing of the test process's own environment rides through: this test
 // runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
-// and a pane that inherited them would register with the wrong daemon.
+// and a pane that inherited them would register with the wrong daemon. The scripts of that
+// launcher directory run the legion the daemon's boot was given as overrides.paneLegion. So every
+// driver of this runtime boots its daemon with paneLegion set to this runtime's legion. Unset, the
+// boot gives them its own executable, this test binary, and a pane's `jj` runs the package's tests.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),

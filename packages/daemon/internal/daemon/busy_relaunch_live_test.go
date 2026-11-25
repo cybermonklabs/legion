@@ -316,6 +316,7 @@ func (r *busyRelaunchLive) overrides() overrides {
 			return r.rt, nil
 		},
 		listen:         heldListen,
+		paneLegion:     r.rt.legion,
 		workflowTokens: &workflowTokenRecorder{},
 	}
 }
