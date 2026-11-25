@@ -1,3 +1,5 @@
+/** Real stack: typing in the live document editor, whose typed text the server stores through the
+ *  live write, which no stub serves. */
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, selectEditorText } from "./editor";
 import { expect, test } from "./test";
@@ -12,8 +14,7 @@ const PROBE = { intervals: [50, 100, 200, 500, 1000, 2000] };
 // the base the bold took the rest of the line, `**Status quo is not an excuse. Reject historical
 // mistakes.**`, and a person who turned it off after the space was left with a bold run ending in
 // a space, stored `**Status quo is not an excuse.&#32;**&#82;eject` (dispatch://INFRA-1387).
-// @pr: the one row that types a mark's input rule through the editor's appended transactions.
-test("typing a bold run closed before a space and a capital stores it as typed @pr", async ({
+test("typing a bold run closed before a space and a capital stores it as typed", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
