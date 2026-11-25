@@ -570,10 +570,10 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
  * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
  * another, which the page draws rather than picking one of the two.
  *
- * Two of them are the chain's (R10), each read from what the page already holds
- * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
- * names a node of another kind, and `nobody_asked` a plan task naming neither a requirement it
- * serves nor a declaration it attempts.
+ * Three of them are the chain's (R10), each read from what the page already holds
+ * (`tree-drafts.ts`): `serves_not_requirement` is a citation naming a node of another kind or
+ * nothing, `serves_nothing` a check naming nothing it serves (`page-words-j.ts`), and
+ * `nobody_asked` a plan task naming neither a requirement it serves nor anything it attempts.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
  * because the line is drawn in the node's own body, and a declaration is what a person asked
@@ -599,7 +599,7 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
-  /** The citation names a node, and that node is a requirement no longer. */
+  /** The citation names a node that is no statement, or nothing in a document the page holds. */
   serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
    *  two name different sources. */

@@ -36,6 +36,17 @@ export default {
       in_short_how: "How it gets done",
       in_short_shown: "What you will be shown",
     },
+    GAP_LINES: {
+      /** A check whose `serves` names no target at all (`tree-drafts.ts`'s `servePlacements`):
+       *  it proves no statement, so it stands under the issue with nothing to prove. A check
+       *  whose `serves` names a target that is no statement carries `serves_not_requirement`
+       *  instead. */
+      serves_nothing: "This check names no statement it serves.",
+    },
+    GAP_WORDS: {
+      /** The check names nothing it serves, so no statement stands behind it. */
+      serves_nothing: "No statement",
+    },
   },
   unasked: [],
   answers: [],
