@@ -198,12 +198,18 @@ const poolPort = "6432"
 
 // poolURL is the URL of database through the pool whose socket is in socketDir, signed in as user
 // with password. url.Values writes a space as `+`, which pgconn keeps as a `+` rather than reading
-// it as a space, so each `+` the encoding leaves is spelt %20: a literal `+` is %2B by then.
-func poolURL(user, password, database, socketDir string) string {
+// it as a space, so each `+` the encoding leaves is spelt %20: a literal `+` is %2B by then. A
+// socketDir that holds a comma is refused: pgx reads host= as a comma-separated list of hosts,
+// however the comma is encoded, so no URL can name that directory to it.
+func poolURL(user, password, database, socketDir string) (string, error) {
+	if strings.Contains(socketDir, ",") {
+		return "", fmt.Errorf("the pool's socket directory %q holds a comma, and pgx splits a URL's host= at each comma into "+
+			"hosts of their own, so no client can reach the socket there: run the test with a TMPDIR whose path holds none", socketDir)
+	}
 	return (&url.URL{
 		Scheme: "postgres", User: url.UserPassword(user, password), Path: "/" + database,
 		RawQuery: strings.ReplaceAll(url.Values{"host": {socketDir}, "port": {poolPort}, "sslmode": {"disable"}}.Encode(), "+", "%20"),
-	}).String()
+	}).String(), nil
 }
 
 // TestThePoolURLReadsBackToItsSocketDirectory: pgconn reads poolURL back to the directory the
@@ -211,13 +217,31 @@ func poolURL(user, password, database, socketDir string) string {
 // and database it was given, a password with a space and a `+` included.
 func TestThePoolURLReadsBackToItsSocketDirectory(t *testing.T) {
 	const dir, password = "/tmp/a pool+dir/lg1", "p@ss word+"
-	config, err := pgconn.ParseConfig(poolURL("postgres", password, "db", dir))
+	address, err := poolURL("postgres", password, "db", dir)
+	if err != nil {
+		t.Fatalf("poolURL refused %q: %v", dir, err)
+	}
+	config, err := pgconn.ParseConfig(address)
 	if err != nil {
 		t.Fatalf("pgconn cannot read the pool's URL: %v", err)
 	}
 	if config.Host != dir || fmt.Sprint(config.Port) != poolPort || config.User != "postgres" || config.Password != password || config.Database != "db" {
 		t.Fatalf("the pool's URL reads back as host %q port %d user %q password %q database %q; want %q, %s, postgres, %q, db",
 			config.Host, config.Port, config.User, config.Password, config.Database, dir, poolPort, password)
+	}
+}
+
+// TestThePoolURLRefusesASocketDirectoryWithAComma: a socket directory whose path holds a comma is
+// refused by a message that names pgx's split of host=, and the split itself is still pgx's: it
+// reads the directory, percent-encoded, as more than one host.
+func TestThePoolURLRefusesASocketDirectoryWithAComma(t *testing.T) {
+	const dir = "/tmp/a,b/lg1"
+	if _, err := poolURL("postgres", "pw", "db", dir); err == nil || !strings.Contains(err.Error(), "pgx splits a URL's host= at each comma") {
+		t.Fatalf("poolURL(%q) = %v; want a refusal naming pgx's split of host= at a comma", dir, err)
+	}
+	config, err := pgconn.ParseConfig("postgres:///db?host=" + url.QueryEscape(dir) + "&port=" + poolPort + "&sslmode=disable")
+	if err == nil && config.Host == dir {
+		t.Fatalf("pgx now reads host=%s as the one directory %q, so the refusal is no longer needed", url.QueryEscape(dir), dir)
 	}
 }
 
@@ -258,6 +282,10 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 	}
 	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 	socketDir := testtmp.Dir(t, ".s.PGSQL."+poolPort)
+	address, err := poolURL(server.User, server.Password, server.Database, socketDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	config := strings.Join([]string{
 		"[databases]",
 		fmt.Sprintf("* = host=%s port=%d", host, server.Port),
@@ -292,7 +320,6 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 	if out, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("start the pool: docker run: %v: %s", err, out)
 	}
-	address := poolURL(server.User, server.Password, server.Database, socketDir)
 	logs := func() string {
 		out, _ := exec.Command(docker, "logs", name).CombinedOutput()
 		return string(out)
