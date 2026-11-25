@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -144,7 +145,7 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 	bin := t.TempDir()
 	write := func(name, script string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

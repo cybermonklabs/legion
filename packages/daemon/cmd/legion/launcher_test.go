@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -375,7 +376,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	// with a user name and a query, and fails.
 	bin := t.TempDir()
 	script := "#!/bin/sh\necho 'the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer'\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

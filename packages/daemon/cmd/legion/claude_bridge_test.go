@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -286,7 +287,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	p := &claudeBridgeProcess{t: t, tmp: testtmp.Dir(t, claudebridge.InboxLongestPath),
 		stderr: filepath.Join(dir, "stderr"), exited: make(chan struct{})}
 	claude := filepath.Join(dir, "claude")
-	if err := os.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := testexec.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stderr, err := os.Create(p.stderr)

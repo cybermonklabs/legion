@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -38,7 +39,7 @@ func trailerLegion(t *testing.T) string {
 // writeTrailerScript writes an executable /bin/sh script with body at path.
 func writeTrailerScript(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
+	if err := testexec.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -317,7 +318,7 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 			}
 			wrapper := "#!" + bash + "\nset -euo pipefail\nprintf 'run\\n' >> '" + log + "'\n" + prepend + realGit +
 				"_real=\"$(real_git)\"\nexec \"$_real\" \"$@\"\n"
-			if err := os.WriteFile(filepath.Join(shims, "git"), []byte(wrapper), 0o700); err != nil {
+			if err := testexec.WriteFile(filepath.Join(shims, "git"), []byte(wrapper), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			repo := trailerRepo(t, git)
@@ -369,7 +370,7 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			log := filepath.Join(dir, "runs")
-			if err := os.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
+			if err := testexec.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			return bin + ":" + host + ":" + alias + ":" + real, log
@@ -378,7 +379,7 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 			one, two := t.TempDir(), t.TempDir()
 			log := filepath.Join(t.TempDir(), "runs")
 			for _, host := range []string{one, two} {
-				if err := os.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
+				if err := testexec.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -498,7 +499,7 @@ func copyExecutable(t *testing.T, from, to string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(to, data, 0o700); err != nil {
+	if err := testexec.WriteFile(to, data, 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -722,7 +723,7 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	closing := "#!" + bash + "\n" +
 		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
 		"exec '" + git + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
@@ -830,7 +831,7 @@ func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *te
 	closing := "#!" + bash + "\n" +
 		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
 		"exec '" + git + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
@@ -889,7 +890,7 @@ func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	host := t.TempDir()
-	if err := os.WriteFile(filepath.Join(host, "git"), []byte("exec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(host, "git"), []byte("exec '"+git+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sh, err := exec.LookPath("sh")

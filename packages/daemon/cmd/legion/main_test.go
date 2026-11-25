@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -194,7 +195,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("read %s: %v", sleep, err)
 	}
 	path := filepath.Join(t.TempDir(), "legion")
-	if err := os.WriteFile(path, body, 0o700); err != nil {
+	if err := testexec.WriteFile(path, body, 0o700); err != nil {
 		t.Fatalf("write the probe: %v", err)
 	}
 
@@ -1171,7 +1172,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			if err := os.MkdirAll(shims, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+			if err := testexec.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			fixtureenv.Unset(t, "LEGION_GH_PATH")
@@ -1288,7 +1289,7 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, tc.key+": ./secret\n")
 			path := filepath.Join(filepath.Dir(config), "secret")
 			if tc.mode != 0 {
-				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+				if err := testexec.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chmod(path, tc.mode); err != nil {
@@ -1351,7 +1352,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, "nats_daemon_nkey_seed_file: ./nats-daemon-seed\n")
 			path := filepath.Join(filepath.Dir(config), "nats-daemon-seed")
 			if tc.mode != 0 {
-				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+				if err := testexec.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chmod(path, tc.mode); err != nil {

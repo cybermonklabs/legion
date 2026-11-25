@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
@@ -106,7 +107,7 @@ case "$*" in
 *) echo "Invalid $OMP_SESSION_STORAGE for OMP_SESSION_STORAGE" >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	return path
@@ -136,7 +137,7 @@ func (i image) without(t *testing.T, name string) {
 // install writes an executable stub over one of the image's stubbed binaries.
 func (i image) install(t *testing.T, name, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(i.bin, name), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(i.bin, name), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -390,7 +391,7 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+					if err := testexec.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
 						t.Fatal(err)
 					}
 				}
