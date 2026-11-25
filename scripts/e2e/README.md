@@ -4006,7 +4006,10 @@ What the proof stands in for lies outside the reservation path:
 each role's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the files are documentation placeholders);
 the store answers as the daemon's does for an issue's first launch;
 the runtime's cache set names one public repository, which GitHub clones for its cache without asking for the placeholder provisioning token;
-and the roles' gh files hold a placeholder token.
+the roles' gh files hold a placeholder token;
+and the project's providers Secret, `legion-<project>-providers`, which the driver writes before each launch as an operator writes it for a deployment (`writeLiveProvidersSecret`), holds under `SESSION_DSN` a session database URL nothing dials.
+`session_store: postgres` makes every pod mount that key, so a pod without the Secret waits at `Init` on `FailedMount … secret "legion-<project>-providers" not found` until its launch times out.
+The files name no `leak_check`, so no pod is pushed the shared public leak check and no launch waits on one.
 The pod's reservation, its admission, scheduling and QoS class, Agent Sandbox's pod and gVisor are the real ones.
 `burstable_kind_test.go`, untagged, builds both files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
 `BURSTABLE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, both `legion.yaml` files and each pod's manifest as the API server holds it.
@@ -4031,10 +4034,13 @@ its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-controller
 
 What the proof stands in for lies outside the sweep:
 the controller's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the file are documentation placeholders);
-its App tokens are placeholders; and no record names a repository, and its gh files name no owner.
+its App tokens are placeholders;
+the project's providers Secret, which the controller's pod mounts, is the driver's, as `burstable-kind.sh`'s is;
+and no record names a repository, and its gh files name no owner.
 The claim the supervisor would store is written to the store by the driver, as the supervisor writes it before a launch begins.
 The store, the runtime's sweep and launch, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
 `controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
+What the cluster must hold, such as that Secret, only the live run sees, and no CI job makes the live run of this proof, `burstable-kind.sh` or `share-volumes-kind.sh`: `.github/e2e-scripts.json` lists all three under `elsewhere`, which `e2e.yaml` refuses by name (of the kind proofs, only `shared-clone-kind.sh` is a hosted one, run when it is dispatched).
 `CONTROLLER_SWEEP_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, on a failure, what the cluster held.
 
 ## share-volumes-kind.sh
@@ -4063,6 +4069,7 @@ The kind node's own `mount.nfs` mounts the share, as a GKE node's does.
 
 What the proof stands in for lies outside the volume path, as `burstable-kind.sh`'s does:
 the agents are sleep stubs, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
+The driver writes the providers Secret of all four files' projects, the three it does not launch included, since the probe pod `legion probe-boot` starts on each file mounts its own project's Secret, and once the pod is on a node the probe reads a failed mount of that Secret before a failed mount of any other volume and before a share's own refusal; without it `probe-missing-export` and `probe-silent-server` are refused on that Secret, not on the share they name (`probe-missing-claim` is not, since the scheduler refuses its missing claim before the pod reaches a node).
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
