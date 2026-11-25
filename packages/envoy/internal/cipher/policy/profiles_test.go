@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -123,6 +124,58 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		)
 		if _, err := policy.ParseProfiles([]byte(valid)); err != nil {
 			t.Fatalf("ParseProfiles of a file of valid profiles: %v", err)
+		}
+	})
+}
+
+// resultsProxy is the proxy block of the results capability, oauthwire.AirlockResultsName: one
+// exact host, Authorization alone, the results routes and kind dpop.
+const resultsProxy = `"proxy": {"hosts": ["dispatch.example.test"], "headers": ["Authorization"], "kind": "dpop",
+  "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}, {"method": "POST", "pathPrefix": "/api/v1/issues/"}]}`
+
+// TestParseProfilesHoldsTheResultsProfileToANameAndAProxyBlock: the results capability,
+// DISPATCH_RESULTS_TOKEN, is a name and a proxy block of kind dpop and nothing else, since the
+// broker mints its credential for a CI run's result grant from no stored secret. A profile of kind
+// dpop that sets a source, a tier, requesters, a maxGrant, a github block or a google block is
+// refused naming that field, whatever its name; the results capability with no proxy block is
+// refused naming proxy. The control is the name and the dpop block alone, which parses into the
+// airlock's entry of kind dpop.
+func TestParseProfilesHoldsTheResultsProfileToANameAndAProxyBlock(t *testing.T) {
+	// results is a profile of the results capability's name: the fields given, then its proxy
+	// block.
+	results := func(fields string) string {
+		return `{"name": "` + oauthwire.AirlockResultsName + `", ` + fields + resultsProxy + `}`
+	}
+	for _, c := range []struct {
+		name, profile, profileName, field string
+	}{
+		{"a source", results(`"source": "RESULTS_SOURCE", `), oauthwire.AirlockResultsName, "source"},
+		{"a tier", results(`"tier": "agent", `), oauthwire.AirlockResultsName, "tier"},
+		{"requesters", results(`"requesters": ["legion-daemon"], `), oauthwire.AirlockResultsName, "requesters"},
+		{"a maxGrant", results(`"maxGrant": "15m", `), oauthwire.AirlockResultsName, "maxGrant"},
+		{"a github block", results(`"github": {"accounts": ["example-org"], "permissions": {"metadata": "read"}}, `), oauthwire.AirlockResultsName, "github"},
+		{"a google block", results(`"google": {"scopes": ["cloud-platform"]}, `), oauthwire.AirlockResultsName, "google"},
+		{"a source on a dpop block of another name", `{"name": "OTHER_TOKEN", "source": "RESULTS_SOURCE", ` + resultsProxy + `}`, "OTHER_TOKEN", "source"},
+		{"no proxy block", `{"name": "` + oauthwire.AirlockResultsName + `"}`, oauthwire.AirlockResultsName, "proxy"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := policy.ParseProfiles([]byte(profilesFile(githubRead, c.profile)))
+			if err == nil {
+				t.Fatalf("ParseProfiles served a file whose profile %s has %s", c.profileName, c.name)
+			}
+			if want := fmt.Sprintf("profiles[1] %q: %s ", c.profileName, c.field); !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("the refusal %q does not open %q: it must name the profile and the field it refuses", err, want)
+			}
+		})
+	}
+	t.Run("the control: the name and the dpop block alone", func(t *testing.T) {
+		profiles, err := policy.ParseProfiles([]byte(profilesFile(githubRead, results(""))))
+		if err != nil {
+			t.Fatalf("ParseProfiles of the results capability as a name and a dpop block: %v", err)
+		}
+		entry := profiles.ProxyRules().Lookup(oauthwire.AirlockResultsName)
+		if entry == nil || entry.Kind != proxyrules.KindDPoP || !reflect.DeepEqual(entry.Hosts, []string{"dispatch.example.test"}) {
+			t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s on dispatch.example.test", oauthwire.AirlockResultsName, entry, proxyrules.KindDPoP)
 		}
 	})
 }

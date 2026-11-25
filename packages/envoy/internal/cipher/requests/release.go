@@ -159,7 +159,7 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		entry := m.Airlock.Lookup(g.name)
 		// A name under an entry of kind dpop is a CI run's results capability, which the broker
 		// mints and holds, and never a stored secret's release: it is refused before anything of
-		// it is read, to the session and to the proxy alike.
+		// it is read.
 		if entry != nil && entry.Kind == proxyrules.KindDPoP {
 			return nil, fmt.Errorf("release %s: %w", g.name, ErrAirlockMintedOnly)
 		}

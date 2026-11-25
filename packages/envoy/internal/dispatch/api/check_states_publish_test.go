@@ -262,7 +262,7 @@ func TestEachKindOfChangePublishesTheNewState(t *testing.T) {
 func upsertHead(t *testing.T, rig *checkStatesRig, number int, sha, issue, title string) {
 	t.Helper()
 	attributed := issue
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := rig.served.deps.Attributor.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
 		Repo: ciJobRepository, Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main", BaseSHA: ciJobBaseSHA, State: "open",
 		IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true, Title: title,
 		URL: fmt.Sprintf("https://github.com/%s/pull/%d", ciJobRepository, number),

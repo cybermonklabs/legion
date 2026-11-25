@@ -328,7 +328,9 @@ The child's `NO_PROXY` keeps none of its fixed entries that covers a host the gr
 Dispatch's tailnet name is under `.ts.net`, so with Dispatch bound `.ts.net` leaves the list
 and Dispatch's writes reach the proxy, while the broker's own name stays. The broker's own name
 is held to the bound hosts the same way: a broker host that is a bound host, a parent domain of
-one or a name under one is left out, so that bound host's writes still reach the proxy. See
+one or a name under one is left out, so that bound host's writes still reach the proxy. An entry
+is compared without one trailing dot, its fully qualified spelling, so `dispatch.example.test.` is
+left out as `dispatch.example.test` is. See
 [`ci-results.md`](../../../envoy-client/docs/ci-results.md) for the job and broker settings.
 
 ## Install

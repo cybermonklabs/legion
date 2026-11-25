@@ -1,7 +1,7 @@
 // result_grant_test.go drives the REAL compiled broker's result grants: a CI run's token traded
-// at the token endpoint for an airlock placeholder, on a fresh schema, with the proxy block of the
-// profile DISPATCH_RESULTS_TOKEN of kind dpop. The helpers are token_exchange_test.go's and
-// main_test.go's.
+// at the token endpoint for an airlock placeholder, on a fresh schema, with the results profile
+// DISPATCH_RESULTS_TOKEN, a proxy block of kind dpop, in BROKER_PROFILES_FILE. The helpers are
+// token_exchange_test.go's and main_test.go's.
 package main
 
 import (
@@ -18,13 +18,14 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// resultsBoundHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds in these
-// tests, standing in for Dispatch's public host.
+// resultsBoundHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds in
+// these tests, standing in for Dispatch's public host.
 const resultsBoundHost = "dispatch.ci-results.test"
 
-// resultsProfiles is the profiles file of a broker whose result entry's grants are held to the
-// proxy block of the profile DISPATCH_RESULTS_TOKEN: kind dpop, bound to resultsBoundHost, carried
-// in Authorization alone, allowing POST under the results routes' two prefixes.
+// resultsProfiles is the profiles file of a broker whose result entry's grants are held to
+// DISPATCH_RESULTS_TOKEN: a profile of a name and a proxy block alone, of kind dpop, bound to
+// resultsBoundHost, carried in Authorization alone, allowing POST under the results routes' two
+// prefixes.
 const resultsProfiles = `{"profiles": [{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": ["` + resultsBoundHost + `"], "headers": ["Authorization"],
 	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}, {"method": "POST", "pathPrefix": "/api/v1/issues/"}], "kind": "dpop"}}]}`
 

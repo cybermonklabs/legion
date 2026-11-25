@@ -15,10 +15,10 @@ import (
 // the heads a `before_merge` check compares with are results_head_bases.go's (headBases). It
 // holds no policy about GitHub: what is asked, how long an answer is believed and what is written
 // back are delivery's (delivery/branch.go, delivery/commit_pull_reads.go,
-// delivery.Attributor.HeadsAttributedTo, delivery.Attributor.ReadThroughCommitPulls), and the read
-// of a pushed branch's head is results_ci.go's (readBranchHead). What lives here is the choice of
-// bases (comparedWith, measuredBranches) and one memo per read, so a tab listing twenty results
-// against a handful of commits costs a handful of round trips.
+// delivery.Attributor.HeadsAttributedTo, delivery.Attributor.ReadThroughCommitPulls), and the
+// read of a pushed branch's head is results_ci.go's (readBranchHead). What lives here is the
+// choice of bases (comparedWith, measuredBranches) and one memo per read, so a tab listing twenty
+// results against a handful of commits costs a handful of round trips.
 
 // comparisonReader answers one read of one issue's results: for each check the bases its
 // results are compared with, and for each result where its commit stands among them.
@@ -38,11 +38,11 @@ import (
 //
 // An `after_merge` check is compared with the branch the check's issue's pull request merged
 // into — the base branch of the newest merged pull request of the issue's repository attributed
-// to that issue (delivery.BaseBranchMergedFor) — and with the repository's default branch. A
-// linked repository's merge names a branch of that repository, which only a result whose commit
-// that repository holds is compared with (results_linked.go, linkedBranchBases). An issue whose
-// work merged into an integration branch has reached that branch, so a commit that branch
-// carries proves the work before the integration branch itself lands. Once that branch has
+// to that issue (delivery.Attributor.BaseBranchMergedFor) — and with the repository's default
+// branch. A linked repository's merge names a branch of that repository, which only a result
+// whose commit that repository holds is compared with (results_linked.go, linkedBranchBases). An
+// issue whose work merged into an integration branch has reached that branch, so a commit that
+// branch carries proves the work before the integration branch itself lands. Once that branch has
 // landed the trunk carries the work too, and answers for it where the base branch — deleted on
 // the merge, as a repository that deletes every merged branch does — can answer nothing at
 // all. So a base branch GitHub no longer holds reads as "this commit is not on it" and never
@@ -53,9 +53,9 @@ import (
 //
 // The merge's own commit goes on standing at the base branch after the branch is gone, because
 // Dispatch recorded it as on that branch when it recorded the merge
-// (delivery.UpsertPullRequestHead) and a yes is kept for good. In a repository that merges by
-// squash that commit never lands on the default branch at all, so without that record a result
-// at the merge commit would stand at no basis for ever once the base branch was deleted.
+// (delivery.Attributor.UpsertPullRequestHead) and a yes is kept for good. In a repository that
+// merges by squash that commit never lands on the default branch at all, so without that record a
+// result at the merge commit would stand at no basis for ever once the base branch was deleted.
 //
 // A `default_branch` check is compared with the default branch of the check's issue's resolved
 // repository alone, whatever branch the pull request merged into. That is the whole of the
@@ -242,8 +242,8 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 	}
 }
 
-// noMergedBranch is what delivery.BaseBranchMergedFor answers for an issue Dispatch holds no
-// merge of, and for a merged row whose base_ref is empty: no branch to compare with. It is
+// noMergedBranch is what delivery.Attributor.BaseBranchMergedFor answers for an issue Dispatch
+// holds no merge of, and for a merged row whose base_ref is empty: no branch to compare with. It is
 // spelled like delivery.DefaultBranch and means the opposite of it — "there is nothing here to
 // ask about" rather than "ask about the repository's own default branch" — so each is named
 // where it is used. measuredBranches tests for one and answers the other in its place, and
@@ -332,8 +332,8 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // An issue that resolves to no repository is the first. An issue whose project's default
 // repository was cleared after its merge, or whose parent moved, keeps a merged row naming a
 // branch of a repository it no longer resolves to, and there is no repository left to read
-// delivery.BaseBranchMergedFor for or to walk such a name in: onNamedBranch would have no
-// repository to ask GitHub or the stored rows about and would answer unknown for every result
+// delivery.Attributor.BaseBranchMergedFor for or to walk such a name in: onNamedBranch would have
+// no repository to ask GitHub or the stored rows about and would answer unknown for every result
 // of the check. There is nothing to compare with and nothing left to read, which is a fact
 // about the work and not a
 // failed read, so no pass of such a check stands (dispatch://INFRA-1522).
@@ -347,9 +347,9 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // A repository no read of this process ever named a default branch for — the one whose first
 // `GET /repos/{owner}/{repo}` after a restart failed, and every repository of a deployment
 // holding no App key — still has the branch its issue's pull request merged into, which
-// delivery.BaseBranchMergedFor reads from the database and no call to GitHub. An `after_merge`
-// check of such an issue compares with that branch alone, so the stored yes at it is reached;
-// only a check no branch at all can be named for compares with nothing.
+// delivery.Attributor.BaseBranchMergedFor reads from the database and no call to GitHub. An
+// `after_merge` check of such an issue compares with that branch alone, so the stored yes at it
+// is reached; only a check no branch at all can be named for compares with nothing.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
 	repo, answered := c.repositoryOf(ctx, check.IssueKey)
 	if !answered || repo == nil {
@@ -741,8 +741,10 @@ func (c *comparisonReader) measuredBranches(
 //   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
 //     issue that row is attributed to and whether it is attributed at all. Such a commit is one
 //     Dispatch's own passes keep reading — the reconcile re-reads an open row at every pass of
-//     one process, each starting at most five minutes after the one before it ended
-//     (delivery.PullRequestHeadStaleAfter), and offers a merged one once per attribution rule
+//     one process that tries its whole batch while no more than a batch is due, each starting at
+//     most five minutes after the one before it ended (delivery.PullRequestHeadStaleAfter),
+//     within the bound delivery.ListStalePullRequestHeads states past that or after a pass a rate
+//     limit stopped, and offers a merged one once per attribution rule
 //     (delivery.ListStalePullRequestHeads) —
 //     so a read from here repairs nothing. This is a child's result on its parent's tab: the row
 //     is the child's own pull request, attributed to the child, and no answer of GitHub's puts
@@ -890,8 +892,8 @@ func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (st
 
 // baseBranchMergedFor is the branch the check's issue's newest merged pull request in repo, the
 // repository it resolves to, merged into, the pull requests of repo attributed to the issue
-// (delivery.BaseBranchMergedFor), read once per read of the results, and whether the read
-// answered at all. An issue Dispatch holds no merge of there answers noMergedBranch, which
+// (delivery.Attributor.BaseBranchMergedFor), read once per read of the results, and whether the
+// read answered at all. An issue Dispatch holds no merge of there answers noMergedBranch, which
 // measuredBranches reads as no branch but the repository's default one to ask about. A merge of
 // a pull request of another repository, which the issue links by its URL and the attribution so
 // gives it, names a branch of that repository: baseBranchMergedIn's, never one to walk in repo.
@@ -904,7 +906,7 @@ func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey, re
 	if answer, memoized := c.baseBranches[issueKey]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	branch, err := c.server.deps.Attributor.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey, repo)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
 	}

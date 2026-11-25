@@ -54,7 +54,7 @@ Name them in the day's report and take nothing for them.
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro, or holds it further for a fix or its CI |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, or a root's `todo`, starts its first step |
+| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
 | `fix_running` | Its task's last step passed, and a fix of the task runs; `heldBy` is the fix's check and head | The fix ends, then Legion starts retro when its CI has passed at the head |
 | `ci_at_head` | Its task's last step passed, and a check a CI job runs has not passed at its head; `heldBy` is each such check | Each such check passes at the head, then Legion starts retro; a failure starts a fix instead |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |

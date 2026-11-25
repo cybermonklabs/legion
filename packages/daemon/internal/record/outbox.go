@@ -354,7 +354,8 @@ type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
 // worker's own summary; from the tester's phase its reason names each check that does not pass at
-// the tested head, or what the move waits for, since no worker reports a verdict. A review-stuck
+// the tested head, or what the move waits for, since no worker reports a verdict, and the notice
+// carries what its reason names as fields too (Head, WaitsFor, Waiting, Failing). A review-stuck
 // notice's summary names the fact that wrote it, and its topic is the reviewer's role topic, which
 // the architect asks for the decision.
 type Notice struct {
@@ -365,6 +366,19 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Head, WaitsFor, Waiting and Failing are what the tester's phase-finished notice of the
+	// testing move names in its Reason, as fields, and no other notice carries them
+	// (validateOutboxPayload): the tested head, "" where the tester's record named none; on a wait,
+	// what the move waits for (tested_head, fence, set or checks) and the checks whose states it
+	// waits for; on a move back, each check that does not pass there, with its state and reason.
+	// The move writes the Reason and these from one value (workflow's testingMove), so the architect
+	// reads each as a value and not only inside a sentence. A release before these keys decodes a
+	// notice strictly (DisallowUnknownFields), so the way back of 20261121074614_phase_verdict_gone
+	// deletes them from each queued notice before that release boots.
+	Head     string         `json:"head,omitempty"`
+	WaitsFor string         `json:"waits_for,omitempty"`
+	Waiting  []string       `json:"waiting,omitempty"`
+	Failing  []FailingCheck `json:"failing,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
 	// in, the copy of that hold the controller reads, and the worker-died that names the death
@@ -507,6 +521,26 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+}
+
+// FailingCheck is one check that does not pass at the tested head, as the testing move judged the
+// state Dispatch published of it there (workflow's judgeStates): the check's id, its state, no or
+// unknown, and the reason of that state, "" where Dispatch gave none. The tester's phase-finished
+// notice of a move back carries each (Notice.Failing), and the implementer's task and that
+// notice's reason name each as String writes it.
+type FailingCheck struct {
+	Check  string `json:"check"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// String is the check as a task and a notice's reason name it: its id and its state, then its
+// reason in brackets where it has one.
+func (c FailingCheck) String() string {
+	if c.Reason == "" {
+		return c.Check + ": " + c.State
+	}
+	return c.Check + ": " + c.State + " (" + c.Reason + ")"
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -2402,6 +2436,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if move := value.Head != "" || value.WaitsFor != "" || len(value.Waiting) > 0 || len(value.Failing) > 0; move && (value.Kind != "phase-finished" || value.Role != claim.RoleTester || value.Phase != phase.Testing) {
+			return fmt.Errorf("a %s notice carries the testing move's head, wait or checks; only the tester's phase-finished notice of testing does", value.Kind)
+		}
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
@@ -2755,18 +2792,29 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
-// passed its last step while issues beneath it are still in the workflow (workflow's
-// beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
-// retro starts when the last one leaves (workflow's releaseHeldParents).
+// `retro-held` is a task held before its retro, each such notice written by workflow's
+// retroHeldFor; it carries one of two meanings. A parent whose task's last step is not the
+// owner's acceptance, held because it passed its last step while issues beneath it are still in
+// the workflow (workflow's retroHold, retroHeldNotice; HoldForChildren): its reason names each of
+// them, and that the retro starts when the last one leaves (workflow's releaseHeldParents). Or a
+// task whose last step passed, held while a fix of it runs (HoldForFix) or until each check a CI
+// job runs passes at its head (HoldForCI), the end hold every task has (workflow's
+// endHoldNotice): its reason names the fix's check and head, or each check not yet passed, and
+// what the owner can do before then.
 //
-// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
-// now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree. The first step deletes its rows and tells the issue's architect
-// once, whatever number of versions it passed over; the reason names each version, its document
-// and its giver, and the plan the first step runs: an owner's, of the issue's generation or carried
-// to it, or the default steps.
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree; the reason names each version, its document and its giver,
+// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
+// default steps), and that the architect may give the plan again with register_plan as its own.
+// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
+// run takes the project's default steps, and the reason names each version and the group
+// (intake's GroupClause), and offers no register_plan, which that issue's owner is answered
+// PLAN_NOT_TAKEN for.
 //
 // `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
 // launcher, older than the release that added the kind, could not look the session up by its id,
@@ -2776,10 +2824,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // of migration 20261120042902 deletes its unsent rows.
 //
 // `ci-failed` is a check that a CI job runs failing at the head of a task where no fix takes the
-// failure, which the task's owner is told of once for that check at that head
-// (Store.TellOwnerOnce): its reason names the check and the head and, where a fix ran for it, that
-// its one fix ended. No earlier release decodes it, so the way back of migration
-// 20261123134547_fix_beside_steps deletes its unsent rows.
+// failure, which the task's owner is told of once for that check at that head (workflow's
+// endFailure, ciFailedNotice; Store.TellOwnerOnce): its reason names the check and the head and,
+// where a fix ran for it, that its one fix ended. No earlier release decodes it, so the way back
+// of migration 20261123134547_fix_beside_steps deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",

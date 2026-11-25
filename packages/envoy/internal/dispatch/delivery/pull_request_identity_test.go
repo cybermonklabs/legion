@@ -10,6 +10,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -159,9 +161,10 @@ func TestAPullRequestFirstSeenClosedUnderItsCanonicalNameEndsTheLifecycleOfItsOl
 			pool, ctx := deliveryTestPool(t)
 			issue := seedGadgetsIssue(t, ctx, pool, row.number)
 			seedRenamedGadgets(t, ctx, pool)
+			attributor := NewAttributor(renamesOf(t, ctx, pool))
 			put := func(repo, head, state string) {
 				t.Helper()
-				if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+				if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 					Repo: repo, Number: row.number, HeadSHA: head, State: state, IssueKey: &issue, AttributionComplete: true,
 				}); err != nil {
 					t.Fatalf("write %s#%d at %s, %s: %v", repo, row.number, head, state, err)
@@ -175,7 +178,7 @@ func TestAPullRequestFirstSeenClosedUnderItsCanonicalNameEndsTheLifecycleOfItsOl
 			if row.existing {
 				put(gadgetsRepo, h3, "open")
 			}
-			if err := upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
+			if err := attributor.upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
 				Repo: gadgetsRepo, Number: row.number, HeadSHA: h3, State: row.state, IssueKey: &issue, AttributionComplete: true,
 			}, gadgetsOldRepo); err != nil {
 				t.Fatalf("write %s#%d %s under the canonical name: %v", gadgetsRepo, row.number, row.state, err)
@@ -194,5 +197,81 @@ func TestAPullRequestFirstSeenClosedUnderItsCanonicalNameEndsTheLifecycleOfItsOl
 					row.state, row.number, after, ended, generation)
 			}
 		})
+	}
+}
+
+// TestTheCanonicalNameWriterWritesTheCanonicalRowBeforeItDeletesTheOldOne: #964 is stored under
+// the repository's old name; it opens at 8181…, closes, reopens at 8282… and moves on to 8383…, so
+// a close of it is known and 8282… is a former head of the lifecycle the reopen began. The
+// canonical-name writer (upsertHeadUnderCanonicalName) then reads it closed at 8484… under the
+// canonical name: it writes the canonical row closed and deletes the old name's open row. The
+// records of the two writes are in that order, the write first, and the close they show ends the
+// lifecycle: once the canonical row reopens at 8585…, #964 holds no former head, 8282… and 8383…
+// included. The settler counts a row written closed while a close of the pull request is known
+// only where a row of it is open then (pull_request_former_heads_apply), so a delete of the open
+// row before the write would leave no row open, and the close would end nothing.
+func TestTheCanonicalNameWriterWritesTheCanonicalRowBeforeItDeletesTheOldOne(t *testing.T) {
+	const h1, h2, h3 = "8181818181818181818181818181818181818181", "8282828282828282828282828282828282828282", "8383838383838383838383838383838383838383"
+	const h4, h5 = "8484848484848484848484848484848484848484", "8585858585858585858585858585858585858585"
+	const number = 964
+	pool, ctx := deliveryTestPool(t)
+	issue := seedGadgetsIssue(t, ctx, pool, number)
+	seedRenamedGadgets(t, ctx, pool)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	put := func(repo, head, state string) {
+		t.Helper()
+		if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: repo, Number: number, HeadSHA: head, State: state, IssueKey: &issue, AttributionComplete: true,
+		}); err != nil {
+			t.Fatalf("write %s#%d at %s, %s: %v", repo, number, head, state, err)
+		}
+	}
+	lifecycle := func() (*int64, int) {
+		t.Helper()
+		var ended *int64
+		var generation int
+		if err := pool.QueryRow(ctx, `
+			select ended, generation from pull_request_former_heads_pulls where pull = pull_request_former_heads_pull_of($1, $2)`,
+			gadgetsRepo, number).Scan(&ended, &generation); err != nil {
+			t.Fatalf("read #%d's lifecycle: %v", number, err)
+		}
+		return ended, generation
+	}
+	put(gadgetsOldRepo, h1, "open")
+	put(gadgetsOldRepo, h1, "closed")
+	put(gadgetsOldRepo, h2, "open")
+	put(gadgetsOldRepo, h3, "open")
+	if before := foldedFormerHeadsOf(t, ctx, pool, gadgetsOldRepo, number); !slices.Equal(before, []string{h2}) {
+		t.Fatalf("#%d holds the former heads %v under the old name, want 8282… alone: this test holds no history to end", number, before)
+	}
+	ended, reopened := lifecycle()
+	if ended == nil {
+		t.Fatalf("#%d holds no close after it closed and reopened under the old name: this test needs a close the settler knows", number)
+	}
+
+	if err := attributor.upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
+		Repo: gadgetsRepo, Number: number, HeadSHA: h4, State: "closed", IssueKey: &issue, AttributionComplete: true,
+	}, gadgetsOldRepo); err != nil {
+		t.Fatalf("write %s#%d closed under the canonical name: %v", gadgetsRepo, number, err)
+	}
+	rows, err := pool.Query(ctx, `
+		select op || ' ' || repo || '#' || number || case when coalesce(new_open, old_open) then ' open' else ' closed' end
+		from pull_request_former_heads_moves where number = $1 order by seq`, number)
+	if err != nil {
+		t.Fatalf("read the records of #%d: %v", number, err)
+	}
+	records, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the records of #%d: %v", number, err)
+	}
+	if want := []string{"INSERT acme/gadgets#964 closed", "DELETE oldco/gadgets#964 open"}; !slices.Equal(records, want) {
+		t.Errorf("upsertHeadUnderCanonicalName's writes are recorded as %v, want %v: the canonical row is written before the old name's open row is deleted, so the close is written while a row of the pull request is open", records, want)
+	}
+
+	put(gadgetsRepo, h5, "open")
+	after := foldedFormerHeadsOf(t, ctx, pool, gadgetsRepo, number)
+	if _, generation := lifecycle(); len(after) != 0 || generation <= reopened {
+		t.Fatalf("after the canonical row was written closed and reopened, #%d holds the former heads %v at generation %d (%d before), want none at a later generation: the close the canonical-name writer wrote ended nothing",
+			number, after, generation, reopened)
 	}
 }

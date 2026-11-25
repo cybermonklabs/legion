@@ -23,7 +23,7 @@ import (
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
 // role records a result for such a check (refuseResultOfAnotherRecorder), and nothing is stored
 // of the run its `ci_check` names: each read takes the head of each open pull request of the
-// issue (delivery.HeadsAttributedTo), or where none is open the newest merged one
+// issue (delivery.Attributor.HeadsAttributedTo), or where none is open the newest merged one
 // (delivery.NewestPullRequestHead), reads each such commit's check runs from GitHub once, in the
 // repository of that pull request's own row, and derives a result at each from the run its
 // `ci_check` names. The check states settler's read takes the former heads of those pull requests
@@ -339,10 +339,11 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 }
 
 // ciHeadsOf is the heads a check CI proves is read at: the head of each open pull request of
-// issueKey (delivery.HeadsAttributedTo), each in its own row's repository and each commit of a
-// repository once, the open pull request of the highest number first, whose read is the check's
-// `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the final head of
-// the merged pull request of the highest number; and none where Dispatch holds neither.
+// issueKey (delivery.Attributor.HeadsAttributedTo), each in its own row's repository and each
+// commit of a repository once, the open pull request of the highest number first, whose read is
+// the check's `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the
+// final head of the merged pull request of the highest number; and none where Dispatch holds
+// neither.
 func (s *server) ciHeadsOf(ctx context.Context, issueKey string) ([]delivery.NewestHead, error) {
 	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {

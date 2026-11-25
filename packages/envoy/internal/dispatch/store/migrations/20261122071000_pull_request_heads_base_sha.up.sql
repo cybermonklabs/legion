@@ -6,14 +6,23 @@
 -- (delivery.UpsertPullRequestHead). base_ref names the branch, which can move with no change of
 -- its name; base_sha names the revision. The check states settler's read of which commits are a
 -- pull request's own is GitHub's comparison of the head and the base revision the row stores
--- (migration 20261123233128, pull_request_former_heads_claim), so its answer is about those two
+-- (migration 20261124122830, pull_request_former_heads_claim), so its answer is about those two
 -- commits; the claim's snapshot names the stored revisions, and the answer applies only where they
 -- are unchanged.
 --
 -- Null where no writer stored one: every row stored before this migration, and a row a writer that
 -- read no base revision wrote, such as one the release before this one writes while the release
 -- rolls. Null is "not known": the settler compares nothing for such a row until a write stores a
--- revision, which the reconcile's read of each open pull request does within minutes.
+-- revision, which the reconcile's read of each open pull request does: of n rows due in its first
+-- selection, the open rows due and the merged rows no read has reached (the merged rows of an
+-- older attribution rule take only the room those leave, at most 50 a pass), it tries each within
+-- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
+-- acknowledged, whatever their reads answer, a row never tried first, and a pass a rate limit
+-- stops leaves the rows it did not try in their places, so the next pass takes them first
+-- (migration 20261123124956, delivery.ListStalePullRequestHeads); a try whose stamp's call times
+-- out or loses its connection may still commit the stamp with no read, at a moment the reconcile
+-- never learns, so the bound counts no pass with such a stamp and holds again only once the stamp
+-- has settled, with no bound while such stamps recur, and the stamp stores no revision.
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
 -- takes ACCESS EXCLUSIVE on pull_request_heads for the catalog write alone, after waiting for each

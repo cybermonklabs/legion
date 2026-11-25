@@ -25,9 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -196,7 +194,7 @@ func (g *specGitHub) serve(t *testing.T) string {
 
 // specResultsRig is a Dispatch whose verifier serves results tokens as cmd/dispatch's does, a
 // GitHub that holds the run's check run and files, and project ACME whose default repository is
-// the run's.
+// the run's repository.
 type specResultsRig struct {
 	*brokerTokenRig
 	github *specGitHub
@@ -206,31 +204,30 @@ type specResultsRig struct {
 
 func newSpecResultsRig(t *testing.T) *specResultsRig {
 	t.Helper()
-	return newSpecResultsRigOf(t, refs.Renames{}, specResultsRepository)
+	return newSpecResultsRigOn(t, testServerOptions{})
 }
 
-// newSpecResultsRigOf is newSpecResultsRig on a server given renames, as a boot gives its own
-// (Deps.Renames), with repository ACME's default repository, as PUT
-// /api/v1/projects/{key}/default-repository sets it.
-func newSpecResultsRigOf(t *testing.T, renames refs.Renames, repository string) *specResultsRig {
+// newSpecResultsRigOn is newSpecResultsRig on a server built from serving, for a test that gives
+// the server a store of its own and the rename pairs read from it (renamedRepositoryStore). The
+// project's default repository is set as a person sets it, through PUT
+// /api/v1/projects/{key}/default-repository.
+func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRig {
 	t.Helper()
 	github := &specGitHub{
 		checkRuns: map[int64]specCheckRunAnswer{specResultsCheckRun: {name: "go-checks", headSHA: specResultsCommit}},
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
 	}
 	_, pemText := githubapptest.Key(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: github.serve(t),
-		renames:       renames,
-	})
+	serving.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
+	serving.githubAPIBase = github.serve(t)
+	rig := newBrokerTokenRigOn(t, serving)
 	for _, project := range []string{specResultsProject, "OTHER"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
 			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
 		}
 	}
-	if set := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": repository}); set.Code != http.StatusOK {
-		t.Fatalf("set %s's default repository to %s: status=%d body=%s", specResultsProject, repository, set.Code, set.Body.String())
+	if set := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": specResultsRepository}); set.Code != http.StatusOK {
+		t.Fatalf("set %s's default repository to %s: status=%d body=%s", specResultsProject, specResultsRepository, set.Code, set.Body.String())
 	}
 	return &specResultsRig{brokerTokenRig: rig, github: github, caller: newBrokerCaller(t)}
 }
@@ -661,41 +658,60 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 	rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
 }
 
-// TestARepositoryTheProjectDoesNotMapIsRefused: the token's run is of a repository the project
-// does not map, so its files are no files of the project. The run is whole, its workflow_ref
-// under that repository, as the broker mints one.
+// TestARepositoryTheProjectDoesNotMapIsRefused: the token's run is of a repository that is not
+// the project's default repository, so its files are no files of the project. The run is whole,
+// its workflow_ref under that repository, as the broker mints one. A project with no default
+// repository takes the result of no run, and the refusal says the run's repository is not the
+// project's default.
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
-	rig := newSpecResultsRig(t)
-	token := rig.token(func(answer *ciphertoken.Introspection) {
-		answer.CI.Repository = "example-org/another-repo"
-		answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/topic"
+	t.Run("another repository", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		token := rig.token(func(answer *ciphertoken.Introspection) {
+			answer.CI.Repository = "example-org/another-repo"
+			answer.CI.WorkflowRef = "example-org/another-repo/.github/workflows/ci-results.yaml@refs/heads/topic"
+		})
+		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+		if want := "example-org/another-repo, the repository of this token's run, is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
+			t.Fatalf("the refusal reads %q, want it to say %q", refusal.Error, want)
+		}
 	})
-	rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+	t.Run("a project with no default repository", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		if cleared := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": nil}); cleared.Code != http.StatusOK {
+			t.Fatalf("clear %s's default repository: status=%d body=%s", specResultsProject, cleared.Code, cleared.Body.String())
+		}
+		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+	})
 }
 
 // TestARepositorySpelledWithCapitalsIsTheProjectsRepository: GitHub spells a run's repository as
-// its owner does (`Example-Org/Example-Repo`), and a project's default repository is stored in
-// lower case. Every comparison of a repository reads both sides lowercased, under the name each
-// is called today by the boot's rename pairs (refs.Renames.Canonical), so the run of the
-// project's default repository, and of the repository that default was renamed to, writes its
-// result whatever the case of its name. The row is stored under the repository as the run names
-// it. The lowercase run of every other test is the control.
+// its owner does (`Example-Org/Example-Repo`), and Dispatch stores a project's default repository
+// lowercased (parseIssueRepo). The check reads both sides lowercased, as every comparison of a
+// repository does (refs.CanonicalRepoSQL), so the run of the project's default repository writes
+// its result whatever the case of its name. A default stored under the name its repository was
+// renamed away from is read under the new name, the name GitHub names the run's repository by
+// (refs.Renames, over the pairs the server was given). The pair is seeded by SQL and handed to the
+// server, as no route writes one (renamedRepositoryStore). The default is written under the old
+// name by SQL, as a build before this one writes it during a roll: PUT
+// /api/v1/projects/{key}/default-repository stores the new name, and the next boot's rename pass
+// rewrites the old one (store.RewriteRenamedRepositories). The row is stored under the repository
+// as the run names it. The lowercase run of every other test is the control.
 func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
-	// The renamed default is a row stored under the old name before the boot read the pair, which
-	// the route that sets a default never writes, so it is seeded by SQL.
-	renamed := refs.NewRenames([]store.RepoRename{{From: "example-org/old-repo", To: "Example-Org/New-Repo"}})
 	for _, row := range []struct {
-		name, repository, stored string
-		renames                  refs.Renames
+		name, repository string
+		// storedDefault, where set, is the project's default as the row holds it, written by SQL.
+		storedDefault string
 	}{
-		{"the project's default repository", "Example-Org/Example-Repo", "", refs.Renames{}},
-		{"a repository the project's default was renamed to", "Example-Org/New-Repo", "example-org/old-repo", renamed},
+		{name: "the project's default repository", repository: "Example-Org/Example-Repo"},
+		{name: "the name the project's default repository was renamed to", repository: "Example-Org/New-Repo", storedDefault: "example-org/old-repo"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rig := newSpecResultsRigOf(t, row.renames, specResultsRepository)
-			if row.stored != "" {
-				if _, err := rig.database.Pool.Exec(context.Background(), `update projects set default_repo = $2 where key = $1`, specResultsProject, row.stored); err != nil {
-					t.Fatalf("store %s's default repository as %s: %v", specResultsProject, row.stored, err)
+			database, renames := renamedRepositoryStore(t, "RENM", "example-org/old-repo", "example-org/new-repo")
+			rig := newSpecResultsRigOn(t, testServerOptions{store: database, renames: renames})
+			if row.storedDefault != "" {
+				if tag, err := rig.database.Pool.Exec(context.Background(),
+					`update projects set default_repo = $2 where key = $1`, specResultsProject, row.storedDefault); err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("store %s's default repository as %s, as a build before this one would: %v (%d rows)", specResultsProject, row.storedDefault, err, tag.RowsAffected())
 				}
 			}
 			token := rig.token(func(answer *ciphertoken.Introspection) {

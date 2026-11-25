@@ -8,6 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
+An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -49,6 +50,10 @@ Legion holds every task before its retro until each `ci_check` check passes at i
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
+An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
+Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
+
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
@@ -58,6 +63,8 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  A project's experiment draws the child when the daemon records it.
+  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 

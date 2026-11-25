@@ -29,13 +29,13 @@
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
     },
-    "./loopback-host": {
-      "types": "./src/loopback-host.ts",
-      "bun": "./src/loopback-host.ts"
-    },
     "./row-clock": {
       "types": "./src/row-clock.ts",
       "bun": "./src/row-clock.ts"
+    },
+    "./loopback-host": {
+      "types": "./src/loopback-host.ts",
+      "bun": "./src/loopback-host.ts"
     },
     "./standin-body": {
       "types": "./src/standin-body.ts",

@@ -70,12 +70,12 @@ func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	// The row is credited to the issue it leaves first, so the measured write is a move. The
 	// database is this test's own clone (deliveryTestPool), so the first write creates the row and
 	// records no move on the issue the measured one reaches.
-	if err := UpsertPullRequestHead(ctx, traced, broker, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, traced, broker, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
 
 	report := tracer.Measure(t, traced, func() {
-		if err := UpsertPullRequestHead(storetest.MarkXid(ctx), traced, broker, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(storetest.MarkXid(ctx), traced, broker, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
 			t.Errorf("move the head to %s: %v", reached, err)
 		}
 	})

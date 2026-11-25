@@ -12,13 +12,17 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 )
 
-// resultGrant is a grant of one run, ending at expires.
+// entryDigest stands for the results entry a grant is made under: 64 hex digits, as the column
+// holds every digest.
+const entryDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// resultGrant is a grant of one run, made under entryDigest and ending at expires.
 func resultGrant(hash string, expires time.Time) oauthstore.ResultGrant {
 	return oauthstore.ResultGrant{
 		ID: uuid.NewString(), PlaceholderSHA256: hash, Subject: "workflow-results:o/r/.github/workflows/ci-results.yaml",
 		Session: "ci-results:o/r/.github/workflows/ci-results.yaml", Principal: "workflow-results:o/r/.github/workflows/ci-results.yaml",
 		Scopes: []string{"results"}, Extra: map[string]any{"ci": map[string]any{"check_run_id": "97"}, "person": "ada@example.com"},
-		ExpiresAt: expires.UTC().Truncate(time.Microsecond),
+		EntryDigest: entryDigest, ExpiresAt: expires.UTC().Truncate(time.Microsecond),
 	}
 }
 

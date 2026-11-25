@@ -146,11 +146,13 @@ func (head HeadOfChangedLink) AttributionEvents() []model.Event {
 // GitHub issue (githubIssueLink): each row whose own URL is one of those links, each row whose
 // stored citations (attribution_cited_issues) name one, and, where a GitHub-issue link went, each
 // row the issue holds by a citation that stores none, since such a row cannot say which citation
-// that was. Each row is locked before it is read, so a writer of the same row waits for this
-// transaction rather than having its issue read before its write and overwritten after it. No
-// index serves `lower(url)` or the citations: a change of an issue's links is a person's edit,
-// rare beside the reads of the table, and one scan of a row per pull request Dispatch has seen
-// costs that edit a few milliseconds.
+// that was. A row the build before this one wrote during a roll can store a URL under the name its
+// repository was renamed away from until the boot's pass rewrites it, so the spellings find it as
+// the attribution's link sources do (attributionCandidates). Each row is locked before it is
+// read, so a writer of the same row waits for this transaction rather than having its issue read
+// before its write and overwritten after it. No index serves `lower(url)` or the citations: a
+// change of an issue's links is a person's edit, rare beside the reads of the table, and one scan
+// of a row per pull request Dispatch has seen costs that edit a few milliseconds.
 var linksChangedRowsQuery = `
 	select p.repo, p.number, p.url, p.issue_key, p.attribution_source,
 		p.attribution_title_keys, p.attribution_cited_issues, p.attribution_branch_keys,
@@ -219,10 +221,11 @@ type changedLinkRow struct {
 // Two kinds of row the stored facts cannot judge whole, and each is given attribution_rule 0, a
 // rule older than every rule that judges a row now, so the reconcile judges it on its own pass:
 // the merged arm takes a merged row of an older rule (ListStalePullRequestHeads), and an open row
-// is read again within PullRequestHeadStaleAfter whatever its rule. One is a row with stored
-// inputs whose commit messages no writer read (they are read only when no earlier source names an
-// issue) and no other source of which holds it now: it is nobody's until that read, since the
-// link that gave it is gone. The other is a row written before the inputs were stored: a link of
+// is due again once its last read is PullRequestHeadStaleAfter old, whatever its rule, and is
+// tried within the bound that function gives. One is a row with stored inputs whose commit
+// messages no writer read (they are read only when no earlier source names an issue) and no other
+// source of which holds it now: it is nobody's until that read, since the link that gave it is
+// gone. The other is a row written before the inputs were stored: a link of
 // its own URL removed, or a GitHub-issue link removed where it was the issue's by a citation,
 // takes it from the issue, and a link added leaves it as it is. Rule 4 has the reconcile store
 // the inputs of every such row once (AttributionRuleVersion).

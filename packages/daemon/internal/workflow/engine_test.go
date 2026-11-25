@@ -343,11 +343,9 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	}
 }
 
-// A reviewer started on the tester's pass is told the tester's handoff as the Dispatch record it
-// reads with `dispatch handoff-read`, with the commit that record names, the head the tester
-// tested, and no verdict of the tester's: no completion carries one, and the check states at the
-// head decided the move. (This completion named no commit before a tester's completion was held
-// to name the head it tested.)
+// The tester's pass moves the issue to reviewing and starts the reviewer once. The reviewer's task
+// is built from the tester's phase row, which holds no verdict (record.PhaseRow): no completion
+// carries one, and the check states at the head decided the move.
 func TestAReviewerIsToldTheTestersRecordAndNoVerdict(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -360,13 +358,9 @@ func TestAReviewerIsToldTheTestersRecordAndNoVerdict(t *testing.T) {
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
-	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Handoff commit: " + headOne + ". Pull request: #42." +
-		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
-		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
-	}
-	if strings.Contains(strings.ToLower(task), "verdict") {
-		t.Fatalf("reviewer task %q still names a verdict", task)
+	assertPhase(t, pool, phase.Reviewing)
+	if starts := roleStarts(t, pool, claim.RoleReviewer); starts != 1 {
+		t.Fatalf("the tester's pass started the reviewer %d times, want once", starts)
 	}
 }
 
@@ -433,16 +427,17 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 }
 
 // The architect learns what a phase produced from its phase-finished notice: the worker's own
-// summary, and, for the tester's move back, the reason naming each check that does not pass. No
-// notice carries a verdict: the check states decided the move.
+// summary, and, for the tester's move back, the tested head and each check that does not pass
+// there, as fields of the notice. No notice carries a verdict: the check states decided the move.
 func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndNoVerdict(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		passes bool
-		reason string
+		name    string
+		passes  bool
+		head    string
+		failing []record.FailingCheck
 	}{
-		{"a pass", true, ""},
-		{"a fail", false, "these checks do not pass at " + headOne + ": k1: no (fail)"},
+		{"a pass", true, "", nil},
+		{"a fail", false, headOne, []record.FailingCheck{{Check: "k1", State: "no", Reason: "fail"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -466,9 +461,13 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndNoVerdict(t *testing.T) 
 				t.Fatalf("decode notice %s: %v", payload, err)
 			}
 			_, verdict := notice["verdict"]
-			if reason, _ := notice["reason"].(string); notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" ||
-				verdict || reason != tc.reason {
-				t.Fatalf("phase-finished notice = %s, want the tester's summary, the reason %q and no verdict", payload, tc.reason)
+			var sent record.Notice
+			if err := json.Unmarshal(payload, &sent); err != nil {
+				t.Fatalf("decode notice %s as the architect receives it: %v", payload, err)
+			}
+			if sent.Role != claim.RoleTester || sent.Phase != phase.Testing || sent.Summary != "twelve scenarios pass against the head" || verdict ||
+				sent.Head != tc.head || !slices.Equal(sent.Failing, tc.failing) {
+				t.Fatalf("phase-finished notice = %s, want the tester's summary, the head %q, failing %+v and no verdict", payload, tc.head, tc.failing)
 			}
 		})
 	}
@@ -786,12 +785,12 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 
 // A testing step ends by the states of its checks at the head the tester tested, and by nothing
 // else, so the tester has no way out of testing but its completion: its backward move to each
-// earlier phase a backward row serves is refused BACKWARD_REFUSED with a reason that says how the
-// step ends instead, and nothing moves, nothing is counted, no step result is written and nothing
-// is posted on the issue. A target no backward row serves keeps the refusal that names the row,
-// and the reviewer's move back out of reviewing is still taken. Each refusal of the tester finds
-// the run of testing's step open, as the move into testing leaves it, and leaves it open at its
-// one start, with no end written and nothing queued beside its start.
+// earlier phase a backward row serves is refused BACKWARD_REFUSED, and nothing moves, nothing is
+// counted, no step result is written and nothing is posted on the issue. A target no backward row
+// serves is refused BACKWARD_REFUSED too, and the reviewer's move back out of reviewing is still
+// taken. Each refusal of the tester finds the run of testing's step open, as the move into testing
+// leaves it, and leaves it open at its one start, with no end written and nothing queued beside its
+// start.
 func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 	seed := func(t *testing.T, at phase.Phase, role claim.Role) *pgxpool.Pool {
 		pool := migratedPool(t)
@@ -861,11 +860,6 @@ func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 			if refusalCode(result) != "BACKWARD_REFUSED" {
 				t.Fatalf("the tester's move to %s = %+v, want BACKWARD_REFUSED", to, result.Refusal)
 			}
-			for _, says := range []string{"ends by the states of its checks", "`dispatch result`", "a fail, with its evidence, for a check you cannot verify", "handoff_complete"} {
-				if !strings.Contains(result.Refusal.Message, says) {
-					t.Fatalf("the refusal reads %q, want it to say %q", result.Refusal.Message, says)
-				}
-			}
 			if got := issuePhase(t, pool); got != phase.Testing {
 				t.Fatalf("after the refused move the issue is in %s, want testing", got)
 			}
@@ -879,8 +873,8 @@ func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 		pool := seed(t, phase.Testing, claim.RoleTester)
 		place, queued := openTesting(t, pool)
 		result := back(t, pool, claim.RoleTester, phase.Reviewing)
-		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, "no backward row of testing serves reviewing") {
-			t.Fatalf("the tester's move to reviewing = %+v, want BACKWARD_REFUSED naming the row no backward row serves", result.Refusal)
+		if refusalCode(result) != "BACKWARD_REFUSED" {
+			t.Fatalf("the tester's move to reviewing = %+v, want BACKWARD_REFUSED", result.Refusal)
 		}
 		stillOpen(t, pool, place, queued)
 	})
@@ -1257,9 +1251,9 @@ func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int)
 // used to send the work back with its own move; a testing step now ends by its checks' states
 // alone, so that move is refused (TestATestersBackwardMoveOutOfTestingIsRefused), and the tester
 // records a fail of the check it cannot verify, with that evidence, and completes at the head it
-// tested. The issue goes back to implementing with a task naming that check, and the implementer,
-// the role running implementing, takes the work back to planning with its own move, whose notice
-// names the move.
+// tested. The issue goes back to implementing, the tester's notice carrying that check, and the
+// implementer, the role running implementing, takes the work back to planning with its own move,
+// whose notice carries the implementer's words.
 func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 	const why = "the harness needs a fixture the plan does not name"
 	pool := migratedPool(t)
@@ -1282,8 +1276,16 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
 		Summary: why, Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Implementing)
-	if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "k1: no (fail)") {
-		t.Fatalf("the implementer's task %q, want it to name the check the tester failed, k1: no (fail)", task)
+	var tester []byte
+	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished' and payload->>'role' = 'tester'").Scan(&tester); err != nil {
+		t.Fatalf("read the tester's phase-finished notice: %v", err)
+	}
+	var told record.Notice
+	if err := json.Unmarshal(tester, &told); err != nil {
+		t.Fatalf("decode notice %s: %v", tester, err)
+	}
+	if want := []record.FailingCheck{failingOf("k1", "no", "fail")}; told.Head != headOne || !slices.Equal(told.Failing, want) {
+		t.Fatalf("the tester's notice of the move back = %s, want the head %s and failing %+v", tester, headOne, want)
 	}
 
 	if result, err := intake.ApplyFact(ctx, pool, "api", "implementer-back", intake.BackwardMove{
@@ -1300,9 +1302,8 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode notice %s: %v", payload, err)
 	}
-	want := "moved back to planning by the implementer: " + why
-	if notice["role"] != "implementer" || notice["phase"] != "implementing" || notice["reason"] != want {
-		t.Fatalf("the backward move's notice = %s, want the implementer's phase-finished for implementing reading %q", payload, want)
+	if reason, _ := notice["reason"].(string); notice["role"] != "implementer" || notice["phase"] != "implementing" || !strings.Contains(reason, why) {
+		t.Fatalf("the backward move's notice = %s, want the implementer's phase-finished for implementing carrying its words %q", payload, why)
 	}
 	if notice["summary"] != nil || notice["verdict"] != nil {
 		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)

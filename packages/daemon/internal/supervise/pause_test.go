@@ -389,6 +389,79 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 	})
 }
 
+// A launch that passed the wake gate's pause check before the pause began meets the pause after
+// its first write, before it asks the runtime for a process (launchTries): it starts nothing, the
+// pause's gate holds it and stops the claim for the pause, a launch owed. The pause's catch-up
+// reads the claim's published view (internal/daemon's Paused), which shows the claim as it stood
+// before the launch until that first write, so without this check the launch started its process
+// during the pause. A pause that ends before the gate's stop lets the launch out without the
+// pacing: it took its token and wrote its wake line at the wake gate already (wake.ran).
+func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
+	// passed is a harness whose pacing begins the pause as it lets the claim's first launch out,
+	// after that launch's pause check (reserveWake), and the count of tokens the pacing gave.
+	passed := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
+		t.Helper()
+		var mu sync.Mutex
+		taken := 0
+		var pausing *pauseFlag
+		h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
+			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time {
+				mu.Lock()
+				defer mu.Unlock()
+				taken++
+				if taken == 1 {
+					pausing.set(7)
+				}
+				return now
+			}}
+		})
+		pausing = flag
+		return h, flag, stops, func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return taken
+		}
+	}
+
+	t.Run("the pause's gate holds the launch and stops the claim", func(t *testing.T) {
+		h, _, stops, taken := passed(t)
+
+		h.must(RequestSpawn{Claim: h.token})
+
+		h.wantStarts(h.token, 0)
+		h.wantState(StateLaunching)
+		if !h.armed(TimerPause) {
+			t.Fatal("no stop of the claim is posted for its next decision")
+		}
+		h.advance(0)
+		h.wantState(StateSuspended)
+		h.wantStarts(h.token, 0)
+		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+		if n := taken(); n != 1 {
+			t.Fatalf("the pacing gave %d tokens, want the one the launch took at the wake gate", n)
+		}
+	})
+
+	t.Run("a pause that ends before the gate's stop lets the launch out once, unpaced", func(t *testing.T) {
+		h, flag, stops, taken := passed(t)
+
+		h.must(RequestSpawn{Claim: h.token})
+		h.wantStarts(h.token, 0)
+		flag.set(0)
+		h.advance(0)
+
+		h.wantStarts(h.token, 1)
+		h.wantState(StateLaunching)
+		if n := taken(); n != 1 {
+			t.Fatalf("the pacing gave %d tokens, want the one the launch took at the wake gate", n)
+		}
+		if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token)); len(lines) != 1 {
+			t.Fatalf("wake lines = %v, want the one the launch wrote at the wake gate", lines)
+		}
+		stops.wantStops(t)
+	})
+}
+
 // The controller is the one role the pause never holds: its launch runs while the project is
 // paused, and the gate posts no stop of it.
 func TestTheControllersLaunchRunsWhileTheProjectIsPaused(t *testing.T) {
