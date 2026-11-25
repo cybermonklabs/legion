@@ -436,9 +436,10 @@ function codeLeft(
  * is shorter than the code by less than a millisecond, which the code's end does not hold (there an
  * interval must also be shorter than the lifetime's whole milliseconds); and where the code lives
  * longer than 1 s but its end holds 1 s or less, as one of 1.0005 s does: a plain "longer than
- * 1 s" would name a limit it already passes. The floor's own limit always reads so, since a code
- * that outlives 1 s by less than a millisecond holds only 1 s, which no interval in [1, 1.001) s
- * reaches.
+ * 1 s" would name a limit it already passes. The floor's own limit always reads so, as does the
+ * no-interval arm's limit of "both 1 s and a poll interval it names": a code that outlives 1 s by
+ * less than a millisecond holds only 1 s, which no interval in [1, 1.001) s reaches, so a plain
+ * "longer" would send a broker that names 1 s, or 1.0005 s, round again.
  */
 function unpollableRemedy(
   named: number | undefined,
@@ -458,7 +459,7 @@ function unpollableRemedy(
   if (named === undefined) {
     return outlivesLeast
       ? `it names a poll interval shorter than ${lifetime}, or its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s`
-      : `its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
+      : `its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s, or a millisecond or more longer than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
   }
   if (wholeMillisecondsOf(intervalSeconds) === LEAST_POLL_SECONDS * 1000) {
     return `its codes live a millisecond or more longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;

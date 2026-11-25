@@ -643,7 +643,7 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { interval: null, expiresIn: 0 },
-      `a device code that had already lapsed, with no poll interval, so one of 5 s${lapsed} its codes live longer than 5 s, or than both 1 s and a poll interval it names`,
+      `a device code that had already lapsed, with no poll interval, so one of 5 s${lapsed} its codes live longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names`,
     ],
     [
       { interval: 5_000, expiresIn: 0 },
@@ -684,7 +684,13 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { interval: null, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with no poll interval, so one of 5 s${lapses} its codes live a millisecond or more longer than 5 s, or than both 1 s and a poll interval it names`,
+      `a device code that lives 1.0005 s, with no poll interval, so one of 5 s${lapses} its codes live a millisecond or more longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names`,
+    ],
+    // A code of 1 s, no interval named: its second limit says "a millisecond or more" too, since
+    // a broker that then names 1 s and lengthens its codes to 1.0005 s is refused again.
+    [
+      { interval: null, expiresIn: 1 },
+      `a device code that lives 1 s, with no poll interval, so one of 5 s${lapses} its codes live longer than 5 s, or a millisecond or more longer than both 1 s and a poll interval it names`,
     ],
     // The same at the floor, an interval no shorter than such a code and under 1.001 s, and at an
     // interval of an hour or more, where a shorter interval is needed too.
