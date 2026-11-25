@@ -63,8 +63,15 @@ async function expectAnswer(dialog: Locator, words: string, answer: SearchRespon
  *  Take it before the words are typed. A row holds the bar to this answer rather than to one it
  *  read itself: the server's ranking of the items other rows wrote can move between two reads
  *  with no write of the row's between them, and another row's issue, `LAYW2GX3-2`, stood seventh
- *  in an answer read at a row's start and first in the page's (nightly 45541644067). */
-async function pageAnswer(page: Page, words: string): Promise<SearchResponse> {
+ *  in an answer read at a row's start and first in the page's (nightly 45541644067). The page
+ *  asks for the words and its own project, `numberProject`, which narrows nothing, and for no
+ *  other member: a search the page narrowed by a filter the reader did not choose fails here,
+ *  as an answer read apart from the page would have shown. */
+async function pageAnswer(
+  page: Page,
+  words: string,
+  numberProject: string
+): Promise<SearchResponse> {
   const answered = await page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -73,6 +80,10 @@ async function pageAnswer(page: Page, words: string): Promise<SearchResponse> {
       !url.searchParams.has("keywords_only")
     );
   });
+  expect(
+    Object.fromEntries(new URL(answered.url()).searchParams),
+    `the members of the page's whole search for "${words}"`
+  ).toEqual({ number_project: numberProject, q: words });
   return (await answered.json()) as Result<"/api/v1/search/results", "get">;
 }
 
@@ -181,7 +192,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
-    const priorityAnswer = pageAnswer(page, "priority p2");
+    const priorityAnswer = pageAnswer(page, "priority p2", core);
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
@@ -287,7 +298,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     });
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
-    const issueAnswer = pageAnswer(page, "issue");
+    const issueAnswer = pageAnswer(page, "issue", core);
     await input.fill("issue");
     await expectAnswer(dialog, "issue", await issueAnswer);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
@@ -343,7 +354,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       ["down", "Move card down"],
     ] as const) {
       await page.keyboard.press("Control+k");
-      const answer = pageAnswer(page, query);
+      const answer = pageAnswer(page, query, core);
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
@@ -365,7 +376,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await route.continue();
     });
     await page.keyboard.press("Control+k");
-    const nextAnswer = pageAnswer(page, "next");
+    const nextAnswer = pageAnswer(page, "next", core);
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
     await expect(nextMove).toHaveCount(1);
