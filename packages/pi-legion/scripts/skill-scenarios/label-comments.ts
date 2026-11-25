@@ -196,8 +196,7 @@ const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
 /** Where the model calls go, and how each call gets its key. `url` is the messages endpoint:
- *  `v1/messages` joined onto the route's URL, its path and query kept (`joinUrl`), since appended
- *  to the text of a URL with a query it would sit inside the query. */
+ *  `v1/messages` joined onto the route's URL, its path and query kept (`joinUrl`). */
 interface ModelRoute {
   readonly url: string;
   readonly key: () => Promise<string>;

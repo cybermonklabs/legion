@@ -493,8 +493,6 @@ export async function runChecks(options: Options, deps: CheckDependencies): Prom
 }
 
 export function liveDispatch(config: DispatchConfig): DispatchReads {
-  // Each route is joined onto the Dispatch URL's path, its query kept (`joinUrl`): appended to the
-  // text of a URL with a query, the route would sit inside the query.
   // The bearer, or the access token this machine traded its own identity for, with the proof
   // that goes with it; the coverage read goes around DispatchClient, so it presents it itself.
   const credential = config.credential;

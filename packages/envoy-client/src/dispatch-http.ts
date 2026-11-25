@@ -2804,8 +2804,7 @@ export class DispatchClient {
   /**
    * The request URL of `path`, each segment escaped, with `query`'s members as its own query: the
    * path joined onto the configured URL's path, the configured query kept ahead of the request's
-   * own (`joinUrl`). Resolved against the URL's text with a slash appended, a URL with a query
-   * would take the slash into the query and lose both its query and its path.
+   * own (`joinUrl`).
    */
   #url(path: readonly string[], query?: object): string {
     const params = new URLSearchParams();
