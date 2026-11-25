@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -296,7 +298,9 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 // answer starts the fix's step. A task held at its end for its CI is held for its fix from then
 // on, from retro still. Each other check that fails at the head in the same pass joins it
 // (joinFix), since the pass now holds it open. A merge forward of the head the implementer owes
-// does not delay it: the fix takes that merge as its own first work (takeOwedMerge).
+// does not delay it: the fix takes that merge as its own first work (takeOwedMerge). A fix whose own
+// branch cannot be named (claim.BesideBranch) opens not at all: the owner is told once instead
+// (refuseFixName), and every other fact of the issue goes on.
 func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure, row *record.CIFailure) error {
 	issue, w := pass.issue, pass.w
 	if e.waitForOwedMerge && owedMerge(pass.pr, pass.head) != nil {
@@ -311,6 +315,9 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	number := 1
 	if latest != nil {
 		number = latest.Fix + 1
+	}
+	if _, err := claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer); err != nil {
+		return e.refuseFixName(ctx, tx, pass, check, failure, row, err)
 	}
 	fix := record.TaskFix{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Fix: number, State: record.FixReading,
 		Check: check, Head: pass.head, Place: place}
@@ -378,20 +385,6 @@ func (e *Engine) assignRepair(ctx context.Context, tx pgx.Tx, pass *fixPass, sta
 	return nil
 }
 
-// tellImplementer sends body to the implementer of issue as one role message.
-func (e *Engine) tellImplementer(ctx context.Context, tx pgx.Tx, issue record.Issue, body string) error {
-	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
-	if err != nil {
-		return err
-	}
-	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // fixRunsAt says whether the run at place is the run of the step the running fix of issue's task
 // runs again (Issue.RunningFix): that run stands beside the issue's own step while the fix runs,
 // and the fix's end ends it (endFix). A fix still reading its job has started no run.
@@ -436,9 +429,10 @@ func (e *Engine) fixJobRead(ctx context.Context, tx pgx.Tx, fact intake.FixJobRe
 // of a new run of that step naming the fix's check; the fix runs at that entry, so the issue
 // record names it (Issue.RunningFix) and the fences of a start and of a delivery hold its task
 // (record.PhaseHolds); and its start is queued for the phase of its step, beside the line of
-// starts that wait for a slot, with its working copy made at the fix's head (started). The issue
-// stays where it stands, and each other step of the task that was handed work in this run is told
-// of the fix (tellStepsOfFix).
+// starts that wait for a slot, with its working copy made at the fix's head, or at the head of the
+// fix's own branch where origin holds it (started, fixBranchOf). The issue stays where it stands,
+// and each other step of the task that was handed work in this run is told of the fix
+// (tellStepsOfFix).
 func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fix record.TaskFix) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -464,7 +458,8 @@ func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fi
 	}
 	fixing := issue
 	fixing.Phase, fixing.Hold = at, nil
-	if err := e.started(ctx, tx, fixing, role, sent, entry, startMarks{stored: true, fix: fix.Fix, fixFrom: fix.Head}); err != nil {
+	marks := startMarks{stored: true, fix: fix.Fix, fixFrom: fix.Head, fixBranch: e.fixBranchOf(issue, fix)}
+	if err := e.started(ctx, tx, fixing, role, sent, entry, marks); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a fix starts beside the task's steps", "issue", issue.Key, "task", fix.Task, "fix", fix.Fix,
@@ -476,7 +471,8 @@ func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fi
 // is told (task), in that step's phase, its working copy line naming the fix's own working copy
 // (fixDirOf), and right after it the sentences of the fix, each built from the start's typed facts
 // (startFacts): what it fixes (fixSentence), each other check it holds, the merge forward its
-// implementer owes, which the fix makes first (owedMergeSentence), and how it pushes.
+// implementer owes, which the fix makes first (owedMergeSentence), and how it pushes
+// (fixPushSentence).
 func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, at phase.Phase) (string, error) {
 	fixing := issue
 	fixing.Phase, fixing.Hold = at, nil
@@ -484,8 +480,8 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	if err != nil {
 		return "", err
 	}
-	dir := fixDirOf(e.cfg.WorkspaceDir)
-	standing, err := standingText(fixing, dir, w, rows)
+	dirOf := fixDirOf(e.cfg.WorkspaceDir)
+	standing, err := standingText(fixing, dirOf, w, rows)
 	if err != nil {
 		return "", err
 	}
@@ -500,12 +496,16 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	if !facts.Own || facts.Fix != fix.Fix {
 		return "", fmt.Errorf("compose the task of fix %d of task %s of %s: the start at its place stands beside fix %d", fix.Fix, fix.Task, issue.Key, facts.Fix)
 	}
-	copyLine := WorkingCopy(fixing, dir).lines
+	copyLine := WorkingCopy(fixing, dirOf).lines
 	sentences := fixSentence(issue.Key, facts)
 	for _, check := range facts.Failed {
 		sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", check, facts.Head, facts.Cases[check])
 	}
-	sentences += owedMergeSentence(facts) + fixPushSentence
+	dir := ""
+	if dirOf != nil {
+		dir = dirOf(fixing)
+	}
+	sentences += owedMergeSentence(facts) + fixPushSentence(issue, fix, facts.Branch, dir)
 	standing.lines = copyLine + sentences + strings.TrimPrefix(standing.lines, copyLine)
 	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
 }
@@ -521,13 +521,35 @@ func owedMergeSentence(facts startFacts) string {
 		"Include it in your fix's one end push, and push nothing from the task's shared copy.", facts.MergeBase, facts.MergeHead)
 }
 
-// fixPushSentence is how a fix pushes, which its task says after the failures it holds: from its
-// own working copy, onto the head of the task's branch, taking each commit a step beside it names
-// as it stands. The copy goes under the working copy (`--insert-before @`), so it becomes `@-`,
-// the commit the push and the completion read; a copy `--onto @-` would be a sibling of `@`.
-const fixPushSentence = " Push only from this working copy, to the branch of the task; before you push, fetch the branch and rebase your commits onto its head where it moved. " +
-	"The other steps keep the task's working copy; a commit a step beside you names in its report is in this clone by its id: " +
-	"copy it onto your head with jj duplicate <commit> --insert-before @, and never rebase or rewrite it, since another working copy stands on it."
+// fixPushSentence is how fix pushes, which its task says after the failures it holds: from its own
+// working copy at dir, its work in progress only to its own branch own (F), never to the task's
+// branch; once, when it ends, to the task's branch, then it completes. Before that push it fetches
+// the task's branch and rebases its own commits onto its head where it moved, and takes the commits
+// each step beside it pushed to a branch of its own (workspace.BesideTakeCommands): a copy under its
+// working copy of each commit of those branches the task's branch lacks, rebasing and rewriting none,
+// and a commit a step names by its id and could not push copied the same way. The copy goes under
+// the working copy (`--insert-before @`), so it becomes `@-`, the commit the push and the completion
+// read; a copy `--onto @-` would be a sibling of `@`. A fix whose own branch cannot be named, which
+// the fix rule refuses to open (refuseFixName), pushes to the task's branch alone.
+func fixPushSentence(issue record.Issue, fix record.TaskFix, own, dir string) string {
+	if dir == "" {
+		dir = "."
+	}
+	taskBranch := claim.IssueBranch(issue.Key)
+	prefix, err := claim.BesideFixPrefix(issue.Key, issue.Generation, fix.Task, fix.Fix)
+	if own == "" || err != nil {
+		return " Push only from this working copy, to the branch of the task, once, when your fix ends, then complete; before you push, fetch the branch and rebase your commits onto its head where it moved. " +
+			"A commit a step beside you names in its report is in this clone by its id: copy it onto your head with jj duplicate <commit> --insert-before @, and never rebase or rewrite it."
+	}
+	return fmt.Sprintf(" Push only from this working copy. Until your fix ends, push your commits only to your own branch %s, never to the branch of the task: run %s, then %s. "+
+		"When your fix ends, push it to the branch of the task once, then complete. "+
+		"Before that push, fetch the branch of the task and rebase your own commits onto its head where it moved, and take the commits of the steps beside you: %s. "+
+		"That copies under your working copy each commit of their branches that the branch of the task does not hold; never rebase or rewrite one, since another working copy may stand on it. "+
+		"A commit that a step names by its id and could not push is in this clone by that id: copy it the same way, with jj duplicate <commit> --insert-before @.",
+		own, shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "set", own, "-r", "@-"}),
+		shellprefix.Command([]string{"jj", "-R", dir, "git", "push", "--remote", "origin", "--bookmark", own}),
+		strings.Join(workspace.BesideTakeCommands(dir, prefix, own, taskBranch), ", then "))
+}
 
 // startFacts is what a start of a step of issue's task, standing in issue.Phase on w, is told of a
 // fix and of the task's CI, as typed values; each sentence such a start's task says of them is
@@ -538,15 +560,20 @@ const fixPushSentence = " Push only from this working copy, to the branch of the
 //     failure, each other check it holds that fails at that head (Failed, with Cases), and the
 //     head and base of the merge forward its implementer owes there, which the fix took as its own
 //     first work (owedMerge, takeOwedMerge);
-//   - a start of another step while a fix reads its job or runs: the fix's number, check and head;
+//   - a start of another step while a fix reads its job or runs: the fix's number, check and head,
+//     and, for each role but the reviewer, which creates no commit, the step's own branch beside
+//     the fix (Branch) and the head the daemon holds of a push of it (Pushed, record.TaskFix.Pushed);
+//     a start whose step is bound to a branch already keeps that one (record.StepStart.PushBranch),
+//     and so does a resume of a step that still runs after its fix ended with its way pending;
 //   - a start of an implementation step of a task that takes a fix, with no fix open: the head and
 //     each check a CI job runs that fails there (Failed).
 //
-// Every other start holds none.
+// The fix's own start holds its own branch F as Branch. Every other start holds none.
 type startFacts struct {
 	Fix                                        int
 	Own                                        bool
 	Check, Head, CICase, Job, Page, ReadFailed string
+	Branch, Pushed                             string
 	MergeHead, MergeBase                       string
 	Failed                                     []string
 	// Cases is the ci_case of each check of Failed that a fix holds.
@@ -565,7 +592,12 @@ func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return startFacts{}, err
 	}
 	if open != nil && open.Place != place.Position {
-		return startFacts{Fix: open.Fix, Check: open.Check, Head: open.Head}, nil
+		return e.besideFacts(ctx, tx, issue, w, place.Position, *open)
+	}
+	if open == nil {
+		if facts, bound, err := e.boundFacts(ctx, tx, issue, w, place.Position); err != nil || bound {
+			return facts, err
+		}
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
@@ -596,6 +628,70 @@ func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return facts, nil
 }
 
+// besideFacts is the start facts of a step at place, a step of w's task of issue other than the
+// fix's own, while open, a fix of the task, reads its job or runs (startFacts): the fix's number,
+// check and head, and, for each role but the reviewer, the step's branch: the one its open start
+// is bound to already (record.StepStart.PushBranch), which a later fix's start keeps, else its own
+// branch beside open, which its start binds (bindBesideFix); and the head the daemon holds of a
+// push of that branch, read from the fix the branch is of. The role is the role of the step's phase,
+// a phase of a step of the plan, which admitted never is.
+func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int, open record.TaskFix) (startFacts, error) {
+	facts := startFacts{Fix: open.Fix, Check: open.Check, Head: open.Head}
+	role := RoleFor(w.steps()[place-1])
+	if role == claim.RoleReviewer || role == "" {
+		return facts, nil
+	}
+	bound, pushed, err := e.boundBranch(ctx, tx, issue, w, place)
+	if err != nil {
+		return startFacts{}, err
+	}
+	if bound != "" {
+		facts.Branch, facts.Pushed = bound, pushed
+		return facts, nil
+	}
+	if branch, ok := e.besideBranchOf(issue, w.Task, open.Fix, role); ok {
+		facts.Branch, facts.Pushed = branch, open.Pushed[string(role)]
+	}
+	return facts, nil
+}
+
+// boundFacts is the start facts of a step at place of w's task of issue whose open start is bound
+// to a branch beside a fix that no longer reads its job or runs (startFacts, while no fix of the task
+// is open): a resume of a step that still runs after its fix ended with its way pending, told of
+// that fix and of its branch until its step ends. false where the start is bound to none.
+func (e *Engine) boundFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
+	bound, pushed, err := e.boundBranch(ctx, tx, issue, w, place)
+	if err != nil || bound == "" {
+		return startFacts{}, false, err
+	}
+	_, _, _, number, _, _ := claim.MatchBesideBranch(bound, []string{w.Task})
+	fix, err := e.store.FixAt(ctx, tx, issue.Key, issue.Generation, w.Task, number)
+	if err != nil || fix == nil {
+		return startFacts{}, false, err
+	}
+	return startFacts{Fix: fix.Fix, Check: fix.Check, Head: fix.Head, Branch: bound, Pushed: pushed}, true, nil
+}
+
+// boundBranch is the branch beside a fix that the open start of the step at place of w's task of
+// issue is bound to (record.StepStart.PushBranch), "" for none, and the head the daemon holds of a
+// push of it, read from the fix the branch names (record.Store.FixAt, record.TaskFix.Pushed), ""
+// for none.
+func (e *Engine) boundBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (branch, pushed string, err error) {
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
+	if err != nil || start.Run != record.RunOpen || start.PushBranch == "" {
+		return "", "", err
+	}
+	_, _, _, number, role, ok := claim.MatchBesideBranch(start.PushBranch, []string{w.Task})
+	if !ok {
+		return start.PushBranch, "", nil
+	}
+	fix, err := e.store.FixAt(ctx, tx, issue.Key, issue.Generation, w.Task, number)
+	if err != nil || fix == nil {
+		return start.PushBranch, "", err
+	}
+	return start.PushBranch, fix.Pushed[string(role)], nil
+}
+
 // fixFacts is the start facts of fix's own start (startFacts), pr being issue's pull request on
 // record.
 func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, pr *record.PullRequest) (startFacts, error) {
@@ -605,6 +701,7 @@ func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	}
 	facts := startFacts{Fix: fix.Fix, Own: true, Check: fix.Check, Head: fix.Head, CICase: held.States[fix.Check].CICase,
 		Job: fix.JobName, Page: fix.JobURL, ReadFailed: fix.ReadFailed}
+	facts.Branch, _ = e.besideBranchOf(issue, fix.Task, fix.Fix, claim.RoleImplementer)
 	for _, state := range failedChecks(held) {
 		if state.Check == fix.Check {
 			continue
@@ -629,9 +726,9 @@ func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 
 // fixLines is what the task of a start of a step of issue's task, standing in issue.Phase on w,
 // says of a fix and of the task's CI (startFacts): beside a fix that reads its job or runs, that
-// the failure is the fix's and that the step pushes nothing until the fix ended; and, for an
-// implementation step of a task that takes a fix, each check that a CI job runs and that fails at
-// the task's head, each of which goes to that step (record.CIFailureToImplementer), so the fix
+// the failure is the fix's and where the step pushes until it ends (besideStepSentence); and, for
+// an implementation step of a task that takes a fix, each check that a CI job runs and that fails
+// at the task's head, each of which goes to that step (record.CIFailureToImplementer), so the fix
 // rule tells its implementer of it no second time. Every other start says nothing more, the fix's
 // own among them, whose task is the fix's (fixTask).
 func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
@@ -640,8 +737,7 @@ func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	case err != nil || facts.Own:
 		return "", err
 	case facts.Fix > 0:
-		return fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix. "+
-			"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push.", facts.Check, facts.Head), nil
+		return besideStepSentence(facts), nil
 	case len(facts.Failed) == 0:
 		return "", nil
 	}
@@ -701,51 +797,198 @@ func jobOf(fix record.TaskFix) string {
 	return fix.JobName
 }
 
-// tellStepsOfFix sends one role message of fix to the worker of each other step of w's task that
-// was handed work in this run (its phases row holds the task of an entry): the fix runs, the
-// failure is the fix's, what that failure does to the step's own report, and that nothing is
-// pushed to the task's branch until the fix ended. The tester's testing step still judges each
-// check a CI job runs, this one among them, so its report can fail for it, and a step that fails
-// beside a fix moves nothing until the way after the fix (besideFix); no other step's report fails
-// for it. A step that
-// has not started is told by its start (task). The owner, whose acceptance step is no worker's,
-// is told nothing here.
+// tellStepsOfFix tells each other step of w's task that runs or was handed work in this run (its
+// phases row holds the task of an entry), and the owner where the issue stands in the owner's
+// acceptance, of fix, by one fix-started row each (record.CINewsFixStarted, tellFixStarted): the fix
+// runs, the failure is the fix's, and, for each role but the reviewer, which creates no commit, that
+// until its step ends it pushes only to its own branch beside the fix, which the row names and the
+// step's open start is bound to here (toldBranch). Each row is for the step's current work, its
+// entry where its step runs, or the owner's acceptance, so the outbox wakes a released reader and
+// finishes a row whose work is no longer current undelivered.
+//
+// A step whose current start named this fix (toldByStart: it started while the fix read its job)
+// was told by its own start's task, and the owner by the row of its move into accepting
+// (tellOwnerOfFix), so each is told once. A step that has not started is told by its start (task).
+// The tester's testing step still judges each check a CI job runs, this one among them, so its
+// report can fail for it, and a step that fails beside a fix moves nothing until the way after the
+// fix (besideFix); no other step's report fails for it.
 func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix) error {
-	words := plan.Words(namedSteps(w.Steps))
-	var recipients []roleRecipient
-	for i, at := range w.steps() {
-		role := RoleFor(at)
-		if i+1 == fix.Place || role == "" || role == claim.RoleArchitect {
-			continue
-		}
-		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	news, err := e.fixStartedOf(ctx, tx, issue, w, fix)
+	if err != nil {
+		return err
+	}
+	var opened time.Time
+	if e.toldByClock {
+		failure, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, w.Task, fix.Check, fix.Head)
 		if err != nil {
 			return err
 		}
-		if row.Entry > 0 && row.EntryTask != "" {
-			recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
+		if failure != nil {
+			opened = failure.At
 		}
 	}
-	runs := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own. ",
-		fix.Task, issue.Key, fix.Check, fix.Head, jobOf(fix), fix.Place, words[fix.Place-1])
-	push := "Push nothing to the branch of the task until the fix ended: name in your report each commit you would push, and the fix takes it."
-	for _, recipient := range recipients {
-		addressed, err := e.addressRoles(issue.Project, []roleRecipient{recipient}, nil)
+	for i, at := range w.steps() {
+		role := RoleFor(at)
+		if i+1 == fix.Place || role == "" {
+			continue
+		}
+		place := record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: i + 1}
+		start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 		if err != nil {
 			return err
 		}
-		leave := "Leave that failure to the fix: your report does not fail for it, and you run its job no more. "
-		if recipient.role == claim.RoleTester {
-			leave = fmt.Sprintf("Leave the fixing of that failure to the fix, and run its job no more. Your testing still judges each check a CI job runs, %s among them, "+
-				"so your report can fail for it: a failed report moves nothing while the fix runs, and the way after the fix reads it. ", fix.Check)
-		}
-		for _, to := range addressed {
-			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: runs + leave + push}); err != nil {
+		to := roleRecipient{issue: issue.Key, role: role, row: issue.Key}
+		var reader *record.CIReader
+		if role == claim.RoleArchitect {
+			// The owner's acceptance is no worker's step: the owner is told while the issue
+			// stands in it, the acceptance being its work.
+			if record.StandsAt(issue) != at || start.Run != record.RunOpen {
+				continue
+			}
+			if to.issue, err = e.owningArchitect(ctx, tx, issue); err != nil {
 				return err
 			}
+			reader = &record.CIReader{Phase: at}
+		} else {
+			row, err := e.phaseRow(ctx, tx, issue.Key, role)
+			if err != nil {
+				return err
+			}
+			if row.Entry == 0 || row.EntryTask == "" {
+				continue
+			}
+			if !row.Completed() && start.Run == record.RunOpen {
+				reader = &record.CIReader{Phase: at, Entry: row.Entry}
+			}
+		}
+		if e.toldByStart(start, fix, opened) {
+			continue
+		}
+		branch, err := e.toldBranch(ctx, tx, issue, place, start, fix, role)
+		if err != nil {
+			return err
+		}
+		if err := e.tellFixStarted(ctx, tx, issue, w, news, to, reader, branch); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// tellOwnerOfFix tells the owner, whose acceptance step starts at step while a fix of the task
+// reads its job or runs (startNamedStep), of that fix by the fix-started row tellStepsOfFix gives
+// each step beside it: the acceptance has no task of its own to name the fix, so the row is its one
+// notice of it, naming the owner's branch beside the fix, which the start bound (bindBesideFix). Its
+// acceptance is not held by the fix's check. A fix that opens after the acceptance started tells
+// the owner at its own start instead.
+func (e *Engine) tellOwnerOfFix(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
+	if step.place.Kind != record.PlaceStep {
+		return nil
+	}
+	fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, step.place.Task)
+	if err != nil || fix == nil || fix.Place == step.place.Place {
+		return err
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	news, err := e.fixStartedOf(ctx, tx, issue, w, *fix)
+	if err != nil {
+		return err
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil {
+		return err
+	}
+	owner, err := e.owningArchitect(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	return e.tellFixStarted(ctx, tx, issue, w, news, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key},
+		&record.CIReader{Phase: step.at}, start.PushBranch)
+}
+
+// fixStarted is what every fix-started row of fix carries beside its receiver: the repository and
+// the number of the task's pull request, how the fix's check's CI job ended at the fix's head, and
+// the word of the step the fix runs again in the task's plan.
+type fixStarted struct {
+	fix    record.TaskFix
+	repo   string
+	number int
+	ciCase string
+	step   string
+}
+
+// fixStartedOf is the fixStarted of fix, a fix of w's task of issue.
+func (e *Engine) fixStartedOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix) (fixStarted, error) {
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return fixStarted{}, err
+	}
+	news := fixStarted{fix: fix, repo: prRepo(issue, pr)}
+	if pr != nil {
+		news.number = pr.Number
+	}
+	held, err := e.store.HeadStates(ctx, tx, issue.Key, news.repo, fix.Head)
+	if err != nil {
+		return fixStarted{}, err
+	}
+	news.ciCase = held.States[fix.Check].CICase
+	if words := plan.Words(namedSteps(w.Steps)); fix.Place >= 1 && fix.Place <= len(words) {
+		news.step = words[fix.Place-1]
+	}
+	return news, nil
+}
+
+// tellFixStarted writes the fix-started row of news to to, a step beside the fix or the owner, for
+// reader, its current work, nil where its step does not run, with branch, the branch beside the fix
+// it pushes to, "" for the reviewer, which creates no commit. The row names the fix's check, head,
+// job's case and number (Assigned) and that branch, which a test reads; its body
+// (fixStartedBody) is built from the same values.
+func (e *Engine) tellFixStarted(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, news fixStarted, to roleRecipient,
+	reader *record.CIReader, branch string) error {
+	addressed, err := e.addressRoles(issue.Project, []roleRecipient{to}, nil)
+	if err != nil {
+		return err
+	}
+	fix := news.fix
+	for _, a := range addressed {
+		if err := e.enqueue(ctx, tx, a.issue, record.CINews{Purpose: record.CINewsFixStarted, Role: string(a.token), Generation: issue.Generation,
+			Task: w.Task, Repo: news.repo, PullRequest: news.number, Head: fix.Head, Reader: reader, Branch: branch,
+			Assigned: &record.CIAssigned{Check: fix.Check, Head: fix.Head, CICase: news.ciCase, Fix: fix.Fix},
+			Body:     fixStartedBody(issue.Key, news, to.role, branch)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fixStartedBody is the body of the fix-started row to role, a step beside the fix of news, or the
+// owner for the architect, branch being its branch beside the fix ("" for the reviewer): the fix,
+// its check, head and job, and the step it runs again in its own working copy; that the failure is
+// the fix's (for the tester, whose testing still judges the check, that its report can fail for
+// it); and how it pushes until its step ends, where it records each result and what it does where
+// GitHub refuses its push. The owner is told what it accepts on instead of where it records.
+func fixStartedBody(key string, news fixStarted, role claim.Role, branch string) string {
+	fix := news.fix
+	body := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own.",
+		fix.Task, key, fix.Check, fix.Head, jobOf(fix), fix.Place, news.step)
+	if role == claim.RoleTester {
+		body += fmt.Sprintf(" Leave the fixing of that failure to the fix, and run its job no more. Your testing still judges each check a CI job runs, %s among them, "+
+			"so your report can fail for it: a failed report moves nothing while the fix runs, and the way after the fix reads it.", fix.Check)
+	} else {
+		body += " Leave that failure to the fix: your report does not fail for it, and you run its job no more."
+	}
+	if branch == "" {
+		return body + " Until your step ends, push nothing to the branch of the task."
+	}
+	body += pushBesideSentence(branch)
+	if role == claim.RoleArchitect {
+		return body + fmt.Sprintf(" Accept only where each check but %s reads yes at the head of the pull request. %s is the fix's, and it does not hold your acceptance. "+
+			"A result at a commit of your own branch counts for nothing.", fix.Check, fix.Check) + refusedPushSentence
+	}
+	return body + recordAtHead(fix.Head)
 }
 
 // runningFixOf is the walk of issue's run and its task's fix number n, where that fix runs (the
@@ -989,6 +1232,12 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 			return false, err
 		}
 	}
+	// The failed step's branch beside the fix is the one its start was bound to, read before its
+	// run ends.
+	stepStart, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil {
+		return false, err
+	}
 	if _, err := e.endRun(ctx, tx, issue.Key, step.place, end, func(start record.StepStart) record.StepRecord {
 		return stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
 	}); err != nil {
@@ -998,8 +1247,7 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return true, e.afterFix(ctx, tx, issue, w, &rowMove{trigger: trigger, target: target, handoff: handoff, pr: pr, why: why})
 	}
 	if gotReport {
-		if err := e.tellImplementer(ctx, tx, issue, fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.",
-			step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)); err != nil {
+		if err := e.reportToFix(ctx, tx, issue, w, *fix, step, handoff, pr, stepStart.PushBranch); err != nil {
 			return false, err
 		}
 	}
@@ -1011,6 +1259,36 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	e.logOnCommit(ctx, "workflow: a failed step beside a fix waits for the fix", "issue", issue.Key, "task", w.Task, "fix", fix.Fix,
 		"from", from, "trigger", trigger, "gotReport", gotReport, "returnTo", fix.ReturnTo)
 	return true, nil
+}
+
+// reportToFix gives fix, which runs, the report of step, a step beside it that failed and returned
+// the task to the fix's own step (besideFix), handoff being that step's completion: one step-report
+// row to the implementer, for the fix's work (its number and entry), so the outbox wakes a released
+// fix and finishes the row undelivered once the fix ended, naming branch, the step's own branch beside
+// the fix that its start was bound to, where its commits are ("" for none), which the fix takes
+// before its end push.
+func (e *Engine) reportToFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, step standing, handoff record.PhaseRow,
+	pr *record.PullRequest, branch string) error {
+	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
+	if branch != "" {
+		body += fmt.Sprintf(" Its commits are on its own branch %s: take them before your end push, as your task says.", branch)
+	}
+	number := 0
+	if pr != nil {
+		number = pr.Number
+	}
+	for _, to := range addressed {
+		if err := e.enqueue(ctx, tx, to.issue, record.CINews{Purpose: record.CINewsStepReport, Role: string(to.token), Generation: issue.Generation,
+			Task: w.Task, Repo: prRepo(issue, pr), PullRequest: number, Head: fix.Head, Reader: &record.CIReader{Fix: fix.Fix, Entry: fix.Entry},
+			Branch: branch, Body: body}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // taskStepRuns says whether a step of w's task runs: the latest run of one of its places is open.

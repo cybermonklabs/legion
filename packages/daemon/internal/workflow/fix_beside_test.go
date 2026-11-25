@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -135,11 +137,12 @@ func TestAnApprovalBesideTheFixStartsTheNextStep(t *testing.T) {
 }
 
 // A review that requests changes beside the running fix returns the task to the fix's step, so its
-// report goes to the fix: the fix holds it, the implementer is told by one role message naming the
-// reviewer, its step and its report, and no step starts while the task is held for its fix from
-// reviewing. The review's round is counted, and the review round cap's notice goes at the cap; no
-// return is counted, since the way after the fix counts it. The control, kept: the same request
-// after the fix ended returns the task at once, counting its round and its return.
+// report goes to the fix: the fix holds it, the implementer gets one step-report row for the fix's
+// work, which names no branch, since the reviewer pushes none, and no role message; and no step
+// starts while the task is held for its fix from reviewing. The review's round is counted, and the
+// review round cap's notice goes at the cap; no return is counted, since the way after the fix
+// counts it. The control, kept: the same request after the fix ended returns the task at once,
+// counting its round and its return.
 func TestAChangesRequestBesideTheFixGoesToItAndCountsItsRound(t *testing.T) {
 	engine := returnEngine()
 	engine.cfg.ReviewRoundCap = 1
@@ -152,7 +155,10 @@ func TestAChangesRequestBesideTheFixGoesToItAndCountsItsRound(t *testing.T) {
 	if fix := r.latestFix(); !fix.GotReport || fix.State != record.FixRunning || fix.ReturnTo != 0 {
 		t.Fatalf("the fix after the request for changes = %+v, want it running with the review's report", fix)
 	}
-	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "reviewer", "step 3", reviewRecord, "the widget renders twice")
+	if got, want := r.stepReports(), []string{fmt.Sprintf("implementer fix-1@%d -", r.latestFix().Entry)}; !slices.Equal(got, want) {
+		t.Fatalf("the step-report rows = %q, want %q", got, want)
+	}
+	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 	r.assertHeldForTheFix(phase.Reviewing)
 	r.assertRunEnded(3, 1, ResultFailed, 1)
 	// The outbox keeps one pending phase start of an issue, the latest; none is the implementer's.
@@ -176,6 +182,24 @@ func TestAChangesRequestBesideTheFixGoesToItAndCountsItsRound(t *testing.T) {
 			t.Fatalf("the task counts %+v, want one round and one return under reviewing-implementing", counts)
 		}
 	})
+}
+
+// stepReports is each step-report row of LEGION-208, oldest first, as `<role> <reader> <branch>`,
+// with `-` for no branch.
+func (r *fixRig) stepReports() []string {
+	r.t.Helper()
+	var lines []string
+	for _, n := range r.newsOf() {
+		if n.Purpose != record.CINewsStepReport {
+			continue
+		}
+		branch := n.Branch
+		if branch == "" {
+			branch = "-"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s", roleOf(r.t, n.Role), readerLine(n.Reader), branch))
+	}
+	return lines
 }
 
 // A review that returns the task to the planner while the fix runs waits for the fix: the fix
