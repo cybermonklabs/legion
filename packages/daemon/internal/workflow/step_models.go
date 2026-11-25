@@ -19,13 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A step record names the model its agent's launches were set to, and each model that answered
-// the agent's own calls during the step, with its count. The agent's shim counts the calls of its
-// launch, and the daemon reads those totals before each fact (Config.ReadTotals). A step's calls
-// are what the shim counted between the read its start used and the read its end used. A launch
-// that started during the step counts from zero. The final totals of a launch that ended during
-// the step stand in for the read at its end. Where any of these is missing, the record says that
-// it does not know its counts.
+// A step record names the model its agent's launches were set to. It also names each model that
+// answered the agent's own calls during the step, with its count. The agent's shim counts the
+// calls of its launch, and the daemon reads those totals before each fact (Config.ReadTotals). A
+// step's calls are what the shim counted between the read its start used and the read its end
+// used. A launch that started during the step counts from zero. The final totals of a launch that
+// ended during the step stand in for the read at its end. Where any of these is missing, the
+// record says that it does not know its counts.
 
 // FactReads is each read of a launch's totals that a fact made before its transaction and that
 // gave totals, by launch (Config.ReadTotals).
@@ -63,29 +63,31 @@ var _ intake.Reader = (*Engine)(nil)
 // read-only transaction on pool. That transaction ends before the totals are read, so a read that
 // waits holds no connection. Without Config.ReadTotals nothing is read.
 func (e *Engine) ReadFact(ctx context.Context, pool store.TxPool, fact intake.Fact) context.Context {
-	if e.cfg.ReadTotals == nil {
-		return withAppliedFact(ctx, fact, nil)
-	}
-	agents, err := store.ReadOnly(ctx, pool, "read the agents of the steps a fact can start or end", func(ctx context.Context, tx pgx.Tx) ([]claim.Token, error) {
-		issue, err := e.factIssue(ctx, tx, fact)
-		if err != nil || issue == "" {
-			return nil, err
+	var reads FactReads
+	if e.cfg.ReadTotals != nil {
+		agents, err := store.ReadOnly(ctx, pool, "read the agents of the steps a fact can start or end", func(ctx context.Context, tx pgx.Tx) ([]claim.Token, error) {
+			issue, err := e.factIssue(ctx, tx, fact)
+			if err != nil || issue == "" {
+				return nil, err
+			}
+			return e.store.StepAgentClaims(ctx, tx, issue)
+		})
+		// The read-only transaction has ended here.
+		switch {
+		case err != nil:
+			e.log.Warn("workflow: a fact reads no agent's calls, since the read of its issue's agents failed", "error", err)
+		case len(agents) > 0:
+			reads = e.cfg.ReadTotals(ctx, agents)
 		}
-		return e.store.StepAgentClaims(ctx, tx, issue)
-	})
-	// The read-only transaction has ended here.
-	if err != nil {
-		e.log.Warn("workflow: a fact reads no agent's calls, since the read of its issue's agents failed", "error", err)
-		return withAppliedFact(ctx, fact, nil)
 	}
-	if len(agents) == 0 {
-		return withAppliedFact(ctx, fact, nil)
-	}
-	return withAppliedFact(ctx, fact, e.cfg.ReadTotals(ctx, agents))
+	return withAppliedFact(ctx, fact, reads)
 }
 
 // factIssue is the issue fact names: its own, or the issue of the pull request it names by number
-// or by branch. It is "" for a fact that names none, or a pull request the store does not hold.
+// or by branch. That pull request is read as the fact's handlers read it (pullRequestRow,
+// pullRequestRowByBranch). So it is found under a renamed repository's other name too, and only
+// where its issue is on the fact's repository. It is "" for a fact that names none, or a pull
+// request the store does not hold.
 func (e *Engine) factIssue(ctx context.Context, tx pgx.Tx, fact intake.Fact) (string, error) {
 	if issue, ok := intake.IssueOf(fact); ok {
 		return issue, nil
@@ -93,9 +95,9 @@ func (e *Engine) factIssue(ctx context.Context, tx pgx.Tx, fact intake.Fact) (st
 	var pr *record.PullRequest
 	var err error
 	if push, ok := fact.(intake.Push); ok {
-		pr, err = e.store.PullRequestRowByBranch(ctx, tx, push.Repo, push.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, push.Repo, push.Branch)
 	} else if repo, number, ok := pullRequestOf(fact); ok {
-		pr, err = e.store.PullRequestRowByNumber(ctx, tx, repo, number)
+		pr, err = e.pullRequestRow(ctx, tx, repo, number)
 	}
 	if err != nil || pr == nil {
 		return "", err
@@ -142,10 +144,10 @@ func launchAt(launches record.AgentLaunches, generation uint64) *record.Launch {
 	return nil
 }
 
-// usedRead is the read a step uses of a live launch: the newer, by its read number, of the fact's
-// read of key and the newest read a committed fact kept (record.Launch.Newest). It is nil where
-// the fact did not read key: a read the fact did not make cannot show that the launch made no call
-// since the kept one.
+// usedRead is the read a step uses of a live launch. It is the newer, by its read number, of the
+// fact's read of key and the newest read a committed fact kept (record.Launch.Newest). It is nil
+// where the fact did not read key. A read the fact did not make cannot show that the launch made
+// no call since the kept one.
 func usedRead(reads FactReads, key record.LaunchKey, launch *record.Launch) *record.LaunchRead {
 	read, ok := reads[key]
 	if !ok {
@@ -188,8 +190,9 @@ func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, p
 	return nil
 }
 
-// launchSpan is one launch of a step's agent during the step: its set model, "" where it is not
-// known, and its totals at the step's start and at its end, nil where they are not known.
+// launchSpan is one launch of a step's agent during the step. setModel is its set model, "" where
+// it is not known. start and end are its totals at the step's start and at its end, nil where not
+// known.
 type launchSpan struct {
 	setModel   string
 	start, end *shimwire.Totals
@@ -203,13 +206,13 @@ type spanRead struct {
 	final bool
 }
 
-// stepSpans is each launch of agent during a step, given what the step's start kept (began), the
-// agent's launches now (from began's generation on), whether its generation now is a launch still
-// starting (starting, startingLaunch), and the fact's reads. The launches are the start's live
-// launch, each launch from began.FromZero to the generation now, and the launch still starting. A
-// launch counts from zero where it started after the start. Its end is the read usedRead gives where
-// it is live now, and its final totals where it ended. A launch still starting has no end. used is
-// each read the end used.
+// stepSpans is each launch of agent during a step. began is what the step's start kept, and now is
+// the agent's launches from began's generation on. starting says the generation now is a launch
+// still starting (startingLaunch), and reads are the fact's reads. The launches are the start's
+// live launch, each launch from began.FromZero to the generation now, and the launch still
+// starting. A launch counts from zero where it started after the start. Its end is the read
+// usedRead gives where it is live now, and its final totals where it ended. A launch still
+// starting has no end. used is each read the end used.
 func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaunches, starting bool, reads FactReads) (spans []launchSpan, used []spanRead) {
 	var generations []uint64
 	if began.Live {
@@ -268,9 +271,10 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 // model and no call.
 //
 // The answers are each model's calls summed over the launches, without zeros, most calls first,
-// then by model. They are nil, not known, where a launch's start or end is not known, its end
-// overflowed, its count outside the form changed, a count fell, a name is outside the form of a
-// step's agent text, or more than steprecord.AnswersMax models remain.
+// then by model. They are nil, not known, where a launch's start or end is not known, or its end
+// overflowed. They are nil too where a count outside the form changed, or a count fell. They are
+// nil where a name is outside the form of a step's agent text, or more than
+// steprecord.AnswersMax models remain.
 func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
 	if len(spans) == 0 {
 		none := []record.ModelCalls{}
@@ -327,7 +331,7 @@ func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
 }
 
 // writeCounts gives write, the end of a step's run whose start is start, its set model and its
-// answers, and keeps and logs each read the end used. It writes neither where the run's start kept
+// answers. It keeps and logs each read the end used. It writes neither where the run's start kept
 // no totals, its agent is none, or the engine reads no totals.
 func (e *Engine) writeCounts(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, start record.StepStart, write *record.StepRecord) error {
 	agent := claim.Token(start.Agent)
@@ -378,9 +382,9 @@ func (e *Engine) startingLaunch(ctx context.Context, tx pgx.Tx, agent claim.Toke
 	return ok && (held.State == supervise.StateLaunching || held.State == supervise.StateLaunchUncertain), nil
 }
 
-// endedBy is who ended a step whose agent is agent, as the end's log line says it: agent where the
-// fact that ended it is that agent's own completion or sign-off, else the fact's Go type name. It
-// is settle in a transaction no fact opened.
+// endedBy is who ended a step whose agent is agent, as the end's log line says it. It is agent
+// where the fact that ended it is that agent's own completion or sign-off. Else it is the fact's Go
+// type name, and settle in a transaction no fact opened.
 func endedBy(ctx context.Context, agent claim.Token) string {
 	applied, ok := appliedFactOf(ctx)
 	if !ok || applied.fact == nil {

@@ -16,14 +16,14 @@ import (
 // opens its own transaction there, and closes it before any wait.
 //
 // A fact applied inside a transaction already open on ctx (store.CommitScoped) is read by no
-// Reader, since a read there would run inside that transaction and its fact lock. Such a fact is
-// applied with nothing read first.
+// Reader. A read there would run inside that transaction and its fact lock. Such a fact is applied
+// with nothing read first.
 type Reader interface {
 	ReadFact(ctx context.Context, pool store.TxPool, fact Fact) context.Context
 }
 
-// readFact runs ReadFact of each of handlers that is a Reader, in their order, each on the context
-// the one before it answered, and answers the last.
+// readFact runs ReadFact of each of handlers that is a Reader, in their order. Each runs on the
+// context the one before it answered, and readFact answers the last.
 func readFact(ctx context.Context, pool store.TxPool, fact Fact, handlers []Handler) context.Context {
 	for _, handler := range handlers {
 		if reader, ok := handler.(Reader); ok {

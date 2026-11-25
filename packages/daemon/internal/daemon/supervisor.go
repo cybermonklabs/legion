@@ -359,10 +359,10 @@ func (s *supervisor) drained(token claim.Token, done chan<- struct{}) {
 	m.inbox.mark(done)
 }
 
-// pump hands each worker-stream event to its claim's machine, in the order the stream queued
-// them, until the stream ends: a mark an agent's request queued (stream.Drained) goes behind the
-// events posted before it (supervisor.drained), a launch's last model totals (stream.FinalTotals)
-// are kept in the store (keepFinal), and every other event is the machine's own (superviseEvent).
+// pump hands each worker-stream event to its claim's machine, in the order the stream queued them,
+// until the stream ends. A mark an agent's request queued (stream.Drained) goes behind the events
+// posted before it (supervisor.drained). A launch's last model totals (stream.FinalTotals) are kept
+// in the store (keepFinal). Every other event is the machine's own (superviseEvent).
 func (s *supervision) pump() {
 	for ev := range s.stream.Events() {
 		if mark, ok := ev.(stream.Drained); ok {
