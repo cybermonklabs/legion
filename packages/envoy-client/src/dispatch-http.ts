@@ -776,9 +776,11 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
 }
 
 /** Whether `storedStatus` (the Envoy module's `internal/dispatch/api/request_keys.go`) keeps this
- *  answer under the key: a 4xx that is no {@link outage} (a 408 or a 429) and no 401. */
+ *  answer under the key, for an answer that is no outage: a 4xx but a 401. `answerEvent`, its one
+ *  caller, hands every outage (a 408, a 429, a 5xx) to `retriesUnderKey` before it asks, so an
+ *  outage never reaches this and it does not test for one. */
 function isStoredKeyStatus(status: number): boolean {
-  return status >= 400 && status < 500 && !outage(status) && status !== 401;
+  return status >= 400 && status < 500 && status !== 401;
 }
 
 /**
