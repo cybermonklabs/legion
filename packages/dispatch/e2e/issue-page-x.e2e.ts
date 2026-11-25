@@ -87,6 +87,7 @@ import {
   graphName,
   type HeldRow,
   heldUnder,
+  marginComments,
   NOBODY_WROTE,
   type NodeStateSeed,
   nodeHolding,
@@ -413,10 +414,14 @@ function drawnWaiting(row: Locator): Promise<boolean | null> {
 }
 
 /** What a row reads its page with: the issue, its tree read, the id the page draws each node of
- *  that read under, and the page's one watcher of its requests, made before its first load. */
+ *  that read under, the comments the page draws in the margin beside a node's text, and the
+ *  page's one watcher of its requests, made before its first load. */
 interface LoadedPage {
   readonly answer: IssueTreeRead;
   readonly key: string;
+  /** The comments the reader's comments read anchors, read once the load answered: a count
+   *  counts none of them, nor their threads (`HeldRow.margin`). */
+  readonly margin: ReadonlySet<string>;
   readonly plain: string;
   readonly seeded: NodeStateSeed;
   readonly traffic: ApiRequests;
@@ -442,8 +447,8 @@ async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage
       (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
     )
   );
-  const reads = await treeIdReads(key);
-  return { answer, key, plain, seeded, traffic, treeId: treeIdOf(answer, reads) };
+  const [reads, margin] = await Promise.all([treeIdReads(key), marginComments(key)]);
+  return { answer, key, margin, plain, seeded, traffic, treeId: treeIdOf(answer, reads) };
 }
 
 /**
@@ -715,12 +720,13 @@ async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void
 /** Every branch the page draws open, folded one at a time (`foldEachBranch`), counts what the
  *  tree read holds under it that Conversation draws, an overtaken node and what stands under it
  *  counted as every node is, and opens again. A question indexed from a block stands for the ask
- *  it was indexed into as well, and a criterion is counted only where the page draws one
- *  (`criteria`). The page draws every branch open on load (part T's R11), so no row draws a count
- *  until a fold draws it. */
+ *  it was indexed into as well, a comment on a node's text and its thread count in no branch
+ *  (`margin`), and a criterion is counted only where the page draws one (`criteria`). The page
+ *  draws every branch open on load (part T's R11), so no row draws a count until a fold draws
+ *  it. */
 async function expectFoldedCounts(
   page: Page,
-  { answer, key, seeded }: ProposedPage,
+  { answer, key, margin, seeded }: ProposedPage,
   criteria: Gate
 ): Promise<void> {
   const asks = new Map([
@@ -730,7 +736,7 @@ async function expectFoldedCounts(
   ]);
   const undrawn = noteOwed(criteria) ? undefined : UNDRAWN_KINDS;
   await foldEachBranch(page, answer, key, READER, {
-    held: (readId) => ({ alike: asks.get(readId), undrawn }),
+    held: (readId) => ({ alike: asks.get(readId), margin, undrawn }),
     including: "an overtaken node and what stands under it included",
   });
 }
@@ -798,7 +804,7 @@ async function expectKeysPassStatement8(page: Page, { seeded }: ProposedPage): P
 /** Statement 8's fold control folds it with its lens, counting what it holds, and opens it again
  *  with its lens. */
 async function expectStatement8Folds(page: Page, read: ProposedPage): Promise<void> {
-  const { answer, key, seeded, treeId } = read;
+  const { answer, key, margin, seeded, treeId } = read;
   const { ids } = seeded;
   const row = nodeRow(page, treeId(ids.statement8)).first();
   await row.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
@@ -809,7 +815,10 @@ async function expectStatement8Folds(page: Page, read: ProposedPage): Promise<vo
   await expect(
     row,
     "statement 8's fold does not count its lens with the rest of its branch"
-  ).toHaveAttribute("data-folded-count", String(heldUnder(answer, key, ids.statement8)));
+  ).toHaveAttribute(
+    "data-folded-count",
+    String(heldUnder(answer, key, ids.statement8, { margin }))
+  );
   expect(
     (await treeItemsDrawn(page)).some((item) => item.readId === ids.lens),
     "the lens on statement 8 is drawn while statement 8 is folded"
@@ -1964,8 +1973,9 @@ async function foldEachBranch(
 /**
  * Reads issue `key` on `page` as its reader, with `traffic`, the page's one watcher: the page as
  * it opens, every node drawn whole and unfolded, its text and the nodes it draws; each branch's
- * count once its row folds it, beside the count the reader's own tree read makes; and each view,
- * its control's count beside the count its own view read makes where the page holds that read.
+ * count once its row folds it, beside the count the reader's own tree read and comments read
+ * make; and each view, its control's count beside the count its own view read makes where the
+ * page holds that read.
  */
 async function readAsReader(
   page: Page,
@@ -1983,11 +1993,12 @@ async function readAsReader(
   const plain = presetPath(key, "conversation");
   await gotoSettled(page, traffic, plain);
   const answer = await heldAnswer(tree, `${who}'s tree read`);
+  const margin = await marginComments(key, who);
   const drawn = new Set(
     (await treeItemsDrawn(page)).flatMap((item) => (item.readId === null ? [] : [item.readId]))
   );
   const texts = [{ text: await issuePage(page).innerText(), where: "the outline" }];
-  const folded = await foldEachBranch(page, answer, key, who);
+  const folded = await foldEachBranch(page, answer, key, who, { held: () => ({ margin }) });
   const filters = { decisions: 0, plan: 0, spec: 0, verification: 0 };
   for (const view of VIEWS) {
     const name = PRESET_NAMES[view];

@@ -17,6 +17,7 @@ import {
   getIssueCoverage,
   getIssueDecisions,
   getIssueResults,
+  listComments,
   listIssueAsks,
   recordCheckResult,
   userHeaders,
@@ -64,8 +65,8 @@ import type { ApiRequest } from "./traffic";
  *   page draws - each folded branch's (`data-folded-count`), each filter control's
  *   (`data-preset-count`) and its flag (`data-preset-flag`), the Verification summary's "N of M
  *   covered" and Details' "Referenced by" - beside the same counts made from a page's own tree
- *   read (`heldUnder`, `reservedUnder`, `referencesTo`), with `viewCount` of
- *   `e2e/issue-page-t-tree.ts` for a view's.
+ *   read (`heldUnder`, `reservedUnder`, `referencesTo`) and comments read (`marginComments`),
+ *   with `viewCount` of `e2e/issue-page-t-tree.ts` for a view's.
  * - **What the page sent**: the requests to the node state routes (`nodeStateRequests`) and the
  *   address each settle names (`settlesSent`).
  * - **The gates** a row reads once, each holding back the readings that need code not yet under
@@ -143,6 +144,15 @@ export async function treeIdReads(key: string, login = "alice"): Promise<TreeIdR
     listIssueAsks(key, { login }),
   ]);
   return { asks, issue };
+}
+
+/** The comments the page draws in the margin beside a node's text, as `login` reads them: the ids
+ *  of the comments the comments read of issue `key` (`GET /api/v1/issues/{key}/comments`)
+ *  anchors (`Comment.anchor` non-null), as `tree-read/tree-nodes.ts`' `keptReads` keeps them
+ *  (`KeptReads.anchored`) for `onNodeText`. A count reads them as `HeldRow.margin`. */
+export async function marginComments(key: string, login = "alice"): Promise<ReadonlySet<string>> {
+  const comments = await listComments(key, undefined, { login });
+  return new Set(comments.flatMap((comment) => (comment.anchor == null ? [] : [comment.id])));
 }
 
 /** Whether `node` is a node of issue `key` itself that the read did not bring in as context. */
@@ -241,6 +251,13 @@ export interface HeldRow {
    *  server indexed from a block of a document is two nodes of the read, the block and its ask,
    *  which the page draws as one row. */
   readonly alike?: readonly string[];
+  /** The ids of the comments the reader's comments read anchors (`marginComments`). As
+   *  `tree-read/tree-nodes.ts`' `onNodeText` reads one, a comment of them the read hangs under a
+   *  node other than the issue's own is on that node's text: the page draws it, and the replies
+   *  in its thread, in the margin beside that node and no row of any (R9, R10, root R41), and a
+   *  node of another kind under it has no row above it to stand under, so `issue-tree.ts`'
+   *  `assemble` places it under the issue. None of them counts in a branch. */
+  readonly margin?: ReadonlySet<string>;
   /** The kinds the page draws no row for: a node of one is no row and counts none, and the
    *  nodes under it stand under the row above it, as the page places them. */
   readonly undrawn?: Readonly<Record<string, true>>;
@@ -251,12 +268,14 @@ export interface HeldRow {
  *  The walk passes through a node the page draws no row for - a block of an ask, a comment or a
  *  message, which the page draws inside its item's row, or a node of an `undrawn` kind - to what
  *  stands under it, and through a plan task or a result (`NO_CONVERSATION_ROW`), which it counts
- *  only where a node it counts stands under it. */
+ *  only where a node it counts stands under it. It stops at a comment on a node's text (`margin`,
+ *  by `tree-read/tree-nodes.ts`' `onNodeText`): neither it nor anything under it stands in the
+ *  branch. */
 function underIn(
   answer: IssueTreeRead,
   key: string,
   readId: string,
-  { alike = [], undrawn }: HeldRow = {}
+  { alike = [], margin, undrawn }: HeldRow = {}
 ): IssueTreeNode[] {
   const children = childrenIn(answer);
   const seen = new Set<string>([readId, ...alike]);
@@ -265,6 +284,13 @@ function underIn(
     for (const child of children.get(id) ?? []) {
       if (!ownOf(child, key) || seen.has(child.id)) continue;
       seen.add(child.id);
+      if (
+        child.supertag === "comment" &&
+        margin?.has(child.id) === true &&
+        child.parent?.supertag !== "issue"
+      ) {
+        continue;
+      }
       const under = walk(child.id);
       if (
         ITEM_BLOCKS[child.supertag] !== true &&
