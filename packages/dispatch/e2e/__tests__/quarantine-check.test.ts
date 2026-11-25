@@ -24,6 +24,7 @@ import {
   annotationsPerPage,
   type BlameRange,
   blame,
+  type CandidateReading,
   checkRunsPerPage,
   countedRuns,
   decide,
@@ -43,7 +44,6 @@ import {
   report,
   rowLines,
   suitesPerCall,
-  type Unlisted,
   windowDays,
 } from "../tools/quarantine-check";
 import { rowLimit } from "./bounded-subprocess";
@@ -63,31 +63,37 @@ import { listing } from "./playwright-listing";
 
 const pictures = "pictures.e2e.ts [chromium] a picture uploads @pr";
 
-/** No candidate row the checkout's listings lack: the checkout `readCheckout` reads where they
- *  hold every row flaky twice. */
-const noneUnlisted: Unlisted = new Map();
+/** Each row of `changes` as the checkout reads a row its listings hold: `listed`, with its last
+ *  change. */
+function listedAs(changes: ReadonlyMap<string, RowChange>): Map<string, CandidateReading> {
+  return new Map([...changes].map(([name, change]) => [name, { change, kind: "listed" }]));
+}
+
+/** The readings of `stillRows`: every row flaky twice that the checkout's listings hold. */
+const stillReadings = listedAs(stillRows);
 
 /** The rows of `stillRows` with the pictures row's last change read from `ranges`, as the
  *  adapter reads it: its own lines from the listing, their newest commit from the blame. */
-function withPicturesBlame(ranges: (typeof blames)[string]): Map<string, RowChange> {
+function withPicturesBlame(ranges: (typeof blames)[string]): Map<string, CandidateReading> {
   const { end, start } = rowLines(picturesRow.line, picturesRow.fileRows, picturesRow.fileLength);
   const commit = lastChange(ranges, start, end);
   if (commit === undefined) throw new Error("the planted blame holds none of the row's lines");
-  return new Map([
-    ...stillRows,
-    [pictures, { ...commit, lines: `pictures.e2e.ts:${start}-${end}` }],
-  ]);
+  return listedAs(
+    new Map([...stillRows, [pictures, { ...commit, lines: `pictures.e2e.ts:${start}-${end}` }]])
+  );
 }
 
-/** Whether each head of `history` holds each commit of `changes` and of `fixReadings`, by
+/** Whether each head of `history` holds each commit of `readings` and of `fixReadings`, by
  *  `pairKey`: every one does, but where `except` says otherwise. */
 function held(
-  changes: ReadonlyMap<string, RowChange>,
+  readings: ReadonlyMap<string, CandidateReading>,
   fixReadings: readonly FixReading[] = [],
   except: Readonly<Record<string, boolean | string>> = {}
 ): Holds {
   const commits = [
-    ...[...changes.values()].map((change) => change.oid),
+    ...[...readings.values()].flatMap((reading) =>
+      reading.kind === "listed" ? [reading.change.oid] : []
+    ),
     ...fixReadings.map((reading) => reading.entry.fixed),
   ];
   return new Map<string, boolean | string>([
@@ -99,16 +105,17 @@ function held(
 }
 
 const named = (
-  changes: ReadonlyMap<string, RowChange>,
+  readings: ReadonlyMap<string, CandidateReading>,
   fixes: readonly FixReading[] = [],
-  holds: Holds = held(changes, fixes)
+  holds: Holds = held(readings, fixes)
 ) =>
-  decide(history, [], fixes, changes, readAt, holds, noneUnlisted).toQuarantine.map(
-    ({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)]
-  );
+  decide(history, [], fixes, readings, readAt, holds).toQuarantine.map(({ row, runs }) => [
+    `${row.file} ${row.title}`,
+    runs.map((run) => run.id),
+  ]);
 
 test("a row flaky in two runs of the fourteen days is named, with its runs and the lines to add", () => {
-  const decision = decide(history, [], [], stillRows, readAt, held(stillRows), noneUnlisted);
+  const decision = decide(history, [], [], stillReadings, readAt, held(stillReadings));
   expect(decision.toQuarantine.map(({ row, runs }) => [row, runs.map((run) => run.id)])).toEqual([
     [{ file: "pictures.e2e.ts", project: "chromium", title: "a picture uploads @pr" }, [101, 102]],
   ]);
@@ -142,15 +149,7 @@ test("a row flaky in two runs of the fourteen days is named, with its runs and t
 });
 
 test("the same history names nothing once that row is quarantined", () => {
-  const decision = decide(
-    history,
-    [picturesEntry],
-    [],
-    stillRows,
-    readAt,
-    held(stillRows),
-    noneUnlisted
-  );
+  const decision = decide(history, [picturesEntry], [], stillReadings, readAt, held(stillReadings));
   expect(decision.toQuarantine).toEqual([]);
   const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(false);
@@ -161,15 +160,7 @@ test("the same history names nothing once that row is quarantined", () => {
 // `keyed-writes.e2e.ts`'s row is named by two attempts of run 102 and by no other run, and
 // `mermaid.e2e.ts`'s by run 103 and by a nightly 18 days before the reading: each is one run.
 test("a row flaky in one run is not named, however many attempts of it named the row", () => {
-  const decision = decide(
-    history,
-    [picturesEntry],
-    [],
-    stillRows,
-    readAt,
-    held(stillRows),
-    noneUnlisted
-  );
+  const decision = decide(history, [picturesEntry], [], stillReadings, readAt, held(stillReadings));
   expect(decision.toQuarantine).toEqual([]);
   expect(decision.counted.map((run) => run.id)).toEqual([101, 102, 103, 106]);
 });
@@ -185,10 +176,9 @@ test("a pull request's flaky row does not count", () => {
       asMergeGroup,
       [picturesEntry],
       [],
-      stillRows,
+      stillReadings,
       readAt,
-      held(stillRows),
-      noneUnlisted
+      held(stillReadings)
     ).toQuarantine.map(({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)])
   ).toEqual([["deep-links.e2e.ts a held chunk lands @firefox", [103, 104]]]);
 });
@@ -202,7 +192,7 @@ test("a row flaky twice in runs whose heads do not hold its own lines' last chan
     [pairKey("2".repeat(40), head(102))]: false,
   });
   expect(named(changes, [], holds)).toEqual([]);
-  const decision = decide(history, [], [], changes, readAt, holds, noneUnlisted);
+  const decision = decide(history, [], [], changes, readAt, holds);
   expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
     [
       101,
@@ -245,9 +235,9 @@ test("a row flaky in one run whose head holds its own lines' last change, and in
   const changes = withPicturesBlame(blames.ownLinesBetween);
   const holds = held(changes, [], { [pairKey("4".repeat(40), head(102))]: false });
   expect(named(changes, [], holds)).toEqual([]);
-  expect(
-    decide(history, [], [], changes, readAt, holds, noneUnlisted).leftOut.map(({ run }) => run.id)
-  ).toEqual([102]);
+  expect(decide(history, [], [], changes, readAt, holds).leftOut.map(({ run }) => run.id)).toEqual([
+    102,
+  ]);
 });
 
 // The fix's commit time says the opposite of the heads: it is before both runs where their heads
@@ -255,13 +245,13 @@ test("a row flaky in one run whose head holds its own lines' last change, and in
 test("a row flaky twice in runs whose heads do not hold its fix is not named, and flaky twice in runs whose heads hold it is", () => {
   const fix = "5".repeat(40);
   const before = [{ committedDate: "2026-11-06T09:00:00Z", entry: picturesFix }];
-  const holds = held(stillRows, before, {
+  const holds = held(stillReadings, before, {
     [pairKey(fix, head(101))]: false,
     [pairKey(fix, head(102))]: false,
   });
-  expect(named(stillRows, before, holds)).toEqual([]);
+  expect(named(stillReadings, before, holds)).toEqual([]);
   expect(
-    decide(history, [], before, stillRows, readAt, holds, noneUnlisted).leftOut.map(
+    decide(history, [], before, stillReadings, readAt, holds).leftOut.map(
       ({ missing, run, why }) => [run.id, missing, why]
     )
   ).toEqual([
@@ -269,7 +259,9 @@ test("a row flaky twice in runs whose heads do not hold its fix is not named, an
     [102, "fix", `its head ${head(102)} does not hold its fix, ${fix}`],
   ]);
   const after = [{ committedDate: "2026-11-13T09:00:00Z", entry: picturesFix }];
-  expect(named(stillRows, after)).toEqual([["pictures.e2e.ts a picture uploads @pr", [101, 102]]]);
+  expect(named(stillReadings, after)).toEqual([
+    ["pictures.e2e.ts a picture uploads @pr", [101, 102]],
+  ]);
 });
 
 // Nightly 45045453036, started by hand at this branch's head ff963910, blamed the row's own lines
@@ -312,10 +304,9 @@ test("two merge groups created after a row's own lines last changed, whose heads
     runs,
     [],
     [],
-    new Map([[`refresh-freshness.e2e.ts [chromium] ${title}`, change]]),
+    listedAs(new Map([[`refresh-freshness.e2e.ts [chromium] ${title}`, change]])),
     at,
-    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), false])),
-    noneUnlisted
+    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), false]))
   );
   expect(decision.toQuarantine).toEqual([]);
   expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
@@ -348,8 +339,8 @@ test("two merge groups created after a row's own lines last changed, whose heads
 test("a run whose head cannot be placed against its row's last change is counted, and the summary names it with the reason", () => {
   const reason =
     "GitHub has no compare of the two (a 404 or a 422), so one of them is a commit it does not have";
-  const holds = held(stillRows, [], { [pairKey("1".repeat(40), head(101))]: reason });
-  const decision = decide(history, [], [], stillRows, readAt, holds, noneUnlisted);
+  const holds = held(stillReadings, [], { [pairKey("1".repeat(40), head(101))]: reason });
+  const decision = decide(history, [], [], stillReadings, readAt, holds);
   expect(decision.toQuarantine.map(({ runs }) => runs.map((run) => run.id))).toEqual([[101, 102]]);
   const because =
     `counted, though it cannot be told whether its head ${head(101)} holds its own lines' last ` +
@@ -370,12 +361,12 @@ test("a run whose head cannot be placed against its row's last change is counted
 // Run 101's head does not hold the row's last change, and run 102's does not hold its fix.
 test("the summary's count of the runs read says how many flakes it set aside for a head without the row's last change, and for one without its fix", () => {
   const fixes = [{ committedDate: "2026-11-06T09:00:00Z", entry: picturesFix }];
-  const holds = held(stillRows, fixes, {
+  const holds = held(stillReadings, fixes, {
     [pairKey("1".repeat(40), head(101))]: false,
     [pairKey("5".repeat(40), head(102))]: false,
   });
   const { summary } = report(
-    decide(history, [], fixes, stillRows, readAt, holds, noneUnlisted),
+    decide(history, [], fixes, stillReadings, readAt, holds),
     readAt,
     noUnquarantinableFiles
   );
@@ -390,10 +381,9 @@ test("a fix whose commit is not on main fails the check", () => {
     history,
     [picturesEntry],
     fixReadings,
-    stillRows,
+    stillReadings,
     readAt,
-    held(stillRows, fixReadings),
-    noneUnlisted
+    held(stillReadings, fixReadings)
   );
   expect(decision.offMain).toEqual([picturesFix]);
   const { annotations, failed } = report(decision, readAt, noUnquarantinableFiles);
@@ -410,10 +400,9 @@ test("a fix older than fourteen days is named for its owner to delete, and fails
     history,
     [picturesEntry],
     fixReadings,
-    stillRows,
+    stillReadings,
     readAt,
-    held(stillRows, fixReadings),
-    noneUnlisted
+    held(stillReadings, fixReadings)
   );
   expect(decision.spent).toEqual([{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }]);
   const { failed, summary } = report(decision, readAt, noUnquarantinableFiles);
@@ -426,10 +415,9 @@ test("an entry held longer than fourteen days is named with its issue and the li
     history,
     [picturesEntry, fourteenDays, eighteenDays],
     [],
-    stillRows,
+    stillReadings,
     readAt,
-    held(stillRows),
-    noneUnlisted
+    held(stillReadings)
   );
   expect(decision.overdue).toEqual([{ days: 18, entry: eighteenDays }]);
   const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
@@ -454,7 +442,7 @@ test("an entry held longer than fourteen days is named with its issue and the li
 test("flaky rows a run counted and no row notice named are reported as unread", () => {
   const short = history.map((run) => (run.id === 106 ? { ...run, unread: 3 } : run));
   const { annotations } = report(
-    decide(short, [picturesEntry], [], stillRows, readAt, held(stillRows), noneUnlisted),
+    decide(short, [picturesEntry], [], stillReadings, readAt, held(stillReadings)),
     readAt,
     noUnquarantinableFiles
   );
@@ -498,10 +486,9 @@ test("a row of the embedder job flaky in two runs is named with a fix entry's li
     runs,
     [],
     [],
-    new Map([[rowName(row), change]]),
+    listedAs(new Map([[rowName(row), change]])),
     readAt,
-    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), true])),
-    noneUnlisted
+    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), true]))
   );
   const { annotations, failed, summary } = report(decision, readAt, {
     embedder: ["search-tiers.e2e.ts"],
@@ -543,12 +530,12 @@ test("a row of the embedder job flaky in two runs is named with a fix entry's li
   );
 });
 
-// The checkout still holds `pictures.e2e.ts`, and no row of its listings is named `a picture
-// uploads before its rename`: the row was renamed or moved since the two runs named it, and this
-// reading cannot tell which row of the file it is now, so it fails the check as a failed read.
-// The control is the same row with its file gone from the checkout: it does not stand, and fails
-// nothing.
-test("a row flaky twice that no row of its file is named as, while the checkout holds the file, fails the check as a failed read", () => {
+// The checkout's listings hold other rows of `pictures.e2e.ts` and none named `a picture uploads
+// before its rename`: the row was renamed, deleted, or moved to another file or project since the
+// two runs named it, and this reading cannot tell which. No entry can name a row the suite does
+// not run, so a failed check could never be cleared: the check fails nothing, and the summary and
+// a warning name the row, its file and why it was not matched.
+test("a row flaky twice that no row of its file is named as, while the listings hold other rows of that file, is named with a warning and fails nothing", () => {
   const renamed = {
     file: "pictures.e2e.ts",
     project: "chromium",
@@ -559,42 +546,113 @@ test("a row flaky twice that no row of its file is named as, while the checkout 
     runs,
     [],
     [],
-    new Map(),
+    new Map<string, CandidateReading>([[rowName(renamed), { kind: "unmatched" }]]),
     readAt,
-    new Map(),
-    new Map([[rowName(renamed), []]])
+    new Map()
   );
+  expect(decision.unmatched).toEqual([{ row: renamed, runs }]);
+  expect(decision.unlisted).toEqual([]);
+  expect(decision.absent).toEqual([]);
   const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
-  expect(failed).toBe(true);
-  const section = summary.indexOf("#### Flaky rows this reading could not match");
+  expect(failed).toBe(false);
+  const section = summary.indexOf("#### Flakes left out");
   expect(summary.slice(section, section + 3)).toEqual([
-    "#### Flaky rows this reading could not match",
+    "#### Flakes left out",
     "",
     "- `pictures.e2e.ts [chromium] a picture uploads before its rename`, flaky in 2 runs: " +
       "[run 201](https://github.com/cybermonklabs/legion/actions/runs/201) of 2026-11-15 " +
       "(merge_group), [run 202](https://github.com/cybermonklabs/legion/actions/runs/202) of " +
-      "2026-11-16 (merge_group). No row of the checkout's listings is named so, though the " +
-      "checkout holds its file, `pictures.e2e.ts`: the row was renamed or moved inside its file " +
-      "since those runs, and their notices cannot be matched to the row it is now. Its flakes " +
-      "are not counted until those runs leave the 14 days. This is a failed read of those runs " +
-      "and not a finding.",
+      "2026-11-16 (merge_group). The listings of its file, `pictures.e2e.ts`, hold no row of " +
+      "that title in its project, `chromium`: the row was renamed, deleted, or moved to another " +
+      "file or project since those runs, and their notices cannot be matched to a row of the " +
+      "checkout. Its flakes are not counted.",
+  ]);
+  expect(annotations).toEqual([
+    "::warning title=dispatch-browser quarantine::pictures.e2e.ts [chromium] a picture uploads " +
+      "before its rename was flaky in 2 runs of 14 days, and the listings of pictures.e2e.ts " +
+      "hold no row of that title in chromium: a row renamed, deleted, or moved to another file " +
+      "or project since then, so its flakes are not counted: " +
+      "https://github.com/cybermonklabs/legion/actions/runs/201 " +
+      "https://github.com/cybermonklabs/legion/actions/runs/202",
+  ]);
+});
+
+// The checkout holds `pictures.e2e.ts` and no listing of the checkout holds any row of that file,
+// so this reading cannot read the row as it stands, and fails the check as a failed read. The
+// control is the same row with its file gone from the checkout: it does not stand, and fails
+// nothing.
+test("a row flaky twice of a file the checkout holds and no listing holds any row of fails the check as a failed read", () => {
+  const row = {
+    file: "pictures.e2e.ts",
+    project: "chromium",
+    title: "a picture uploads before its rename",
+  };
+  const runs = twiceFlaky([`pictures.e2e.ts:12 [chromium] ${row.title}`]);
+  const decision = decide(
+    runs,
+    [],
+    [],
+    new Map<string, CandidateReading>([[rowName(row), { kind: "unlisted" }]]),
+    readAt,
+    new Map()
+  );
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
+  expect(failed).toBe(true);
+  const section = summary.indexOf("#### Flaky rows of a file no listing holds");
+  expect(summary.slice(section, section + 3)).toEqual([
+    "#### Flaky rows of a file no listing holds",
+    "",
+    "- `pictures.e2e.ts [chromium] a picture uploads before its rename`, flaky in 2 runs: " +
+      "[run 201](https://github.com/cybermonklabs/legion/actions/runs/201) of 2026-11-15 " +
+      "(merge_group), [run 202](https://github.com/cybermonklabs/legion/actions/runs/202) of " +
+      "2026-11-16 (merge_group). The checkout holds its file, `pictures.e2e.ts`, and no listing " +
+      "of the checkout holds any row of that file: the file holds no row now, or a job runs it " +
+      "in a way these listings do not. So this reading cannot read the row as it stands, and " +
+      "its flakes are not counted. This is a failed read of those runs and not a finding.",
   ]);
   expect(annotations).toEqual([
     "::error title=dispatch-browser quarantine::pictures.e2e.ts [chromium] a picture uploads " +
-      "before its rename was flaky in 2 runs of 14 days, and no row of pictures.e2e.ts in the " +
-      "checkout is named so: a row renamed or moved since then, whose notices cannot be matched, " +
-      "so this is a failed read and its flakes are not counted until those runs leave the 14 " +
-      "days: https://github.com/cybermonklabs/legion/actions/runs/201 " +
+      "before its rename was flaky in 2 runs of 14 days, and no listing of the checkout holds " +
+      "any row of pictures.e2e.ts, which the checkout holds, so this is a failed read and its " +
+      "flakes are not counted: https://github.com/cybermonklabs/legion/actions/runs/201 " +
       "https://github.com/cybermonklabs/legion/actions/runs/202",
   ]);
-  expect(decision.unmatched).toEqual([{ row: renamed, runs }]);
-  const gone = decide(runs, [], [], new Map(), readAt, new Map(), noneUnlisted);
-  expect(gone.absent).toEqual([renamed]);
+  expect(decision.unlisted).toEqual([{ row, runs }]);
+  expect(decision.unmatched).toEqual([]);
+  const gone = decide(
+    runs,
+    [],
+    [],
+    new Map<string, CandidateReading>([[rowName(row), { kind: "gone" }]]),
+    readAt,
+    new Map()
+  );
+  expect(gone.absent).toEqual([row]);
   const goneReport = report(gone, readAt, noUnquarantinableFiles);
   expect(goneReport.failed).toBe(false);
   expect(goneReport.summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads before its rename`: the checkout does not " +
       "hold its file, `pictures.e2e.ts`, so the row does not stand."
+  );
+});
+
+// `readCheckout` reads every candidate, so a row with no reading is a defect of the reading:
+// `decide` throws rather than count it as a row that passes.
+test("a row flaky twice that the checkout's readings say nothing of fails the reading", () => {
+  const title = "a row with no reading";
+  expect(() =>
+    decide(
+      twiceFlaky([`pictures.e2e.ts:12 [chromium] ${title}`]),
+      [],
+      [],
+      new Map(),
+      readAt,
+      new Map()
+    )
+  ).toThrow(
+    `pictures.e2e.ts [chromium] ${title} was flaky in 2 runs, and the checkout's reading says ` +
+      "nothing of it: readCheckout reads every row flaky in that many runs, so the quarantine " +
+      "was not checked."
   );
 });
 
@@ -616,10 +674,9 @@ test("a row flaky twice by its own title alone, as runs before full titles named
     runs,
     [],
     [],
-    new Map(),
+    new Map<string, CandidateReading>([[rowName(ownTitle), { kind: "ownTitle", listed: [meant] }]]),
     readAt,
-    new Map(),
-    new Map([[rowName(ownTitle), [meant]]])
+    new Map()
   );
   const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(summary).toContain(
@@ -1006,7 +1063,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
   try {
     const readings = await readHistory(gitHub(server.url, "t"), repository, recordedAt);
     expect(readings).toEqual(recordedReadings);
-    const decision = decide(readings, [], [], new Map(), recordedAt, new Map(), noneUnlisted);
+    const decision = decide(readings, [], [], new Map(), recordedAt, new Map());
     expect(decision.counted).toEqual(recordedReadings);
     expect([...decision.rows].map(([name, { runs }]) => [name, runs.map((run) => run.id)])).toEqual(
       [
@@ -1210,20 +1267,22 @@ test("readHolds compares each commit of a candidate row with each head once, and
       url: `https://github.com/cybermonklabs/legion/actions/runs/${index + 1}`,
     })
   );
-  const changes = new Map<string, RowChange>([
-    [
-      "a.e2e.ts [chromium] row a",
-      { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:1-8", oid: change },
-    ],
-    [
-      "a.e2e.ts [chromium] row b",
-      { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:9-20", oid: change },
-    ],
-    [
-      "c.e2e.ts [chromium] row c",
-      { committedDate: "2026-11-01T00:00:00Z", lines: "c.e2e.ts:1-20", oid: "e".repeat(40) },
-    ],
-  ]);
+  const readings = listedAs(
+    new Map<string, RowChange>([
+      [
+        "a.e2e.ts [chromium] row a",
+        { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:1-8", oid: change },
+      ],
+      [
+        "a.e2e.ts [chromium] row b",
+        { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:9-20", oid: change },
+      ],
+      [
+        "c.e2e.ts [chromium] row c",
+        { committedDate: "2026-11-01T00:00:00Z", lines: "c.e2e.ts:1-20", oid: "e".repeat(40) },
+      ],
+    ])
+  );
   const fixes = [
     {
       file: "a.e2e.ts",
@@ -1252,7 +1311,7 @@ test("readHolds compares each commit of a candidate row with each head once, and
   );
   try {
     const github = gitHub(server.url, "t");
-    const holds = await readHolds(github, repository, runs, changes, fixes, recordedAt);
+    const holds = await readHolds(github, repository, runs, readings, fixes, recordedAt);
     expect(Object.fromEntries(holds)).toEqual({
       [pairKey(change, heads[0])]: true,
       [pairKey(change, heads[1])]: false,
@@ -1276,7 +1335,7 @@ test("readHolds compares each commit of a candidate row with each head once, and
     );
     // A day whose rows are each flaky in one run has no candidate, and compares nothing.
     const quiet = [runs[0], { ...runs[2], flakyRows: [rowC] }];
-    expect(await readHolds(github, repository, quiet, changes, fixes, recordedAt)).toEqual(
+    expect(await readHolds(github, repository, quiet, readings, fixes, recordedAt)).toEqual(
       new Map()
     );
     expect(server.seen).toHaveLength(6);
@@ -1291,8 +1350,10 @@ test("readHolds compares each commit of a candidate row with each head once, and
 // read against this checkout's listings and the stand-in's blame of its file: each has its last
 // change, so it is named, and with a fix entry's lines, since the quarantine cannot take a row of
 // the two-process job. Beside them, a row of one of those files that no listing names - renamed
-// since its runs - is unlisted with no row its notices could mean, and fails the read, and a row
-// of a file the checkout does not hold is neither, and does not stand.
+// since its runs, with the file's other rows listed - is `unmatched`, and fails nothing; a row of
+// a file the checkout holds that no listing holds any row of (`harness-processes.ts`, no spec) is
+// `unlisted`, and fails the read; and a row of a file the checkout does not hold is `gone`, and
+// does not stand.
 test(
   "readCheckout lists a row of the two-process job as that job runs it, and the report names it with a fix entry's lines",
   async () => {
@@ -1313,6 +1374,11 @@ test(
       project: "chromium",
       title: "a row of a deleted file",
     };
+    const unlisted = {
+      file: "harness-processes.ts",
+      project: "chromium",
+      title: "a row of a file no listing holds a row of",
+    };
     const commit = { committedDate: "2026-11-01T00:00:00Z", oid: "7".repeat(40) };
     const server = gitHubStandIn(
       [],
@@ -1328,19 +1394,24 @@ test(
     try {
       const checkout = await readCheckout(
         gitHub(server.url, "t"),
-        [twoProcessRow, signInRow, renamed, gone],
+        [twoProcessRow, signInRow, renamed, unlisted, gone],
         repository,
         "main"
       );
-      expect([...checkout.changes.keys()].sort()).toEqual(
-        [rowName(twoProcessRow), rowName(signInRow)].sort()
-      );
-      expect(Object.fromEntries(checkout.unlisted)).toEqual({ [rowName(renamed)]: [] });
+      expect(
+        Object.fromEntries([...checkout.readings].map(([name, reading]) => [name, reading.kind]))
+      ).toEqual({
+        [rowName(twoProcessRow)]: "listed",
+        [rowName(signInRow)]: "listed",
+        [rowName(renamed)]: "unmatched",
+        [rowName(unlisted)]: "unlisted",
+        [rowName(gone)]: "gone",
+      });
       expect(checkout.unquarantinable.twoProcess).toContain(twoProcessRow.file);
       expect(checkout.unquarantinable.twoProcess).toContain(signInRow.file);
       expect(checkout.unquarantinable.embedder).toContain("search-tiers.e2e.ts");
       const runs = twiceFlaky(
-        [twoProcessRow, signInRow, renamed, gone].map(
+        [twoProcessRow, signInRow, renamed, unlisted, gone].map(
           (row) => `${row.file}:1 [${row.project}] ${row.title}`
         )
       );
@@ -1348,15 +1419,15 @@ test(
         runs,
         [],
         [],
-        checkout.changes,
+        checkout.readings,
         readAt,
-        new Map(runs.map((run) => [pairKey(commit.oid, run.headSha), true])),
-        checkout.unlisted
+        new Map(runs.map((run) => [pairKey(commit.oid, run.headSha), true]))
       );
       expect(decision.toQuarantine.map(({ row }) => rowName(row)).sort()).toEqual(
         [rowName(twoProcessRow), rowName(signInRow)].sort()
       );
       expect(decision.unmatched.map(({ row }) => row)).toEqual([renamed]);
+      expect(decision.unlisted.map(({ row }) => row)).toEqual([unlisted]);
       expect(decision.absent).toEqual([gone]);
       const { failed, summary } = report(decision, readAt, checkout.unquarantinable);
       expect(failed).toBe(true);

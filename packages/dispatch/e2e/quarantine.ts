@@ -158,8 +158,8 @@ export const twoProcessRuns: readonly Readonly<Record<string, string>>[] = [
 /** The files whose rows the quarantine cannot take, as a listing names them: each is run by a job
  *  of .github/workflows/dispatch-browser.yaml that sets no `DISPATCH_E2E_QUARANTINE`, so it runs
  *  a quarantined row of theirs as it runs the rest, and the nightly's quarantine leg runs none of
- *  them. `e2e/__tests__/quarantine.test.ts` and `e2e/tools/quarantine-check.ts` each read them
- *  from listings of the checkout. */
+ *  them. `e2e/__tests__/quarantine.test.ts` and `e2e/tools/quarantine-check.ts` both read them
+ *  through `listUnquarantinableFiles` of `e2e/__tests__/playwright-listing.ts`. */
 export interface UnquarantinableFiles {
   /** The files `bun run e2e:embedder` runs, from a listing of its command (`embedderCommand` of
    *  e2e/__tests__/playwright-listing.ts): the embedder job's, on both lanes. Their rows skip

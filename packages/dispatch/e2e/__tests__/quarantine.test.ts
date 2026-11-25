@@ -8,10 +8,12 @@
  *  The faults are read from the module's own list and from the planted ones of
  *  `fixtures/quarantine-entries.fixture.ts`, each refused for the one fault its name says. The
  *  embedder job's files are read from a listing of the command `bun run e2e:embedder` runs, and
- *  the two-process job's from a listing under each of `twoProcessRuns`. The rows an entry names
- *  are read from a listing of e2e/playwright.config.ts under DISPATCH_E2E_QUARANTINE=only, which
- *  is the nightly's quarantine leg: what it selects is exactly what the config's own pattern
- *  selects, so an entry whose row it does not hold names no row of the suite.
+ *  the two-process job's from a listing under each of `twoProcessRuns`, both through
+ *  `listUnquarantinableFiles` of `./playwright-listing`, which the nightly's check reads them
+ *  through too. The rows an entry names are read from a listing of e2e/playwright.config.ts under
+ *  DISPATCH_E2E_QUARANTINE=only, which is the nightly's quarantine leg: what it selects is
+ *  exactly what the config's own pattern selects, so an entry whose row it does not hold names no
+ *  row of the suite.
  *  `fixtures/quarantine.config.ts` lists planted rows the same way, under each of the three
  *  selections, which is what shows the pattern takes the rows its entries name and nothing that
  *  only looks like one. Its listing under `exclude` is split again through `e2e/shard-reporter.ts`
@@ -34,7 +36,6 @@ import {
   quarantineFaults,
   rowName,
   selectionFaults,
-  twoProcessRuns,
   type UnquarantinableFiles,
 } from "../quarantine";
 import { rowLimit } from "./bounded-subprocess";
@@ -47,11 +48,12 @@ import {
   withoutDate,
   withoutIssue,
 } from "./fixtures/quarantine-entries.fixture";
-import { embedderCommand, listing, retained } from "./playwright-listing";
+import { listing, listUnquarantinableFiles, retained } from "./playwright-listing";
 
 // Started when the file loads, so the seven collect at once. The first lists the real suite under
 // the nightly's quarantine leg, the second the embedder job's rows, the next two the two-process
-// job's, the other three the planted config under each selection.
+// job's (`listUnquarantinableFiles` starts those three), the other three the planted config under
+// each selection.
 //
 // The first names the entries' files and no other. The pattern `only` adds matches a row's whole
 // grep title, which begins with its project and its file, neither holding a space (`quarantined`
@@ -66,19 +68,8 @@ const quarantinedRows = retained(
     "--pass-with-no-tests",
   ])
 );
-const embedder = embedderCommand();
 const unquarantinable: Promise<UnquarantinableFiles> = retained(
-  Promise.all([
-    listing(import.meta.url, "e2e/playwright.config.ts", embedder.environment, embedder.extra),
-    ...twoProcessRuns.map((environment) =>
-      listing(import.meta.url, "e2e/playwright.config.ts", environment)
-    ),
-  ]).then(([embedderRows, ...twoProcessRows]) => ({
-    embedder: [...new Set(rowsOfListing(embedderRows).map((row) => row.file))],
-    twoProcess: [
-      ...new Set(twoProcessRows.flatMap((rows) => rowsOfListing(rows).map((row) => row.file))),
-    ],
-  }))
+  listUnquarantinableFiles(import.meta.url).then(({ files }) => files)
 );
 const plantedConfig = "e2e/__tests__/fixtures/quarantine.config.ts";
 const plantedAll = retained(listing(import.meta.url, plantedConfig, {}));

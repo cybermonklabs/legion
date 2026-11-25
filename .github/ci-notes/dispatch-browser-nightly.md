@@ -21,11 +21,14 @@ two-process job cannot be quarantined: those jobs set no `DISPATCH_E2E_QUARANTIN
 a quarantined row as they run the rest, and the quarantine leg, one server process with no
 embedder, runs none of their rows. For such a row the summary names the lines of a fix entry
 instead, and says to fix the row in its own lines or to write that entry. A flaky row that no
-row of the checkout is named as, though the checkout holds its file, is a row renamed or moved
-since its runs, whose flakes cannot be matched to it: the check fails on it as a failed read.
-Until 14 days after cybermonklabs/legion#4523 lands on main, a notice of a run from before it,
-which names a row inside a `describe` by its own title alone, is the one exception: the summary
-names the row it means, and its flakes are not counted. A pull request's runs are not read,
+row of the checkout's listings is named as, while they hold other rows of its file, was
+renamed, deleted, or moved to another file or project since its runs: its flakes cannot be
+matched to a row the suite runs, and no entry can name one, so the summary names it under
+"Flakes left out" with a `::warning` annotation, and the check fails nothing. A flaky row whose
+file the checkout holds, while no listing holds any row of that file, fails the check as a
+failed read. Until 14 days after cybermonklabs/legion#4523 lands on main, a notice of a run
+from before it, which names a row inside a `describe` by its own title alone, is named with the
+row it means, and its flakes are not counted. A pull request's runs are not read,
 since a pull request's head can carry its own defect; the tool's head says the rest. It needs
 no other job of this run: what it reads is runs that have already ended, this one's not among
 them, so a flaky row of tonight's full lane is counted by tomorrow's check.

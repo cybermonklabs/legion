@@ -373,11 +373,12 @@ When a row may be added to the browser suite:
   workflow's own header says so). The check reads each row as the job that ran it runs it, the
   two-process job's in two-process mode among them. It counts a flaky run only when the commit the
   run tested holds the last change to the row's own lines, or when GitHub's compare cannot tell,
-  which the summary names. A flaky row that no row of the checkout is named as, though its file is
-  still there, fails the check as a failed read: the row was renamed or moved, and its flakes
-  cannot be matched to it. The one exception, until 14 days after cybermonklabs/legion#4523 lands,
-  is a run from before it, whose notice names a row inside a `describe` by its own title alone:
-  its flakes are not counted, and the summary names the row. `e2e/quarantine.ts` holds two kinds
+  which the summary names.
+  A flaky row that no row of the checkout is named as, while the checkout's listings hold other rows of its file, was renamed, deleted, or moved to another file or project.
+  Its flakes cannot be matched to a row the suite runs, and no entry can name one, so the check names the row under "Flakes left out" with a warning and fails nothing.
+  A flaky row whose file the checkout holds, while no listing holds any row of that file, fails the check as a failed read.
+  Until 14 days after cybermonklabs/legion#4523 lands, a run from before it names a row inside a `describe` by its own title alone: its flakes are not counted, and the summary names the row it means.
+  `e2e/quarantine.ts` holds two kinds
   of entry, each naming the row and the issue that owns it. A quarantine entry, with the date it
   was added, takes
   the row out of the pull-request lane and the merge queue, and the row keeps running in the
