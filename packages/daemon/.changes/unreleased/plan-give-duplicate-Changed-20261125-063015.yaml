@@ -4,11 +4,15 @@ body: |-
   taken` and `workflow: a plan is not taken: the issue's group runs the project's default steps`
   now holds every giver of the version as one text, listed as a sentence lists them (`a`, `a and
   b`, `a, b and c`), the giver the store added last first. Before, it held the claim token of the
-  one giver alone. A saved log query that matches `giver` equal to a claim token no longer matches
-  a version with more than one giver: match the token inside the field instead. Two new log lines
-  carry the same field: `workflow: a plan of an earlier owner is set aside for a plan its owner
-  gave`, and `workflow: an owner's plan is given again by another owner`, which puts the owner that
-  gave it again in `given_by` and the givers before it in `giver`.
+  one giver alone. The field `runs` of `workflow: a plan of an earlier owner is not taken`, which
+  names the version the first step runs (`version 1 of document <id>, given by <givers>`), now
+  names every giver of that version in the same way. Before, it named its one giver. A saved log
+  query that matches `giver` equal to a claim token, or `runs` equal to a version's text with one
+  giver, no longer matches a version with more than one giver: match the token inside the field
+  instead. Two new log lines carry the field `giver`: `workflow: a plan of an earlier owner is set
+  aside for a plan its owner gave`, and `workflow: an owner's plan is given again by another
+  owner`, which puts the owner that gave it again in `given_by` and the givers before it in
+  `giver`.
 time: 2026-11-25T06:30:15Z
 custom:
     Issue: plan-give-duplicate
