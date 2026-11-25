@@ -15,17 +15,16 @@ body: |-
   for `--help` or `--dry-run` posts nothing and is no write. Each comment, message and agent's
   message it posts carries the loop's mark, so the loop answers none of them. Each `answers: gh`
   and `answers: dispatch` log line says in `write` whether its call ran one of the tool's writes,
-  whatever its exit. Each call has a
-  gh call's time and output bounds, and an answer makes
-  at most `answers.bounds.gh_calls` dispatch calls, counted apart from its gh calls, as gh's calls
-  are now counted apart from its dispatch calls. Each call is recorded in `answer_tool_calls`; a
-  call the daemon stopped during is told to the next run as of unknown outcome, and the daemon's
-  reply on a fault names each dispatch write. The daemon finds `dispatch` at boot at
-  `LEGION_DISPATCH_PATH`, else on PATH, else at `/opt/legion/pi-envoy/bin/dispatch`, and `bun` at
-  `LEGION_BUN_PATH` or on PATH; a daemon that names no `dispatch_url`, or finds no `dispatch` or no
-  `bun`, offers no dispatch tool. The boot log's `answers: tools` line and `legion config check`
-  name the loop's tools and why one is not offered. Store migration
-  `20261124072849_answer_tool_calls_tool` adds `answer_tool_calls.tool`.
+  whatever its exit. Each call has a gh call's time and output bounds, and an answer makes at most
+  `answers.bounds.gh_calls` dispatch calls, counted apart from its gh calls, as gh's calls are now
+  counted apart from its dispatch calls. Each call is recorded in `answer_tool_calls`; a call the
+  daemon stopped during is told to the next run as of unknown outcome, and the daemon's reply on a
+  fault names each dispatch write. The daemon finds `dispatch` at boot at `LEGION_DISPATCH_PATH`,
+  else on PATH, else at `/opt/legion/pi-envoy/bin/dispatch`, and `bun` at `LEGION_BUN_PATH` or on
+  PATH; a daemon that names no `dispatch_url`, or finds no `dispatch` or no `bun`, offers no
+  dispatch tool. The boot log's `answers: tools` line and `legion config check` name the loop's
+  tools and why one is not offered. Store migration `20261124072849_answer_tool_calls_tool` adds
+  `answer_tool_calls.tool`.
 time: 2026-11-24T07:28:49.000000000Z
 custom:
     Issue: pr2230

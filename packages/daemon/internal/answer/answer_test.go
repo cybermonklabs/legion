@@ -360,6 +360,59 @@ func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
 	}
 }
 
+// Every example call the dispatch tool's description gives is a read, and it gives one: each JSON
+// object with args in the description the loop offers the model decodes as the tool's input (args,
+// stdin and no other field) and names one of the tool's reads (dispatchtool.ReadCommands). In proof
+// run 45683361567 a model ran the description's one write example, a comment, as a probe with the
+// stdin "placeholder", and the comment posted.
+func TestEveryExampleCallOfTheDispatchToolsDescriptionIsARead(t *testing.T) {
+	s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)))
+	req := anthropicRequest(t, s, &stubGH{}, 1)
+	req.Dispatch = &stubDispatch{}
+	if _, err := Answer(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var description string
+	for _, tool := range offerOf(t, s.requests()[0]).Tools {
+		if tool.Name == store.ToolDispatch {
+			description = tool.Description
+		}
+	}
+	if description == "" {
+		t.Fatal("the call offers no dispatch tool")
+	}
+	examples := 0
+	for rest := description; ; {
+		at := strings.IndexByte(rest, '{')
+		if at < 0 {
+			break
+		}
+		rest = rest[at:]
+		object := json.NewDecoder(strings.NewReader(rest))
+		var fields map[string]json.RawMessage
+		if object.Decode(&fields) != nil || fields["args"] == nil {
+			rest = rest[1:]
+			continue
+		}
+		example := rest[:object.InputOffset()]
+		rest = rest[len(example):]
+		examples++
+		var input struct {
+			Args  []string `json:"args"`
+			Stdin string   `json:"stdin"`
+		}
+		strict := json.NewDecoder(strings.NewReader(example))
+		strict.DisallowUnknownFields()
+		if err := strict.Decode(&input); err != nil || len(input.Args) == 0 || !slices.Contains(dispatchtool.ReadCommands, input.Args[0]) {
+			t.Errorf("the dispatch tool's description gives the example call %s (%v), want the tool's input naming one of its reads %v:\n%s",
+				example, err, dispatchtool.ReadCommands, description)
+		}
+	}
+	if examples == 0 {
+		t.Errorf("the dispatch tool's description gives no example call:\n%s", description)
+	}
+}
+
 // ghOffer is what an Anthropic model call offered of the gh tool and said of it: the tool's
 // description, its args' description in the input schema, and the system prompt.
 func ghOffer(t *testing.T, r recorded) (description, args, system string) {

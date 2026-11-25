@@ -34,11 +34,12 @@ var WriteCommands = []string{"comment", "message", "send-to-agent", "resolve-com
 var marked = []string{"comment", "message", "send-to-agent"}
 
 // Place is where the answer loop posts the reply of the question an answer runs for (Open), as a
-// write of the tool names it: the ask on whose thread the reply is posted; the comments the
-// question names of the comment thread it is posted in, a reply to any of which Dispatch puts in
-// that thread (or on the ask the thread hangs under); the message it replies to; and the session
-// it is sent to. A write aimed there would be a second reply, and the tool refuses it (aimRefusal).
-// The zero Place names none, and the tool refuses nothing for it.
+// write of the tool names it: the ask on whose thread the reply is posted; the comments of the
+// comment thread it is posted in, the ones the question names and every comment that thread held
+// when the answer started, a reply to any of which Dispatch puts in that thread (or on the ask the
+// thread hangs under); the message it replies to; and the session it is sent to. A write aimed
+// there would be a second reply, and the tool refuses it (aimRefusal). The zero Place names none,
+// and the tool refuses nothing for it.
 type Place struct {
 	Ask      string
 	Comments []string
@@ -56,10 +57,15 @@ const commandRefusal = "the daemon runs only these dispatch commands for a stopp
 const fileRefusal = "`%s` hands dispatch a file of the daemon's host, and the daemon hands it none: " +
 	"give the text as the call's stdin and write `--<field>-file -`, which reads it."
 
+// PlaceAdvice is what placeRefusal tells the model to do instead of a write aimed where the loop
+// posts the answer, which the dispatch tool's description says in the same words
+// (internal/answer's dispatchDescription).
+const PlaceAdvice = "Put what you would post there in your reply: the daemon posts it there."
+
 // placeRefusal is the reason a write aimed where the loop posts the answer is refused: the option
-// that aims it as given, the command, and that place.
+// that aims it as given, the command, and that place, then PlaceAdvice.
 const placeRefusal = "`%s` aims this `dispatch %s` where the daemon posts your reply to this question itself, %s, " +
-	"so it would be a second reply there. Put what you would post there in your reply: the daemon posts it there."
+	"so it would be a second reply there. " + PlaceAdvice
 
 // refusal is the reason argv is refused before dispatch starts, "" for none: its command, the
 // first argument, is none of ReadCommands and WriteCommands, a command the CLI adds later among
@@ -114,10 +120,6 @@ func aimRefusal(argv []string, stdin string, place Place) string {
 		if !ok {
 			continue
 		}
-		given := argv[i]
-		if !inline {
-			given += " " + value
-		}
 		field, fromFile := strings.CutSuffix(name, "-file")
 		switch {
 		case fromFile && value != "-":
@@ -126,6 +128,12 @@ func aimRefusal(argv []string, stdin string, place Place) string {
 			value = stdin
 		}
 		if where := place.aimedBy(argv[0], field, value); where != "" {
+			// The option as given: its word, then the next argument where that is its value (option),
+			// which value no longer holds where it was read from stdin.
+			given := argv[i]
+			if !inline {
+				given += " " + argv[i+1]
+			}
 			return fmt.Sprintf(placeRefusal, given, argv[0], where)
 		}
 	}
@@ -142,8 +150,9 @@ func (p Place) aimedBy(command, field, value string) string {
 	case command == "comment" && field == "--reply-to-ask" && namesID(itemID(value, "ask"), p.Ask, true):
 		return "on the thread of ask " + p.Ask
 	case command == "comment" && field == "--reply-to":
+		id := itemID(value, "comment")
 		for _, comment := range p.Comments {
-			if namesID(itemID(value, "comment"), comment, false) {
+			if namesID(id, comment, false) {
 				return "in the thread of comment " + comment
 			}
 		}

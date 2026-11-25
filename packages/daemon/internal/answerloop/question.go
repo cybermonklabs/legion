@@ -609,13 +609,15 @@ func (l *Loop) toolPlace(ctx context.Context, q store.AnswerQuestion, o Origin) 
 // it), else the root and every reply of o's comment thread (Dispatch.Thread of its root, or of
 // o's own comment where that is the root, a mention nobody replied to yet).
 func (l *Loop) threadComments(ctx context.Context, o Origin) ([]string, error) {
-	var comments []dispatch.Comment
+	var ids []string
+	var replies []dispatch.Comment
 	if o.AskID != "" {
 		ask, err := l.cfg.Dispatch.Ask(ctx, o.AskID)
 		if err != nil {
 			return nil, fmt.Errorf("read the thread of ask %s: %w", o.AskID, err)
 		}
-		comments = ask.Replies
+		replies = ask.Replies
+		ids = make([]string, 0, len(replies))
 	} else {
 		root := o.Thread
 		if root == "" {
@@ -625,10 +627,10 @@ func (l *Loop) threadComments(ctx context.Context, o Origin) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the comment thread of %s: %w", root, err)
 		}
-		comments = append([]dispatch.Comment{thread.Root}, thread.Replies...)
+		replies = thread.Replies
+		ids = append(make([]string, 0, 1+len(replies)), thread.Root.ID)
 	}
-	ids := make([]string, 0, len(comments))
-	for _, c := range comments {
+	for _, c := range replies {
 		ids = append(ids, c.ID)
 	}
 	return ids, nil

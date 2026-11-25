@@ -451,10 +451,13 @@ func (a *Answer) record(seq int, argv []string, owner string, started time.Time)
 // exit, so a reader of the line need not judge the arguments itself, and reads exit beside it for
 // a write gh or GitHub then refused; and for a refused call its refusal.
 func (a *Answer) log(seq int, argv []string, owner string, result Result) {
-	_, _, writing := writeCommand(argv)
+	writing := false
+	if result.Ran {
+		_, _, writing = writeCommand(argv)
+	}
 	attrs := []any{"question", a.question, "seq", seq, "issue", a.agent.Issue, "role", a.agent.Role,
 		"app", string(a.agent.App()), "appID", a.agent.AppID, "owner", owner, "args", argv, "exit", result.Exit, "ran", result.Ran,
-		"write", result.Ran && writing}
+		"write", writing}
 	if !result.Ran {
 		attrs = append(attrs, "refused", result.Output)
 	}

@@ -116,9 +116,10 @@ type argsProperty struct {
 // (dispatchtool.ReadCommands and WriteCommands), and that every other command, and an option
 // handing it a file of the daemon's host, is refused; when a write is for, how its text is given,
 // and the loop's mark it adds to what it posts; that it refuses a write aimed where the daemon
-// posts the reply itself, in the words of that refusal (dispatchtool's placeRefusal); and that
-// Dispatch's output can carry advice for a running agent, which the stopped agent takes no action
-// on: the CLI has no switch that leaves it out (packages/envoy-client's renderAdvice).
+// posts the reply itself, in the words of that refusal, whose advice it shares
+// (dispatchtool.PlaceAdvice); and that Dispatch's output can carry advice for a running agent,
+// which the stopped agent takes no action on: the CLI has no switch that leaves it out
+// (packages/envoy-client's renderAdvice).
 //
 // It gives no write call ready to run. Proof run 45683361567 showed a model the one comment the
 // description then gave, its stdin "Your comment.", and the model's first call was that comment,
@@ -143,7 +144,7 @@ func dispatchDescription(req Request) string {
 		"Never use `comment`, `message` or `send-to-agent` to post your answer or a copy of it. " +
 		"The tool refuses a write aimed where the daemon posts your reply to this question itself. " +
 		"That place is the same comment thread, the same ask, the Dispatch message that you reply to, or the Envoy session that asked. " +
-		"Such a write would be a second reply there. Put what you would post there in your reply: the daemon posts it there.\n\n" +
+		"Such a write would be a second reply there. " + dispatchtool.PlaceAdvice + "\n\n" +
 		"Dispatch's output can carry advice written for an agent that is running, for example to close an ask or to move an issue's status. " +
 		"You can do neither now. Take no action on that advice.\n\n" +
 		"`dispatch <command> --help` prints a command's options. Use it only before a command that the message asks for."
