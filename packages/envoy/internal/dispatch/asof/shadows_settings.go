@@ -59,6 +59,10 @@ func ProjectSettingTypes() []string { return slices.Clone(projectSettingTypes) }
 //     since each create numbers its issue in the transaction that appends it (api/issue_create.go).
 //   - last_seq: the newest seq of the project's own events at the cut, as the append sets it.
 //   - key, name and created_at: no write changes them.
+//   - proven_sessions: the newest project.created or project.updated at the cut (each write of
+//     the setting appends project.updated with the row, api/project_proven_sessions.go), false in
+//     a payload written before the column existed, when no project had it on; else the present
+//     value when no such event is later than the cut; else false.
 //   - owner, visibility, slack_channels and slack_channels_changed_at: the row's, as they stand
 //     now. They decide who may see the project and where its credentials may post, and no event
 //     records them (project.access_changed names the change and no value). Who may see what is
@@ -112,7 +116,15 @@ func projectsShadow(cut string) string {
 			then p.default_repo
 			else (select r.repo from (` + repoProjectsShadow(`least(`+cut+`, `+projectDefaultRepoBegan+`)`) + `) r
 				where r.project = p.key and r.is_default limit 1)
-		end as default_repo
+		end as default_repo,
+		coalesce(
+			(select coalesce((e.payload->>'proven_sessions')::boolean, false) from public.events e
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at <= ` + cut + `
+				order by e.seq desc limit 1),
+			case when not exists (
+				select from public.events e
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at > ` + cut + `)
+			then p.proven_sessions else false end) as proven_sessions
 	from public.projects p
 	where p.created_at <= ` + cut
 }
