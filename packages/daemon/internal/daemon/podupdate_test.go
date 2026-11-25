@@ -264,8 +264,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: s.reviewerPods.gate(st), Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		// The reviewer's task hold, as openSupervision wires it (reviewerPods.holdsTask).
-		DeliveryWaits: s.reviewerPods.holdsTask,
+		// The reviewer's task hold, as openSupervision wires it (reviewerPods.check).
+		DeliveryWaits: s.reviewerPods.check,
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,

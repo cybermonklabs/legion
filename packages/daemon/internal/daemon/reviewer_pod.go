@@ -97,6 +97,14 @@ func (p *reviewerPods) behind(c supervise.Claim) bool {
 // launch the rule lets through drops what was recorded for its issue. The wait is routine
 // (routineWaiting): the daemon opens the round itself and the round's bound ends it, so a start
 // row that retries it stays at debug however long the round runs.
+//
+// It is the rule at a task's send too (supervise.Deps.DeliveryWaits): a reviewer process already
+// running in an issue pod on another image is handed no task there, whichever backend runs it and
+// whatever contract its plugin records. The task stays pending, the pod is recorded as a held
+// start records it, so the sweep opens its round at once, and the reviewer is handed the task
+// once it runs in the pod that replaces this one. A message the daemon holds for that reviewer
+// waits on the same wait, which its row answers (supervise's ReviewHeadHolds,
+// reviewerAtRecordedHead), so that row's attempts stay at debug too.
 func (p *reviewerPods) check(c supervise.Claim) error {
 	if c.Role != claim.RoleReviewer || p == nil {
 		return nil
@@ -116,15 +124,6 @@ func (p *reviewerPods) check(c supervise.Claim) error {
 	}
 	return routineWaiting{err: wait.Errorf("the reviewer of %s starts only in a pod on the configured image %s, and its pod %s runs %s: the pod's update round replaces it first",
 		c.Issue, image.Configured, image.Pod, image.Image)}
-}
-
-// holdsTask is the rule at a task's send (supervise.Deps.DeliveryWaits): a reviewer process
-// already running in an issue pod on another image is handed no task there, whichever backend
-// runs it and whatever contract its plugin records. The task stays pending, the pod is recorded
-// as a held start records it, so the sweep opens its round at once, and the reviewer is handed
-// the task once it runs in the pod that replaces this one.
-func (p *reviewerPods) holdsTask(c supervise.Claim) bool {
-	return p.check(c) != nil
 }
 
 // waitsFor is whether a held reviewer start waits for pod, the pod issue's claims record, to be

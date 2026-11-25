@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -232,6 +233,151 @@ func TestAMessageHeldForAReviewerWaitsForAProcessAtTheRecordedHead(t *testing.T)
 	}
 	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].message != held.message {
 		t.Fatalf("delivered %+v, want the review once", delivered)
+	}
+	if resumes := rt.CallsOf("Resume"); len(resumes) != 1 {
+		t.Fatalf("the reviewer was resumed %d times, want once", len(resumes))
+	}
+}
+
+// A message the daemon holds for a reviewer is held as the reviewer's task is while the
+// reviewer's issue pod runs another image than the configured one, also where its process was
+// launched at the head the record holds: the reviewer works only in a pod on the configured image
+// (reviewerPods), so the row publishes nothing to the process in that pod and starts nothing
+// there. Its wait names the pod and the pod's update round, and it is routine, as a held start's
+// is: the daemon opens that round itself and the round's bound ends it, so the row's attempts stay
+// at debug however long the round runs, rather than turning into warnings from the seventh. Once
+// the round has replaced the pod and the reviewer runs in the new one, the row publishes, to that
+// process. The control: with the pod on the configured image, a message for the same head is
+// published at once, to the process the daemon found.
+func TestAMessageHeldForAReviewerAtItsHeadWaitsForItsPodOnAnotherImage(t *testing.T) {
+	publisher := &holderPublisher{}
+	logs := &syncBuffer{}
+	runner, sup, _ := runnerIn(t, phase.Retro, "in_progress", publisher, slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	recorded := &pullRequestHead{head: "sha-2"}
+	sup.deps.ReviewHead = recorded.read
+	sup.deps.Specs = headSpecs{recorded: recorded}
+	// The reviewer rule as openSupervision wires it: every launch's recheck, and the hold of a
+	// send, read the issue pod's image.
+	images := &podImageScript{issue: "LEGION-208"}
+	images.runs(podUpdatePod, reviewerPodConfiguredImage)
+	pods := newReviewerPods(sup.deps.Runtime, quietLogger())
+	pods.images = images
+	sup.deps.Store = pods.gate(sup.deps.Store)
+	sup.deps.DeliveryWaits = pods.check
+	rt := sup.deps.Runtime.(*fake.Runtime)
+	conns := sup.deps.Conns.(*fake.Conns)
+
+	// The reviewer's process runs in the issue's pod, and this release launched it at sha-2, the
+	// head the record holds, and recorded that launch (supervise.Claim.ReviewLaunchHead).
+	ctx := context.Background()
+	token := mustClaimToken(t, "LEGION-208", claim.RoleReviewer)
+	live := liveClaim(1, token, sup.deps.PluginContract)
+	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", "LEGION-208", "LEGION-208", claim.RoleReviewer, supervise.StateIdle
+	live.Locator = podUpdateLocator(token, "LEGION-208", podUpdatePod)
+	live.ReviewLaunchHead, live.ReviewLaunchGeneration = "sha-2", live.Generation
+	machine, _, err := sup.Create(ctx, live, "")
+	if err != nil {
+		t.Fatalf("create the reviewer's claim: %v", err)
+	}
+	// The outbox reaches the reviewer through the machine its supervisor holds for the token: a
+	// row that finds none holds nothing back, and the control below would pass for that reason.
+	if found, ok := sup.Machine(token); !ok || found != machine {
+		t.Fatalf("the supervisor holds no machine for %s, so no row reaches this reviewer's", token)
+	}
+	conns.Register(token, fake.NewConn())
+
+	issue := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Repo: "acme/widgets", Phase: phase.Retro}
+	payload := record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: "sha-1", Landed: "sha-2",
+		Base: "main", Phase: phase.Retro, PullRequest: 86}
+	row := mustOutboxRow(t, "LEGION-208", payload, time.Now())
+	message := func(text string) heldMessage {
+		return heldMessage{issue: issue, token: token, role: claim.RoleReviewer, what: "the merge-forward review of LEGION-208",
+			message: text, attributes: []any{"row", row.ID}, claimEnded: "ended", delivered: "delivered"}
+	}
+	attempt := func(m heldMessage) error {
+		t.Helper()
+		err := runner.deliverHeld(ctx, row, m)
+		machine.Wait()
+		return err
+	}
+
+	control := message("the control: read what changed since sha-1 and send your verdict at sha-2")
+	if err := attempt(control); err != nil {
+		t.Fatalf("the control's attempt with the pod on the configured image = %v, want it published", err)
+	}
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].message != control.message {
+		t.Fatalf("the control delivered %+v, want its message once: the heads do not match, and this case proves nothing", delivered)
+	}
+	if launches := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); launches != 0 {
+		t.Fatalf("the control started %d processes, want none: the process was launched at the record's head", launches)
+	}
+
+	// The configured image moves on, so the pod the reviewer runs in now runs another one.
+	images.runs(podUpdatePod, reviewerPodOldImage)
+	held := message("read what changed since sha-1 and send your verdict at sha-2")
+	var waited error
+	for n := 1; n <= 3; n++ {
+		if waited = attempt(held); !errors.Is(waited, wait.ErrWaiting) {
+			t.Fatalf("attempt %d while the pod runs %s = %v, want a wait", n, reviewerPodOldImage, waited)
+		}
+	}
+	if text := waited.Error(); !routineWait(waited) || !strings.Contains(text, podUpdatePod) || !strings.Contains(text, "update round") {
+		t.Errorf("the held message waits with %q (routine: %t), want the routine wait that names the pod %s and its update round",
+			text, routineWait(waited), podUpdatePod)
+	}
+	// The row's seventh attempt, where a wait that is not routine turns into a warning
+	// (waitWarnAttempts): the outbox settles it as it settles every attempt.
+	late := row
+	late.Attempts = waitWarnAttempts
+	runner.settle(ctx, late, waited)
+	if lines := loggedMessages(t, logs.String(), "outbox row waits"); len(lines) != 1 || lines[0]["level"] != "DEBUG" {
+		t.Errorf("the seventh attempt's wait logged %+v, want one line, at debug", lines)
+	}
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 {
+		t.Fatalf("delivered %+v, want the control alone: nothing reaches the reviewer in a pod on another image", delivered)
+	}
+	if launches := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); launches != 0 {
+		t.Fatalf("the held attempts started %d processes, want none in a pod on another image", launches)
+	}
+
+	// The pod's update round replaces the pod: the reviewer's process ends with it, and the
+	// reviewer starts again, in the pod that replaces it, on the configured image.
+	ended := machine.Claim().Locator
+	images.replaced()
+	conns.Register(token, fake.NewConn())
+	rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, "LEGION-208", podUpdateReplacementPod)})
+	if err := machine.Handle(ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
+		Locator: *ended, Kind: runtime.Gone, At: sup.deps.Clock.Now(), Displaced: true,
+	}}); err != nil {
+		t.Fatalf("the end of the reviewer's process with its pod: %v", err)
+	}
+	machine.Wait()
+	if resumes := rt.CallsOf("Resume"); len(resumes) != 1 || resumes[0].Spec.ReviewHead != "sha-2" {
+		t.Fatalf("the reviewer was resumed %+v, want once, at sha-2", resumes)
+	}
+	images.runs(podUpdateReplacementPod, reviewerPodConfiguredImage)
+	if err := attempt(held); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the attempt while the reviewer launches in the new pod = %v, want a wait", err)
+	}
+	generation := machine.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: generation},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: live.Session, SessionFile: live.SessionFile, PluginContract: sup.deps.PluginContract},
+		supervise.RequestReady{Claim: token, Generation: generation, Session: live.Session},
+	} {
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	machine.Wait()
+	if c := machine.Claim(); c.State != supervise.StateReady || podOf(c.Locator) != podUpdateReplacementPod {
+		t.Fatalf("the reviewer is %s at %+v, want it ready in the pod %s", c.State, c.Locator, podUpdateReplacementPod)
+	}
+	if err := attempt(held); err != nil {
+		t.Fatalf("the attempt once the reviewer is ready in the new pod = %v, want the message published", err)
+	}
+	if _, delivered := publisher.snapshot(); len(delivered) != 2 || delivered[1].message != held.message {
+		t.Fatalf("delivered %+v, want the control and then the held message", delivered)
 	}
 	if resumes := rt.CallsOf("Resume"); len(resumes) != 1 {
 		t.Fatalf("the reviewer was resumed %d times, want once", len(resumes))

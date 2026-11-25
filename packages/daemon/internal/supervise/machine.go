@@ -1028,13 +1028,14 @@ type Deps struct {
 	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
 	// any decision in flight (Machine.View). nil holds no delivery back.
 	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
-	// DeliveryWaits says whether c's pending task waits, unsent, for a reason of the daemon's
-	// that nothing of the claim records: a reviewer works only in an issue pod on the configured
-	// image, so a task for a reviewer whose pod runs another image waits for the pod that
-	// replaces it (internal/daemon's reviewerPods). The task stays pending and charged nothing,
-	// and the next decision asks again (sendPending). A message the daemon holds for a reviewer
-	// waits on it too (ReviewHeadHolds). nil holds no delivery back.
-	DeliveryWaits func(c Claim) bool
+	// DeliveryWaits is the wait c's pending task waits on, unsent, for a reason of the daemon's
+	// that nothing of the claim records, and nil where it waits on none: a reviewer works only in
+	// an issue pod on the configured image, so a task for a reviewer whose pod runs another image
+	// waits for the pod that replaces it (internal/daemon's reviewerPods, whose wait names the pod
+	// and its update round). The task stays pending and charged nothing, and the next decision
+	// asks again (sendPending). A message the daemon holds for a reviewer waits on it too, and its
+	// row answers that wait (ReviewHeadHolds). nil holds no delivery back.
+	DeliveryWaits func(c Claim) error
 	// ReviewHead is the head of issue's pull request as the daemon's record holds it now, ""
 	// where it records none (internal/daemon's workflowRuntime.reviewHead): the head a reviewer's
 	// task is for. A reviewer works only in a clone of its own made at the head its launch's spec

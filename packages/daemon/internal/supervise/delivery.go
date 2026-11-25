@@ -854,7 +854,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// Nor is a claim whose task the daemon holds back for a reason the claim does not record
 	// (Deps.DeliveryWaits): a reviewer whose pod runs another image than the configured one is
 	// handed its task in the pod that replaces it, once its process runs there and is ready.
-	if m.deps.DeliveryWaits != nil && m.deps.DeliveryWaits(m.claim) {
+	if m.deps.DeliveryWaits != nil && m.deps.DeliveryWaits(m.claim) != nil {
 		return nil
 	}
 	if _, awaiting := m.timers[TimerTurn]; awaiting {

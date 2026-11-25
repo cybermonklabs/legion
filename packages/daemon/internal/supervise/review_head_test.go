@@ -234,10 +234,15 @@ func TestAReviewersTaskWaitsForAProcessWhoseHeadTheMachineKnows(t *testing.T) {
 	})
 }
 
+// errPodWaits is the wait a reviewer's task waits on while its issue pod runs another image than
+// the configured one, as podGate answers it.
+var errPodWaits = errors.New("the reviewer starts only in a pod on the configured image: the pod's update round replaces it first")
+
 // podGate is the daemon's rule for a reviewer whose issue pod runs another image than the
 // configured one (internal/daemon's reviewerPods), as a test drives it: while the pod runs
-// another image, the reviewer's task waits (Deps.DeliveryWaits) and each launch's recheck refuses
-// the reviewer's start (internal/daemon's reviewerGatedStore). checked counts those rechecks.
+// another image, the reviewer's task waits on errPodWaits (Deps.DeliveryWaits) and each launch's
+// recheck refuses the reviewer's start (internal/daemon's reviewerGatedStore). checked counts
+// those rechecks.
 type podGate struct {
 	*memStore
 	gate    sync.Mutex
@@ -250,15 +255,18 @@ func (g *podGate) CheckLaunch(ctx context.Context, c Claim) error {
 	defer g.gate.Unlock()
 	g.checked++
 	if g.other {
-		return errors.New("the reviewer starts only in a pod on the configured image: the pod's update round replaces it first")
+		return errPodWaits
 	}
 	return g.memStore.CheckLaunch(ctx, c)
 }
 
-func (g *podGate) holdsTask(Claim) bool {
+func (g *podGate) waits(Claim) error {
 	g.gate.Lock()
 	defer g.gate.Unlock()
-	return g.other
+	if g.other {
+		return errPodWaits
+	}
+	return nil
 }
 
 // replaced is the pod's update round replacing the pod with one on the configured image.
@@ -275,25 +283,25 @@ func (g *podGate) checks() int {
 }
 
 // A message the daemon holds for a reviewer (ReviewHeadHolds) waits, as the reviewer's task does,
-// while the reviewer's issue pod runs another image than the configured one: the reviewer is
-// handed nothing there, and its launch into that pod is refused. So the message raises no
-// relaunch at the record's head while it waits. A relaunch raised there would be refused at each
-// attempt of the outbox, with one line for the raise and one for the refusal each time. Once the
-// pod's round has replaced the pod, the next attempt raises the relaunch.
+// while the reviewer's issue pod runs another image than the configured one, on the wait the task
+// waits on: the reviewer is handed nothing there, and its launch into that pod is refused. So the
+// message raises no relaunch at the record's head while it waits. A relaunch raised there would be
+// refused at each attempt of the outbox, with one line for the raise and one for the refusal each
+// time. Once the pod's round has replaced the pod, the next attempt raises the relaunch.
 func TestAMessageHeldForAReviewerWhosePodWaitsRaisesNoRelaunch(t *testing.T) {
 	h, recorded := newReviewerHarness(t, "head-1")
 	h.reach(StateIdle)
 	pod := &podGate{memStore: h.store, other: true}
 	h.m.deps.Store = pod
-	h.m.deps.DeliveryWaits = pod.holdsTask
+	h.m.deps.DeliveryWaits = pod.waits
 	recorded.set("head-2")
 	h.specs.setReviewHead("head-2")
 
 	for attempt := 1; attempt <= 3; attempt++ {
 		holds, err := h.m.ReviewHeadHolds(h.ctx)
 		h.m.Wait()
-		if err != nil || holds {
-			t.Fatalf("attempt %d: ReviewHeadHolds = %t, %v; want the message held, with no error", attempt, holds, err)
+		if holds || !errors.Is(err, errPodWaits) {
+			t.Fatalf("attempt %d: ReviewHeadHolds = %t, %v; want the message held on the pod's wait", attempt, holds, err)
 		}
 	}
 	if n := pod.checks(); n != 0 {
