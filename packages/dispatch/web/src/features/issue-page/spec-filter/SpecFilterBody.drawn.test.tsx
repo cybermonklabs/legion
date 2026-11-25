@@ -1,4 +1,7 @@
 import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
+import { Schema } from "@milkdown/kit/prose/model";
+import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorView } from "@milkdown/kit/prose/view";
 import {
   onlineManager,
   QueryClient,
@@ -1451,6 +1454,36 @@ test("a row the address named that is no statement is drawn by its kind, with no
   }
 });
 
+test("a row the address keeps is drawn whole with the focus elsewhere", async () => {
+  const text = `${"These words take a line of their own. ".repeat(60)}[Guide](/settings)`;
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1"),
+      node({ id: "comment-1", text, tree: displayTree(text), type: "comment" }),
+    ]),
+    [],
+    { named: ["comment-1"] }
+  );
+  try {
+    const row = rowOf(view, "comment-1");
+    const statementRow = rowOf(view, "spec#b-r1");
+    act(() => row.focus());
+    act(() => statementRow.focus());
+    await measureNearWords(near);
+    expect(statementRow).toHaveFocus();
+    expect(row.querySelector("[data-node-more]")).toBeNull();
+    expect(row.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe("");
+    expect(within(row).getByRole("link", { name: "Guide" })).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    near.restore();
+    restore();
+  }
+});
+
 // An issue whose spec holds no statement says so, in the words the outline says it in.
 test("an issue with no statements says so in the page's own line", () => {
   const { read, view } = drawBody(issueTree([]));
@@ -2072,6 +2105,67 @@ test("a press on a statement's words puts the caret in them, and a press on a li
     expect(locationOf(view)).toBe(destination);
   } finally {
     view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a press on a statement's words passes its point to the outline's editing", async () => {
+  const user = userEvent.setup();
+  // The hold goes on a ProseMirror view; a plain editable on the stage stands in for its drawing.
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <header contentEditable={false}>Requirement</header>
+          <p>The page draws r1.</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: "The page draws r1." })]),
+    [],
+    {
+      editor,
+      onEditing,
+    }
+  );
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    const point = mock(() => ({ offsetNode: words.firstChild, offset: 6 }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    const caretIsAt = (offset: number) =>
+      waitFor(() => {
+        const text = row.querySelector('[data-block-id="r1"] p')?.firstChild;
+        expect(text).toBeDefined();
+        expect(window.getSelection()?.anchorNode).toBe(text);
+        expect(window.getSelection()?.anchorOffset).toBe(offset);
+      });
+    await user.pointer({ keys: "[MouseLeft]", target: words, coords: { x: 72, y: 153 } });
+    await caretIsAt(6);
+    expect(point).toHaveBeenCalledWith(72, 153);
+
+    await user.keyboard("{Escape}");
+    expect(row).toHaveFocus();
+    point.mockClear();
+    await user.keyboard("{Enter}");
+    await caretIsAt(0);
+    expect(point).not.toHaveBeenCalled();
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
     read.mockRestore();
   }
 });

@@ -41,7 +41,6 @@ import {
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
-import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
@@ -60,6 +59,7 @@ import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
+import type { CaretAt } from "../node-caret";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
@@ -143,8 +143,8 @@ const NOTHING = (): void => {};
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, `f` steps through a statement's links - its count of checks among them, which
- * opens the Verification view on that statement. Enter or a press on its words puts the caret
- * in its block through the outline's editing (`useNodeEditing`), and Escape returns to the row.
+ * opens the Verification view on that statement. Enter puts the caret at the block's start. A
+ * press puts it at the pressed text without scrolling the page; Escape returns to the row.
  * `r` replies to a statement once a statement can be a target of the outline's writer, which
  * the body already passes to the keymap. The focus on a statement puts its facts in Details,
  * as a row of the outline does, and the focus on a decision puts that decision's. An address
@@ -545,6 +545,7 @@ export function SpecFilterBody({
     holdInPlaceOf(item, landingHold);
   };
   const pressedWords = useRef<HTMLElement | null>(null);
+  const openingFromPress = useRef<string | undefined>(undefined);
 
   useTreeKeymap({
     container: tree,
@@ -613,6 +614,7 @@ export function SpecFilterBody({
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
       editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
+      openingFromPress: openingFromPress.current === node.id,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
       ...(report?.row === node.id ? { report: report.line } : {}),
@@ -714,12 +716,17 @@ export function SpecFilterBody({
           ) {
             const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
             if (node === undefined) return;
+            const at = pressInWords(words, event.clientX, event.clientY);
+            // The press's focus can draw a frame before the editor opens. Neither places the
+            // row on screen: the reader pressed words that were already on screen.
+            openingFromPress.current = node.id;
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
+              openingFromPress.current = undefined;
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
-              edit(rowKey, node);
+              edit(rowKey, node, at);
             }, 0);
             return;
           }
@@ -937,6 +944,27 @@ function statementWordsAt(target: EventTarget): HTMLElement | null {
     `${FOCUSABLE}, summary, [role="button"], [role="link"], [data-node-trail]`
   );
   return words !== null && !words.contains(control) ? words : null;
+}
+
+/** Reads the press before the editor replaces the words. Both drawings count text characters,
+ *  not markup or lines, so a different wrap in the editor does not change the caret's place. */
+function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
+  const doc = words.ownerDocument;
+  const position = doc.caretPositionFromPoint?.(x, y);
+  const range = position == null ? doc.caretRangeFromPoint?.(x, y) : undefined;
+  const node = position?.offsetNode ?? range?.startContainer;
+  if (node === undefined || !words.contains(node)) return { x, y, offset: 0 };
+  const end = doc.createRange();
+  end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
+  const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    if (text.parentElement?.closest("[data-node-trail]") != null) continue;
+    if (text === node) return { x, y, offset: offset + end.startOffset };
+    if (end.comparePoint(text, 0) >= 0) break;
+    offset += text.textContent?.length ?? 0;
+  }
+  return { x, y, offset };
 }
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
@@ -1381,6 +1409,7 @@ interface SpecRowProps {
   focused: boolean;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
+  openingFromPress: boolean;
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   rowKey: string | undefined;
@@ -1404,6 +1433,7 @@ function Statement({
   focused,
   marked,
   onFocus,
+  openingFromPress,
   report,
   rowKey,
   statement,
@@ -1419,7 +1449,7 @@ function Statement({
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
-  const press = useOnScreenUnderHeads(row, focused, editing === undefined);
+  const press = useOnScreenUnderHeads(row, focused, editing === undefined && !openingFromPress);
   useOutOfTabOrder(words, editing === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.
@@ -1557,8 +1587,8 @@ function verificationPath(node: Pick<TreeNode, "reference">): string | undefined
 
 /** A row the filter kept that is no statement: a node an address named, which outranks the
  *  filter (R20). It is drawn by its kind and its words in the statements' column, with no mark
- *  and no decision beside it, so nothing the filter kept is lost (R19). A key pressed on it with
- *  nowhere to go says so under its words, as on a statement. */
+ *  and no decision beside it. Its words are whole, with the focus or without it, and their links
+ *  stay out of the tab order. A key with nowhere to go says so under its words, as on a statement. */
 function OtherRow({
   editable,
   editing,
@@ -1570,8 +1600,10 @@ function OtherRow({
   tabStop,
 }: SpecRowProps & { node: TreeNode }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
+  const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
   const press = useOnScreenUnderHeads(row, focused, editing === undefined);
+  useOutOfTabOrder(words, editing === undefined);
   return (
     <div
       aria-level={1}
@@ -1597,9 +1629,9 @@ function OtherRow({
       {editing !== undefined ? (
         <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
       ) : (
-        <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
+        <div className={`text-[15px] leading-6 ${pageWordsText}`} data-node-words="" ref={words}>
           <RowText markdown={node.text} source={node.source} tree={node.tree} />
-        </CutWords>
+        </div>
       )}
       <RowReport line={report} />
     </div>
