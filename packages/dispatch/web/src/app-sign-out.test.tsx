@@ -52,12 +52,6 @@ async function answersIn(listener: OtherTab | undefined, count: number): Promise
   await onRealTurns(() => false, 1);
 }
 
-// A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
-// its loads, and where `packages/pi-envoy/extensions/envoy.test.ts`'s row "session_shutdown
-// resolves within its budget when drain hangs on a dead connection" ran 20 times in about 10.4 min
-// at 96. A slower pod runs the same load as fewer loops, matched by that row's run time there, so
-// a figure below written "N busy loops (the R rung)" is one pod's count at the time of its reading.
-
 // W48. A sign-out discards only once Dispatch has answered it. While it is out nothing more goes
 // out here - every write stops trying after the attempt in flight - and every other tab is told to
 // hold the person's writes too. Refused, it leaves the person signed in with every write, here and
@@ -548,6 +542,11 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
   }
 });
 
+// The two rows of the sign-out question below (W45 and W53) hold the fake clock and wait on real
+// turns: each of their waits ends by its own count of real turns or by `waitFor`'s limit. Under
+// load they cost more than the web lane's guard, so package.json's `test` runs this file in a
+// `bun test` command of its own, at a guard of its own.
+
 // W45. The sign-out question names every tab's unsent changes: it asks the other tabs of this
 // browser first, over the sign-in channel, and lists what each of them would discard beside this
 // tab's own. A tab it knows of that does not answer within 300 ms is named as such.
@@ -614,22 +613,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     second.close();
     app.teardown();
   }
-  // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
-  // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. Worst measured
-  // cost: 68 199 ms over 20 runs at the 96 rung in the Job infra-1580-soh-pgv4s of the cluster's
-  // `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A's runs took 38.5 s
-  // against the calibration's 31.2 s), at 2a77b2b8, where main 7df64124's form of this row was 14
-  // of 20 at its 60 s flag (infra-1580-som-7dmqn, 147 busy loops, row A 32.7 s); 67 802.22 ms
-  // over 20 runs at that rung in the Job infra-1580-t24-j12-wh2d8 (140 busy loops, at which row A
-  // took 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 32 001.27 ms;
-  // 49 399.33 ms over 20 runs at that rung in the Job infra-1580-krows-so-rzw2c (109 busy loops,
-  // at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T22:08Z to
-  // 22:34Z, where main's form of this row cost up to 36 303.31 ms; 36 723.83 ms at 16 busy loops
-  // (the 96 rung) on a two-CPU, 8 GiB pod. Six times the worst is 409 s, past what the
-  // `dispatch-ui` job leaves a hang, so the job decides: its `timeout-minutes: 15` less its test
-  // step's 342 s and its other steps' 162 s at a61f3fc7 leaves 396 s (310 s and 145 s at
-  // 919ee888 leave more), and this 390_000 is 5.7 times the worst.
-}, 390_000);
+});
 
 // W53. The sign-out question names each change once, by key: a tab duplicated from this one, or
 // from another, copied its kept writes and resumed them under the same keys, so its copies are the
@@ -699,19 +683,7 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     for (const other of tabs) other.close();
     app.teardown();
   }
-  // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
-  // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. Worst measured
-  // cost: 60 902.00 ms over 20 runs at the 96 rung in the Job infra-1580-t24-j12-wh2d8 of the
-  // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
-  // 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 47 003.49 ms;
-  // 54 396.97 ms over 20 runs at that rung in the Job infra-1580-krows-so-rzw2c (109 busy loops,
-  // at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T21:40Z to
-  // 22:07Z, where main's form of this row cost up to 59 506.81 ms against the suite's 60 s flag;
-  // 33 673.56 ms at 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod. The row's rung is 96: at
-  // 240 one run cost 56 679.57 ms. 390_000 is 6.4 times the worst, and a hang of it fits the 396 s
-  // the `dispatch-ui` job's `timeout-minutes: 15` leaves beside its test step's 342 s and its
-  // other steps' 162 s at a61f3fc7 (310 s and 145 s at 919ee888).
-}, 390_000);
+});
 
 // W43. A lapsed tab shows the writes it keeps: the sign-in page lists the lapsed person's kept
 // writes by name, so they see what waits for them, and a refused one offers Discard there.

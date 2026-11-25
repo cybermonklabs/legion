@@ -22,12 +22,15 @@
     "dist",
     "agents"
   ],
+  "//": [
+    "test: score.test.ts runs alone with --timeout 450000. Its staging drain took up to 74782.68 ms at the 96-loop load."
+  ],
   "scripts": {
     "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline",
+    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'scripts/skill-scenarios/score.test.ts' && bun test --timeout 450000 --preload @legion/test-fixtures/row-deadline scripts/skill-scenarios/score.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

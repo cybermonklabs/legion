@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -11,18 +12,8 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
-// Every hang guard in this file is sized from a measured worst at 96 busy loops, 48 per CPU, this
-// suite's calibrated rung. A guard is at least six times that worst, rounded up. Only the room
-// the pi-legion job leaves for one hang caps a guard. That job's `timeout-minutes: 28`
-// (.github/workflows/ci-job-pi-legion.yaml) is 1680 s. The room is that limit less the job's
-// longest duration on record. The job did not run at the head these guards were sized at. Its
-// slowest recent run is job 137361573250 of CI run 45072143421 (2026-11-22, head 90aae385), one
-// of the three jobs the workflow's own comment names. It took 378 s, from 21:28:13Z to
-// 21:34:31Z. That workflow comment (`ci-job-pi-legion.yaml:54-61`) records a budget of 396 s for
-// the job, which is longer. So the room is 1680 s less 396 s, which leaves 1284 s for one hang.
-// A guard inside that room lets a hang redden the job with its test or file named, where a
-// cancelled job names nothing. A row whose body is synchronous and starts no child carries no
-// guard: it runs at the package's `--timeout 300000` (package.json).
+// This file runs in its own command. Its hooks and rows use that command's guard.
+// Each child process has an earlier kill deadline so a hang reports the command and signal.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
 const work = temporaryDirectory("skill-scenarios-score");
@@ -32,33 +23,49 @@ const runs = path.join(work, "runs");
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
 
+/** Time for Bun to reap a killed child and report the failure before the shared deadline. */
+const REAP_MARGIN_MS = 1_000;
+
+/**
+ * Runs `command` and sends SIGKILL if its timeout expires. Bun 1.4.4 sends SIGTERM at the test
+ * guard. A child that ignores SIGTERM can leave `Bun.spawnSync` blocked. An earlier SIGKILL
+ * lets us report the command and signal, even when Bun labels the hook failure `(unnamed)`.
+ */
+function runToEnd(command: string[], killMs: number, env?: Record<string, string | undefined>) {
+  // Whole milliseconds, and at least one: `Bun.spawnSync` takes a `timeout` of 0 as none.
+  const timeout = Math.max(1, Math.floor(killMs));
+  const ran = Bun.spawnSync(command, { env, timeout, killSignal: "SIGKILL" });
+  if (ran.signalCode) {
+    const how = ran.exitedDueToTimeout
+      ? `was killed (${ran.signalCode}) at its limit of ${timeout} ms`
+      : `ended on ${ran.signalCode}`;
+    throw new Error(`\`${command.join(" ")}\` ${how}. Stderr: ${ran.stderr.toString().trim()}`);
+  }
+  return ran;
+}
+
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
  * write at the call. `work` is reserved at module scope and made by the hook that reservation
  * registered, so nothing exists to write into until then — and a `bun test -t <pattern>` that
  * selects no row of this file runs no hook of it, where a module body that staged its world
- * would leave every file of it behind.
+ * would leave every file of it behind. Each is handed the moment, on `performance.now()`'s clock,
+ * at which a child it runs is killed.
  */
-const stagings: (() => void)[] = [];
+const stagings: ((killAt: number) => void)[] = [];
 
-// A hang guard, not a bound on the work: what can hang is draining the stagings, which builds a
-// repository — the pushed-code run's clone source, its git init, its commits and all. Timed round
-// the body on this two-CPU pod: 1376.98 / 1394.75 / 1591.83 ms (min / median / max) over 3 idle
-// runs of this file, and 28259.94 / 43733.27 / 74782.68 ms over 10 runs at 96 busy loops (48 per
-// CPU), this suite's calibrated rung. Six times that worst is 448.7 s, rounded up to 450_000,
-// 6.02 times it. That fits the 1284 s the pi-legion job leaves for one hang (the rule above
-// `work`, `ci-job-pi-legion.yaml:54-61`). A drain that never returns then reddens the job with
-// this file named instead of cancelling it. Bun reports a timed-out `beforeAll` as `(unnamed)`,
-// so the row itself is not named.
+// The staging drain builds the pushed-code run's repository. Its seven git commands are the
+// only subprocess calls. They share one kill deadline measured from the start of the hook.
 beforeAll(() => {
+  const killAt = performance.now() + timeLeft() - REAP_MARGIN_MS;
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
   }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
-  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-}, 450_000);
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage(killAt);
+});
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -291,11 +298,12 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
-stagings.push(() => {
+stagings.push((killAt) => {
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = runToEnd(
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      killAt - performance.now(),
+      { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -3132,20 +3140,15 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
-// A hang guard, not a bound on the work: what can hang is the `score.ts runs` subprocess this
-// hook spawns over the staged world. Timed round the body on this two-CPU pod: 2213.74 / 2243.03
-// / 2319.58 ms (min / median / max) over 3 idle runs, and 24833.04 / 60288.11 / 60932.92 ms over
-// the 7 of 10 runs at 96 busy loops (48 per CPU), this suite's calibrated rung, that reached it.
-// Six times that worst is 365.6 s, rounded up to 370_000, 6.07 times it. That fits the 1284 s the
-// pi-legion job leaves for one hang (the rule above `work`, `ci-job-pi-legion.yaml:54-61`). This
-// hook and the drain above, both hung, take 820 s, which still fits it. A subprocess that never
-// returns then reddens the job with this file named instead of cancelling it. Bun reports a
-// timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
+// The `score.ts runs` subprocess can hang while it scores the staged world.
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = runToEnd(
+    ["bun", path.join(import.meta.dir, "score.ts"), "runs", runs],
+    timeLeft() - REAP_MARGIN_MS
+  );
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-}, 370_000);
+});
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3648,24 +3651,12 @@ beforeAll(() => {
   );
 });
 
-// A hang guard, not a bound on the work: what can hang is the `score.ts live-read` subprocess this
-// row spawns. Measured on this two-CPU pod: 276 ms to 337 ms idle, median 277 ms over 5 runs, and
-// 4.0 s to 19.7 s under 96 busy loops (48 per CPU, this suite's calibrated rung), median 12.4 s
-// over 20 runs. Bun's 5 s default for a test failed this row in 9 of 10 loaded runs, which were
-// taken without the package's `--timeout 300000`: that default applies only to a run with no
-// flag. Six times the worst is 118 s, rounded up to 120_000, 6.1 times it. That fits the 1284 s
-// the pi-legion job leaves for one hang (the rule above `work`, `ci-job-pi-legion.yaml:54-61`).
-// A subprocess that never returns then reddens the job with this test named instead of
-// cancelling it.
+// The `score.ts live-read` subprocess can hang while it reads the staged skill files.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = Bun.spawnSync([
-    "bun",
-    path.join(import.meta.dir, "score.ts"),
-    "live-read",
-    liveRun,
-    liveSkills,
-    liveLogs,
-  ]);
+  const read = runToEnd(
+    ["bun", path.join(import.meta.dir, "score.ts"), "live-read", liveRun, liveSkills, liveLogs],
+    timeLeft() - REAP_MARGIN_MS
+  );
   const text = read.stdout.toString();
   expect(read.exitCode).toBe(0);
   const skillChars = [...skillWhole].length;
@@ -3677,7 +3668,7 @@ test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]
     `skill://demo/references/notes.md\t${[...otherHeader].length}\t${notesChars}\tfalse\tfalse`,
   ]);
   expect(text).toContain("2 of 4 reads arrived whole\n");
-}, 120_000);
+});
 
 /** A run's row and the lines printed under it. */
 function rowOf(name: string): string {

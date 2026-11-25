@@ -9,7 +9,7 @@
     "build:web": "vite build --config web/vite.config.ts",
     "check:classes": "bun web/src/theme/classes-in-build-css.ts",
     "check:asset-sizes": "bun web/src/asset-sizes-in-build.ts",
-    "test": "bun run build:contracts && bun run test:web web/src && bun run test:harness e2e/__tests__",
+    "test": "bun run build:contracts && bun run test:web web/src --path-ignore-patterns 'web/src/app-sign-out.test.tsx' && bun run test:web --timeout 410000 web/src/app-sign-out.test.tsx && bun run test:harness e2e/__tests__",
     "test:web": "bun test --parallel --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
     "test:web:cold": "bun run test:web --preload ./web/src/__tests__/hold-lazy-loads.ts",
     "test:web:late-reads": "bun run test:web --preload ./web/src/__tests__/hold-read-answers.ts",
