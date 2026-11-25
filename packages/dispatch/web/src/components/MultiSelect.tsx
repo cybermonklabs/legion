@@ -771,10 +771,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${single ? "" : "[overflow-anchor:none]"} ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           focusOnOpen={focusOnOpen}
           id={panelId}
           onDismiss={(how) => onOpenChange(false, how)}
+          // A pointer tick in a multi-select scrolls nothing. Firefox otherwise follows the moved
+          // option through native scroll anchoring. Arrow and Enter reveal use scrollTop directly.
+          overflowAnchor={single ? undefined : "none"}
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}

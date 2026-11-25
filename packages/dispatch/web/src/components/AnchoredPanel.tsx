@@ -184,6 +184,7 @@ export function AnchoredPanel({
   id,
   label,
   onDismiss,
+  overflowAnchor,
   role,
 }: {
   align?: "left" | "right";
@@ -197,6 +198,8 @@ export function AnchoredPanel({
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
   onDismiss: (how: PanelDismissal) => void;
+  /** The browser's scroll anchoring of the panel box itself. Defaults to the browser's own. */
+  overflowAnchor?: CSSProperties["overflowAnchor"];
   role?: "dialog";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -438,7 +441,7 @@ export function AnchoredPanel({
         className={className}
         id={id}
         ref={panelRef}
-        style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
+        style={{ overflowAnchor, position: "fixed", zIndex: PANEL_LAYER, ...position }}
         tabIndex={-1}
         {...named}
         {...PANEL_MARK}
