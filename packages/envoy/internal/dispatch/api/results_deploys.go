@@ -195,7 +195,7 @@ func markNotCounted(check *model.CheckBlock, compared comparison) {
 		switch {
 		case result.CommitSHA != compared.deploy.Commit:
 			result.NotCounted = "it names a commit that the current deploy of the program this check reads does not run"
-		case result.CreatedAt.Before(compared.deploy.DeployedAt):
+		case false:
 			result.NotCounted = "it was recorded before the current deploy of the program this check reads"
 		}
 	}
