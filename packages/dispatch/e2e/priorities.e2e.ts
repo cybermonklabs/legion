@@ -28,7 +28,7 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
-import { actionBar } from "./editor";
+import { actionBar, placeCaretAtEnd } from "./editor";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
@@ -2832,8 +2832,10 @@ test("a writer's keystroke on a description the editor cannot keep whole writes 
     await page.goto(`/priorities/${kept.id}`);
     const editor = page.getByRole("textbox", { exact: true, name: "Description" });
     await expect(editor).toBeVisible();
-    await editor.click();
-    await page.keyboard.press("ControlOrMeta+End");
+    // ProseMirror holds the caret at the end before the first key (`placeCaretAtEnd`). A click
+    // and ControlOrMeta+End typed the word where the click fell when ProseMirror's focus handler
+    // ran between the key's caret move and its read of that move.
+    await placeCaretAtEnd(editor);
     await page.keyboard.type(" Done.");
     await editor.blur();
     await expect.poll(() => stored(kept.id), { timeout: 15_000 }).not.toBe(plain);
@@ -3550,17 +3552,12 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
 }
 
 /** The field's own control: `editor` when given, else the description's editor, or the title's
- *  box, opened from its heading as a reader opens it. In an editor, the selection the click makes
- *  can reach ProseMirror after ControlOrMeta+End and put the caret back where the click fell, so
- *  the gesture is made again until the caret stands collapsed at the editor's end. */
+ *  box, opened from its heading as a reader opens it. In an editor, the caret is put at its end
+ *  so that ProseMirror holds it there before the first key (`placeCaretAtEnd`). */
 async function openTableField(cell: TableCell, editor?: Locator): Promise<Locator> {
   if (editor !== undefined || cell.field === "description") {
     const control = editor ?? cell.page.getByRole("textbox", { exact: true, name: "Description" });
-    await expect(async () => {
-      await control.click();
-      await cell.page.keyboard.press("ControlOrMeta+End");
-      expect(await control.evaluate(caretAtEnd), "the caret stands at the editor's end").toBe(true);
-    }).toPass({ timeout: 5_000 });
+    await placeCaretAtEnd(control);
     return control;
   }
   await titleHeading(cell.page).click();
@@ -3568,17 +3565,6 @@ async function openTableField(cell: TableCell, editor?: Locator): Promise<Locato
   await expect(box).toBeFocused();
   await cell.page.keyboard.press("End");
   return box;
-}
-
-/** Whether the selection is one caret inside `node` with no text of `node` after it. */
-function caretAtEnd(node: Element): boolean {
-  const selection = window.getSelection();
-  const anchor = selection?.anchorNode ?? null;
-  if (selection?.isCollapsed !== true || anchor === null || !node.contains(anchor)) return false;
-  const after = document.createRange();
-  after.setStart(anchor, selection.anchorOffset);
-  after.setEnd(node, node.childNodes.length);
-  return after.toString() === "";
 }
 
 /** Her suffix typed at the end of the field, or of `editor` when given, which she then leaves. */
