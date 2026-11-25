@@ -106,6 +106,10 @@ func TestATemplateMadeForOtherMigrationsIsNeverCopied(t *testing.T) {
 	}
 
 	_, st := replayStore(t, dsn)
+	var path string
+	if err := st.Pool().QueryRow(ctx, "show search_path").Scan(&path); err != nil || path != "public,pg_temp" {
+		t.Fatalf("replay search_path = %q, err = %v; want public and then pg_temp", path, err)
+	}
 	var marked bool
 	if err := st.Pool().QueryRow(ctx, "select to_regclass('replay_stale_template_mark') is not null").Scan(&marked); err != nil {
 		t.Fatalf("read whether the replay's database holds the stale template's mark: %v", err)

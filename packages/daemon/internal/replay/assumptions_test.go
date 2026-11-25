@@ -1,6 +1,6 @@
 package replay
 
-//ci:reads docs/site/src/content/docs/legion/replay.md TestTheDocsPageGivesEveryAssumption reads replayPage, the tool's page under ../../../..
+//ci:reads docs/site/src/content/docs/legion/replay.md `packages/daemon/internal/replay/assumptions_test.go#TestTheDocsPageGivesEveryAssumption` reads replayPage under ../../../..
 
 import (
 	"context"

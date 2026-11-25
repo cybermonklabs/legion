@@ -1,7 +1,7 @@
 package replay
 
-//ci:reads docs/site/src/content/docs/legion/replay.md TestEverySignalOfR11HasOneDefinition reads replayPage.
-//ci:reads packages/contracts/fixtures/daemon-api/state-controller-claim.json TestTheIdleShareFromTheStateJSON reads stateGolden.
+//ci:reads docs/site/src/content/docs/legion/replay.md `packages/daemon/internal/replay/signals_test.go#TestEverySignalOfR11HasOneDefinition` reads replayPage.
+//ci:reads packages/contracts/fixtures/daemon-api/state-controller-claim.json `packages/daemon/internal/replay/signals_test.go#TestTheIdleShareFromTheStateJSON` reads stateGolden.
 
 import (
 	"encoding/json"

@@ -2653,6 +2653,8 @@ A person who acted on a publication did so in a recorded event, which the replay
 
 **Evidence in a recorded window.** _The publication rows that the replay finishes without acting._
 The replay finishes each publication of the gated steps, the design gates and the role holders, and each step record and plan record, without acting.
+The workflow can attach an experiment and variant from a simulated assignment to a step record, but the replay does not publish that pair or use it as start-state evidence.
+Collected windows do not supply prior experiment assignments.
 `run.json` counts them under `divergence.finished`.
 A person's act after a publication is a Dispatch event of the window.
 
@@ -2746,6 +2748,7 @@ A check that reopened its issue made the record's own reopen, which the replay a
 
 **Evidence in a recorded window.** _The check rows and turns that the replay leaves out._
 The replay leaves out each fact of a production check, its report, its looks, its wakes and its time limit, and finishes its rows without acting.
+This includes the wakes postponed after a checking role fails, as well as older wakes superseded by the postponement.
 `run.json` counts the check's turns that the replay left out under `divergence.turnsLeftOut`.
 
 **If it is wrong.**

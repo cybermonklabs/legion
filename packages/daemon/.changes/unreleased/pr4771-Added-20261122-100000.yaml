@@ -34,8 +34,8 @@ body: |-
     `legion state` prints a `slots:` line under its admission line. It says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below
-    the first issue that waits for one. From daemon API contract 277, `legion state --json` carries
-    the same reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
+    the first issue that waits for one. With daemon API entry `20261125162112` (`slots-reading`),
+    `legion state --json` carries the same reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
     each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
     without them. The controller's tick notice carries the reading as `slots`.
 

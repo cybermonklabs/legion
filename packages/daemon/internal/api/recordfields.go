@@ -195,7 +195,7 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Status", Column: ColumnAgents, Keys: []string{"status"},
 		Reason: "the status the daemon means the issue to have and writes to Dispatch"},
 	{Field: "Rank", Column: ColumnWithheld,
-		Reason: "the record's field is served as no key of its own: the `rank` and `rootRank` an issue of the project carries are the admission's reading (contract 277), which the projection writes beside the record for the issues the line and the slots reading place, and no issue of another project carries them"},
+		Reason: "the record's field is served as no key of its own: the `rank` and `rootRank` an issue of the project carries are the admission's reading, which the projection writes beside the record for the issues the line and the slots reading place, and no issue of another project carries them"},
 	{Field: "LingerUntil", Column: ColumnAgents, Keys: []string{"lingerUntil"},
 		Reason: "an absent `holdReason` means either no reason or a tree that lingers, and this is what tells the two apart, which the controller's texts turn on"},
 	{Field: "Hold", Column: ColumnAgents, Keys: []string{"holdReason", "heldFrom"},

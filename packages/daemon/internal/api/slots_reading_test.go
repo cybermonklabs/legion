@@ -84,10 +84,10 @@ func TestTheStateRouteServesACallerItsPluginContractsSlotsReading(t *testing.T) 
 		served bool
 	}{
 		{name: "a caller that states the contract before this one", remote: statePodAddr + ":41000",
-			claims: podClaims(DaemonAPIVersion), stated: slotsReadingContract - 1},
+			claims: podClaims(DaemonAPIVersion()), stated: entryNumber(slotsReadingContract) - 1},
 		{name: "a pod whose claims record the pause's contract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract)},
 		{name: "a caller that states this contract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract),
-			stated: slotsReadingContract, served: true},
+			stated: entryNumber(slotsReadingContract), served: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(pauseContract), served: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,16 +122,12 @@ func TestTheStateRouteServesACallerItsPluginContractsSlotsReading(t *testing.T) 
 	})
 }
 
-// slotsReadingContract is the contract whose entry in version.go added the five keys, and this
-// daemon's own contract is never below it: a caller at this contract is served them.
+// The slots-reading entry has a served number, not just an id. entryNumber's fallback for
+// a missing registration stands above the daemon's own contract.
 func TestTheSlotsReadingContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedSlotsReading = 277
-	if slotsReadingContract != addedSlotsReading {
-		t.Fatalf("slotsReadingContract = %d, want %d, the contract whose entry in version.go added `admission.slots`, `rank`, `rootRank` and the slot's `state` and `since`",
-			slotsReadingContract, addedSlotsReading)
-	}
-	if slotsReadingContract > DaemonAPIVersion {
-		t.Fatalf("slotsReadingContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			slotsReadingContract, DaemonAPIVersion)
+	number := entryNumber(slotsReadingContract)
+	if number <= LastNumberedContract || number > DaemonAPIVersion() {
+		t.Fatalf("slots-reading entry number = %d, want above the frozen contracts and at most %d",
+			number, DaemonAPIVersion())
 	}
 }

@@ -40,6 +40,11 @@ const replayBuildPrefix = replayDatabasePrefix + "build_"
 // space every lock of the daemon's own store lives in. The second key is the template's name.
 const templateLockClass = "legion.replay.template"
 
+// The replay opens dedicated connections, not transaction-pooled sessions. On the databases it
+// owns, unqualified store and migration tables resolve in public, with catalogs searched first
+// implicitly and temporary relations last. The admin connection needs no application schema.
+const replaySearchPath = "public,pg_temp"
+
 // replayTables is the tables a rule replays read that no daemon migration makes, created by the
 // replay in its own database after the daemon's migrations, and in no daemon's database, since the
 // daemon runs none of these rules: the merger's ready mark inside merging of the release at
@@ -118,7 +123,7 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 		return replayDatabase{}, nil, err
 	}
 	db := replayDatabase{name: name, url: target, admin: dsn}
-	admin, err := pgx.Connect(ctx, dsn)
+	admin, err := connectReplayAdmin(ctx, dsn)
 	if err != nil {
 		return replayDatabase{}, nil, fmt.Errorf("replay: connect to %s to make the replay's database: %w", redacted(dsn), err)
 	}
@@ -146,10 +151,9 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 
 // templateKey is the key of the template for the migration set all and the replay's own tables:
 // the first 16 bytes, in hex, of the SHA-256 of the count of all, each migration's name and SQL in
-// the order given, the count of tables and each table's statement, every field preceded by its
-// length, so no two sets share a key by moving bytes from one field to the next. A migration
-// added, removed, renamed or rewritten, or a table of the replay's own changed, gives another key,
-// and so another template: a template made for other migrations is never copied.
+// the order given, the count of tables, each table's statement and the schema search path.
+// Every field is preceded by its length so moving bytes between fields gives a different key.
+// A template made for other migrations, tables or a different search path is never copied.
 func templateKey(all []migrations.Migration, tables []string) string {
 	sum := sha256.New()
 	count := func(n int) {
@@ -171,6 +175,7 @@ func templateKey(all []migrations.Migration, tables []string) string {
 	for _, table := range tables {
 		field(table)
 	}
+	field(replaySearchPath)
 	return hex.EncodeToString(sum.Sum(nil)[:16])
 }
 
@@ -282,7 +287,7 @@ func randomName(prefix string) string {
 // to. A drop that finds a session of the database still closing is tried again for a while.
 func (db replayDatabase) drop(ctx context.Context) error {
 	ctx = context.WithoutCancel(ctx)
-	admin, err := pgx.Connect(ctx, db.admin)
+	admin, err := connectReplayAdmin(ctx, db.admin)
 	if err != nil {
 		return fmt.Errorf("replay: connect to drop the replay's database %s: %w", db.name, err)
 	}
@@ -305,10 +310,20 @@ func (db replayDatabase) drop(ctx context.Context) error {
 // not exited yet.
 const objectInUse = "55006"
 
+func connectReplayAdmin(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RuntimeParams["search_path"] = "pg_catalog, pg_temp"
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
 // databaseURL is dsn naming the database name in place of its own: the URL form's path, or a
 // keyword form's dbname, whichever dsn is written in. It refuses a dsn pgx cannot read, and a
 // rewrite pgx reads another server or user from than dsn, so the replay's database is made on the
-// server the caller named and on no other.
+// server the caller named and on no other. It pins the search path for both template creation
+// and replay execution rather than inheriting the caller's schema order.
 func databaseURL(dsn, name string) (string, error) {
 	given, err := pgconn.ParseConfig(dsn)
 	if err != nil {
@@ -321,9 +336,12 @@ func databaseURL(dsn, name string) (string, error) {
 			return "", fmt.Errorf("replay: read the Postgres DSN: %w", err)
 		}
 		parsed.Path, parsed.RawPath = "/"+name, ""
+		query := parsed.Query()
+		query.Set("search_path", replaySearchPath)
+		parsed.RawQuery = query.Encode()
 		rewritten = parsed.String()
 	} else {
-		rewritten = dsn + " dbname=" + name
+		rewritten = dsn + " dbname=" + name + " search_path='" + replaySearchPath + "'"
 	}
 	read, err := pgconn.ParseConfig(rewritten)
 	if err != nil {

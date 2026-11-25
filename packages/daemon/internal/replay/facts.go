@@ -269,7 +269,7 @@ var FactSources = map[string]FactSource{
 	"GateRequestFound":          {Way: FactLeftOut, Assumption: assumeBootRepairsNothing},
 	"CheckReport":               {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"CheckLookEnded":            {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
-	"CheckWakeDue":              {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
+	"CheckWakeDue":              {Way: FactLeftOut, Assumption: assumeNoProductionCheck}, // Includes the WakeAt fence on postponed checks.
 	"CheckBound":                {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"PullRequestOpened":         {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestReview":         {Way: FactLeftOut, Assumption: assumeNoGitHub},

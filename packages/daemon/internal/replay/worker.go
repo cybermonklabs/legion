@@ -102,8 +102,9 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindGatedStepsPublish}:  {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 	{Kind: record.OutboxKindDesignGatesPublish}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 	{Kind: record.OutboxKindRoleHoldersPublish}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
-	{Kind: record.OutboxKindStepRecord}:         {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
-	{Kind: record.OutboxKindPlanRecord}:         {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	// The variant is part of the step publication, not a second effect that the replay executes.
+	{Kind: record.OutboxKindStepRecord}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindPlanRecord}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
 
 	{Kind: record.OutboxKindIssueBranch}:     {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 	{Kind: record.OutboxKindIssueSuspend}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
@@ -116,6 +117,7 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindMergeQueueRemoval}: {Way: OutboxFinished, Assumption: assumeNoGitHub},
 	{Kind: record.OutboxKindConflictConfirm}:   {Way: OutboxFinished, Assumption: assumeNoGitHub},
 
+	// Superseded check wakes and their replacements are both left out under the same assumption.
 	{Kind: record.OutboxKindCheckWake}:  {Way: OutboxFinished, Assumption: assumeNoProductionCheck},
 	{Kind: record.OutboxKindCheckLook}:  {Way: OutboxFinished, Assumption: assumeNoProductionCheck},
 	{Kind: record.OutboxKindCheckBound}: {Way: OutboxFinished, Assumption: assumeNoProductionCheck},

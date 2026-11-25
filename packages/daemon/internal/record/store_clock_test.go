@@ -56,15 +56,12 @@ type clockRow struct {
 // column the replay wrote; this test covers the half that writes nothing, the comparisons, and
 // the writes of those statements on data the replay's fixture may not reach.
 //
-// It lists, from the Go source of internal/record, internal/store and internal/treelifecycle,
-// every statement that reads Postgres's clock — each string literal naming now(), named by its
-// function — and fails for a statement no row of the table answers and for a row that names no
-// statement. Each row either runs its statement through a store built with a clock at a time in
-// 2001 (record.NewStoreWithClock, store.Store.UseClock) and asserts the clock's answer, or says
-// why the admission pass and the engine never run it and the replay does not call it.
+// It lists each string literal naming now() from the record, store, treelifecycle and replay
+// packages and fails for a statement no row answers or a row that names no statement. A row
+// checks the store's injected clock or explains why nothing a replay runs reaches the statement.
 func TestEveryStatementThatComparesWithNowTakesTheClock(t *testing.T) {
 	module := filepath.Join("..", "..")
-	found := nowStatements(t, module, "internal/record", "internal/store", "internal/treelifecycle")
+	found := nowStatements(t, module, "internal/record", "internal/store", "internal/treelifecycle", "internal/replay")
 	rows := clockRows()
 	answered := make(map[nowStatement]bool, len(rows))
 	for _, row := range rows {

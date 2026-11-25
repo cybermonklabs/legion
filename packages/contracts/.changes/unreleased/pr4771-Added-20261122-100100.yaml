@@ -1,13 +1,13 @@
 kind: Added
 body: |-
-    The daemon API mirror reads contract 277. `api.Admission` carries `slots`, the slots reading:
+    The daemon API mirror reads the `slots-reading` entry (`20261125162112`). `api.Admission` carries `slots`, the slots reading:
     the slots in use and the cap, the holders counted by what each does (`working`, `stopped`,
     `person`, `issue` and `idle`, each with its count and oldest time), the two readings of started
     work that waits for a slot (`waitOnlyForSlot` and `startedWithoutSlot`), `belowFirstWaiting`,
     and `line`, the sentence that `legion state` prints. Each slot carries its holder's `state` and
     `since`, and each issue carries its own Dispatch `rank` and its tree root's `rootRank`. Every
-    new field is optional, because the daemon serves none of them to a caller below 277. The golden
-    fixtures under `fixtures/daemon-api/` carry contract 277.
+    new field is optional, because the daemon serves none of them to a caller below that entry.
+    The entry's fixture records the added fields.
 time: 2026-11-22T10:01:00.000000000Z
 custom:
     Issue: pr4771
