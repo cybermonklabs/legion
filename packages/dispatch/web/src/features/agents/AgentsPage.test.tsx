@@ -1394,13 +1394,13 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("[@Planner](dispatch://agent/planner-session)")
+      ).toBe("[@Planner](dispatch://agent/planner-session) ")
     );
-    // The pick wrote the party's mention into the box, so the rest of the message is written
-    // after it: replacing the box would drop that mention.
+    // The pick wrote the party's mention into the box, and the one space a seed ends with, so
+    // the rest of the message is written after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
-    await user.paste(" Track this under Core");
+    await user.paste("Track this under Core");
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
@@ -1496,7 +1496,7 @@ test("an upload refused on an Agents row's issue goes with the pick, and its Ret
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
     // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
-    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await within(planner).findByText("That file is too large.");
@@ -1535,7 +1535,7 @@ test("an upload that lands after an Agents row's issue pick joins the message at
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
     // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
-    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));

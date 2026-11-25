@@ -92,19 +92,23 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 }
 
 // commentParties is who one comment names: the delivering parties, each once and in the order
-// the request's array and then the body name them, and the login of each person the body names,
-// each once and in the order it names them. It is the set every mention rule is keyed on and the
-// set the deliveries are resolved from.
+// the request's array and then the body name them, the login of each person the body names,
+// each once and in the order it names them, and whether it names any party at all. It is the
+// set every mention rule is keyed on and the set the deliveries are resolved from.
 //
 // A person is in people and never in targets: a person reads the record and is never a
 // delivering party, so nothing is sent to one, nothing is resolved for one, and one never
-// counts toward the cap. A comment names somebody when it has a target or a person
-// (validateCommentMentions), which is what makes a typed `/btw` the command it looks like.
-// The logins are kept rather than counted because what a comment says about the people it names
-// is to be written from them; every rule here asks only whether there is one.
+// counts toward the cap. A party the body writes at an address no delivery route takes is in
+// neither list, for the same reasons (commentPartiesOf). A comment names somebody when it names
+// any party - a target, a person, or such an address (named) - as the composer's own reading of
+// a draft says (`draftParties`' `named`), and that is what makes a typed `/btw` the command it
+// looks like (validateCommentMentions). The logins are kept rather than counted because what a
+// comment says about the people it names is to be written from them; every rule here asks only
+// whether there is one.
 type commentParties struct {
 	targets []string
 	people  []string
+	named   bool
 }
 
 // partyTarget is the delivery route a party reference names - `session:<id>` for an agent,
@@ -122,11 +126,13 @@ func partyTarget(ref text.Ref) string {
 
 // checkMentionRoute refuses a target of no known form - one model.ParseRoute does not read as a
 // delivery route - with the code and the reason the `mentions` array has always answered such a
-// target with. Both readers are held to it (R4), because the grammar a body writes a party in is
-// the wider one: text.IsSessionID takes every session id the Agents page shows, `.` and `:`
-// among them, where a session route is `session:[A-Za-z0-9_-]+`, so a body can write an agent
-// address no route reaches. A role reference cannot: text reads a role token by ParseRoute's own
-// `[a-z0-9-]+`.
+// target with. Only the array is held to it (R4 keeps every refusal the array had). The grammar a
+// body writes a party in is the wider one: text.IsSessionID takes every session id the Agents
+// page shows, `.` and `:` among them, where a session route is `session:[A-Za-z0-9_-]+`, so a
+// body can write an agent address no route reaches. Such an address is the writer's words (R8),
+// and a body that writes one is stored as it stands and delivers to nobody for it
+// (commentPartiesOf) rather than refused. A role reference cannot write one: text reads a role
+// token by ParseRoute's own `[a-z0-9-]+`.
 func checkMentionRoute(target string) error {
 	if _, err := model.ParseRoute(target); err != nil {
 		return errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
@@ -137,9 +143,15 @@ func checkMentionRoute(target string) error {
 // commentPartiesOf is the party set of one comment: the targets the request's `mentions` array
 // carries, as it wrote them, and then the parties its body names (R4), read with the shared
 // reader. A party both name, and one the body names twice, is one party: the repeat is dropped
-// here, before any rule reads the set. A target of a form no delivery route takes refuses the
-// write wherever it is written (checkMentionRoute); the array's own repeat rule is applied as it
-// is read, since it is about what the caller sent rather than about who is named.
+// here, before any rule reads the set. An array target of a form no delivery route takes refuses
+// the write (checkMentionRoute), and the array's own repeat rule is applied as it is read: both
+// are about what the caller sent rather than about who is named.
+//
+// A party the body writes at an address no delivery route takes is the writer's words (R8), and
+// no text a comment could store before bodies named parties changes its meaning or is refused
+// now (R10): the comment is stored with that address as written, the party counts as somebody
+// named, and it is no target - nothing is resolved for it, delivered to it or counted for it
+// toward the cap.
 //
 // A party reference a code context holds names nobody (text.Located.InCode): a body that writes
 // one inside a fenced block, an indented block or a code span is showing the address rather than
@@ -161,14 +173,14 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		seen[mention.Target] = struct{}{}
 		parties.targets = append(parties.targets, mention.Target)
 	}
+	parties.named = len(parties.targets) > 0
 	for _, located := range body {
 		if located.InCode || !located.IsParty() {
 			continue
 		}
+		parties.named = true
 		// A person is named by being one, not by being the party left over when no route is
-		// written: a person reads the record and is never delivered to (R5). Every other party
-		// is a route this reader writes; for a kind added to text.IsParty alone partyTarget
-		// answers "", which checkMentionRoute refuses rather than let it pass for a person.
+		// written: a person reads the record and is never delivered to (R5).
 		if located.Kind == "person" {
 			// The same person named twice is one person, as a repeated target is one party. The
 			// repeat is found in the set the targets are, under a `person:` key no route is
@@ -180,9 +192,13 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 			}
 			continue
 		}
+		// Every other party is the route partyTarget writes for it. One model.ParseRoute does not
+		// read as a delivery route - an agent's session id of the wider body grammar, or "" for a
+		// kind added to text.IsParty alone - names somebody and is in neither list: it is neither
+		// a target nor a person.
 		target := partyTarget(located.Ref)
-		if err := checkMentionRoute(target); err != nil {
-			return commentParties{}, err
+		if _, err := model.ParseRoute(target); err != nil {
+			continue
 		}
 		if _, repeated := seen[target]; repeated {
 			continue
@@ -196,14 +212,15 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 // validateCommentMentions is the comment's delivery mode and its delivering targets, or the
 // refusal its party set earns. Every refusal is keyed on that set (commentPartiesOf): a
 // delivery mode with no party named anywhere, more delivering parties than the cap, a mode
-// outside the three, a target of no known form, and an array that repeats a target. Each
-// answers 400 MENTION_INPUT, as it always has.
+// outside the three, an array target of no known form, and an array that repeats a target. Each
+// answers 400 MENTION_INPUT, as it always has. A body whose only party is at an address no
+// delivery route takes names somebody, so a mode beside it is taken, and it delivers to nobody.
 func validateCommentMentions(input commentInput, body []text.Located) (string, []string, error) {
 	parties, err := commentPartiesOf(input, body)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(parties.targets) == 0 && len(parties.people) == 0 {
+	if !parties.named {
 		if input.Delivery != nil {
 			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery requires mentions")
 		}

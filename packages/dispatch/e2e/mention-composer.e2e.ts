@@ -505,7 +505,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
     await card.getByRole("button", { name: "Reply" }).click();
     const composer = page.getByRole("form", { name: "Comment composer" });
     await expect(composer.getByLabel("Comment")).toHaveValue(
-      "[@Planner](dispatch://agent/planner)"
+      "[@Planner](dispatch://agent/planner) "
     );
     await composer.getByLabel("Comment").fill("Plain reply");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
