@@ -70,35 +70,38 @@ import (
 // adds, `session-forgotten`, goes to the issue's architect alone, as `session-lost` does: the
 // controller is told of neither (#4065), and no shape moves. This contract is served down by 193's
 // rule (#3659): every answer goes through one writer, which shapes it to the contract its caller
-// reads. The agent actions' answer and the pod update's are two rows of answers.go's table,
-// `agent-action` on the four routes and `pod-update` on `issues/pod-update`, each arrived whole
-// with its routes at this contract (agentActionsContract), so no contract below records either, and
-// shapeAnswer serves each as written. The agent actions' `state`, `suspendedBy` and
-// `suspensionHeldBy` are enumerated fields of the table, each recorded whole at this contract, so
-// no value of them is held back, and the plugin reads every field of both answers as optional,
-// since its code hands each answer on whole and reads none of them (`LEGION_ANSWER_READS`). Every
-// refusal of the five routes is the refusal answer: `PROJECT_PAUSED` is an `api.PauseFailure`,
-// placed by the caller's pod where it states no contract and served without its `pause` below 178,
-// and every other code, from `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`,
-// which no contract shapes. The five routes' request records start at this contract
-// (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any other
-// answer moved, so this entry's records of every other answer are those of the contract before it.
+// reads. The agent actions' answer and the pod update's are two rows of this entry (`answers` of
+// its registration below), `agent-action` on the four routes and `pod-update` on
+// `issues/pod-update`, each arrived whole with its routes at this entry, so no contract below
+// records either, and shapeAnswer serves each as written (`identityAnswers` of the registration).
+// The agent actions' `state`, `suspendedBy` and `suspensionHeldBy` are enumerated rows of the entry
+// (`enumeratedFields`), each recorded whole at it, so no value of them is held back, and the plugin
+// reads every field of both answers as optional, since its code hands each answer on whole and
+// reads none of them (`LEGION_ANSWER_READS`). Every refusal of the five routes is the refusal
+// answer: `PROJECT_PAUSED` is an `api.PauseFailure`, placed by the caller's pod where it states no
+// contract and served without its `pause` below 178, and every other code, from
+// `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
+// five routes' request records start at this entry: its fixture holds them (`routes` of
+// `packages/contracts/fixtures/daemon-api/contracts/20261125182642_agent-actions.json`), and its
+// test rows give each route's request type (`requests` of
+// contract_20261125182642_agent-actions_test.go). No key and no value of any other answer moved, so
+// this entry's records of every other answer are those of the contract before it.
 // Before #5399 this change carried a number of its own, 292 at the last, which a census of the open
 // pull requests chose again at each merge of main. Since #5399 no branch picks a number: this
 // entry's number is its rank in main's merge order.
 //
-// agentActionsContract is the daemon contract four of the agent door's six agent actions and the
-// controller's pod update arrived at: `POST /legion/v1/agents/stop`, `retry`, `suspend` and
-// `resume`, which answer AgentActionResponse (AnswerAgentAction), and `POST
-// /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each answer
-// arrived whole with its routes, so no contract below this one records either, no caller below it
-// is served one, and neither is ever shaped: shapeAnswer's row for each is the identity. No key and
-// no value of any other answer moved at this contract.
-//
-// It is a literal of its own and never DaemonAPIVersion, as shapedAnswersContract is: a later
-// contract moves that constant, and the contract these answers arrived at stays where it is. It is
-// the entry's id (contract_<id>_<slug>.go), the UTC second its author made the entry, which the
-// build's order turns into the entry's number.
+// agentActionsContract is the id of this entry (contract_<id>_<slug>.go), the UTC second its author
+// made it, which the build's order turns into the entry's number. Each row of the registration
+// below names the entry by it, and the registry resolves each such value to the entry's number;
+// code that compares a caller's contract with the entry reads entryNumber(agentActionsContract).
+// The number moves when an entry ranks before this one, and the id does not. The entry is the one
+// four of the agent door's six agent actions and the controller's pod update arrived at: `POST
+// /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, which answer AgentActionResponse
+// (AnswerAgentAction), and `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse
+// (AnswerPodUpdate). Each answer arrived whole with its routes, so no contract below this entry
+// records either, no caller below it is served one, and neither is ever shaped: each is one of the
+// entry's `identityAnswers`, which shapeAnswer serves as written (identityAnswer). No key and no
+// value of any other answer moved at this entry.
 const agentActionsContract = 20261125182642
 
 func init() {
