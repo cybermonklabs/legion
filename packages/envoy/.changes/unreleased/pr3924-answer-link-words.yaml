@@ -11,5 +11,9 @@ body: |-
   reference, case and punctuation aside - written as those words and then, in parentheses, the
   link with the item's short form as its words: "Implementer of OPS-4 ([OPS-4](dispatch://OPS-4))
   is unresponsive". It reads each item as the run's person may see it. A time, a web address, a
-  picture, an autolink, code and a reply frame of tool calls are stored as they came. The agent's
-  prompt names comments and messages in its rule that every fact goes outside the link.
+  picture, an autolink, code and a reply frame of tool calls are stored as they came. An issue key
+  the answer names bare, as text, which drew no chip ("DEMO-21 is a P3 backlog feature" left the
+  person without its title), is stored as the issue's link, `[DEMO-21](dispatch://DEMO-21)`, where
+  a tool result of the run holds it; a key no read of the run returned stays text. The agent's
+  prompt names comments and messages in its rule that every fact goes outside the link, and says
+  that each chip's key, status and title count among an answer's 120 words.

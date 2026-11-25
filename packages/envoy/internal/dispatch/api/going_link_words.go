@@ -1,21 +1,25 @@
 package api
 
 // going_link_words.go keeps the words the model gave a link to an item in each answer of a run of
-// the command bar's agent. The bar draws an answer with chips (web features/going/ConversationView,
-// MarkdownBody with chips): each link to an item shows the item in place of the link's words, and
-// the eval's judge reads an answer the same way (going/eval's RenderAnswer). So a fact the model
-// wrote as a link's words reached no one, though the prompt tells it to write each fact outside
-// the link (going/chips' KeepLinkWords says what the eval measured). The server writes each answer
-// so as it stores the answer's frame (AgentListener.step): the run's events are the one text the
-// bar's conversation, History and the eval all read an answer from. The server writes it rather
-// than the agent since it reads each item the answer links from the store, as the bar reads it for
-// its chip, where the agent holds only what its reads happened to return.
+// the command bar's agent, and links each issue key the answer names bare that a read of the run
+// returned. The bar draws an answer with chips (web features/going/ConversationView, MarkdownBody
+// with chips): each link to an item shows the item in place of the link's words, and the eval's
+// judge reads an answer the same way (going/eval's RenderAnswer). So a fact the model wrote as a
+// link's words reached no one, though the prompt tells it to write each fact outside the link
+// (going/chips' KeepLinkWords says what the eval measured), and an issue it named by a bare key,
+// with no link, showed no chip, so no one read its title (going/chips' LinkBareKeys). The server
+// writes each answer so as it stores the answer's frame (AgentListener.step): the run's events
+// are the one text the bar's conversation, History and the eval all read an answer from. The
+// server writes it rather than the agent since it reads each item the answer links from the
+// store, as the bar reads it for its chip, and the run's tool results from its saved steps, where
+// the agent holds only what its reads happened to return.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,11 +36,14 @@ const goingReplyFrame = "reply"
 
 // goingKeepLinkWords writes, in place, the text of each reply frame of frames that answers - one
 // that names no tool call, which the bar draws as the run's answer (web
-// features/going/run-frames.ts) - as chips.KeepLinkWords writes it, each item the text links read
+// features/going/run-frames.ts) - with each bare issue key that a tool result of run holds
+// written as the issue's link (chips.LinkBareKeys, goingRunResults), so the answer links only
+// items its run read, and then as chips.KeepLinkWords writes it, each item the text links read
 // from q for run's person (goingAnswerItems). Every other frame, and a reply frame that writes as
 // it came, stays as it came, byte for byte. A reply frame of tool calls is the header the bar
 // writes over its calls in plain words, with no chip, so it stays as it came too.
 func goingKeepLinkWords(ctx context.Context, q queryer, run string, frames []agentwire.Frame) error {
+	results := &goingRunResults{ctx: ctx, q: q, run: run}
 	items := &goingAnswerItems{ctx: ctx, q: q, run: run}
 	for at, frame := range frames {
 		var reply struct {
@@ -46,7 +53,11 @@ func goingKeepLinkWords(ctx context.Context, q queryer, run string, frames []age
 		if frame.Name != goingReplyFrame || json.Unmarshal(frame.Data, &reply) != nil || reply.Text == "" || len(reply.Tools) > 0 {
 			continue
 		}
-		kept := chips.KeepLinkWords(reply.Text, items)
+		linked := chips.LinkBareKeys(reply.Text, results.returned)
+		if results.err != nil {
+			return results.err
+		}
+		kept := chips.KeepLinkWords(linked, items)
 		if items.err != nil {
 			return items.err
 		}
@@ -63,6 +74,39 @@ func goingKeepLinkWords(ctx context.Context, q queryer, run string, frames []age
 		frames[at].Data, _ = json.Marshal(fields)
 	}
 	return nil
+}
+
+// goingRunResults is the result text of each tool step of a run, read from q once, when it is
+// first asked of a key, so a step whose answer names no bare key reads none. Every tool step of
+// the run is saved in an earlier step call than the model step whose reply answers, so the read
+// holds them all. A read that fails keeps its error (err), and no key is returned after it.
+type goingRunResults struct {
+	ctx     context.Context
+	q       queryer
+	run     string
+	results []string
+	read    bool
+	err     error
+}
+
+// returned reports whether key stands as a whole token in a tool result of the run
+// (chips.HoldsKey): a read of the run returned it.
+func (r *goingRunResults) returned(key string) bool {
+	if !r.read {
+		r.read = true
+		rows, err := r.q.Query(r.ctx, `
+			select body->>'result' from going_run_steps
+			where run_id = $1::uuid and kind = $2 and body->>'result' is not null
+			order by step
+		`, r.run, agentwire.StepTool)
+		if err == nil {
+			r.results, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		}
+		if err != nil {
+			r.err = fmt.Errorf("read the tool results of run %s: %w", r.run, err)
+		}
+	}
+	return r.err == nil && slices.ContainsFunc(r.results, func(result string) bool { return chips.HoldsKey(result, key) })
 }
 
 // The reads of goingAnswerItems: an issue's status and title by its key, a document's or a file's

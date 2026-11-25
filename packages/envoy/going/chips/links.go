@@ -11,6 +11,17 @@ import (
 // words are their href. Code spans and fenced code blocks, escaped characters, pictures and all
 // other text stay as written.
 func RewriteLinks(markdown string, link func(out *strings.Builder, written, words, href string)) string {
+	return rewriteMarkdown(markdown, link, writeText)
+}
+
+// rewriteMarkdown is markdown with each of its links outside code written by link, as
+// RewriteLinks writes them, and each run of its plain text written by text. Plain text is what
+// stands outside fenced code blocks, code spans, escaped characters, pictures and links, so a
+// writer of text changes no code, no link and no address. text is given the markdown the run
+// stands in, the lines between two fenced code blocks, and the run's bounds in it, so it can read
+// what stands either side of the run, and writes what stands in its place to out. Fenced code
+// blocks, code spans, escaped characters and pictures stay as written.
+func rewriteMarkdown(markdown string, link func(out *strings.Builder, written, words, href string), text func(out *strings.Builder, markdown string, start, end int)) string {
 	var out strings.Builder
 	out.Grow(len(markdown))
 	fence, from := "", 0
@@ -22,7 +33,7 @@ func RewriteLinks(markdown string, link func(out *strings.Builder, written, word
 		line := markdown[at : at+end]
 		if fence == "" {
 			if opened := codeFence(line); opened != "" {
-				rewriteInline(&out, markdown[from:at], link)
+				rewriteInline(&out, markdown[from:at], link, text)
 				fence, from = opened, at
 			}
 		} else if closesFence(line, fence) {
@@ -34,9 +45,15 @@ func RewriteLinks(markdown string, link func(out *strings.Builder, written, word
 	if fence != "" {
 		out.WriteString(markdown[from:])
 	} else {
-		rewriteInline(&out, markdown[from:], link)
+		rewriteInline(&out, markdown[from:], link, text)
 	}
 	return out.String()
+}
+
+// writeText writes the run of plain text from start to end of markdown as written, which is how
+// RewriteLinks writes all text.
+func writeText(out *strings.Builder, markdown string, start, end int) {
+	out.WriteString(markdown[start:end])
 }
 
 // fenceLine is a line that opens or closes a fenced code block: up to three spaces, then three
@@ -61,15 +78,29 @@ func closesFence(line, fence string) bool {
 }
 
 // rewriteInline writes markdown text that holds no fenced code block, each link in it as link
-// writes it: code spans and escaped characters as written, and a picture whole.
-func rewriteInline(out *strings.Builder, markdown string, link func(out *strings.Builder, written, words, href string)) {
+// writes it and each run of plain text between them as text writes it: code spans and escaped
+// characters as written, and a picture whole.
+func rewriteInline(out *strings.Builder, markdown string, link func(out *strings.Builder, written, words, href string), text func(out *strings.Builder, markdown string, start, end int)) {
+	// plain is where the run of plain text that the next code span, escaped character, picture or
+	// link ends starts.
+	plain := 0
+	// endText writes the run of plain text that ends at at with text, before what stands from at,
+	// and starts the next run at end, after it.
+	endText := func(at, end int) {
+		if plain < at {
+			text(out, markdown, plain, at)
+		}
+		plain = end
+	}
 	for at := 0; at < len(markdown); {
 		switch c := markdown[at]; {
 		case c == '\\' && at+1 < len(markdown) && asciiPunct(markdown[at+1]):
+			endText(at, at+2)
 			out.WriteString(markdown[at : at+2])
 			at += 2
 		case c == '`':
 			end := codeSpanEnd(markdown, at)
+			endText(at, end)
 			out.WriteString(markdown[at:end])
 			at = end
 		case c == '!' && strings.HasPrefix(markdown[at+1:], "["):
@@ -77,32 +108,33 @@ func rewriteInline(out *strings.Builder, markdown string, link func(out *strings
 			if linkEnd, _, _, ok := inlineLink(markdown, at+1); ok {
 				end = linkEnd
 			}
+			endText(at, end)
 			out.WriteString(markdown[at:end])
 			at = end
 		case c == '[':
 			end, words, href, ok := inlineLink(markdown, at)
 			if !ok {
-				out.WriteByte(c)
 				at++
 				continue
 			}
+			endText(at, end)
 			link(out, markdown[at:end], words, href)
 			at = end
 		case c == '<':
 			end := strings.IndexByte(markdown[at:], '>')
 			if end < 0 || !autolink.MatchString(markdown[at+1:at+end]) {
-				out.WriteByte(c)
 				at++
 				continue
 			}
+			endText(at, at+end+1)
 			autolinked := markdown[at+1 : at+end]
 			link(out, markdown[at:at+end+1], autolinked, autolinked)
 			at += end + 1
 		default:
-			out.WriteByte(c)
 			at++
 		}
 	}
+	endText(len(markdown), len(markdown))
 }
 
 // autolink is the inside of a markdown autolink: a scheme, a colon and no space or angle bracket.

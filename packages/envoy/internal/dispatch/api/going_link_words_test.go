@@ -81,6 +81,41 @@ func TestAnAnswerIsStoredWithTheWordsOfItsLinks(t *testing.T) {
 	})
 }
 
+// TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked: the preview at e2b341f7 answered
+// "DEMO-21 is a P3 backlog feature with no assignee" with DEMO-21 as text, not a link, so the bar
+// drew no chip of it and no one read its title. The server stores the reply frame of an answer
+// with each issue key it names bare that a tool result of the run holds written as the issue's
+// link, and every other field as the agent sent it. A key no read of the run returned stays text,
+// though its issue is real, so the answer links only items its run read.
+func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
+	t.Parallel()
+	rig := newGoingAgentRig(t, nil)
+	read := rig.issue(t, "Export: CSV and PDF")
+	unread := rig.issue(t, "Rotate the signing keys")
+	run, token := rig.working(t, "alice", "what is "+read)
+	body, err := json.Marshal(map[string]any{
+		"call":   map[string]any{"id": "call_1", "tool": "read", "arguments": map[string]any{"ref": "dispatch://" + read}},
+		"error":  false,
+		"result": `{"key": "` + read + `", "title": "Export: CSV and PDF", "status": "backlog", "priority_shown": "P3", "assignee": null}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.client.Step(context.Background(), agentwire.StepRequest{Run: run, LeaseToken: token, Step: 1,
+		Kind: agentwire.StepTool, Body: body, Note: "read an issue"}); err != nil {
+		t.Fatalf("save the tool step of run %s: %v", run, err)
+	}
+	answer := map[string]any{"step": 2, "tools": []string{}, "labels": []string{}, "waits_for_person": false, "model_ms": 80,
+		"text": read + " is a P3 backlog feature with no assignee, and " + unread + " waits on it."}
+	storeReply(t, rig, run, token, 2, answer)
+	want := map[string]any{}
+	for field, value := range answer {
+		want[field] = value
+	}
+	want["text"] = "[" + read + "](dispatch://" + read + ") is a P3 backlog feature with no assignee, and " + unread + " waits on it."
+	requireStoredReplies(t, rig, run, want)
+}
+
 // storeReply saves step of run, a model step, with its one reply frame, reply.
 func storeReply(t *testing.T, rig goingAgentRig, run, token string, step int, reply map[string]any) {
 	t.Helper()
