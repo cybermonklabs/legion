@@ -1108,7 +1108,7 @@ func (s *Server) login(ctx context.Context) Response {
 // or it reached its expiry).
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
-	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
+	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, LoginReason: ls.Reason, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
 		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)
