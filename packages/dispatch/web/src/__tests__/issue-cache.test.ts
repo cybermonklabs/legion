@@ -2,10 +2,49 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { api } from "../api/client";
-import { mergeIssue } from "../api/issue-cache";
+import { mergeIssue, roleDocument } from "../api/issue-cache";
 import { issueQuery } from "../api/queries";
-import type { IssueDetails } from "../api/types";
-import { issue as fixture } from "../features/margin/margin-fixture";
+import type { Artifact, IssueDetails } from "../api/types";
+import { issue as fixture, specArtifact } from "../features/margin/margin-fixture";
+
+/** A plan whose name was changed by hand: only the id the issue names says it is the plan. */
+const renamedPlan: Artifact = {
+  ...specArtifact,
+  id: "artifact-2",
+  name: "roadmap.md",
+  primary: false,
+  slug: "roadmap-md",
+};
+
+const planned: IssueDetails = { ...fixture, artifacts: [specArtifact, renamedPlan] };
+
+test("the plan is the document the issue's plan query names", () => {
+  const named: IssueDetails = {
+    ...planned,
+    queries: [
+      {
+        query: "plan",
+        artifact_id: renamedPlan.id,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${fixture.key}`,
+      },
+    ],
+  };
+  expect(roleDocument(named, "plan")).toBe(renamedPlan);
+  expect(roleDocument(named, "verification")).toBeUndefined();
+  // The queries decide alone where the issue read carries them, whatever the kept id names.
+  expect(
+    roleDocument({ ...planned, plan_artifact_id: renamedPlan.id, queries: [] }, "plan")
+  ).toBeUndefined();
+  expect(roleDocument(undefined, "plan")).toBeUndefined();
+});
+
+// During a roll or after a rollback a server of the release before answers the issue read: it
+// carries no `queries`, and names the plan in `plan_artifact_id`, "" where the issue has none.
+test("an issue read with no queries names its plan by its kept id", () => {
+  expect(roleDocument({ ...planned, plan_artifact_id: renamedPlan.id }, "plan")).toBe(renamedPlan);
+  expect(roleDocument(planned, "plan")).toBeUndefined();
+});
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();

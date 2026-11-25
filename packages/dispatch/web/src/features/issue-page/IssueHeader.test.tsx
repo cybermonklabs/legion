@@ -10,10 +10,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
-import {
-  artifactRecordHandler,
-  decisionsAndReadMarkHandlers,
-} from "../../__tests__/proof-document";
+import { artifactRecordHandler, readMarkHandlers } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -196,7 +193,7 @@ function answerHeaderReads(): void {
       } satisfies IssueCoverage)
     ),
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
 }
 

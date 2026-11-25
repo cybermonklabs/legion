@@ -25,7 +25,6 @@ import type {
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
-import type { DecisionsRead } from "./decision-entries";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -387,143 +386,45 @@ test("an agent's decision links each ask its from_ask settles", async () => {
   }
 });
 
-const decisionsDocumentId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-
-/** The issue's documents as the release before stored them: its decisions document beside them. */
-const beforeArtifacts = [
-  ...artifacts,
-  {
-    id: decisionsDocumentId,
-    issue_key: "CORE-1",
-    kind: "doc",
-    name: "decisions.md",
-    primary: false,
-    project: "",
-    slug: "decisions-md",
-  },
-] as unknown as Artifact[];
-
-/** The Decisions read as a server of the release before answers it: no `entries`, its open
- *  questions, and its decisions, each a `##` section of the issue's decisions document addressed
- *  by its heading block - the agent's waiting one, a person's that cites the ask it answers, and
- *  a replaced one. */
-function beforeView(): DecisionsRead {
-  const section = (
-    block: string,
-    text: string,
-    fields: Partial<NonNullable<DecisionsRead["decisions"]>[number]>
-  ) => ({
-    asks: [],
-    block_id: block,
-    changed_at: "2026-11-01T00:00:00Z",
-    changed_version: 3,
-    heading: "",
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
-    replaced: false,
-    text,
-    text_sha256: `sum-${block}`,
-    text_tree: displayTree(text),
-    unsure: false,
-    waiting_review: false,
-    ...fields,
-  });
-  return {
-    decisions: [
-      section(
-        "h-store",
-        "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
-        {
-          heading: "Store notices in a table",
-          links: [shapedLink("p1", false)],
-          unsure: true,
-          waiting_review: true,
-        }
-      ),
-      section("h-name", "## Name them notices\n\nThe person chose the name.", {
-        asks: [askId],
-        heading: "Name them notices",
-        kind: "person",
-      }),
-      section("h-file", "## Keep them in a file\n\nA file was simpler.", {
-        heading: "Keep them in a file",
-        replaced: true,
-      }),
-    ],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [
-      {
-        block_id: "q1",
-        id: questionId,
-        issue_key: "CORE-1",
-        kind: "question",
-        multiple: false,
-        options: [],
-        question: "Which index should the table carry?",
-        state: "open",
-        urgency: "normal",
-      } as unknown as IssueAskRow,
-    ],
-  };
-}
-
-// During a roll a page of this build can reach a server of the release before, which answers no
-// `entries`. The tab then draws that read's open questions and decisions as it drew them before
-// decisions were nodes, and never says the issue has none; a Keep is written against the block of
-// the decisions document the decision's address names.
-test("a Decisions read of the release before, with no entries, is drawn from its own lists", async () => {
+// The tree read names a document only on a typed block of a role document, so the entry of a
+// decision of any other document names none. The tab finds its document and its block by the
+// decision's own address: its link opens that block, and a Keep is written against it.
+test("a decision the read names no document for is opened and kept by its own address", async () => {
   const user = userEvent.setup();
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(beforeView() as IssueDecisions);
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        block: "store",
+        document: null,
+        shaped: [shapedLink("p1", false)],
+        text: "Store notices in a table.",
+        waiting_review: true,
+      }),
+    ],
+    open_questions: [],
+  });
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
-    artifact_id: decisionsDocumentId,
-    block_id: "h-store",
+    artifact_id: documentId,
+    block_id: "store",
     changed_version: 3,
     kept_at: "2026-11-02T00:00:00Z",
     kept_by: "alice",
   } satisfies DecisionKeep);
   try {
-    renderPanel(undefined, beforeArtifacts);
-    await screen.findByRole("region", { name: "Open questions" });
-    expect(screen.queryByText("This issue has no decisions yet.")).not.toBeInTheDocument();
-    expect(
-      within(list("Open questions")).getByRole("link", {
-        name: "Which index should the table carry?",
-      })
-    ).toHaveAttribute("href", `/issues/CORE-1/asks/${questionId}`);
-
+    renderPanel();
+    await screen.findByRole("region", { name: "Waiting for your review" });
     const waiting = list("Waiting for your review");
-    expect(within(waiting).getByText("Store notices in a table")).toBeDefined();
-    await waitFor(() =>
-      expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
-        "the index may be slow."
-      )
-    );
     expect(
       within(waiting)
         .getAllByRole("link")
         .map((link) => link.getAttribute("href"))
-    ).toEqual(["/issues/CORE-1/artifacts/decisions-md#b-h-store", "/issues/CORE-1/spec#b-p1"]);
-
-    const mine = list("Your decisions");
-    expect(within(mine).getByText("Name them notices")).toBeDefined();
-    expect(within(mine).getByRole("link", { name: "The ask it answers" })).toHaveAttribute(
-      "href",
-      `/issues/CORE-1/asks/${askId}`
-    );
-    expect(within(list("Replaced")).getByText("Keep them in a file")).toBeDefined();
+    ).toEqual(["/issues/CORE-1/artifacts/notes-md#b-store", "/issues/CORE-1/spec#b-p1"]);
 
     await user.click(within(waiting).getByRole("button", { name: "Keep" }));
     await waitFor(() => expect(keep).toHaveBeenCalled());
-    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([
-      decisionsDocumentId,
-      "h-store",
-      "sum-h-store",
-    ]);
-    await waitFor(() =>
-      expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined()
-    );
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([documentId, "store", "sum-store"]);
   } finally {
     read.mockRestore();
     keep.mockRestore();

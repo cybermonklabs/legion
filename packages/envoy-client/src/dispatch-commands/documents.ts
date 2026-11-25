@@ -4,6 +4,7 @@ import type {
   ArtifactBlock,
   EditOp,
   EditPrecondition,
+  IssueDetails,
   UploadPrecondition,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
@@ -510,17 +511,28 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   };
 }
 
+/**
+ * The id of the artifact the issue names for its plan, "" where it names none: the artifact of
+ * its plan query, where the issue read carries `queries`.
+ */
+function planArtifactId(issue: IssueDetails): string {
+  // A server of the release before answers the issue read with no `queries`, and names the plan
+  // in `plan_artifact_id`.
+  // kept for one release: role-artifact-ids
+  if (issue.queries === undefined) return issue.plan_artifact_id ?? "";
+  return issue.queries.find(({ query }) => query === "plan")?.artifact_id ?? "";
+}
+
 /** `dispatch plan-approve`: record the plan review's approval of an issue's plan. */
 export async function planApproveCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, documentOwner, resolveDocument } = context;
   const planOwner = documentOwner();
   const named = optionalString(args, "artifact");
-  // The server resolves a plan by its role and the dashboard by the issue's
-  // plan_artifact_id, precisely because a hand-renamed document must not displace the Plan
-  // tab; the filename is only what an issue whose detail names no plan falls back on.
+  // The issue names the artifact that answers its plan query. Use its id even if its filename
+  // differs from plan.md, the fallback when the issue detail names no plan.
   const byRole =
     named === undefined && planOwner.kind === "issue"
-      ? ((await client.getIssue(planOwner.issue)).plan_artifact_id ?? "")
+      ? planArtifactId(await client.getIssue(planOwner.issue))
       : "";
   const resolved = await resolveDocument(planOwner, named ?? (byRole || "plan.md"));
   const version = numberArg(args, "version");

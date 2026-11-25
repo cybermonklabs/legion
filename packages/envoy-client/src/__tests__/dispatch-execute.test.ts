@@ -8541,19 +8541,24 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe("# Right document");
   });
 
-  // The server answers verification_artifact_id "" for an issue that has no Verification
-  // document, never null, so an empty list of checks there is "no document", not "a document
-  // with no check blocks": the two send the reader to different work.
+  // When there are no results, the issue's queries distinguish no Verification document from
+  // a Verification document with no checks. The two answers send the reader to different work.
+  // Where the issue read carries `queries` they decide alone, whatever the results read's
+  // `verification_artifact_id` names. A server of the release before answers the issue read with
+  // no `queries`, and there that id decides: "" where the issue has no Verification document.
   test("dispatch_results tells an issue with no Verification document to write one", async () => {
-    const results = async (verificationArtifactID: string) => {
+    const verification = {
+      query: "verification",
+      artifact_id: "artifact-9",
+      takes: ["check", "result"],
+      subtree: "issue:DSP-42",
+    };
+    const results = async (issue: { queries?: unknown[] }, keptId: string) => {
       const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
         const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") return response(issue);
         if (target.pathname === "/api/v1/issues/DSP-42/results") {
-          return response({
-            issue: "DSP-42",
-            verification_artifact_id: verificationArtifactID,
-            checks: [],
-          });
+          return response({ issue: "DSP-42", verification_artifact_id: keptId, checks: [] });
         }
         throw new Error(`unexpected request: ${target.pathname}`);
       };
@@ -8568,16 +8573,72 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
     };
-
-    const none = await results("");
-    expect(none.text).toBe(
-      "DSP-42 has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved."
-    );
-    expect(none.details).toMatchObject({ issue: "DSP-42", checks: 0 });
+    const noDocument =
+      "DSP-42 has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.";
     // A Verification document that holds no check block is the other sentence.
-    expect((await results("artifact-9")).text).toBe(
-      "DSP-42's Verification document holds no check blocks."
-    );
+    const noChecks = "DSP-42's Verification document holds no check blocks.";
+
+    const none = await results({ queries: [] }, "artifact-9");
+    expect(none.text).toBe(noDocument);
+    expect(none.details).toMatchObject({ issue: "DSP-42", checks: 0 });
+    expect((await results({ queries: [verification] }, "")).text).toBe(noChecks);
+
+    expect((await results({}, "")).text).toBe(noDocument);
+    expect((await results({}, "artifact-9")).text).toBe(noChecks);
+  });
+
+  // `dispatch plan-approve` approves the artifact the issue names for its plan query, whatever
+  // its filename, and plan.md where the issue names none. Where the issue read carries `queries`
+  // they decide alone, whatever `plan_artifact_id` names. A server of the release before answers
+  // the issue read with no `queries`, and there `plan_artifact_id` names the plan.
+  test("dispatch_plan_approve approves the plan the issue names, by its queries or its kept id", async () => {
+    const plan = {
+      query: "plan",
+      artifact_id: "renamed",
+      takes: ["plan_task", "plan_role"],
+      subtree: "issue:DSP-42",
+    };
+    const approved = async (issue: { plan_artifact_id: string; queries?: unknown[] }) => {
+      const reviewed: string[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            artifacts: [
+              { id: "renamed", slug: "roadmap-md", name: "roadmap.md" },
+              { id: "by-name", slug: "plan-md", name: "plan.md" },
+            ],
+            open_asks: [],
+            ...issue,
+          });
+        }
+        const review = /^\/api\/v1\/artifacts\/([^/]+)\/plan-reviews$/.exec(target.pathname);
+        if (review !== null && init?.method === "POST") {
+          reviewed.push(review[1] ?? "");
+          return response({ artifact_id: review[1], state: "approved", version: 2 }, 201);
+        }
+        throw new Error(`unexpected request: ${target.pathname}`);
+      };
+      await executeDispatchTool({
+        tool: "dispatch_plan_approve",
+        args: { issue: "DSP-42", version: 2 },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return reviewed;
+    };
+
+    expect(await approved({ plan_artifact_id: "by-name", queries: [plan] })).toEqual(["renamed"]);
+    expect(await approved({ plan_artifact_id: "renamed", queries: [] })).toEqual(["by-name"]);
+
+    expect(await approved({ plan_artifact_id: "renamed" })).toEqual(["renamed"]);
+    expect(await approved({ plan_artifact_id: "" })).toEqual(["by-name"]);
   });
 
   // CHECK_CONTENDED means the write found the check reworded at both of its attempts and
@@ -17016,12 +17077,23 @@ describe("executeDispatchTool", () => {
       "Links:",
       "- child_of issue dispatch://DSP-40 (Parent work · 2026-09-01T10:00:00Z)",
     ];
+    const parentEdge = {
+      kind: "child_of",
+      direction: "out",
+      node: nodes.parent,
+      excerpt: { text: "Parent work" },
+      created_at: "2026-09-01T10:00:00Z",
+      source_seq: null,
+    };
 
     /** `dispatch read --issue DSP-42` against a Dispatch whose references route gives
-     *  `references`, and whose graph read of the issue node lists `edgesInto` into it and its
-     *  `child_of` to its parent out of it: the paths it requested, and the read from
-     *  `References:` to its end. */
-    async function readIssue(references: () => Response, edgesInto: readonly unknown[] = edgesIn) {
+     *  `references`, and whose graph read lists `edgesInto` into it and `edgesOut` out of it:
+     *  the paths it requested, and the read from `References:` to its end. */
+    async function readIssue(
+      references: () => Response,
+      edgesInto: readonly unknown[] = edgesIn,
+      edgesOut: readonly unknown[] = [parentEdge]
+    ) {
       const requests: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
         const target = new URL(String(url));
@@ -17095,19 +17167,7 @@ describe("executeDispatchTool", () => {
             return response({ node: issueNode, edges: edgesInto });
           }
           if (target.searchParams.get("from") === "dispatch://DSP-42") {
-            return response({
-              node: issueNode,
-              edges: [
-                {
-                  kind: "child_of",
-                  direction: "out",
-                  node: nodes.parent,
-                  excerpt: { text: "Parent work" },
-                  created_at: "2026-09-01T10:00:00Z",
-                  source_seq: null,
-                },
-              ],
-            });
+            return response({ node: issueNode, edges: edgesOut });
           }
         }
         throw new Error(`unexpected request: ${target.pathname}${target.search}`);
@@ -17127,6 +17187,43 @@ describe("executeDispatchTool", () => {
         sections: result.text.slice(result.text.indexOf("\nReferences:\n") + 1),
       };
     }
+
+    test("prints the issue's five outbound relations once each under Links", async () => {
+      const ask = "aaaaaaaa-0000-4000-8000-000000000050";
+      const askRef = `dispatch://DSP-50/ask/${ask}`;
+      const componentRef = "dispatch://DSP/component/parser";
+      const edgesOut = [
+        parentEdge,
+        { ...parentEdge, excerpt: undefined, kind: "needs", node: nodes.waiting },
+        { ...parentEdge, excerpt: undefined, kind: "duplicate_of", node: nodes.other },
+        {
+          ...parentEdge,
+          excerpt: undefined,
+          kind: "filed_from",
+          node: { kind: "ask", id: ask, ref: askRef },
+        },
+        {
+          ...parentEdge,
+          excerpt: undefined,
+          kind: "affects",
+          node: { kind: "component", id: "DSP/parser", ref: componentRef },
+        },
+      ];
+      const { sections } = await readIssue(
+        () => response({ members: [], truncated: false, links, linked_from: [] }),
+        [],
+        edgesOut
+      );
+
+      const expectedLinks = [
+        ...linksSection,
+        "- needs issue dispatch://DSP-45 (2026-09-01T10:00:00Z)",
+        "- duplicate_of issue dispatch://DSP-50 (2026-09-01T10:00:00Z)",
+        `- filed_from ask ${askRef} (2026-09-01T10:00:00Z)`,
+        `- affects component ${componentRef} (2026-09-01T10:00:00Z)`,
+      ];
+      expect(sections.match(/^Links:\n[\s\S]*$/m)?.[0]).toBe(expectedLinks.join("\n"));
+    });
 
     // The issue's comment mentions its parent, which is under `Links:`, and its child, the source
     // of the `child_of` into the issue: neither prints under `References:`, and the child's edge

@@ -19,6 +19,8 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { decisionsFromTree } from "./decisions-tree";
+
 import {
   type Answer,
   type Body,
@@ -1692,10 +1694,19 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
-   *  its spec holds, and each decision with the spec nodes it shaped. */
-  getIssueDecisions(key: string) {
-    return this.read("/api/v1/issues/{key}/decisions", { key });
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. */
+  async getIssueDecisions(key: string) {
+    const first = await this.getIssueTree(key, { view: "decisions" });
+    const nodes = [...(first.nodes ?? [])];
+    const tuples = [...(first.tuples ?? [])];
+    let cursor = first.cursor;
+    while (typeof cursor === "string") {
+      const page = await this.getIssueTree(key, { view: "decisions", cursor });
+      for (const node of page.nodes ?? []) nodes.push(node);
+      for (const tuple of page.tuples ?? []) tuples.push(tuple);
+      cursor = page.cursor;
+    }
+    return decisionsFromTree(key, nodes, tuples);
   }
 
   /** Record that the caller agrees with the decision at that block, as the text they

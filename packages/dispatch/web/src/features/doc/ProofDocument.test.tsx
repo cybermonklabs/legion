@@ -295,6 +295,11 @@ function heldTreeRead(viewOf: string | null): { release(): void; requests(): str
   answerRequests(
     http.get("/api/v1/issues/:key/tree", async ({ params, request }) => {
       const url = new URL(request.url);
+      // The page's Decisions read is another read of this route, which this row neither holds
+      // nor counts.
+      if (url.searchParams.get("view") === "decisions") {
+        return Response.json(treeRead(String(params.key), null));
+      }
       requests.push(`${url.pathname}${url.search}`);
       await promise;
       return Response.json(treeRead(String(params.key), viewOf));
@@ -393,6 +398,10 @@ test("a failed tree read fails the document's load as a failed text read does, a
   answerRequests(
     http.get("/api/v1/issues/:key/tree", ({ request }) => {
       const url = new URL(request.url);
+      // The page's Decisions read is another read of this route, which this row does not fail.
+      if (url.searchParams.get("view") === "decisions") {
+        return Response.json(treeRead("CORE-1", null));
+      }
       requests.push(`${url.pathname}${url.search}`);
       return Response.json({ code: "INTERNAL", error: "the tree read is down" }, { status: 500 });
     })

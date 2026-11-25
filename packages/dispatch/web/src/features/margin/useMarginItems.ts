@@ -20,7 +20,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { issueDecisionsQuery, issueSpecAddress, linkReachesDocument } from "../doc/spec-marks";
+import { issueDecisionsQuery, issueSpecAddress } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { isDecisionEntry } from "../issue/decision-entries";
 import {
@@ -509,9 +509,6 @@ export function useMarginItems(
     ...freshness,
   });
   const specAddress = issueSpecAddress(issueKey ?? "");
-  // The spec's ref_key, which every block node a server of the release before answers of it opens
-  // (linkReachesDocument).
-  const specRefKey = visibleArtifact?.ref_key;
   // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
   // spec block it stands beside.
   const specNode = `${issueKey ?? ""}/spec`;
@@ -519,14 +516,14 @@ export function useMarginItems(
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
-      // The spec blocks this entry shaped, each once: a block the spec on screen holds
-      // (linkReachesDocument), named by its id in the spec. The link's node is no name for it:
-      // a block of a spec converted into its issue's room is the room's node, `<KEY>/tree#<id>`,
-      // which belongs to no one document of the room.
+      // The spec blocks this entry shaped, each once: a block the link names the spec on screen
+      // as holding (`to.document`), named by its id in the spec. The link's node is no name for
+      // it: a block of a spec converted into its issue's room is the room's node,
+      // `<KEY>/tree#<id>`, which belongs to no one document of the room.
       const blocks = new Set<string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && linkReachesDocument(link, specAddress, specRefKey)) {
+        if (blockId !== undefined && link.to.document === specAddress) {
           blocks.add(blockId);
         }
       }
@@ -553,7 +550,6 @@ export function useMarginItems(
     showsDecisions,
     specAddress,
     specNode,
-    specRefKey,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({

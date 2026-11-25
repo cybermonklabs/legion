@@ -16,7 +16,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
-import { decisionsAndReadMarkHandlers } from "../../../__tests__/proof-document";
+import { readMarkHandlers } from "../../../__tests__/proof-document";
 import { answerIssuePatches } from "../../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../../api/client";
 import type {
@@ -217,7 +217,7 @@ function renderOutlineHeader(shown: IssueDetails) {
         spec_artifact_id: "",
       } satisfies IssueCoverage)
     ),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
   const path = `/issues/${shown.key}`;
   const route = parseIssuePath(path, "");

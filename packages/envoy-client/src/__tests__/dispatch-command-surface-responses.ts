@@ -47,6 +47,14 @@ export function issueBody(key = ISSUE) {
     closed_at: null,
     primary_artifact_id: ARTIFACT_ID,
     plan_artifact_id: PLAN_ARTIFACT_ID,
+    queries: [
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT_ID,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${key}`,
+      },
+    ],
     last_seq: 0,
     route_status: null,
     route_holder: null,
@@ -148,8 +156,8 @@ export function artifactBody(name = "design.md", kind = "doc") {
   };
 }
 
-/** The issue's plan document: the one `dispatch plan-approve` resolves, by the `plan_artifact_id`
- *  the issue detail names it under. It carries the version that command's example approves. */
+/** The issue's plan document: the artifact its plan query names. It carries the version that
+ *  the `dispatch plan-approve` example approves. */
 function planArtifactBody() {
   return {
     ...artifactBody("plan.md"),
