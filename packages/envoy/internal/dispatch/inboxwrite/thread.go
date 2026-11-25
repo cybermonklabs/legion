@@ -441,22 +441,20 @@ const agentRepliesRead = `
 	),`
 
 // queueAgentDismissalsClear queues the clear of migration 20261105093507 for the Agent dismissals
-// of root, the message a session's reply climbed to: the root `for no key update`
-// (queueRootLock), which the reply's writer took already before its insert
-// (Recording.QueueRootLock), so this one waits for nothing, and which orders the clear against
-// the dismiss route's `for update` of the same root (inboxDismissLockAgentRoots,
+// of root, the message a session's reply climbed to, under the root `for no key update`, which the
+// reply's writer took first (Recording.QueueRootLock) and which orders the clear
+// against the dismiss route's `for update` of the same root (inboxDismissLockAgentRoots,
 // api/inbox_dismiss.go) and the restore's `for no key update` of it (inboxRestoreLockAgentRoots)
-// whichever takes it first; then the retraction of the dismissed tuple of each person whose
+// whichever takes it first: the retraction of the dismissed tuple of each person whose
 // user_agent_thread_dismissed row names the root, read by the statement that retracts it
 // (graphstore.MarkedIn); then the failure a test arms there (fail, failpoint.AgentDismissalClear);
 // then the delete of every one of those rows, whose trigger clears the root's agent_dismissed_at
-// (migration 20261125053125) under the lock the root already holds. Both statements after the
-// lock read the rows as they stand once it is held, nothing read in the write's read phase, so a
-// dismissal the route committed before the reply's write phase - while the reply waited for the
-// root among them - ends with the reply, as the trigger ends it; and no dismissal of the root can
-// commit between the two, since the route marks one only under the root's `for update`.
+// (migration 20261125053125) under the lock the root already holds. Both statements read the rows
+// as they stand once the root is held, nothing read in the write's read phase, so a dismissal the
+// route committed before the reply's write phase - while the reply waited for the root among
+// them - ends with the reply, as the trigger ends it; and no dismissal of the root can commit
+// between the two, since the route marks one only under the root's `for update`.
 func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) {
-	queueRootLock(b, root)
 	dismissed := graphstore.MarkedIn(`select login from user_agent_thread_dismissed where message_id = $4::uuid`, root)
 	graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event)
 	failpoint.Queue(b, fail)
@@ -470,5 +468,9 @@ func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Wr
 // agent_dismissed_at takes the root first (the lock order written on api/inbox_read.go's
 // markInboxReadThreads).
 func queueRootLock(b *store.WriteBatch, root string) {
-	b.Queue(fmt.Sprintf("take the root message %s", root), `select 1 from messages where id = $1::uuid for no key update`, root)
+	b.Queue(fmt.Sprintf("take the root message %s", root), RootLockStatement, root)
 }
+
+// RootLockStatement is the statement queueRootLock takes a root with, as pg_stat_activity shows it
+// while the reply that sent it waits there.
+const RootLockStatement = `select 1 from messages where id = $1::uuid for no key update`

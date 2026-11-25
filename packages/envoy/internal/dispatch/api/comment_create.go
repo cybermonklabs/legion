@@ -1086,9 +1086,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	attempts := make([]model.CommentDelivery, len(resolvedMentions))
 	claims := make([]time.Time, len(resolvedMentions))
 	attemptKeys := make([]graphstore.AttemptKey, len(resolvedMentions))
-	// The attempts' nodes, held for the comment.created event appended below, which causes them as
-	// it causes the comment's own node; what their rows hold is stated under the same event once
-	// every attempt of the comment is written (graphstore.QueueAttempted).
+	// The attempts' nodes, held for the comment.created event appended below (commentAttempts).
 	attemptsOpened := make([]graphstore.Uncaused, len(resolvedMentions))
 	for index, mention := range resolvedMentions {
 		// The row is the projection of the mention's tuples (commentMentionFacts), and says whether
@@ -1404,9 +1402,9 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // answers (commentStoreWrite); the project it is in (graphstore.ScopeOf), which its record in its
 // thread names (inboxwrite.Comment); the transaction's now(), which its mentions' attempt rows'
 // created_at defaults to and their nodes are made at (graphstore.AttemptOpened); and, for a reply,
-// the members of the thread its head is the root of (inboxwrite.MembersColumn), nil for a comment
-// that starts its own thread, which its record then reads no second time
-// (inboxwrite.Write.Members).
+// the members of the thread its head is the root of (inboxwrite.MembersColumn), which its record
+// then reads no second time (inboxwrite.Write.Members), nil for a comment that starts its own
+// thread.
 type commentRowWrite struct {
 	commentStoreWrite
 	project    string
@@ -1435,12 +1433,9 @@ type commentRowWrite struct {
 // before the insert runs, its event and its mark record, carries the time the row will hold. The
 // row, its node and the facts it projects carry that one time: the store's census digests the
 // row's created_at against its node's made_at, and graph_edges answers a comment's edges from the
-// row before its kind's cutover and from the tuples after it. Beside it is the transaction's
-// now(), which the mentions' attempt rows' created_at defaults to and their nodes are made at
-// (graphstore.AttemptOpened), and, for a reply, the members of the thread its head is the root
-// of (inboxwrite.MembersColumn), which its record then reads no second time
-// (inboxwrite.Write.Members): the read phase writes nothing, and every writer of those rows
-// and tuples waits at the owner lock this write holds.
+// row before its kind's cutover and from the tuples after it. What it reads beside that clock
+// (commentRowWrite) is read in the read phase, which writes nothing, and every writer of those
+// rows and tuples waits at the owner lock this write holds.
 func queueCommentRow(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, suggestionKind string,
 	thread commentThreadTarget,
@@ -1519,10 +1514,10 @@ func queueCommentRow(
 // queueCommentReferences queues the index of comment's blocks and the reconciliation of its
 // references (queueItemReferences), after its row (queueCommentRow), and answers what they move
 // and what the index and the citations state, which wait for the comment's event
-// (queueCommentCreated). The row is queued, so the fields that row will hold are handed over. They
-// name the document that its `#id`s resolve against, which no read of the row can answer yet; and
-// so is its node, scope, out of which its blocks and its citations are stated
-// (commentStoreWrite.scope). Its short ids resolve for the comment's author, who writes it.
+// (queueCommentCreated). The row is queued, so what it will hold is handed over: the fields that
+// name the document its `#id`s resolve against, which no read of the row can answer yet, and its
+// node, as scope (commentStoreWrite.scope), out of which its blocks and its citations are stated.
+// Its short ids resolve for the comment's author, who writes it.
 func (s *server) queueCommentReferences(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment, scope refs.ItemScope,
 ) (model.ReferenceChanges, graphstore.Uncaused, error) {

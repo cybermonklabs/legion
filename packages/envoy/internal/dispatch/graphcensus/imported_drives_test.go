@@ -345,16 +345,16 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 	`, comment, state)
 }
 
-// leaveSendPending puts the first attempt of the post id back to pending under a fresh claim, its
-// envelope and its error cleared, as its sender leaves it while its send is in flight: the attempt
-// a delete settles. table is the post's attempts table and owner the column naming the post in it.
-// The claim is the moment of this write, so no pass of the delivery sweep takes the attempt for one
-// a sender gave up on before the drive runs.
-func (r *writersRig) leaveSendPending(t *testing.T, table, owner, id string) {
+// leaveSendPending puts the first attempt of the post id, of kind, back to pending under a fresh
+// claim, its envelope and its error cleared, as its sender leaves it while its send is in flight:
+// the attempt a delete settles. The claim is the moment of this write, so no pass of the delivery
+// sweep takes the attempt for one a sender gave up on before the drive runs.
+func (r *writersRig) leaveSendPending(t *testing.T, kind refs.ItemKind, id string) {
 	t.Helper()
+	table := string(kind) + "_deliveries"
 	tag, err := r.database.Pool.Exec(context.Background(), `
 		update `+table+` set state = 'pending', envelope_id = null, error = null, claimed_at = now()
-		where `+owner+` = $1::uuid and attempt = 1
+		where `+string(kind)+`_id = $1::uuid and attempt = 1
 	`, id)
 	if err != nil {
 		t.Fatalf("leave the first attempt of %s pending: %v", id, err)
@@ -1227,7 +1227,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"body": "Can this go, @" + messageSession + "?", "mentions": []map[string]any{{"target": "session:" + messageSession}},
 			}, "alice", http.StatusCreated)).ID
 			r.settledAttempts(t, deletedComment, model.DeliveryStateSent)
-			r.leaveSendPending(t, "comment_deliveries", "comment_id", deletedComment)
+			r.leaveSendPending(t, refs.ItemComment, deletedComment)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/comments/"+deletedComment, nil, "alice", http.StatusOK)
@@ -1243,7 +1243,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			deletedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages", map[string]any{
 				"body": "Can this go?", "target": "session:" + messageSession, "delivery": "steer",
 			}, "alice", http.StatusCreated)).ID
-			r.leaveSendPending(t, "message_deliveries", "message_id", deletedMessage)
+			r.leaveSendPending(t, refs.ItemMessage, deletedMessage)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/messages/"+deletedMessage, nil, "alice", http.StatusOK)

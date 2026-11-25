@@ -862,13 +862,13 @@ func (r *storeWriterRig) commentDelete() storeWriter {
 	return storeWriter{
 		name: "deleteComment settling a pending send",
 		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
-			deleteSteps("the comment", "comments", refs.ItemComment, commentClearStatement, "comment_deliveries")...),
+			deleteSteps("the comment", refs.ItemComment, commentClearStatement)...),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			login := r.fresh("lockdeleter")
 			comment := decodeMentionedComment(t, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "Can this go, @s1?", "mentions": []map[string]any{{"target": "session:s1"}}}, login)).ID
 			settledCommentDeliveries(t, r.database, comment)
-			r.leaveSendPending(t, ctx, "comment_deliveries", "comment_id", comment)
+			r.leaveSendPending(t, ctx, refs.ItemComment, comment)
 			return storeWriterRun{write: func() error {
 				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/comments/"+comment, map[string]any{}, login), http.StatusOK)
 			}}
@@ -888,13 +888,13 @@ func (r *storeWriterRig) messageDelete() storeWriter {
 	return storeWriter{
 		name: "deleteMessage settling a pending send",
 		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
-			deleteSteps("the message", "messages", refs.ItemMessage, messageClearStatement, "message_deliveries")...),
+			deleteSteps("the message", refs.ItemMessage, messageClearStatement)...),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			login := r.fresh("lockunsender")
 			message := createIssueMessage(t, r.handler, r.issue, map[string]any{
 				"body": "Can this go?", "target": "session:s1", "delivery": "steer",
 			}, login)
-			r.leaveSendPending(t, ctx, "message_deliveries", "message_id", message.ID)
+			r.leaveSendPending(t, ctx, refs.ItemMessage, message.ID)
 			return storeWriterRun{write: func() error {
 				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/messages/"+message.ID, map[string]any{}, login), http.StatusOK)
 			}}
@@ -902,16 +902,16 @@ func (r *storeWriterRig) messageDelete() storeWriter {
 	}
 }
 
-// leaveSendPending puts the first attempt of the post id back to pending under a fresh claim, its
-// envelope and its error cleared, as a sender leaves it while its send is in flight: the attempt a
-// delete settles (queueDeletedPostSettlement). table is the post's attempts table and owner the
-// column naming the post in it. The claim is the moment of this write, so no sweep takes the
-// attempt for one a sender gave up on before the run ends.
-func (r *storeWriterRig) leaveSendPending(t *testing.T, ctx context.Context, table, owner, id string) {
+// leaveSendPending puts the first attempt of the post id, of kind, back to pending under a fresh
+// claim, its envelope and its error cleared, as a sender leaves it while its send is in flight:
+// the attempt a delete settles (queueDeletedPostSettlement). The claim is the moment of this
+// write, so no sweep takes the attempt for one a sender gave up on before the run ends.
+func (r *storeWriterRig) leaveSendPending(t *testing.T, ctx context.Context, kind refs.ItemKind, id string) {
 	t.Helper()
+	table := string(kind) + "_deliveries"
 	tag, err := r.database.Pool.Exec(ctx, `
 		update `+table+` set state = 'pending', envelope_id = null, error = null, claimed_at = now()
-		where `+owner+` = $1 and attempt = 1
+		where `+string(kind)+`_id = $1 and attempt = 1
 	`, id)
 	if err != nil {
 		t.Fatalf("leave the first attempt of %s pending: %v", id, err)
@@ -921,14 +921,15 @@ func (r *storeWriterRig) leaveSendPending(t *testing.T, ctx context.Context, tab
 	}
 }
 
-// deleteSteps are the steps a delete of item, a post of kind whose row is in table, takes after its
-// owner lock while one send of the post is pending: the clear of its row (clear, the head of its
-// statement), the index of the empty body the clear leaves (correctionBlockSteps), the settle of
-// the send, failed, on its row of attempts (queueDeletedPostSettlement), the send's receipt, and
-// what the settle left on the attempt's row, under that receipt (graphstore.QueueAttempted). The
-// attempt's node is there from the attempt's open, and its row names it. Every row the steps take
-// is there before the run, and each step is held as its table.
-func deleteSteps(item, table string, kind refs.ItemKind, clear, attempts string) []storeStep {
+// deleteSteps are the steps a delete of item, a post of kind, takes after its owner lock while one
+// send of the post is pending: the clear of its row (clear, the head of its statement), the index
+// of the empty body the clear leaves (correctionBlockSteps), the settle of the send, failed, on
+// its row of attempts (queueDeletedPostSettlement), the send's receipt, and what the settle left
+// on the attempt's row, under that receipt (graphstore.QueueAttempted). The attempt's node is
+// there from the attempt's open, and its row names it. Every row the steps take is there before
+// the run, and each step is held as its table.
+func deleteSteps(item string, kind refs.ItemKind, clear string) []storeStep {
+	table, attempts := string(kind)+"s", string(kind)+"_deliveries"
 	steps := append([]storeStep{{
 		name: item + "'s clear", order: projectionStep,
 		hold: holdTableWrites(table), at: clear,
@@ -1049,61 +1050,53 @@ func ownRowStep() storeStep {
 }
 
 // bodyBlockSteps are the three steps an item's write takes for the blocks of its body, between
-// the item's row and its event (refs' item index). The first is the item's block state row,
-// which the trigger on the item row's insert writes (item_blocks_owe, migrations 0143, 0144 and
-// 20261101143212), so the write waits for it inside insert, the item row's own statement. The
-// second is the block nodes of the body, in one node write, held by the key of the first of them
-// (holdFirstBlockNode): its table is the item node's step's, and a hold of that table stops the
-// write at its first node write. The third is the block rows that name those nodes, whose foreign
-// key needs the nodes first.
+// the item's row and its event (refs' item index; blockSteps), the block rows being the head of
+// their insert. The first is the item's block state row, which the trigger on the item row's
+// insert writes (item_blocks_owe, migrations 0143, 0144 and 20261101143212), so the write waits
+// for it inside insert, the item row's own statement. The block nodes are held by the key of the
+// first of them (holdFirstBlockNode): their table is the item node's step's, and a hold of that
+// table stops the write at its first node write.
 func (r *storeWriterRig) bodyBlockSteps(item string, kind refs.ItemKind, insert string) []storeStep {
-	state, blocks := string(kind)+"_block_state", string(kind)+"_blocks"
-	nodes := item + "'s block nodes"
-	return []storeStep{
-		{
-			name: item + "'s block state row", order: projectionStep,
-			hold: holdTableWrites(state), at: insert,
-			takes: []tableLock{{state, rowExclusiveMode}},
-		},
-		{
-			name: nodes, order: nodeStep,
-			hold: r.holdFirstBlockNode(kind, insert), at: nodeWriteStatement,
-			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-		},
-		{
-			name: item + "'s block rows", order: projectionStep, names: nodes,
-			hold: holdTableWrites(blocks), at: "insert into " + blocks + " (",
-			takes: []tableLock{{blocks, rowExclusiveMode}},
-		},
-	}
+	return blockSteps(item, kind, insert, r.holdFirstBlockNode(kind, insert), "insert into "+string(kind)+"_blocks (")
 }
 
 // correctionBlockSteps are the three steps a correction of a post takes for the index of the body
-// it writes, or clears, between the post's row and its event (refs' ItemIndexing.Queue). The first
-// is the post's block state row, which the trigger on the update of the post's body writes
-// (item_blocks_owe, migrations 0143 and 20261110224508), so the write waits for it inside update,
-// the row's own statement. The second is the block nodes the index states, in one node write: an
-// edit's new block, stated live, and the blocks a delete takes out, stated gone. It is the write's
-// first of graph_nodes, so it is held as the table. The third is the block rows, each naming its
-// block's node, rows being the head of the first statement that writes them: the insert of an
-// edit's new block, and the update that takes a delete's blocks out of the post's current
-// revision.
+// it writes, or clears, between the post's row and its event (refs' ItemIndexing.Queue;
+// blockSteps). The first is the post's block state row, which the trigger on the update of the
+// post's body writes (item_blocks_owe, migrations 0143 and 20261110224508), so the write waits for
+// it inside update, the row's own statement. The block nodes the index states are an edit's new
+// block, stated live, and the blocks a delete takes out, stated gone; their node write is the
+// write's first of graph_nodes, so it is held as the table. The block rows are the head of the
+// first statement that writes them (rows): the insert of an edit's new block, and the update that
+// takes a delete's blocks out of the post's current revision.
 func correctionBlockSteps(item string, kind refs.ItemKind, update, rows string) []storeStep {
+	return blockSteps(item, kind, update, holdTableWrites("graph_nodes"), rows)
+}
+
+// blockSteps are the three steps a write of item, a post of kind, takes for the blocks of the body
+// it writes: the item's block state row, which a trigger on the item row's statement (row) writes,
+// so the write waits for it inside that statement; the block nodes of the body, in one node write,
+// held by nodes; and the block rows that name those nodes, whose foreign key needs the nodes
+// first, waited for at rows.
+func blockSteps(
+	item string, kind refs.ItemKind, row string,
+	nodes func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun), rows string,
+) []storeStep {
 	state, blocks := string(kind)+"_block_state", string(kind)+"_blocks"
-	nodes := item + "'s block nodes"
+	named := item + "'s block nodes"
 	return []storeStep{
 		{
 			name: item + "'s block state row", order: projectionStep,
-			hold: holdTableWrites(state), at: update,
+			hold: holdTableWrites(state), at: row,
 			takes: []tableLock{{state, rowExclusiveMode}},
 		},
 		{
-			name: nodes, order: nodeStep,
-			hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+			name: named, order: nodeStep,
+			hold: nodes, at: nodeWriteStatement,
 			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 		},
 		{
-			name: item + "'s block rows", order: projectionStep, names: nodes,
+			name: item + "'s block rows", order: projectionStep, names: named,
 			hold: holdTableWrites(blocks), at: rows,
 			takes: []tableLock{{blocks, rowExclusiveMode}},
 		},
@@ -1390,11 +1383,23 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 // that takes it: the second node write of a path shows graph_nodes again and says nothing about
 // where the write is, which the statement the write waits at says. A later step is read by its
 // rows (rowsLocked) and by its table locks of every mode but the two a batch's preparation takes
-// (parseTimeMode).
+// (parseTimeMode). A table whose rows a step before the held one locks - a row lock shows the row
+// share mode - holds those rows locked whatever a later step of it has done, so its rows say
+// nothing of the later step, which is read by its other locks and by where the write waits: a
+// session's reply takes its thread's root before the attempt it answers and then writes its own
+// row of messages (sessionReply).
 func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *storeWriterRig, writer storeWriter) {
 	t.Helper()
 	first := firstTakers(writer.steps)
 	for index, step := range writer.steps {
+		rowLocked := map[string]bool{}
+		for _, earlier := range writer.steps[:index] {
+			for _, lock := range earlier.takes {
+				if lock.mode == rowShareMode {
+					rowLocked[lock.table] = true
+				}
+			}
+		}
 		run := writer.ready(t, ctx)
 		holder, release := rig.beginHolder(t, ctx)
 		step.hold(t, ctx, holder, run)
@@ -1424,6 +1429,9 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 					if !parseTimeMode(lock.mode) && slices.Contains(held, lock) {
 						t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
 							writer.name, step.name, lock, other.name, other.name, step.name, held)
+					}
+					if rowLocked[lock.table] {
+						continue
 					}
 					if locked := rig.rowsLocked(t, ctx, backend, lock.table); len(locked) > 0 {
 						t.Errorf("%s held at %s has locked rows %v of %s, which %s takes, a later step: it took %s before %s",

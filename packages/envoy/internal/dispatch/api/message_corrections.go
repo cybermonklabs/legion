@@ -160,17 +160,12 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Each person the edit newly mentions takes part in the message's thread from it (R4's mention
-	// arm), with no delivery, since an edit delivers nothing, as the comment edit's does: the
-	// thread's root is read here, in the read phase, only for an edit that names somebody new.
-	var mentionedIn []graphstore.Tuple
-	if len(indexed.People) > 0 {
-		rootKind, rootID, err := inboxwrite.ThreadRoot(r.Context(), tx, graphstore.KindMessage, message.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		mentionedIn = inboxwrite.MentionParticipation(rootKind, rootID, indexed, actor, editedAt, graphstore.LatestEvent)
+	// Each person the edit newly mentions takes part in the message's thread from it, as the
+	// comment edit's does (editMentionParticipation).
+	mentionedIn, err := editMentionParticipation(r.Context(), tx, graphstore.KindMessage, message.ID, indexed, actor, editedAt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.edited", actor, referenceChanges)
 	if err != nil {
@@ -216,6 +211,24 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, message)
+}
+
+// editMentionParticipation is the participation of each person an edit of the post kind/id newly
+// mentions (indexed, what the edit's index states) in the post's thread, from the edit's moment
+// (R4's mention arm), with no delivery, since an edit delivers nothing; nil for an edit that names
+// nobody new. The thread's root is read in tx, in the read phase, only for an edit that names
+// somebody new. editComment and editMessage queue it last in their write.
+func editMentionParticipation(
+	ctx context.Context, tx pgx.Tx, kind, id string, indexed graphstore.Uncaused, actor model.Actor, at time.Time,
+) ([]graphstore.Tuple, error) {
+	if len(indexed.People) == 0 {
+		return nil, nil
+	}
+	rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	return inboxwrite.MentionParticipation(rootKind, rootID, indexed, actor, at, graphstore.LatestEvent), nil
 }
 
 // deleteMessage answers DELETE /api/v1/messages/{id}: the author withdraws its own message. The

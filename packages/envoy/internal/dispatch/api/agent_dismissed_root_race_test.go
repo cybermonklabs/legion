@@ -18,13 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
-
-// agentRootLock is the statement a session's reply takes its thread's root with, before its
-// attempt and its insert (inboxwrite.Recording.QueueRootLock), as pg_stat_activity shows it.
-const agentRootLock = `select 1 from messages where id = $1::uuid for no key update`
 
 // agentRootDismissedAt is the root's own mark of its author's dismissal, nil where it holds none.
 func agentRootDismissedAt(t *testing.T, database *store.Store, root string) *time.Time {
@@ -41,7 +38,7 @@ func agentRootDismissedAt(t *testing.T, database *store.Store, root string) *tim
 func requireRootMirrorsTheMark(t *testing.T, database *store.Store, root, what string) {
 	t.Helper()
 	mark, column := agentThreadDismissal(t, database, "alice", root), agentRootDismissedAt(t, database, root)
-	if (mark == nil) != (column == nil) || (mark != nil && !mark.Equal(*column)) {
+	if !sameInstant(mark, column) {
 		t.Fatalf("%s: the root %s holds agent_dismissed_at %v, and alice's mark is %v", what, root, column, mark)
 	}
 }
@@ -86,7 +83,7 @@ func TestASessionReplyTakesTheAgentRootBeforeItsAttemptWhileADismissHoldsIt(t *t
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	replying := storetest.WaitForStatementBehind(t, database, held.tx, agentRootLock)
+	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.RootLockStatement)
 	// The root's own lock takes the row share mode on messages; the attempt's takes it on
 	// message_deliveries, and the insert the row exclusive mode on messages.
 	if locks := heldIn(t, held.tx, replying, "message_deliveries", rowShareMode, rowExclusiveMode); locks > 0 {

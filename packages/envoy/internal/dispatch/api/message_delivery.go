@@ -180,9 +180,12 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(ctx)
 	// Every attempt is opened, resumed and accepted under this lock, so what the checks below
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
-	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
-	// through its insert's foreign key, this row FOR KEY SHARE, which FOR UPDATE would wait for
-	// while this transaction waits for the attempt row the reply holds.
+	// the claim's, and not FOR UPDATE. A session's reply takes its thread root's row FOR NO KEY
+	// UPDATE before its attempt (inboxwrite's Recording.QueueRootLock), so where this message is
+	// that root the reply queues behind this lock before it holds anything. Where it is not, the
+	// reply takes the attempt row and then, through its insert's foreign key, this row FOR KEY
+	// SHARE, which FOR UPDATE would wait for while this transaction waits for the attempt row the
+	// reply holds.
 	if _, err := tx.Exec(ctx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -399,9 +402,11 @@ func (s *server) recordPendingMessageDelivery(
 			return pendingMessageDelivery{}, err
 		}
 	}
-	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
-	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds. A message of an
+	// FOR NO KEY UPDATE, as the accept's is: a session's reply whose thread root is this message
+	// takes this row FOR NO KEY UPDATE before its attempt (inboxwrite's Recording.QueueRootLock)
+	// and so queues behind this lock; one whose root is another message takes an attempt row and
+	// then this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for
+	// that while this transaction waits below for the attempt row the reply holds. A message of an
 	// issue has its text read here too, under the issue's owner lock every writer of it holds
 	// (lockedMessageForCorrection), so the frame and the send carry the body as the lock's
 	// previous holder left it, not as the caller read it before the lock. A message with no issue,

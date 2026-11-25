@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -136,7 +137,7 @@ func TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory(t *testing.T) {
 		for index, shape := range shapes {
 			signatures[index] = requireWalkScaleAnswer(t, shape, read)
 		}
-		if fmt.Sprint(signatures[0]) != fmt.Sprint(signatures[1]) {
+		if !maps.Equal(signatures[0], signatures[1]) {
 			t.Fatalf("%s answers entries of other relations at %s than at %s:\n%v\n%v",
 				read.name, large.name, small.name, signatures[1], signatures[0])
 		}
@@ -464,7 +465,7 @@ func countWalkScale(t *testing.T, shape *dismissedScaleShape, read walkScaleRead
 			t.Fatalf("explain %s: %v", name, err)
 		}
 		var plans []struct {
-			Plan walkScaleNode `json:"Plan"`
+			Plan analyzedNode `json:"Plan"`
 		}
 		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
 			t.Fatalf("read the plan of %s: %d plans, %v", name, len(plans), err)
@@ -504,34 +505,10 @@ func countWalkScale(t *testing.T, shape *dismissedScaleShape, read walkScaleRead
 	return least, text
 }
 
-// walkScaleNode is one node of an analysed plan as the counts read it: analyzedNode's fields and
-// the filter a scan applies, which tells the Agent arm's scan of messages from the others.
-type walkScaleNode struct {
-	NodeType         string          `json:"Node Type"`
-	RelationName     string          `json:"Relation Name,omitempty"`
-	IndexName        string          `json:"Index Name,omitempty"`
-	Filter           string          `json:"Filter,omitempty"`
-	Rows             float64         `json:"Actual Rows"`
-	Loops            float64         `json:"Actual Loops"`
-	RemovedByFilter  float64         `json:"Rows Removed by Filter,omitempty"`
-	RemovedByRecheck float64         `json:"Rows Removed by Index Recheck,omitempty"`
-	SharedHitBlocks  float64         `json:"Shared Hit Blocks,omitempty"`
-	SharedReadBlocks float64         `json:"Shared Read Blocks,omitempty"`
-	Plans            []walkScaleNode `json:"Plans,omitempty"`
-}
-
-func (node walkScaleNode) everyNode() []walkScaleNode {
-	nodes := []walkScaleNode{node}
-	for _, child := range node.Plans {
-		nodes = append(nodes, child.everyNode()...)
-	}
-	return nodes
-}
-
 // walkScaleScan is whether node reads a table's rows: a scan of the table itself or of one of its
 // indexes, the bitmap heap scan standing for the bitmap index scans under it, whose buffers it
 // counts.
-func walkScaleScan(node walkScaleNode) bool {
+func walkScaleScan(node analyzedNode) bool {
 	switch node.NodeType {
 	case "Seq Scan", "Index Scan", "Index Only Scan", "Bitmap Heap Scan":
 		return node.RelationName != ""
@@ -546,7 +523,7 @@ func walkScaleScan(node walkScaleNode) bool {
 // page's own reads of messages are no part of it: the conversations of the page's roots
 // (agent_chain, meInboxPageReads) walk their replies, which at 250 dismissed the generic plan reads
 // by a scan of the whole table at each step and at 5,000 by messages_in_reply_to.
-func walkScaleAgentArm(node walkScaleNode) bool {
+func walkScaleAgentArm(node analyzedNode) bool {
 	if !walkScaleScan(node) {
 		return false
 	}

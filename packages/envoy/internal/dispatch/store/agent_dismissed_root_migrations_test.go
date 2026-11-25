@@ -121,31 +121,34 @@ func TestTheAgentRootCarriesItsAuthorsDismissalFromEveryWriteOfTheMark(t *testin
 	requireAgentDismissedAt(t, store, second, at(5), "a root no reply reached")
 }
 
-// The live index holds the one-off roots no dismissal marks and no other: a root's mark takes it
-// out of the index's predicate, and the mark's delete puts it back.
+// The live index holds the one-off roots no dismissal marks and no other: its predicate, as the
+// catalogue holds it, requires agent_dismissed_at is null, and a root's mark takes the root out
+// of that predicate and the mark's delete puts it back.
 func TestTheLiveAgentRootsIndexHoldsTheRootsNoDismissalMarks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, agentDismissedLiveIndex)
 	var valid bool
+	var predicate string
 	if err := store.Pool.QueryRow(ctx, `
-		select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid
+		select i.indisvalid, coalesce(pg_get_expr(i.indpred, i.indrelid), '')
+		from pg_index i join pg_class c on c.oid = i.indexrelid
 		where c.relname = 'messages_direct_roots_live'
-	`).Scan(&valid); err != nil || !valid {
+	`).Scan(&valid, &predicate); err != nil || !valid {
 		t.Fatalf("messages_direct_roots_live is valid %t (%v), want a valid index", valid, err)
+	}
+	if !strings.Contains(predicate, "agent_dismissed_at IS NULL") {
+		t.Fatalf("messages_direct_roots_live's predicate is %q, want it to hold no root a dismissal marks (agent_dismissed_at IS NULL)", predicate)
 	}
 	root := insertReturningID(t, store, `
 		insert into messages (author, body, target) values ('{"kind":"user","id":"alice"}', 'Can you look?', 'session:s1')
 		returning id::text`)
+	// live reads whether the root is in the index: whether its row passes the index's own
+	// predicate.
 	live := func() bool {
 		t.Helper()
 		var held bool
-		if err := store.Pool.QueryRow(ctx, `
-			select exists (
-				select 1 from messages m
-				where m.issue_key is null and m.in_reply_to is null and m.target like 'session:%'
-				  and m.author->>'kind' = 'user' and m.agent_dismissed_at is null and m.id = $1
-			)`, root).Scan(&held); err != nil {
+		if err := store.Pool.QueryRow(ctx, `select exists (select 1 from messages where id = $1 and `+predicate+`)`, root).Scan(&held); err != nil {
 			t.Fatalf("read whether %s is live: %v", root, err)
 		}
 		return held

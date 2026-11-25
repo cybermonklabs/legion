@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -220,20 +221,34 @@ func (r *storeWriterRig) broadcastCopy() storeWriter {
 const attemptRowStatement = "select " + messageDeliveryColumns + " from message_deliveries where message_id = $1 and attempt = $2 for update"
 
 // sessionReply is a session's reply to a message on the issue (insertSessionReply), through the
-// reply route: it takes the issue's owner lock (lockIssue) and then the attempt it answers `for
-// update`, then writes the reply's node, the reply's row, the message.answered and the facts the
-// node write stated. The attempt's row belongs to a projected table and names no node the reply
-// writes, so the written order lets it come before the reply's node, as a mention reply's
-// answered comment does (mentionReply). Each run answers a message of its own, sent to s1 and
-// delivered, since an attempt already answered takes no second reply.
+// reply route: it takes the issue's owner lock (lockIssue), then the thread's root `for no key
+// update` before every other row of the thread (inboxwrite.Recording.QueueRootLock) - the message
+// it answers, here a root - then the attempt it answers `for update`, then writes the reply's node,
+// the reply's row, the message.answered and the facts the node write stated. The root's row and
+// the attempt's row belong to projected tables and name no node the reply writes, so the written
+// order lets them come before the reply's node, as a mention reply's answered comment does
+// (mentionReply). The root's lock is a row of messages, the table the reply's row writes, so the
+// reply's row is told taken by the key share its foreign key takes of its issue's row, which no
+// step before it locks. Each run answers a message of its own, sent to s1 and delivered, since an
+// attempt already answered takes no second reply.
 func (r *storeWriterRig) sessionReply() storeWriter {
-	// parent is the message the run under way answers, which its ready sends and its attempt's
-	// hold locks.
+	// parent is the message the run under way answers, which its ready sends and its root's and
+	// attempt's holds lock.
 	var parent string
+	reply := objectNodeSteps("the reply", "messages", "insert into messages (", nil)
+	reply[1].takes = append(reply[1].takes, tableLock{"issues", rowShareMode})
 	return storeWriter{
 		name: "insertSessionReply",
 		steps: append([]storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
+			{
+				name: "the thread's root row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from messages where id = $1::uuid for no key update`, parent)
+				},
+				at:    inboxwrite.RootLockStatement,
+				takes: []tableLock{{"messages", rowShareMode}},
+			},
 			{
 				name: "the answered attempt's row", order: projectionStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
@@ -242,7 +257,7 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 				at:    attemptRowStatement,
 				takes: []tableLock{{"message_deliveries", rowShareMode}},
 			},
-		}, objectNodeSteps("the reply", "messages", "insert into messages (", nil)...),
+		}, reply...),
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			parent = createIssueMessage(t, r.handler, r.issue, map[string]any{
 				"body": "Does the reply take the lock order?", "target": "session:s1", "delivery": "steer",

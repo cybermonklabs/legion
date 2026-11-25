@@ -14,7 +14,8 @@ import type { RepliesOwner } from "./useMarkThreadRead";
 
 /** One unread thread row for `threadId`, as the one read answers a Reply row: read through a
  *  mark older than its reply, at a version of its own - not 0, so a test cannot pass on a missing
- *  field. An Agent row is a shape of its own, which the tests that need one build themselves. */
+ *  field. An Agent row is a shape of its own, built below (`agentRow`, `plannerAgentRow`, and
+ *  `withConversation` for the one read's answer of it). */
 export function replyRow(
   threadId: string,
   overrides: Partial<MyReplyThreadRow> = {}

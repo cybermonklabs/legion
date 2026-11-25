@@ -401,12 +401,13 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //     the root (api's createStoredMessage, D6): a root no session answered is no Agent row, and a
 //     reply under it takes none of this step (Recording.Unanswered).
 //
-// A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
-// dismissals: the root `for no key update`, which its writer took before the reply's insert
-// (Recording.QueueRootLock), then the retraction of the dismissed tuple of each person whose
-// user_agent_thread_dismissed row names it, then the delete of those rows, each statement reading
-// the rows as they stand once the root is held, as the trigger user_agent_thread_dismissed_clear
-// does for an older build's reply (migrations 20261105093507 and 20261125053125).
+// A session's reply to a message ends, between steps 1 and 2, its thread root's Agent
+// dismissals, under the root `for no key update` (Recording.QueueRootLock), which the API's
+// writers of such a reply take before its insert and Record takes first in its batch: the
+// retraction of the dismissed tuple of each person whose user_agent_thread_dismissed row names
+// it, then the delete of those rows, each statement reading the rows as they stand once the root
+// is held, as the trigger user_agent_thread_dismissed_clear does for an older build's reply
+// (migrations 20261105093507 and 20261125053125).
 //
 // Steps 2 to 4 hold one lock rule: the rows are locked before the delivered_to of the people
 // holding them is appended, and the backfill marks a row under the same lock, so no delivery falls
@@ -418,7 +419,10 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 	if err != nil {
 		return err
 	}
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return recording.Queue(b, event) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		recording.QueueRootLock(b)
+		return recording.Queue(b, event)
+	})
 }
 
 // Recording is w's record as PlanRecord planned it in the write's read phase: the thread it is

@@ -882,6 +882,11 @@ func appendedNodeParams(nodes []Node, cause *int64, own map[baseAttribute]struct
 		if cause != nil {
 			causes[index] = *cause
 		}
+		// An attribute's skip bit is its place in baseAttributes, and the append clears that bit
+		// from the mark's (markVisibility, markState, markProject, markParties), so baseAttributes
+		// lists the four in mark order: visibility, state, project, parties. Nothing else holds
+		// the two lists in step: a reorder of either would have a write skip an attribute the
+		// writer does not state itself and state again one it does.
 		for bit, attribute := range baseAttributes {
 			if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
 				skips[index] |= 1 << bit

@@ -39,7 +39,7 @@ const (
 // meInboxRig is a test server whose store is traced for the one read's own statements: once a
 // request's credential has resolved to a person (meInboxWindowIdentity) meInboxStatements records
 // every statement the traced pool runs, on whatever context, each statement a batch sends on its
-// own, until the test's call of the handler returns (countedRead). The caller's identity is resolved
+// own, until the test's call of the handler returns (windowedRead). The caller's identity is resolved
 // on the untraced pool and before that window opens, so a sign-in lookup is no statement of the read.
 type meInboxRig struct {
 	database   *store.Store
@@ -63,10 +63,10 @@ func newMeInboxRig(t *testing.T) *meInboxRig {
 	return &meInboxRig{database: database, traced: traced, handler: handler, statements: statements}
 }
 
-// countedRead sends the read as login with the window armed, and answers its response and every
+// windowedRead sends the read as login with the window armed, and answers its response and every
 // statement the traced pool ran from the moment login's credential resolved until the handler
 // returned, on whatever context it ran, less the horizon pool's (ownStatements).
-func (rig *meInboxRig) countedRead(t *testing.T, login string, query url.Values) (*httptest.ResponseRecorder, []string) {
+func (rig *meInboxRig) windowedRead(t *testing.T, login string, query url.Values) (*httptest.ResponseRecorder, []string) {
 	t.Helper()
 	rig.statements.arm()
 	response := meInboxRequestAs(t, rig.handler, context.Background(), login, query)
@@ -392,7 +392,7 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 	seed.toPerson(reachedBob...)
 
 	t.Run("one statement answers the four arms and not the node with no relation", func(t *testing.T) {
-		response, own := rig.countedRead(t, alice, nil)
+		response, own := rig.windowedRead(t, alice, nil)
 		answer := decodeMeInbox(t, response)
 		// Every statement the traced pool ran from the moment alice's credential resolved until
 		// the handler returned counts, on whatever context it ran, each of a batch on its own, but

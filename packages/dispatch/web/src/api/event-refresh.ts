@@ -502,12 +502,7 @@ function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void
  *  (corrected-post.ts) writes the mark at once, but not the words, which an edit event can carry
  *  cut short. The query exists only while a person's page is open. */
 function appendPersonPages(targets: RefreshTarget[], event: DispatchEvent): void {
-  if (
-    event.type === "comment.edited" ||
-    event.type === "comment.deleted" ||
-    event.type === "message.edited" ||
-    event.type === "message.deleted"
-  ) {
+  if (POST_CORRECTIONS[event.type] !== undefined) {
     targets.push({ queryKey: ["people"] });
   }
 }
