@@ -929,16 +929,46 @@ start_inbox() {
 # run that read no review App names lib/github-apps.sh's default. The mention trigger is the
 # listener's own default, and the CI store the route records checks in is the listener's own
 # bucket on the run's NATS. The base commit's listener (A13) is started the same way.
+# start_listener's words after BINARY_DIR, each NAME=VALUE, are more of the listener's environment:
+# A13 gives both of its listeners one role claim reaper period and one live window (run_a13), and
+# the bring-up's start gives none, so the pass's listener keeps the deployment's defaults. Each
+# start records the log's size before it and the second its listener first answered
+# (listener_log_from, listener_opened), which await_reaper_pass reads. The listener's registry is
+# open by that second: /v1 answers 503 until it is, and the start waits for a 2xx.
 start_listener() {
   local bin=$1
+  shift
   [ -n "$listener_keeper_pid" ] || keep_port listener_keeper port_listener
+  listener_log_from=$(log_size listener)
   start_kept listener listener_keeper ENVOY_LISTEN_FD -- "${service_env[@]}" "HOME=$work/listener-home" \
     "ENVOY_API_TOKEN=$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 "PORT={port}" ENVOY_LISTEN_HOST=127.0.0.1 \
     "ENVOY_MACHINE_ID=legion-e2eal-$$" ENVOY_WEBHOOKS=github "ENVOY_GITHUB_WEBHOOK_SECRET=$(cat "$work/github-webhook-secret")" \
     "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" "${dispatch_identity_listener_env[@]}" \
-    "NATS_URLS=nats://127.0.0.1:$port_nats" "$bin/envoy-listener"
+    "NATS_URLS=nats://127.0.0.1:$port_nats" "$@" "$bin/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
     curl -fsS --max-time 5 -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
+  listener_opened=$(date +%s)
+}
+
+# await_reaper_pass LIVE PERIOD waits until the listener start_listener last started has been open
+# longer than LIVE seconds, its ENVOY_SESSION_LIVE_WINDOW, and has then logged a pass of its role
+# claim reaper (`role claim reaper cycle`), which runs every PERIOD seconds, its
+# ENVOY_ROLE_CLAIM_REAP_INTERVAL. A claim the listener restored at its start is kept until it has
+# been open for that window, its restart grace, and a gone holder's claim is released only on a
+# pass (ReapRoleClaims and releaseReadExpiredRoleClaim, packages/envoy/internal/store). It reads
+# only this start's lines and judges each by the second the listener logged it in, in UTC
+# (service_env's TZ=UTC): a line counts from the second after listener_opened + LIVE, which is past
+# the window's end, since listener_opened is no earlier than the second the registry opened in. It
+# waits up to three periods past that end, and returns at once when such a pass is logged already;
+# a wait that gives up is noted (soft_wait), and the caller goes on.
+await_reaper_pass() {
+  local live=$1 period=$2 grace left
+  grace=$(date -u -d "@$((listener_opened + live))" +%FT%T)
+  left=$((listener_opened + live - $(date +%s)))
+  ((left > 0)) || left=0
+  soft_wait "$((left + 3 * period))" "the listener's restart grace to end at ${grace}Z and its role claim reaper to pass after it" \
+    sh -c "tail -c +$((listener_log_from + 1)) '$evidence/logs/listener.log' | grep -F '\"msg\":\"role claim reaper cycle\"' | jq -se 'any(.[]; .time[:19] > \"$grace\")'" ||
+    true
 }
 
 start_dispatch() {
@@ -5104,8 +5134,19 @@ done
 # asker's inbox, so the inbox is started again on the restarted NATS, whose port is a new one. Then
 # A13's own control: the same probe against the branch's daemon with `answers` on, whose
 # comparison with the base commit must fail.
+# Both stacks are probed at one point of the role claim reaper, so the comparison reads the
+# branch's change and not the reaper's timing: both listeners run it every reap_period seconds
+# (scripts/e2e/envoy-session-states.sh's 20 s, not the deployment's five minutes) over a live
+# window of live_window seconds, the listener's own default set here so the rig owns the grace it
+# waits for, and each probe, the branch's, its control's and the base's, runs only once its own
+# listener has been open past that grace and its reaper has passed after it (await_reaper_pass).
+# Without that, proof run 45542053007 compared under postgres a branch listener some 25 minutes
+# old, whose reaper had released a gone holder's role claim, with a base listener probed seconds
+# after its start, which still kept that claim as one it restored inside its grace. The first probe
+# of each listener waits out the rest of its window; every later one finds the pass logged already.
 run_a13() {
-  local differs probe_store branch control_differs
+  local differs probe_store branch control_differs live_window=300 reap_period=20
+  local reaper_env=("ENVOY_ROLE_CLAIM_REAP_INTERVAL=${reap_period}s" "ENVOY_SESSION_LIVE_WINDOW=${live_window}s")
   begin a13
   store=-
   a13_project=A13$run_tag
@@ -5116,7 +5157,7 @@ run_a13() {
   start_nats
   stop_service inbox
   start_inbox
-  start_listener "$work/branch"
+  start_listener "$work/branch" "${reaper_env[@]}"
   start_dispatch "$work/branch" dispatch
   dispatch_human POST projects "$(jq -cn --arg key "$a13_project" '{key: $key, name: "A13 probes"}')" >/dev/null
   declare -gA a13_quiet=()
@@ -5135,19 +5176,21 @@ run_a13() {
     sleep 65
     a13_quiet[$store]=0
     check_boot_without_answers || a13_quiet[$store]=1
+    await_reaper_pass "$live_window" "$reap_period"
     a13_probe branch "$store"
     run_controls
     stop_daemon
     start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
       "$branch_plugin"
     sleep 65
+    await_reaper_pass "$live_window" "$reap_period"
     a13_probe control "$store"
     stop_daemon
   done
   stop_service dispatch
   stop_service listener
   restart_nats_from "$work/nats-snapshot"
-  start_listener "$work/base"
+  start_listener "$work/base" "${reaper_env[@]}"
   start_dispatch "$work/base" dispatch_base
   dispatch_human POST projects "$(jq -cn --arg key "$a13_project" '{key: $key, name: "A13 probes"}')" >/dev/null
   store=files
@@ -5163,7 +5206,10 @@ run_a13() {
   write_legion_config "$work/base-a13.yaml" base
   start_daemon "$work/base/legion" "$work/base-a13.yaml" "$evidence/logs/base-daemon-a13.log" "$base_home" "$base_profile" \
     "$base_plugin"
-  for probe_store in $stores; do a13_probe base "$probe_store"; done
+  for probe_store in $stores; do
+    await_reaper_pass "$live_window" "$reap_period"
+    a13_probe base "$probe_store"
+  done
   stop_daemon
   for store in $stores; do
     differs=$(a13_differs)
