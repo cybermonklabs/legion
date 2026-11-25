@@ -18,6 +18,14 @@ var directMountsAllowed = map[string]string{
 	`internal/dispatch/api/server.go:register:route.Method + " " + route.Pattern`: "the route table's loop: it mounts " +
 		"only route-table rows, which undecidedReads and undecidableWrites hold, and which a walk of what the " +
 		"server serves takes from the route index",
+	// The process's own probes and its metrics scrape, which cmd/dispatch's dispatchHandler mounts
+	// beside the router: each answers the same thing to every caller and reads no row a project
+	// holds. The slice that carries cmd/dispatch moves them into the route census, and these three
+	// keys go with it.
+	`cmd/dispatch/main.go:dispatchHandler:"GET /healthz"`: "the readiness probe: process state, no project row",
+	`cmd/dispatch/main.go:dispatchHandler:"GET /livez"`:   "the liveness probe: 204 and nothing read",
+	`cmd/dispatch/main.go:dispatchHandler:"GET /metrics"`: "the process's metrics registry: counters, no project row",
+	`cmd/dispatch/main.go:dispatchHandler:"/"`:            "the router itself, whose every pattern routes.mount puts through Handle",
 }
 
 // TestEveryMountedPatternHasAReadClass reads the server's source, every package under
