@@ -126,6 +126,19 @@ jobs:
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts
+      # scripts/skill-cuts/checkout.ts answers a replayed read-only call from a copy of the
+      # session's checkout, its command run in unshare's own unprivileged user, mount,
+      # network, PID and UTS namespaces (runSandboxed), and checkout.test.ts's rows, and
+      # replay.test.ts's and cli.test.ts's that read through it, fail rather than skip where that
+      # sandbox cannot be made.
+      # Ubuntu 24.04 restricts unprivileged user namespaces with an AppArmor sysctl, so the job
+      # turns it off on its throwaway runner, as daemon-go does (`|| true`: a runner image without
+      # the key restricts nothing), and the unshare after it, with the sandbox's namespaces, is the
+      # verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the skill-cuts checkout sandbox)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user --mount --net --pid --fork --uts --mount-proc true
       - name: Test pi-legion
         run: bun run test
         working-directory: packages/pi-legion

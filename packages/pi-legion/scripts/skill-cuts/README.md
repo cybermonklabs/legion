@@ -1495,6 +1495,9 @@ Inputs:
 
 - `--rows`: the count's raw output, in `attribute --count`'s layout (`<store>/<day>.txt`, or
   `<store>/<day>T<hour>.txt` for each hour of a split day), read by `attribute.ts`'s own reader.
+  Each store with rows also needs its `<store>/roots.txt`, which that reader refuses the store's
+  rows without: run `count-sql --config <skill-cuts.json> --store <store> --query roots` through
+  the store's `psqlCommand` and save its output there (`count-sql`, above).
 - `--spans`: each store's earliest record, in the form `attribute --spans` takes.
 - `--dotfiles-commit`: the commit of `dotfilesRepo` whose pins are read, 40 hex digits; without
   it, the default branch's commit when the command runs.
@@ -1548,9 +1551,10 @@ Outputs under `--out`:
   earliest record from the spans file; each store not read and each `--not-read` with its reason;
   the dotfiles commit and each pin with the commit it resolves to; the pin changes in the window;
   the rule; the sessions per skill in each column, and per skill and store; the skills with at
-  least 20 own-copy sessions; the `count-sql` command line of each store and day the rows hold
-  (with its psqlCommand, as it made the file), and the command's own line, with the
-  `--dotfiles-commit` it read added when none was given, so it reads the same pins again.
+  least 20 own-copy sessions; the `count-sql` command line of each store and day the rows hold,
+  and of each store's `roots.txt` (with its psqlCommand, as it made the file), and the command's
+  own line, with the `--dotfiles-commit` it read added when none was given, so it reads the same
+  pins again.
 - `exemplar-count.tsv`: one row per skill of each set at its pin (a skill with no read at 0), in
   the sets' order, most own-copy sessions first: `set`, `skill`, `own_sessions`,
   `upstream_url_sessions`, `other_copy_sessions`, `no_copy_sessions`, `reference_own_sessions`,

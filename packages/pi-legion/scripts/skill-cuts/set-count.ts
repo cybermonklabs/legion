@@ -14,7 +14,9 @@
  *   --rows    The count's raw output, as attribute.ts reads its `--count` (`readCount`, the one
  *             reader of count.sql's rows): `<store>/<YYYY-MM-DD>.txt`, or `<YYYY-MM-DDTHH>.txt` for
  *             each hour of a split day, one count.sql query's psql output each, its count rows and
- *             its summary row.
+ *             its summary row; and each store's `<store>/roots.txt`, which readCount refuses a
+ *             store's rows without: `count-sql --config <file> --store <store> --query roots`, run
+ *             through the store's psqlCommand, its output saved there.
  *   --spans   Each store's earliest record, in the form `attribute --spans` takes.
  *   --dotfiles-commit  The commit of `dotfilesRepo` whose pins it reads (sets.ts), 40 hex digits;
  *             without it, the default branch's commit when it runs.
@@ -57,7 +59,8 @@
  *                       and why; the dotfiles commit and each pin with the commit it resolves to;
  *                       the pin changes in the window; the rule; the sessions per skill, and per
  *                       skill and store; the skills with at least AT_LEAST own-copy sessions; the
- *                       count-sql command of each query the rows hold, and this command.
+ *                       count-sql command of each query the rows hold and of each store's
+ *                       roots.txt, and this command.
  *   exemplar-count.tsv  TSV_COLUMNS, then each column again per configured store
  *                       (`<column>:<store>`), one row per skill of each set, in the sets' order,
  *                       most own-copy sessions first, a tie by name.
@@ -294,6 +297,20 @@ function shellWord(arg: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
+/** The count-sql command line that makes the rows file `<store>/<file>.txt`: count-sql with the
+ *  configuration `config`, the store and `query` (its day and hour, or `--query roots`), run
+ *  through the configuration's psql command `psql` with the store's name. */
+function countSqlLine(
+  config: string,
+  psql: string,
+  store: string,
+  query: readonly string[],
+  file: string
+): string {
+  const words = [CLI, "count-sql --config", shellWord(config), "--store", store, ...query];
+  return [...words, "|", shellWord(psql), store, ">", `${store}/${file}.txt`].join(" ");
+}
+
 /** One skill's numbers, in total and per store, and its own-copy sessions. */
 interface SkillRow {
   readonly set: string;
@@ -524,7 +541,7 @@ function markdown(report: Report): string {
     "",
     "## Commands",
     "",
-    "The count-sql command of each query the rows hold; its output, run through the configuration's psqlCommand with the store's name, is that query's file under the rows directory:",
+    "The count-sql command of each query the rows hold, and of each store's roots.txt; its output, run through the configuration's psqlCommand with the store's name, is that file under the rows directory:",
     "",
     "```",
     ...report.commands.countSql,
@@ -746,24 +763,22 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
         .filter((row) => row.totals.own >= AT_LEAST)
         .sort((a, b) => b.totals.own - a.totals.own),
       commands: {
-        countSql: outputs.map((output) => {
-          const [day = "", hour] = output.name.split("T");
-          return [
-            CLI,
-            "count-sql --config",
-            shellWord(given.config),
-            "--store",
-            output.store,
-            "--day",
-            day,
-            ...(hour === undefined ? [] : ["--hour", String(Number(hour))]),
-            "|",
-            shellWord(config.psqlCommand),
-            output.store,
-            ">",
-            `${output.store}/${output.name}.txt`,
-          ].join(" ");
-        }),
+        // Each store's day and hour queries, then its roots query: the files the rows hold, in
+        // the order of their paths.
+        countSql: [...new Set(outputs.map((output) => output.store))].flatMap((store) => [
+          ...outputs
+            .filter((output) => output.store === store)
+            .map((output) => {
+              const [day = "", hour] = output.name.split("T");
+              const query = [
+                "--day",
+                day,
+                ...(hour === undefined ? [] : ["--hour", String(Number(hour))]),
+              ];
+              return countSqlLine(given.config, config.psqlCommand, store, query, output.name);
+            }),
+          countSqlLine(given.config, config.psqlCommand, store, ["--query", "roots"], "roots"),
+        ]),
         setCount: ownCommand.join(" "),
       },
     };

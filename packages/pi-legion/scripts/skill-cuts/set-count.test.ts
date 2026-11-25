@@ -97,11 +97,17 @@ function configFile(name: string, change: Record<string, unknown> = {}): string 
   return at(name);
 }
 
+/** A store's roots.txt, the table `count-sql --query roots` prints (README.md, "attribute"),
+ *  holding no file: readCount, set-count's reader of the rows as attribute reads them, refuses a
+ *  store's output without one, and set-count reads no profile from it. */
+const ROOTS = " root\n--------\n(0 rows)\n";
+
 /** The rows of store_a that cover the window, with F14's query after it. */
 const PLANTED_ROWS = {
   "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
   "store_a/2026-11-21.txt": fixture("F7-count-second.txt"),
   "store_a/2026-11-22.txt": fixture("F14-count-planted.txt"),
+  "store_a/roots.txt": ROOTS,
 };
 const SPANS = `${JSON.stringify({ store: "store_a", earliest_mtime_ms: NOV_20 - 28 * DAY_MS, files: 4 })}\n`;
 
@@ -145,6 +151,7 @@ test("reads count.sql's rows as attribute reads them", async () => {
   const rows = tree(at("f7-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
     "store_a/2026-11-21.txt": fixture("F7-count-second.txt"),
+    "store_a/roots.txt": ROOTS,
   });
   const out = at("f7-out");
   const ran = await setCount(argsOf(plantedConfig, rows, out));
@@ -230,6 +237,7 @@ test("refuses rows where a store lacks a day of the window", async () => {
   const missing = tree(at("gap-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
     "store_a/2026-11-22.txt": fixture("F14-count-planted.txt"),
+    "store_a/roots.txt": ROOTS,
   });
   const out = at("gap-out");
   const ran = await setCount(argsOf(plantedConfig, missing, out), f10Gh(calls));
@@ -244,6 +252,7 @@ test("refuses rows where a store lacks a day of the window", async () => {
   const hours = tree(at("hour-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
     "store_a/2026-11-21T05.txt": psqlTable("store_a", nov21 + 5 * 3_600_000, nov21 + 6 * 3_600_000),
+    "store_a/roots.txt": ROOTS,
   });
   const split = await setCount(argsOf(plantedConfig, hours, at("hour-out")));
   expect(split.code).toBe(2);
@@ -252,6 +261,7 @@ test("refuses rows where a store lacks a day of the window", async () => {
   const misnamed = tree(at("misnamed-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
     "store_a/2026-11-21.txt": fixture("F7-count-first.txt"),
+    "store_a/roots.txt": ROOTS,
   });
   const wrong = await setCount(argsOf(plantedConfig, misnamed, at("misnamed-out")));
   expect(wrong.code).toBe(2);
@@ -273,6 +283,7 @@ test("gives each store's earliest record from the spans file", async () => {
   const empty = (store: string) => ({
     [`${store}/2026-11-20.txt`]: psqlTable(store, NOV_20, NOV_20 + DAY_MS),
     [`${store}/2026-11-21.txt`]: psqlTable(store, NOV_20 + DAY_MS, NOV_20 + 2 * DAY_MS),
+    [`${store}/roots.txt`]: ROOTS,
   });
   const rows = tree(at("spans-rows"), {
     ...PLANTED_ROWS,
@@ -345,36 +356,55 @@ test("names a configured store with no rows, and the Claude Code transcripts, as
 });
 
 // Catches: a count whose rows cannot be made again (no count-sql line for a query the rows hold,
-// an hour's query given as its day) or whose own command does not give the same pins again.
-test("prints the count-sql command of each store and day, and its own", async () => {
+// an hour's query given as its day, or no line for a store's roots.txt, which readCount refuses
+// the store's rows without) or whose own command does not give the same pins again.
+test("prints the count-sql command of each store and day and of each store's roots.txt, and its own", async () => {
+  const config = configFile("commands.json", {
+    stores: [
+      { name: "store_a", context: "devbox" },
+      { name: "store_b", context: "legion:ACME" },
+    ],
+  });
   const nov21 = NOV_20 + DAY_MS;
   const rows = tree(at("commands-rows"), {
     "store_a/2026-11-20.txt": fixture("F7-count-first.txt"),
     "store_a/2026-11-22.txt": fixture("F14-count-planted.txt"),
+    "store_a/roots.txt": ROOTS,
     ...Object.fromEntries(
       Array.from({ length: 24 }, (_, hour) => [
         `store_a/2026-11-21T${String(hour).padStart(2, "0")}.txt`,
         psqlTable("store_a", nov21 + hour * 3_600_000, nov21 + (hour + 1) * 3_600_000),
       ])
     ),
+    "store_b/2026-11-20.txt": psqlTable("store_b", NOV_20, nov21),
+    "store_b/2026-11-21.txt": psqlTable("store_b", nov21, nov21 + DAY_MS),
+    "store_b/roots.txt": ROOTS,
   });
   const out = at("commands-out");
   const label = "the count's raw rows, version 6";
-  const ran = await setCount(argsOf(plantedConfig, rows, out, "--rows-label", label));
+  const ran = await setCount(argsOf(config, rows, out, "--rows-label", label));
   expect(ran.err).toBe("");
   expect(ran.code).toBe(0);
   const markdown = readFileSync(path.join(out, "exemplar-count.md"), "utf8");
-  const countSql = (day: string, file: string, hour = "") =>
-    `bun scripts/skill-cuts/cli.ts count-sql --config ${plantedConfig} --store store_a --day ${day}${hour} | /usr/bin/psql store_a > store_a/${file}.txt`;
-  expect(markdown).toContain(countSql("2026-11-20", "2026-11-20"));
-  expect(markdown).toContain(countSql("2026-11-21", "2026-11-21T00", " --hour 0"));
-  expect(markdown).toContain(countSql("2026-11-21", "2026-11-21T23", " --hour 23"));
-  expect(markdown).toContain(countSql("2026-11-22", "2026-11-22"));
-  const prefix = `bun scripts/skill-cuts/cli.ts count-sql --config ${plantedConfig} --store store_a`;
-  expect(markdown.split("\n").filter((line) => line.startsWith(prefix))).toHaveLength(26);
+  const prefix = `bun scripts/skill-cuts/cli.ts count-sql --config ${config} --store`;
+  const countSql = (store: string, query: string, file: string) =>
+    `${prefix} ${store} ${query} | /usr/bin/psql ${store} > ${store}/${file}.txt`;
+  expect(markdown).toContain(countSql("store_a", "--day 2026-11-20", "2026-11-20"));
+  expect(markdown).toContain(countSql("store_a", "--day 2026-11-21 --hour 0", "2026-11-21T00"));
+  expect(markdown).toContain(countSql("store_a", "--day 2026-11-21 --hour 23", "2026-11-21T23"));
+  const lines = markdown.split("\n").filter((line) => line.startsWith(prefix));
+  // store_a's 26 queries, then its roots query; then store_b's two queries and its roots query.
+  expect(lines).toHaveLength(30);
+  expect(lines.slice(25)).toEqual([
+    countSql("store_a", "--day 2026-11-22", "2026-11-22"),
+    countSql("store_a", "--query roots", "roots"),
+    countSql("store_b", "--day 2026-11-20", "2026-11-20"),
+    countSql("store_b", "--day 2026-11-21", "2026-11-21"),
+    countSql("store_b", "--query roots", "roots"),
+  ]);
   const own = [
     "bun scripts/skill-cuts/cli.ts set-count",
-    `--config ${plantedConfig} --rows ${rows} --spans ${at("spans.jsonl")} --out ${out}`,
+    `--config ${config} --rows ${rows} --spans ${at("spans.jsonl")} --out ${out}`,
     `--dotfiles-commit ${AT} --rows-label 'the count'\\''s raw rows, version 6'`,
   ].join(" ");
   expect(markdown).toContain(own);
@@ -383,7 +413,7 @@ test("prints the count-sql command of each store and day, and its own", async ()
     commands: { countSql: string[]; setCount: string };
   };
   expect(summary.commands.setCount).toBe(own);
-  expect(summary.commands.countSql).toHaveLength(26);
+  expect(summary.commands.countSql).toEqual(lines);
 
   // Without --dotfiles-commit, the pins are the default branch's commit's (here AT), and its own
   // command names that commit, so it reads the same pins again.
@@ -403,7 +433,7 @@ test("prints the count-sql command of each store and day, and its own", async ()
     return f10(args);
   };
   const headOut = at("commands-head-out");
-  const given = ["--config", plantedConfig, "--rows", rows, "--spans", at("spans.jsonl")];
+  const given = ["--config", config, "--rows", rows, "--spans", at("spans.jsonl")];
   const fromHead = await setCount([...given, "--out", headOut], head);
   expect(fromHead.err).toBe("");
   expect(fromHead.code).toBe(0);
