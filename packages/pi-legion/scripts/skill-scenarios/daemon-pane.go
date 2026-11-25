@@ -800,6 +800,7 @@ const (
 	rigRepository    = rigOwner + "/widgets"
 	rigDefaultBranch = "main"
 )
+
 // realGH is the real gh the pane is told as LEGION_GH_PATH: named, the gh the rig names (its
 // stand-in, as an operator's LEGION_GH_PATH is taken as given), else the daemon's resolution at
 // boot, the first executable gh on path, refused when it is a script (daemon.RefuseScriptGH's
