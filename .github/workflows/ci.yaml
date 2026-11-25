@@ -64,7 +64,6 @@ env:
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
-      "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
@@ -171,12 +170,14 @@ jobs:
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
+      harness_pool_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.harness_pool_test }}
       go_cache_working_set_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_cache_working_set_test }}
       priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
       architecture_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.architecture_check_test }}
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
+      # why: .github/ci-notes/ci.md#why-the-docs-job-is-selected-like-any-other
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
       worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image }}
       # why: .github/ci-notes/ci.md#why-the-browser-images-build-carries-no-full-ci-term
@@ -191,8 +192,7 @@ jobs:
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && steps.filter.outputs.pi_legion || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       pi_legion_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_legion_build }}
-      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
-      # dispatched one above, so they come back on every push.
+      # why: .github/ci-notes/ci.md#the-jobs-with-no-full-ci-term-which-come-back-on-every-push
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
@@ -208,8 +208,7 @@ jobs:
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && steps.filter.outputs.envoy_infra_go || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       envoy_infra_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_build }}
-      # The checks whose subject is text, in a job with no database: no `full-ci` term, only
-      # the dispatched one above, since it is one of the cheapest jobs of the file.
+      # why: .github/ci-notes/ci.md#the-jobs-with-no-full-ci-term-which-come-back-on-every-push
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -223,8 +222,7 @@ jobs:
       dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
-      # so it comes back on every push that selects it, as the two suites above do.
+      # why: .github/ci-notes/ci.md#the-jobs-with-no-full-ci-term-which-come-back-on-every-push
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -417,6 +415,7 @@ jobs:
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
+      harness_pool_test: ${{ needs.changes.outputs.harness_pool_test }}
       go_cache_working_set_test: ${{ needs.changes.outputs.go_cache_working_set_test }}
       priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}
       architecture_check_test: ${{ needs.changes.outputs.architecture_check_test }}
@@ -806,18 +805,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#the-cleanup-detector-run-of-the-document-service
-  envoy-go-docs-finalizers:
-    needs: changes
-    if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    permissions:
-      contents: read
-      actions: read
-      checks: write
-    uses: ./.github/workflows/ci-job-envoy-go-docs-finalizers.yaml
-    with:
-      ci-ok-changes: ${{ toJSON(needs.changes) }}
-
   # why: .github/ci-notes/ci.md#the-real-process-memory-tests-and-why-they-are-a-job-of-their-own
   dispatch-memory:
     needs: changes
@@ -1089,7 +1076,6 @@ jobs:
       - envoy-go-race-api
       - envoy-go-claim-model
       - envoy-go-race-docs
-      - envoy-go-docs-finalizers
       - dispatch-memory
       - dispatch-multiprocess
       - dispatch-two-builds

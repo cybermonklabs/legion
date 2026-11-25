@@ -557,6 +557,36 @@ test("agent authors render the registry title and fall back to a short id", asyn
   }
 });
 
+// Each issue a status change's option moves or unlinks, and each issue R25's fix changes, gets a
+// comment written as Dispatch's system actor: no person and no session. Its thread names it as
+// `AgentName` names every actor that is not a session, by its id, and reads no registry for it.
+test("a comment from Dispatch's system actor shows its author", async () => {
+  const user = userEvent.setup();
+  const body =
+    "Dispatch moved this issue from `todo` to `done`, because alice's status change of its parent passed `include_children`.";
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", { author: { id: "parent-status-rule", kind: "system" }, body }),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turns = await screen.findByRole("list", { name: "Conversation turns" });
+    const turn = (await within(turns).findByText(/Dispatch moved this issue/)).closest<HTMLElement>(
+      "[data-turn]"
+    );
+    if (turn === null) throw new Error("the comment is drawn in no turn");
+    // A thread names its comments' authors once it is open.
+    await user.click(within(turn).getByRole("button", { name: "Expand thread" }));
+    expect(await within(turn).findByText(/^parent-status-rule ·/)).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
 // A closed issue takes a message's retry and replies, so its card offers them as an open one does.
 test("offers targeted-message retries and Reply on a closed issue", async () => {
   const stub = stubLists({

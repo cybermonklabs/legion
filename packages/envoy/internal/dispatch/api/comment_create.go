@@ -618,6 +618,37 @@ type commentResolution struct {
 	decidesRoutes bool
 }
 
+// routeSuppression is what a comment's event says about the copy its owner's route sends
+// (suppress_route, suppressed_route and suppressed_route_session_id): the copy is suppressed when a
+// mention delivers the comment to the session the route reaches. Either the route names a session
+// (its lookup pinned it, or its own lookup went unanswered and it is session:<id>) that a mention
+// delivers the comment to, as far as creation knows (mentionedSession: each pinned session, and
+// the <id> of an unanswered session:<id> mention), or the route string is the target of a mention
+// whose lookup went unanswered - one string names one session - and is then suppressed by that
+// string alone, so a route later moved to that session's direct form is not. The route copy still
+// duplicates the mention for an unanswered role:X mention whose holder the route names under
+// another string, and for a role:X route whose own lookup went unanswered while a mention of
+// another string reaches its holder: neither names a session to compare.
+//
+// The suppression names a candidate only, and the outbox's other session routes (an author, the
+// thread's sessions, the primary document's, the claimant, a follower) take the comment's mentions
+// as their candidates the same way. The outbox decides each copy when it publishes
+// (destinations.leftTo); publishFallbackCopies in internal/dispatch/outbox is the one description.
+func (resolved commentResolution) routeSuppression() (suppressed bool, suppressedRoute string, suppressedSessionID *string) {
+	route := resolved.route
+	switch {
+	case route.sessionID != nil:
+		for _, mention := range resolved.mentions {
+			if sessionID, named := mention.mentionedSession(); named && sessionID == *route.sessionID {
+				return true, route.route, route.sessionID
+			}
+		}
+	case route.unanswered:
+		return true, route.route, nil
+	}
+	return false, "", nil
+}
+
 // commentWrite is the open comment transaction and what its locked owner said: the owner's
 // lifecycle status (nil for a project document) and the resolution that row agreed with.
 type commentWrite struct {
@@ -876,20 +907,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	tx, status, route, resolvedMentions := start.tx, start.status, start.route, start.mentions
-	// mentionedSessions are the sessions the comment's mentions deliver it to, as far as creation
-	// knows (mentionedSession): each pinned session, and the <id> of an unanswered session:<id>
-	// mention. Only a pinned session is stored on the mention, its attempt and comment_mentions;
-	// an unanswered mention stays unpinned there, and the sender resolves it after the response.
+	tx, status, resolvedMentions := start.tx, start.status, start.mentions
+	// Only a pinned session is stored on a mention, its attempt and comment_mentions; an
+	// unanswered mention stays unpinned there, and the sender resolves it after the response.
 	mentions := make([]model.Mention, 0, len(resolvedMentions))
-	mentionedSessions := make(map[string]struct{}, len(resolvedMentions))
 	for _, resolved := range resolvedMentions {
 		mentions = append(mentions, model.Mention{
 			Target: resolved.Target, Delivery: resolved.Delivery, SessionID: resolved.SessionID,
 		})
-		if sessionID, named := resolved.mentionedSession(); named {
-			mentionedSessions[sessionID] = struct{}{}
-		}
 	}
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
@@ -918,37 +943,9 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	input.ReplyTo = threadTarget.ReplyTo
 	input.AskID = threadTarget.AskID
 	replyRoot := threadTarget.ReplyRoot
-	// The route copy is suppressed when a mention delivers the comment to the session the route
-	// reaches: the route names a session (its lookup pinned it, or its own lookup went unanswered
-	// and it is session:<id>) that is one of mentionedSessions, or the route string is the target
-	// of a mention whose lookup went unanswered - one string names one session - and is then
-	// suppressed by that string alone, so a route later moved to that session's direct form is
-	// not. The route copy still duplicates the mention for an unanswered role:X mention whose
-	// holder the route names under another string, and for a role:X route whose own lookup went
-	// unanswered while a mention of another string reaches its holder: neither names a session to
-	// compare.
-	suppressRoute := false
-	suppressedRoute := ""
-	var suppressedRouteSessionID *string
-	switch {
-	case route.sessionID != nil:
-		if _, mentioned := mentionedSessions[*route.sessionID]; mentioned {
-			suppressRoute = true
-			suppressedRoute = route.route
-			suppressedRouteSessionID = route.sessionID
-		}
-	case route.unanswered:
-		suppressRoute = true
-		suppressedRoute = route.route
-	}
-	// The suppression names a candidate only, and the outbox's other session routes (an author,
-	// the thread's sessions, the primary document's, the claimant, a follower) take the comment's
-	// mentions as their candidates the same way. The outbox decides each copy when it publishes
-	// (destinations.leftTo); publishFallbackCopies in internal/dispatch/outbox is the one
-	// description.
 	turn := threadTarget.replyTurn(actor, input.Turn)
-	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	rowID, err := commentRowID(r.Context(), tx)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -981,74 +978,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	author, err := encodeJSON(actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var anchorJSON any
-	if anchor != nil {
-		anchorJSON, err = encodeJSON(anchor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	var suggestion *model.Suggestion
-	var suggestionJSON any
 	if input.Suggestion != nil {
 		suggestion = &model.Suggestion{ReplaceWith: input.Suggestion.ReplaceWith}
-		suggestionJSON, err = encodeJSON(storedSuggestion{Suggestion: *suggestion, Kind: projectionKind})
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
-	// The row's created_at is the clock at the insert (migration 0065's default), which orders an
-	// owner's comments as they commit because every comment insert holds the owner's lock. The
-	// insert is queued, so the clock is read here, at the insert's place and under that lock,
-	// which still orders it after every comment committed before this transaction took the lock
-	// and before every comment committed after it; it is written explicitly, so the projection
-	// below, made before the insert runs, carries the time the row will hold. The row, its node
-	// and the facts it projects carry that one time: the store's census digests the row's
-	// created_at against its node's made_at, and graph_edges answers a comment's edges from the
-	// row before its kind's cutover and from the tuples after it.
-	var comment model.Comment
-	if err := tx.QueryRow(r.Context(), `select clock_timestamp()`).Scan(&comment.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	comment := model.Comment{
+		ID: rowID, IssueKey: owner.IssueKey, ArtifactID: owner.ArtifactID, Author: actor, Body: input.Body, Anchor: anchor,
+		ReplyTo: input.ReplyTo, Answers: threadTarget.Answers, AskID: input.AskID, Turn: turn, Suggestion: suggestion,
+		Mentions: mentions, Deliveries: []model.CommentDelivery{}, RepliesToBlock: threadTarget.ReplyBlock.nodeID(),
 	}
-	// What this comment is in the node and tuple store: its node, queued before the row that names
-	// it, in the project of the issue or the document it belongs to, and the facts the row is the
-	// projection of, which wait for the event that stores it. The node write appends nothing
-	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among them,
-	// is appended under that event, which is appended after the row. A comment left out of the
-	// store (unprojected) has no node to write.
-	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, projectionKind)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	stored, err := commentStored(r.Context(), tx, rowID, actor, comment.CreatedAt, anchor, owner.ArtifactID, project, parties)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !stored.unprojected {
-		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			graphstore.QueueNodes(b, stored.written)
-			return nil
-		}); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	nodeKind, nodeAddress := stored.rowNode()
-	if err := queueExec(ledger, `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1063,19 +1003,6 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	waitingOn := threadTarget.waitingOnAfter(turn)
-	comment.ID = rowID
-	comment.IssueKey = owner.IssueKey
-	comment.ArtifactID = owner.ArtifactID
-	comment.Author = actor
-	comment.Body = input.Body
-	comment.Anchor = anchor
-	comment.ReplyTo = input.ReplyTo
-	comment.AskID = input.AskID
-	comment.Turn = turn
-	comment.Suggestion = suggestion
-	comment.Mentions = mentions
-	comment.Deliveries = []model.CommentDelivery{}
-	comment.RepliesToBlock = threadTarget.ReplyBlock.nodeID()
 	if threadTarget.ReplyBlock != nil {
 		// The comment's insert is queued, so the read that gives a stored reply its block finds
 		// nothing yet: the block read in the read phase is carried here instead.
@@ -1086,7 +1013,6 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 		comment.ReplyBlock = threadTarget.ReplyBlock.replyBlock(issueKey, project, slug)
 	}
-	comment.Answers = threadTarget.Answers
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, false)
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, nil, projectionKind), actor); err != nil {
@@ -1191,20 +1117,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
-	// The comment's row is queued above, so the fields that row will hold are handed over: they
-	// name the document its `#id`s resolve against, which no read of the row can answer yet.
-	pending := refs.PendingSource{IssueKey: owner.IssueKey, ArtifactID: owner.ArtifactID, ReplyTo: input.ReplyTo, AskID: input.AskID}
-	if anchor != nil {
-		pending.AnchorArtifactID = &anchor.ArtifactID
-	}
-	referenceChanges, err := s.queueItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, comment.Body, pending, comment.CreatedAt, true)
+	referenceChanges, err := s.queueCommentReferences(r.Context(), tx, ledger, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The comment's thread_logins are read by its event's insert, after the comment's own insert
-	// and the user_threads trigger it fires.
-	logins := events.ThreadLoginsOf(commentThread(comment))
 	events := []*model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
@@ -1231,68 +1148,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 		events = append(events, event)
 	}
-	payload, err := s.commentEventPayload(
-		r.Context(), tx, &comment, artifactName, threadTarget.eventThread(waitingOn), referenceChanges,
+	event, err := s.queueCommentCreated(
+		r.Context(), tx, ledger, owner, &comment, artifactName, threadTarget, waitingOn, referenceChanges, start.commentResolution, stored,
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	payload.SuppressRoute = suppressRoute
-	payload.SuppressedRoute = suppressedRoute
-	payload.SuppressedRouteSessionID = suppressedRouteSessionID
-	payload.MentionsDecideRoutes = start.decidesRoutes
-	if comment.AskID != nil {
-		payload.AskSessions, err = askSessions(r.Context(), tx, *comment.AskID, threadTarget.AskAuthorSession, actor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	event, err := s.queueLoggedEvent(ledger, owner.event(
-		"comment.created",
-		actor,
-		payload,
-	), logins, "comment", comment.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// What the comment states, under the event that stored it, queued right after that event
-	// (graphstore.LatestEvent): its node's cause, its base attributes, and the artifacts it
-	// is anchored to and owned by, with the move of its node row onto that event
-	// (graphstore.QueueCaused). Then who wrote it, as the node and tuple store holds it: the
-	// author's node and the comment's authored_by tuple, under the same event. A comment left out
-	// of the store has no node to author, so this is skipped with the rest of its write. Then a
-	// session writing in an ask's thread follows the ask, and is a node of the store from this
-	// write on, caused by the same comment.created. It comes after the author's own write, which
-	// takes the author's person node and their session node in one statement in ascending (kind,
-	// id): a follow before it would take the session first and leave the person to that
-	// statement, which is the pair in the other order, and two such writes racing over a session
-	// and an owner the store holds neither of would deadlock (R17). The follow is planned here,
-	// in the read phase, under the owner lock the comment's write holds over the ask's thread
-	// (asks.PlanFollowAuthor), and queued in that step.
-	var follow asks.PlannedFollow
-	if input.AskID != nil {
-		if follow, err = asks.PlanFollowAuthor(r.Context(), tx, *input.AskID, actor, comment.CreatedAt); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if !stored.unprojected {
-			graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
-			if err := graphstore.QueueAuthored(b, graphstore.KindComment, comment.ID, actor, comment.CreatedAt, graphstore.LatestEvent); err != nil {
-				return err
-			}
-		}
-		if input.AskID != nil {
-			if _, err := follow.Queue(b, graphstore.LatestEvent); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1337,6 +1196,229 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// after this response, and its comment.delivery receipt says how it ended.
 	comment.Deliveries = attempts
 	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
+}
+
+// issueComment is a comment that a write in this process leaves on an issue, in the write's own
+// transaction (issueWriteCall.comment): its author, and its words from the issue as the write
+// reads it under its owner lock. It mentions nobody, replies to nothing and has no anchor, so it
+// asks the Envoy listener nothing and its write needs no lookup before its transaction.
+type issueComment struct {
+	author model.Actor
+	words  func(before model.Issue) string
+}
+
+// queueIssueComment queues a comment by author with body on the issue key in the transaction and
+// on the ledger of the write that leaves it, which holds the issue's owner lock: its node and its
+// row (queueCommentRow), its references, its comment.created event and what it states under that
+// event (queueCommentCreated), in the order that the comment route queues them. The event is the
+// author's, so a system author wakes nobody (events.Broker.Notify).
+//
+// The comment has no anchor and no artifact owns it, so it names no artifact's address
+// (commentStored) and is never left out of the store: its node and its two base attributes are
+// written as every comment's are. An author graphstore.AuthorOf names nobody of, as Dispatch's
+// system actors are, writes no authored_by and no author's node (graphstore.QueueAuthored), which
+// is what the store census reads off such a row (graphcensus's commentAuthor). It has no
+// suggestion, so its row stores no suggestion and no kind (queueCommentRow).
+//
+// The body takes the comment route's own checks (createCommentFor): its line endings become line
+// feeds (pmdoc.LineFeeds), then the block bounds and the refusal of a decision block hold it
+// (itemblocks.Check), answered as that route answers them (blockBoundError), so a body they refuse
+// is refused as the route refuses it and the write that leaves it rolls back. A blank body is a
+// fault of the caller's own, and is refused as one. It answers the comment's event and its body as
+// the row holds it.
+func (s *server) queueIssueComment(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string, author model.Actor, body string,
+) (*model.Event, string, error) {
+	body = pmdoc.LineFeeds(body)
+	if strings.TrimSpace(body) == "" {
+		return nil, "", fmt.Errorf("the comment that %s leaves on %s has no body", author.ID, key)
+	}
+	if err := blockBoundError(itemblocks.Check("body", body)); err != nil {
+		return nil, "", err
+	}
+	id, err := commentRowID(ctx, tx)
+	if err != nil {
+		return nil, "", err
+	}
+	owner := issueOwner(key)
+	comment := model.Comment{
+		ID: id, IssueKey: owner.IssueKey, Author: author, Body: body,
+		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
+	}
+	stored, err := queueCommentRow(ctx, tx, ledger, &comment, "")
+	if err != nil {
+		return nil, "", err
+	}
+	references, err := s.queueCommentReferences(ctx, tx, ledger, comment)
+	if err != nil {
+		return nil, "", err
+	}
+	created, err := s.queueCommentCreated(ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, commentResolution{}, stored)
+	return created, body, err
+}
+
+// commentRowID is the id of a new comment, read before its row is queued.
+func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&id)
+	return id, err
+}
+
+// queueCommentRow queues on ledger the comment's node and then the insert of comment's row, which
+// names that node, and writes the row's created_at into comment. It answers what the comment is in
+// the node and tuple store (commentStored), whose facts wait for the comment's event
+// (queueCommentCreated). Its caller holds the owner lock that every comment insert takes first:
+// the comment route's (lockCommentOwner), or that of the issue write that leaves the comment
+// (writeIssue, lockIssueOwners).
+//
+// The row's suggestion column holds comment's suggestion with suggestionKind, the kind its mark
+// recorded (storedSuggestion), which the delete reads (loadStoredSuggestion). Every caller states
+// the kind: the comment route the kind its mark projection read (commentProjectionKind), and a
+// caller whose comment has no suggestion or no anchor "". A comment with no suggestion stores none.
+//
+// The row's created_at is the clock at the insert (migration 0065's default), which orders an
+// owner's comments as they commit because every comment insert holds the owner's lock. The insert
+// is queued, so the clock is read here, at the insert's place and under that lock. That still
+// orders it after every comment committed before this transaction took the lock and before every
+// comment committed after it. It is written explicitly, so what the caller makes of the comment
+// before the insert runs, its event and its mark record, carries the time the row will hold. The
+// row, its node and the facts it projects carry that one time: the store's census digests the
+// row's created_at against its node's made_at, and graph_edges answers a comment's edges from the
+// row before its kind's cutover and from the tuples after it.
+func queueCommentRow(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, suggestionKind string,
+) (commentStoreWrite, error) {
+	author, err := encodeJSON(comment.Author)
+	if err != nil {
+		return commentStoreWrite{}, err
+	}
+	var anchor any
+	if comment.Anchor != nil {
+		if anchor, err = encodeJSON(comment.Anchor); err != nil {
+			return commentStoreWrite{}, err
+		}
+	}
+	var suggestion any
+	if comment.Suggestion != nil {
+		if suggestion, err = encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Kind: suggestionKind}); err != nil {
+			return commentStoreWrite{}, err
+		}
+	}
+	if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&comment.CreatedAt); err != nil {
+		return commentStoreWrite{}, err
+	}
+	// What this comment is in the node and tuple store: its node, queued before the row that names
+	// it, in the project of the issue or the document it belongs to, and the facts the row is the
+	// projection of, which wait for the event that stores it. The node write appends nothing
+	// (graphstore.QueueNodes): every fact of this write, the base attributes it states among them,
+	// is appended under that event, which is appended after the row. A comment left out of the
+	// store (unprojected) has no node to write.
+	project, parties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
+		return commentStoreWrite{}, err
+	}
+	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, comment.Anchor, comment.ArtifactID, project, parties)
+	if err != nil {
+		return commentStoreWrite{}, err
+	}
+	if !stored.unprojected {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, stored.written)
+			return nil
+		}); err != nil {
+			return commentStoreWrite{}, err
+		}
+	}
+	nodeKind, nodeAddress := stored.rowNode()
+	if err := queueExec(ledger, `
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+	`, comment.ID, comment.IssueKey, comment.ArtifactID, author, comment.Body, anchor, comment.ReplyTo, comment.AskID, comment.Turn,
+		suggestion, comment.RepliesToBlock, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
+		return commentStoreWrite{}, err
+	}
+	return stored, nil
+}
+
+// queueCommentReferences queues the index of comment's blocks and the reconciliation of its
+// references (queueItemReferences), after its row (queueCommentRow), and answers what they move.
+// The row is queued, so the fields that row will hold are handed over. They name the document
+// that its `#id`s resolve against, which no read of the row can answer yet. Its short ids resolve
+// for the comment's author, who writes it.
+func (s *server) queueCommentReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment) (model.ReferenceChanges, error) {
+	pending := refs.PendingSource{IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: comment.ReplyTo, AskID: comment.AskID}
+	if comment.Anchor != nil {
+		pending.AnchorArtifactID = &comment.Anchor.ArtifactID
+	}
+	return s.queueItemReferences(ctx, tx, ledger, comment.Author, refs.ItemComment, comment.ID, comment.Body, pending, comment.CreatedAt, true)
+}
+
+// queueCommentCreated queues the comment.created event of comment on owner, after the comment's
+// row and its references, and right after that event what the comment states under it (stored,
+// which queueCommentRow answered): the comment as its write leaves it, in thread, with waitingOn
+// (commentThreadTarget.waitingOnAfter), the references it moved, and what the listener's answers
+// (resolved) decide about the comment's other routes (routeSuppression, mentions_decide_routes).
+// The author of the comment is the event's actor.
+func (s *server) queueCommentCreated(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, owner owner, comment *model.Comment, artifactName string,
+	thread commentThreadTarget, waitingOn string, references model.ReferenceChanges, resolved commentResolution,
+	stored commentStoreWrite,
+) (*model.Event, error) {
+	payload, err := s.commentEventPayload(ctx, tx, comment, artifactName, thread.eventThread(waitingOn), references)
+	if err != nil {
+		return nil, err
+	}
+	payload.SuppressRoute, payload.SuppressedRoute, payload.SuppressedRouteSessionID = resolved.routeSuppression()
+	payload.MentionsDecideRoutes = resolved.decidesRoutes
+	if comment.AskID != nil {
+		if payload.AskSessions, err = askSessions(ctx, tx, *comment.AskID, thread.AskAuthorSession, comment.Author); err != nil {
+			return nil, err
+		}
+	}
+	// The comment's thread_logins are read by its event's insert, after the comment's own insert
+	// and the user_threads trigger it fires.
+	event, err := s.queueLoggedEvent(ledger, owner.event("comment.created", comment.Author, payload),
+		events.ThreadLoginsOf(commentThread(*comment)), "comment", comment.ID)
+	if err != nil {
+		return nil, err
+	}
+	// What the comment states, under the event that stored it, queued right after that event
+	// (graphstore.LatestEvent): its node's cause, its base attributes, and the artifacts it
+	// is anchored to and owned by, with the move of its node row onto that event
+	// (graphstore.QueueCaused). Then who wrote it, as the node and tuple store holds it: the
+	// author's node and the comment's authored_by tuple, under the same event. A comment left out
+	// of the store has no node to author, so this is skipped with the rest of its write. Then a
+	// session writing in an ask's thread follows the ask, and is a node of the store from this
+	// write on, caused by the same comment.created. It comes after the author's own write, which
+	// takes the author's person node and their session node in one statement in ascending (kind,
+	// id): a follow before it would take the session first and leave the person to that
+	// statement, which is the pair in the other order, and two such writes racing over a session
+	// and an owner the store holds neither of would deadlock (R17). The follow is planned here,
+	// in the read phase, under the owner lock the comment's write holds over the ask's thread
+	// (asks.PlanFollowAuthor), and queued in that step.
+	var follow asks.PlannedFollow
+	if comment.AskID != nil {
+		if follow, err = asks.PlanFollowAuthor(ctx, tx, *comment.AskID, comment.Author, comment.CreatedAt); err != nil {
+			return nil, err
+		}
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		if !stored.unprojected {
+			graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
+			if err := graphstore.QueueAuthored(b, graphstore.KindComment, comment.ID, comment.Author, comment.CreatedAt, graphstore.LatestEvent); err != nil {
+				return err
+			}
+		}
+		if comment.AskID != nil {
+			if _, err := follow.Queue(b, graphstore.LatestEvent); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 // commentStoreWrite is what a comment is in the node and tuple store: its node, and the facts

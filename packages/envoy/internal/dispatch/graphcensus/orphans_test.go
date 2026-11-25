@@ -145,7 +145,7 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 	}
 	swept := make(chan error, 1)
 	go func() { swept <- StateOrphanedGone(ctx, sweeper, ref) }()
-	if early, done := storetest.WaitForQueuedBehind(t, create.Tx, pid, swept, lockstep.Wait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, create.Tx, pid, swept); done {
 		t.Fatalf("the sweep answered %v without waiting on the node the create holds, so this test proves nothing", early)
 	}
 	t.Logf("the sweep waits behind %s at %q", create.Name, lockstep.WaitingStatement(t, database, pid))

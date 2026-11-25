@@ -170,7 +170,6 @@ func heardReconnects(client *Client) <-chan struct{} {
 // event lets the old window send before the client hears of the drop; a check that takes any client
 // event since the pin for a loss refuses the new window once the client heard.
 func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
-	t.Parallel()
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	before := conn.Stats().Reconnects

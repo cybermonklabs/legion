@@ -38,6 +38,13 @@ name: CI job test
 # guides step reads guide_layout the same way. Only the job that reads an input is passed it, so
 # none of them is required.
 #
+# All but three harness steps of the test job hand their harness to
+# .github/scripts/harness-pool.sh, which queues it and returns, so the harnesses run beside each other on the runner's cores and beside
+# the Bun steps, and the step "Wait for the script harnesses and judge them" near the end is their
+# verdict: a harness step's own result says only that its harness was queued. Each harness's
+# log, exit status and wall and CPU seconds are in that step's log and its job summary
+# (.github/ci-notes/ci.md#the-harness-pool).
+#
 # ci.yaml keeps both jobs running when `changes` did not succeed, "so this buys signal", and an
 # input it fills from that job is empty then. So each gated step reads `changes-result` too and
 # runs whenever `changes` failed, which is what the job did before the gates were written; lint
@@ -276,6 +283,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: false
+      harness_pool_test:
+        description: "ci.yaml's needs.changes.outputs.harness_pool_test: harness-pool.test.sh and what it tests."
+        type: string
+        required: false
       go_cache_working_set_test:
         description: >-
           ci.yaml's needs.changes.outputs.go_cache_working_set_test:
@@ -346,13 +357,52 @@ jobs:
       # absent, as on a developer's machine, those cases print a SKIP line and count nothing.
       - uses: ./.github/actions/install-changie
 
+      # The three harnesses that stay steps of their own, run before the pool below queues any.
+      # gh-read.test.sh's last case reads this job's own Runner.Worker among its parents, which a
+      # pooled harness, whose parent is the pool's recorder, does not have; it and
+      # dispatch-browser-run-reads.test.sh judge waits of a few seconds against the real clock
+      # (gh-read.test.sh's 10 s window and 5 s after a reset, the run reads' 15-21 s sleep for a
+      # reset 20 s ahead), which pooled harnesses on every core beside them could push past; and
+      # harness-pool.test.sh tests the pool itself, so its verdict does not go through the pool,
+      # and the pool is tested before the job relies on it.
+      # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
+      # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
+      - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
+        run: .github/scripts/gh-read.test.sh
+
+      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
+      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
+      # refusal messages are checked here rather than on a runner against GitHub. Its negative
+      # control traces the drive with strace, which this job's ubuntu-24.04-arm image carries; the
+      # harness refuses by name on an image without it.
+      - name: Test the browser lane's run reads
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
+        run: .github/scripts/dispatch-browser-run-reads.test.sh
+
+      - name: Test the harness pool
+        if: inputs.changes-result != 'success' || inputs.harness_pool_test == 'true'
+        run: .github/scripts/harness-pool.test.sh
+
+      # The script harnesses from here on, each a bash script of fakes that mostly waits on its
+      # fakes' answers, polls and deadlines rather than computing: as one step after another they
+      # were 366 s of this job's 638 s median (n=416 green pull-request jobs, 2026-11-22, when the
+      # job held the plugin build, lints and typechecks tooling-checks holds now) while the
+      # runner's other cores idled. Each step keeps its name and its gate and hands its harness
+      # to .github/scripts/harness-pool.sh, which queues it and returns; the harnesses run beside
+      # each other, no more at once than the runner has cores, and beside the Bun steps after
+      # them, and "Wait for the script harnesses and judge them",
+      # the job's last step but the ci-ok report, is their verdict and prints each one's log. A
+      # harness that needs an earlier step is queued after it: release-push.test.sh after
+      # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh
+      # and go-cache-working-set.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.release_push_test == 'true'
-        run: .github/scripts/release-push.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
 
       - name: Test the release version bump
         if: inputs.changes-result != 'success' || inputs.release_bump_test == 'true'
-        run: .github/scripts/release-bump.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/release-bump.test.sh .github/scripts/release-bump.test.sh
 
       - name: Test third-party notices
         run: bun test scripts/third-party-notices.test.ts
@@ -367,43 +417,43 @@ jobs:
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
-        run: .github/scripts/check-bun-version.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-bun-version.test.sh .github/scripts/check-bun-version.test.sh
 
       - name: Test the Playwright version check
         if: inputs.changes-result != 'success' || inputs.check_playwright_version_test == 'true'
-        run: .github/scripts/check-playwright-version.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-playwright-version.test.sh .github/scripts/check-playwright-version.test.sh
 
       - name: Test the frozen Bun workspace manifest check
         if: inputs.changes-result != 'success' || inputs.check_bun_workspace_manifests_test == 'true'
-        run: .github/scripts/check-bun-workspace-manifests.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-bun-workspace-manifests.test.sh .github/scripts/check-bun-workspace-manifests.test.sh
 
       - name: Test the zod version check
         if: inputs.changes-result != 'success' || inputs.check_zod_version_test == 'true'
-        run: .github/scripts/check-zod-version.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-zod-version.test.sh .github/scripts/check-zod-version.test.sh
 
       - name: Test the gh version check
         if: inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true'
-        run: .github/scripts/check-gh-version.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-gh-version.test.sh .github/scripts/check-gh-version.test.sh
 
       - name: Test the gitleaks version check
         if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'
-        run: .github/scripts/check-gitleaks-version.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-gitleaks-version.test.sh .github/scripts/check-gitleaks-version.test.sh
 
       - name: Test the workflow path model the path checks import
         if: inputs.changes-result != 'success' || inputs.workflow_paths_test == 'true'
-        run: .github/scripts/workflow_paths.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/workflow_paths.test.sh .github/scripts/workflow_paths.test.sh
 
       - name: Test the image trigger path check
         if: inputs.changes-result != 'success' || inputs.check_image_trigger_paths_test == 'true'
-        run: .github/scripts/check-image-trigger-paths.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-image-trigger-paths.test.sh .github/scripts/check-image-trigger-paths.test.sh
 
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'
-        run: .github/scripts/check-ci-images.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-ci-images.test.sh .github/scripts/check-ci-images.test.sh
 
       - name: Test the CI image mirror
         if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'
-        run: .github/scripts/mirror-ci-images.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/mirror-ci-images.test.sh .github/scripts/mirror-ci-images.test.sh
 
       # The tool scripts, in the order they depend on each other: the fetch helper every
       # install goes through, the filler that puts the bytes in the copy that helper reads, the
@@ -411,43 +461,43 @@ jobs:
       # fault in the tool-fallback job.
       - name: Test the tool fetch helper
         if: inputs.changes-result != 'success' || inputs.ci_tools_test == 'true'
-        run: .github/scripts/ci-tools.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-tools.test.sh .github/scripts/ci-tools.test.sh
 
       - name: Test the tool copy filler
         if: inputs.changes-result != 'success' || inputs.mirror_ci_tools_test == 'true'
-        run: .github/scripts/mirror-ci-tools.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/mirror-ci-tools.test.sh .github/scripts/mirror-ci-tools.test.sh
 
       - name: Test the tool manifest check
         if: inputs.changes-result != 'success' || inputs.check_ci_tools_test == 'true'
-        run: .github/scripts/check-ci-tools.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-ci-tools.test.sh .github/scripts/check-ci-tools.test.sh
 
       - name: Test the tool fallback rig
         if: inputs.changes-result != 'success' || inputs.ci_tools_proof_test == 'true'
-        run: .github/scripts/ci-tools-proof.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-tools-proof.test.sh .github/scripts/ci-tools-proof.test.sh
 
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
-        run: .github/scripts/check-action-pins.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-action-pins.test.sh .github/scripts/check-action-pins.test.sh
 
       - name: Test the workflow file check
         if: inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true'
-        run: .github/scripts/check-workflow-files.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-workflow-files.test.sh .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
-        run: .github/scripts/check-private-names.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-private-names.test.sh .github/scripts/check-private-names.test.sh
 
       - name: Test the private-name check's term list
         if: inputs.changes-result != 'success' || inputs.check_private_names_terms_test == 'true'
-        run: .github/scripts/check-private-names-terms.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-private-names-terms.test.sh .github/scripts/check-private-names-terms.test.sh
 
       - name: Test the private-name check's issue-key rule
         if: inputs.changes-result != 'success' || inputs.check_private_names_keys_test == 'true'
-        run: .github/scripts/check-private-names-keys.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-private-names-keys.test.sh .github/scripts/check-private-names-keys.test.sh
 
       - name: Test the plugin-name check
         if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'
-        run: .github/scripts/check-plugin-names.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-plugin-names.test.sh .github/scripts/check-plugin-names.test.sh
 
       - name: Test the kept-for-one-release list check
         if: inputs.changes-result != 'success' || inputs.check_kept_for_one_release_test == 'true'
@@ -455,61 +505,61 @@ jobs:
 
       - name: Test the fireEvent reason check
         if: inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true'
-        run: .github/scripts/check-fireevent-reasons.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-fireevent-reasons.test.sh .github/scripts/check-fireevent-reasons.test.sh
 
       - name: Test the daemon API contract number check
         if: inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true'
-        run: .github/scripts/check-daemon-api-contract.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-daemon-api-contract.test.sh .github/scripts/check-daemon-api-contract.test.sh
 
       - name: Test the release credential check
         if: inputs.changes-result != 'success' || inputs.check_release_credentials_test == 'true'
-        run: .github/scripts/check-release-credentials.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-release-credentials.test.sh .github/scripts/check-release-credentials.test.sh
 
       - name: Test the repository path derivation
         if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
-        run: .github/scripts/repo-paths.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/repo-paths.test.sh .github/scripts/repo-paths.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
         if: inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true'
-        run: .github/scripts/select-e2e-proofs.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/select-e2e-proofs.test.sh .github/scripts/select-e2e-proofs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.
       - name: Test the build-tag test lister
         if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
-        run: .github/scripts/go-tagged-tests.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-tagged-tests.test.sh .github/scripts/go-tagged-tests.test.sh
 
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
-        run: .github/scripts/ci-ok.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok.test.sh .github/scripts/ci-ok.test.sh
 
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.ci_ok_report_test == 'true'
-        run: .github/scripts/ci-ok-report.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-report.test.sh .github/scripts/ci-ok-report.test.sh
 
       - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.ci_ok_reconcile_test == 'true'
-        run: .github/scripts/ci-ok-reconcile.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-reconcile.test.sh .github/scripts/ci-ok-reconcile.test.sh
 
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true'
-        run: .github/scripts/find-pr-payload.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/find-pr-payload.test.sh .github/scripts/find-pr-payload.test.sh
 
       - name: Test the merge-group cancel decision
         if: inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true'
-        run: .github/scripts/merge-group-cancels.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/merge-group-cancels.test.sh .github/scripts/merge-group-cancels.test.sh
 
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
-        run: .github/scripts/main-bypass-check.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/main-bypass-check.test.sh .github/scripts/main-bypass-check.test.sh
 
       # The base envoy-go-build's edited-migrations check compares a run's tree with, per event,
       # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
       - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
         if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
-        run: .github/scripts/edited-migrations-base.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/edited-migrations-base.test.sh .github/scripts/edited-migrations-base.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
       # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
@@ -517,7 +567,7 @@ jobs:
       # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
-        run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-latest-blobs.test.sh .github/scripts/dispatch-browser-latest-blobs.test.sh
 
       # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
       # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
@@ -525,33 +575,18 @@ jobs:
       # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
       - name: Test the browser lane's reading of its rows
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true'
-        run: .github/scripts/dispatch-browser-reading-rows.test.sh
-
-      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
-      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
-      # refusal messages are checked here rather than on a runner against GitHub. Its negative
-      # control traces the drive with strace, which this job's ubuntu-24.04-arm image carries; the
-      # harness refuses by name on an image without it.
-      - name: Test the browser lane's run reads
-        if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
-        run: .github/scripts/dispatch-browser-run-reads.test.sh
-
-      # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
-      # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
-      - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
-        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
-        run: .github/scripts/gh-read.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-reading-rows.test.sh .github/scripts/dispatch-browser-reading-rows.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
       - name: Test the browser lane's memory and CPU sampler
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true'
-        run: .github/scripts/dispatch-browser-samples.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-samples.test.sh .github/scripts/dispatch-browser-samples.test.sh
 
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
-        run: .github/scripts/race_memory.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/race_memory.test.sh .github/scripts/race_memory.test.sh
 
       # The machine watch's test runs as the first process of its own unprivileged user, mount and
       # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
@@ -568,15 +603,18 @@ jobs:
 
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
-        run: .github/scripts/disk_watch.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/disk_watch.test.sh .github/scripts/disk_watch.test.sh
 
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
-        run: bash scripts/priorities-seed-check.test.sh
+        run: .github/scripts/harness-pool.sh start scripts/priorities-seed-check.test.sh bash scripts/priorities-seed-check.test.sh
 
+      # main's #4929 added it as a step of its own after the pool was written; it reads nothing
+      # outside its own mktemp directory and the go stand-ins it puts on PATH there, so it is
+      # queued like the other harnesses.
       - name: Test the architecture-check action's go-path mode
         if: inputs.changes-result != 'success' || inputs.architecture_check_test == 'true'
-        run: .github/actions/architecture-check/check.test.sh
+        run: .github/scripts/harness-pool.sh start .github/actions/architecture-check/check.test.sh .github/actions/architecture-check/check.test.sh
 
       - name: Test the Dispatch census script
         run: bun test scripts/dispatch
@@ -606,14 +644,11 @@ jobs:
           token: ''
           cache: false
 
-      # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
-      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib
-
       # The filters this run's changes job computed, which no file of the repository holds: one
       # case of the check below holds them to what this repository's Bun jobs compile and read, and
       # the router outputs' harness reads the filter names from them, both reading the run's own
-      # file rather than computing them a second time.
+      # file rather than computing them a second time. Before those two harnesses are queued: each
+      # takes the file's path in its step's env, and reads the file when the pool starts it.
       - name: Fetch the filters the changes job selected this run's jobs by
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true' || inputs.ci_router_outputs_test == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -626,19 +661,21 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         env:
           CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
-        run: .github/scripts/check-ci-filters.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-ci-filters.test.sh .github/scripts/check-ci-filters.test.sh
 
       # After setup-go: its first cases build a scratch module with the real go, the one that
-      # marks the cache entries a build uses, which the script under test reads.
+      # marks the cache entries a build uses, which the script under test reads. A pooled harness
+      # takes the PATH of the step that queued it, and the cases set a GOCACHE, GOPATH and module
+      # of their own under their mktemp directory, so the harnesses beside it share none of them.
       - name: Test the build cache prune of the cache fills
         if: inputs.changes-result != 'success' || inputs.go_cache_working_set_test == 'true'
-        run: .github/scripts/go-cache-working-set.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-cache-working-set.test.sh .github/scripts/go-cache-working-set.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
         if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
-        run: .github/scripts/check-ts-filters.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-ts-filters.test.sh .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is text, read by the
       # line and step readers of .github/scripts/go-test-step-expansion.py (the step reader over
@@ -647,7 +684,7 @@ jobs:
       # run compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
-        run: .github/scripts/go-test-step-expansion.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
 
       # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
       # lane labels and a label that names nothing. After the fetch above: the filter names are the
@@ -656,7 +693,35 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
         env:
           CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
-        run: .github/scripts/ci-router-outputs.test.sh
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-router-outputs.test.sh .github/scripts/ci-router-outputs.test.sh
+
+      # After setup-go, since held-port.test.ts builds the real envoy-listener and hands it a held
+      # socket; and after the four harnesses above are queued, so they run beside it rather than
+      # after it (check-ci-filters.test.sh alone took 100 s in run 45107561644's test job).
+      # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
+      # is one the floor takes" runs that file on every run, and lint runs whenever this job does.
+      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
+        run: bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
+
+      # The verdict on the script harnesses the steps above queued: it waits for the last of them,
+      # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
+      # each harness that failed (.github/scripts/harness-pool.sh). Every harness step has a gate
+      # of its own, so a change that reaches none of them queues none, and --allow-none passes
+      # that run; a run that queued any is judged on all of them. It runs after a failed step too,
+      # so a harness queued before the failure is still judged and its log shown. `!cancelled()`
+      # rather than `always()`: the runner signals a running step on a cancel only when its
+      # condition no longer holds, and the wait answers that signal by naming each harness still
+      # running with its log so far; `exec`, so the signal reaches the wait itself.
+      - id: harness-wait
+        name: Wait for the script harnesses and judge them
+        if: ${{ !cancelled() }}
+        run: exec .github/scripts/harness-pool.sh wait --allow-none
+
+      # A job cancelled, or past its timeout, before the step above began: name each harness it
+      # queued as it is, with its log so far, rather than lose them with the job.
+      - name: Name the script harnesses a cancelled job left
+        if: cancelled() && steps.harness-wait.outcome == 'skipped'
+        run: .github/scripts/harness-pool.sh wait --allow-none --now
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -716,29 +781,32 @@ jobs:
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
-      # step has a filter of its own, guide_layout, naming the five guides the test reads and
+      # step has a filter of its own, guide_layout, naming the six guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
       - name: Check the guides' semantic line breaks
         if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
         run: bun test scripts/semantic-line-breaks.guides.test.ts
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the Dispatch census script
-        run: bunx biome check --error-on-warnings scripts/dispatch
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/dispatch
 
       # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the Dispatch census script
         run: bunx tsc --noEmit -p scripts/dispatch
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the GitHub App registration script
-        run: bunx biome check --error-on-warnings scripts/github-apps
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/github-apps
 
       # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the GitHub App registration script
         run: bunx tsc --noEmit -p scripts/github-apps
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the session message-wait script
-        run: bunx biome check --error-on-warnings scripts/sessions
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/sessions
 
       # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
       # The suite itself is .github/workflows/ci-job-sessions-script.yaml's: it creates a
@@ -746,8 +814,9 @@ jobs:
       - name: Typecheck the session message-wait script
         run: bunx tsc --noEmit -p scripts/sessions
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the approval-eval statistics
-        run: bunx biome check --error-on-warnings scripts/approval-eval
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/approval-eval
 
       # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the approval-eval statistics

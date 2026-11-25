@@ -452,6 +452,11 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
+# The test job's run of the live proofs' libraries, cited by its whole run: text. It leaves out
+# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
+# natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+
 
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
@@ -689,17 +694,22 @@ AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
+# Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
+# closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
+# package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
+# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
+# plain run of what the race build cannot run (race_impossible_script), and no job runs the
+# package a third time for the detector alone.
+CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
+CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
-# go command the simple form reduces.
+# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
+# assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
+RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
-# The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
-# ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
-FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1727,8 +1737,15 @@ def race_impossible_tests(root, packages=None) -> dict:
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout."""
-    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
+    sorted, in its -run, under a 10-minute timeout. A package of CLEANUP_DETECTOR_PACKAGES runs
+    under the cleanup detector and with -v: go test prints a passing package's own output only
+    with -v, and the document service's is evidence - its TestMain's count of services left
+    alive, and the xid window rig's logs of which branch a load test reached
+    (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) - which the job that ran the
+    package plain under the detector alone printed for the same reason."""
+    return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
+                     f"go test{' -v' if under in CLEANUP_DETECTOR_PACKAGES else ''} -count=1 -timeout 10m "
+                     f"-run '^({'|'.join(sorted(names))})$' ./{under}"
                      for under, names in packages.items())
 
 
@@ -1869,6 +1886,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
+# and is the verdict on them; envoy-go-checks and the test job each end with one.
+HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the
@@ -1966,6 +1986,7 @@ GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at(TOOLING_JOB, GUIDES_STEP)),
     ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:10,17 spawns it"),
     ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("CONTRIBUTING.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
     ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
     ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
     ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),

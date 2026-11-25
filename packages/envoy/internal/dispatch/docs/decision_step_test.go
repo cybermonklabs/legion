@@ -326,7 +326,7 @@ func TestTheCatchUpStatesAWriteCommittedBetweenItsReadAndItsLock(t *testing.T) {
 
 	change := beginAsThePreviousBuild(t, database, issue)
 	done := startCatchUp(step)
-	if failed, answered := storetest.WaitForQueuedBehind(t, change, pid, done, lockstep.Wait); answered {
+	if failed, answered := storetest.WaitForQueuedBehind(t, change, pid, done); answered {
 		t.Fatalf("the pass answered (%v) without waiting on the issue the previous build's change holds", failed)
 	}
 	changed := commitAsThePreviousBuild(t, change, issue, previousBuildAnswer(ask, "Hold"))
@@ -755,7 +755,7 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	step.UseDocuments(issue.service)
 	ticked := make(chan error, 1)
 	go func() { ticked <- step.Tick(ctx) }()
-	storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second)
+	storetest.WaitForLockWaiters(t, holder, 1)
 	owedAsk, _ := seedUnmarkedAsk(t, issue.database, "OWED")
 	if owed, err := graphcensus.AsksOwed(ctx, issue.database.Pool); err != nil || !owed {
 		t.Fatalf("phase 1 owes a row %t (%v) once the release before wrote an ask, want one owed, so the boot takes the step's lock", owed, err)
@@ -837,7 +837,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 		t.Fatalf("a boot with phase 1 owed answered %v while another session held the step's lock, want it to wait for the lock", err)
 	case <-time.After(2 * time.Second):
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting != 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting != 1 {
 		t.Fatalf("%d backends wait behind the session that holds the step's lock, want the boot's", waiting)
 	}
 	var released bool
