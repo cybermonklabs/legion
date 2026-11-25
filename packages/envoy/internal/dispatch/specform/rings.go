@@ -362,7 +362,7 @@ func (j *footnoteJudge) textVerbs(index int) ste.Verbs {
 	if verbs, ok := j.textVerbsRead[index]; ok {
 		return verbs
 	}
-	_, verbs := ste.LintVerbs(oneLine(j.texts[index].Body))
+	_, verbs := ste.LintVerbs(proseLine(j.texts[index].Body))
 	if j.textVerbsRead == nil {
 		j.textVerbsRead = map[int]ste.Verbs{}
 	}

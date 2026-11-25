@@ -5856,6 +5856,10 @@ Each item below names a path with its method and identity, then its purpose.
       Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
       A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule of a sentence or of a name.
       The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
+      A text is no document, so a line of it that starts with three backticks or three tildes opens no fence, where `ste-lint` reads a fence and lints nothing up to the next such line.
+      Dispatch reads that run, the word right after it such as `sh` in ```` ```sh ````, and the next run of as many on the line as white space, so each rule reads the sentences after it.
+      A run of three backticks inside a line is code font, as `ste-lint` reads it.
+      So code font that starts a line and holds two backticks in a row, which three backticks open, counts its words there: start the line with a word.
       The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
       So code font hides no name or link, also when it holds the whole name or a part of it.
 

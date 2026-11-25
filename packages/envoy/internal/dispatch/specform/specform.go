@@ -7,6 +7,8 @@ package specform
 
 import (
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // Kind is the kind of a text of The Spec.
@@ -201,10 +203,24 @@ func Check(c Context, in Input) []Finding {
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.
 func oneLine(body string) string {
+	return joinedLines(body, func(line string) string { return line })
+}
+
+// proseLine is body as the rules of the form read it: one line, as oneLine joins it, with each
+// fence marker of each of its lines written as white space (ste.NoFences), so it is as long as
+// oneLine's, byte for byte. A text of The Spec is no document: Dispatch joins its lines into one,
+// and the page shows the procedure of a check as it is written, so a line that starts with three
+// backticks or three tildes opens no fence that hides the sentences after it.
+func proseLine(body string) string {
+	return joinedLines(body, ste.NoFences)
+}
+
+// joinedLines is the lines of body, each trimmed and then written by write, joined by one space.
+func joinedLines(body string, write func(string) string) string {
 	var lines []string
 	for line := range strings.SplitSeq(body, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
+			lines = append(lines, write(line))
 		}
 	}
 	return strings.Join(lines, " ")

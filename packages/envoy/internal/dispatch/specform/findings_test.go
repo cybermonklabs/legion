@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -54,6 +55,72 @@ func TestEachHardRuleOfSteLintIsARuleOfTheForm(t *testing.T) {
 		got := Check(planted(), Input{Texts: []Text{statement(test.body)}})
 		if !slices.ContainsFunc(got, func(finding Finding) bool { return string(finding.Rule) == test.rule }) {
 			t.Errorf("Check(%q) = %#v, want a finding of %s", test.body, got, test.rule)
+		}
+	}
+}
+
+// ste-lint reads a line that starts with three backticks or three tildes as a fence, and lints no
+// line from there to the next such line. A text of The Spec is no document: Dispatch joins its
+// lines into one, and the page shows the procedure of a check as it is written. So a fence marker
+// hides no sentence of a text from the rules: the sentence count, the bounds of 25 and 20 words,
+// the rule instructions and the rules of ste-lint read the text as they read the same text without
+// the marker. Each row is a text with a fence marker and the same text without it, which give the
+// same findings, and the text without it gives one at least, so the row can fail.
+func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
+	const claim = "The team spins up the tool; it performs an installation of each package that the team builds in the main tree of the repository " +
+		"for the users who read the guide and the notes that the team writes for them each week of the year and each day of the month at home."
+	const run = "Run the tests and read the log. Open the file and record its size. Read the report and send it."
+	const three = "Dispatch keeps each record. Dispatch shows each record. Dispatch sends each record."
+	said := func(findings []Finding) []string {
+		var lines []string
+		for _, each := range findings {
+			lines = append(lines, fmt.Sprintf("%s %s %s: %s | %s", each.Kind, each.Node, each.Rule, each.Detail, each.Ways))
+		}
+		return lines
+	}
+	for _, test := range []struct {
+		name          string
+		kind          Kind
+		fenced, plain string
+	}{
+		{"the review's claim of 53 words after three backticks", KindClaim, "``` " + claim, claim},
+		{"the claim after three tildes", KindClaim, "~~~ " + claim, claim},
+		{"the claim in a fence of three lines", KindClaim, "```\n" + claim + "\n```", claim},
+		{"the review's procedure in a fence of one line", KindProcedure, "```sh " + run + " ```", run},
+		{"the procedure in a fence of three lines", KindProcedure, "```sh\n" + run + "\n```", run},
+		{"the procedure in a fence of tildes", KindProcedure, "~~~sh " + run + " ~~~", run},
+		{"the procedure after a line break that ste-lint reads", KindProcedure, "Read the guide.\u2028```sh " + run + " ```", "Read the guide.\u2028" + run},
+		{"a statement of three sentences after three backticks", KindStatement, "``` " + three, three},
+	} {
+		fenced := Text{Node: "fence", Kind: test.kind, Body: test.fenced, Where: where}
+		plain := Text{Node: "fence", Kind: test.kind, Body: test.plain, Where: where}
+		want := said(Check(planted(), Input{Texts: []Text{plain}}))
+		if len(want) == 0 {
+			t.Fatalf("%s: the text without the marker gives no finding, so the row cannot fail", test.name)
+		}
+		if got := said(Check(planted(), Input{Texts: []Text{fenced}})); !slices.Equal(got, want) {
+			t.Errorf("%s: Check(%q) =\n%q\nwant the findings of the text without the marker\n%q", test.name, test.fenced, got, want)
+		}
+	}
+	if words := len(strings.Fields(claim)); words != 53 {
+		t.Fatalf("the claim has %d words, want the review's 53", words)
+	}
+	// The stated limit: code font that starts a line and holds two backticks in a row, which three
+	// backticks open, counts its words there, so a claim of 25 words after it has 26. The control:
+	// the same code font inside the line is code font, which counts as no word.
+	twentyFive := strings.Repeat("word ", 24) + "words."
+	for _, test := range []struct {
+		body string
+		want []string
+	}{
+		{"``` a``b ``` " + twentyFive, []string{
+			`claim fence sentence-words: a sentence has 26 words, and a sentence has at most 25: "ab word word word word word word word" | `,
+			`claim fence ste100-long-sentence: ASD-STE100 does not permit a sentence of more than 25 words: "26 words" | `,
+		}},
+		{twentyFive + " ``` a``b ```", nil},
+	} {
+		if got := said(Check(planted(), Input{Texts: []Text{{Node: "fence", Kind: KindClaim, Body: test.body, Where: where}}})); !slices.Equal(got, test.want) {
+			t.Errorf("Check(%q) =\n%q\nwant\n%q", test.body, got, test.want)
 		}
 	}
 }

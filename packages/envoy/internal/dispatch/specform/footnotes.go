@@ -172,7 +172,7 @@ func (j *footnoteJudge) findings(note *Footnote) *footnoteJudgment {
 // find writes each finding of note into judged, of the form rules and of the reference rules, with
 // the count of its sentences and its verbs, the ways out judged by judged.judge.
 func (j *footnoteJudge) find(note *Footnote, judged *footnoteJudgment) {
-	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judged.judge)
+	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, proseLine(note.Body), footnotesHeld{}, judged.judge)
 	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held, judged.judge)
 }
 
@@ -190,7 +190,7 @@ func (j *footnoteJudge) statements() map[*Footnote]int {
 		if text.Kind != KindStatement || len(text.Notes) == 0 {
 			continue
 		}
-		count := min(maxSentences+1, len(sentencesOf(oneLine(text.Body)))+j.held(text).count)
+		count := min(maxSentences+1, len(sentencesOf(proseLine(text.Body)))+j.held(text).count)
 		walk := slices.Clone(text.Notes)
 		for len(walk) > 0 {
 			note := walk[len(walk)-1]

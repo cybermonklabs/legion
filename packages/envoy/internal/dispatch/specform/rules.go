@@ -269,7 +269,7 @@ func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []bro
 	find := func() {
 		found = found[:0]
 		if prose(text.Kind) {
-			form, _, _ := formBreaks(text.Kind, oneLine(text.Body), held, judge)
+			form, _, _ := formBreaks(text.Kind, proseLine(text.Body), held, judge)
 			found = append(found, form...)
 		}
 		found = append(found, heldBreaks(c, people, text.Body, text.Held, judge)...)
@@ -326,7 +326,9 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 		shown = body
 	}
 	line := oneLine(shown)
-	places := judge.placesIn(oneLine(body), line, false)
+	// The places of the shown words are read in both with each fence marker as white space, as the
+	// form rules read the body (proseLine), byte for byte, so each offset of line stays its own.
+	places := judge.placesIn(proseLine(body), proseLine(shown), false)
 	var found []broken
 	type also struct {
 		finding int
