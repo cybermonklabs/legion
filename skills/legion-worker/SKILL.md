@@ -11,7 +11,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
 
 1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (below).
    Where your task has no such line, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
-   Your architect's decisions for you come in your task, your messages and replies in the thread of the plan task they concern, which its message links.
+   Your architect's decisions come in your task, your messages and replies in the thread of the plan task they concern, which its message links.
    A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
