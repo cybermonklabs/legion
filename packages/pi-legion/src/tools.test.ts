@@ -16,16 +16,9 @@ import {
   type JjRunner,
   type LatestHandoff,
 } from "@legion/pi-shared/handoff-record";
-import {
-  isPhaseOp,
-  PHASE_OPS,
-  phaseOpParameters,
-  phaseOpsOf,
-} from "@legion/pi-shared/legion-phase-op-declarations";
-import { executePhaseOp, pluginBuildOf } from "@legion/pi-shared/legion-phase-ops";
+import { phaseOpParameters } from "@legion/pi-shared/legion-phase-op-declarations";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
-import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import pkg from "../package.json";
@@ -123,6 +116,8 @@ function recordingDaemon(options: {
     "intakeDiscard",
     "handoffComplete",
     "releaseRecords",
+    "readyForUpdate",
+    "reviewVerdict",
   ];
   const daemon = {
     grant: async (input: object) => {
@@ -390,58 +385,116 @@ test("the schema the Oh My Pi tool exposes carries every field the phase ops tak
 
 // The phase ops are defined once, in `PHASE_OPS`, and every host's `legion` tool serves that list:
 // this one and claude-envoy's MCP tool (`packages/claude-envoy/tests/legion-tool.test.ts` holds
-// the same of it), so the two list the same phase ops, review_verdict among them. Each claim
-// session is offered the phase ops of its role (`phaseOpsOf`), so review_verdict is a review
-// step's agent's alone: each call of an offered one is answered as the shared executor answers
-// that claim's call, its arguments the executor's to hold, and a call of one its role does not
-// run is refused here as unavailable to that role's session, before any daemon request.
-test("the tool's list of phase ops is PHASE_OPS, and each claim session's call of its role's phase ops reaches the shared executor", async () => {
-  const declared = z.toJSONSchema(toolFor(claimSession("reviewer")).parameters as z.ZodType);
-  const listed = declared.properties?.op;
-  const ops = (typeof listed === "object" ? listed.enum : undefined) ?? [];
-  expect(ops.filter((op) => typeof op === "string" && isPhaseOp(op))).toEqual([...PHASE_OPS]);
+// the same of it); the schema above holds this tool's list word for word. Each claim session is
+// offered the phase ops of its role (`phaseOpsOf`): every one to the reviewer's and each
+// architect's, whose claims run a step of the type review, and every one but review_verdict to
+// each other role's, whose call of it is refused here as unavailable to that role's session, before
+// any daemon request. Each call of an offered op runs on the shared executor, which refuses the
+// root architect's completion, and every other call reaches the daemon as written out below, so a
+// change to what the executor sends for any op fails here as well as in that op's own test.
+test("each claim session is offered its role's phase ops, and each call of one reaches the daemon as the shared executor sends it", async () => {
+  const head = "c0de0000000000000000000000000000000000ff";
+  const since = "2026-11-01T00:00:00Z";
+  const report = { commit: head, handoffId: "handoff-208", handoffVersion: 1 };
   for (const active of EVERY_SESSION) {
     if (active.kind === "controller") continue;
-    const tool = toolFor(active);
-    const offered = phaseOpsOf(active.role);
-    for (const op of PHASE_OPS) {
-      if (!offered.includes(op)) {
-        const { calls, daemon } = recordingDaemon({});
-        const refused = createLegionTool({
-          pi,
-          daemon,
-          controllerGrant: noControllerGrant,
-          onPhaseCompleted: () => undefined,
-          onUpdateAnswered: () => undefined,
-          handoffReport: noHandoffReport,
-          branchHead: noBranchHead,
-          resolveDocument: noDocumentLookup,
-          session: () => active,
-        });
-        expect(await refused.execute("", { op }, undefined, undefined, context())).toEqual({
-          content: [
-            { type: "text", text: `${op} is not available to the ${active.role}'s session` },
+    const { issue, role } = active;
+    const architect = role === "architect";
+    const grant = [
+      "grant",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue },
+    ] as const;
+    // What the architect's move and verdict name beside a phase worker's: the issue it acts on,
+    // and, for the move, the head it sends back.
+    const accepted = architect ? { issue: "LEGION-210" } : {};
+    const sentBack = architect ? { issue: "LEGION-210", commit: head } : {};
+    const review = { verdict: "approve", commit: head, summary: "The change does what it says." };
+    const move = { to: "implementing", reason: "The tests fail." };
+    const cases: ReadonlyArray<{
+      readonly call: Readonly<Record<string, unknown>>;
+      readonly requests?: ReadonlyArray<readonly [string, object | undefined]>;
+      readonly refusal?: string;
+    }> = [
+      { call: { op: "read_record" }, requests: [["record", { issue }]] },
+      {
+        call: { op: "read_release_records", since },
+        requests: [
+          ["releaseRecords", { claimToken: active.claimToken, secret: CLAIM_SECRET, since }],
+        ],
+      },
+      architect && issue === "LEGION-208"
+        ? {
+            call: { op: "handoff_complete", summary: "done" },
+            refusal:
+              "handoff_complete is not available to a root architect session, which runs no phase",
+          }
+        : {
+            call: { op: "handoff_complete", summary: "done" },
+            requests: [
+              ["record", { issue }],
+              grant,
+              [
+                "handoffComplete",
+                { grantId: "grant-208", summary: "done", verdict: "", ...report },
+              ],
+            ],
+          },
+      {
+        call: { op: "request_backward_move", ...move, ...sentBack },
+        requests: [grant, ["phaseBackward", { grantId: "grant-208", ...move, ...sentBack }]],
+      },
+      {
+        call: { op: "ready_for_update", round: "pod:1" },
+        requests: [
+          [
+            "readyForUpdate",
+            {
+              claimToken: active.claimToken,
+              sessionId: "ses_208",
+              secret: CLAIM_SECRET,
+              generation: 1,
+              round: "pod:1",
+              head,
+            },
           ],
-          details: {},
-          isError: true,
-        });
-        expect(calls).toEqual([]);
-        continue;
-      }
-      const shared = await executePhaseOp(
-        {
-          daemon: recordingDaemon({}).daemon(),
-          claim: active,
-          build: pluginBuildOf(pkg),
-          handoffReport: noHandoffReport,
-          branchHead: noBranchHead,
-        },
-        { op }
-      ).then(
-        (answer) => toolSuccess(JSON.stringify(answer), answer),
-        (error: unknown) => toolFailure(error)
-      );
-      expect(await tool.execute("", { op }, undefined, undefined, context())).toEqual(shared);
+        ],
+      },
+      architect || role === "reviewer"
+        ? {
+            call: { op: "review_verdict", ...review, ...accepted },
+            requests: [grant, ["reviewVerdict", { grantId: "grant-208", ...review, ...accepted }]],
+          }
+        : {
+            call: { op: "review_verdict", ...review },
+            refusal: `review_verdict is not available to the ${role}'s session`,
+          },
+      { call: { op: "read_build" }, requests: [["daemonContract", undefined]] },
+    ];
+    for (const { call, requests, refusal } of cases) {
+      const { calls, daemon } = recordingDaemon({
+        state: { issues: { [issue]: { phase: "implementing" } } },
+        answers: { releaseRecords: { releases: [], resumes: [], holds: [] } },
+      });
+      const tool = createLegionTool({
+        pi,
+        daemon,
+        controllerGrant: noControllerGrant,
+        onPhaseCompleted: () => undefined,
+        onUpdateAnswered: () => undefined,
+        handoffReport: async () => report,
+        branchHead: async () => head,
+        resolveDocument: noDocumentLookup,
+        session: () => active,
+      });
+      const answer = await tool.execute("", call, undefined, undefined, context());
+      const refused = answer.isError === true ? answer.content : undefined;
+      expect({ role, issue, op: call.op, refused, calls }).toEqual({
+        role,
+        issue,
+        op: call.op,
+        refused: refusal === undefined ? undefined : [{ type: "text", text: refusal }],
+        calls: [...(requests ?? [])],
+      });
     }
   }
 });
