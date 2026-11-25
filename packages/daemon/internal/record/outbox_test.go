@@ -112,7 +112,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
-		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
+		CheckWakeDue{Look: 2, OpenedAt: now, WakeAt: now.Add(2 * time.Hour), Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},

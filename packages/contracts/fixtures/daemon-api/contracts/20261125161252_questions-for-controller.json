@@ -1,0 +1,51 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "questionsForController",
+        "questionsForController.*",
+        "questionsForController.*.asker",
+        "questionsForController.*.id",
+        "questionsForController.*.issue",
+        "questionsForController.*.passedAt",
+        "questionsForController.*.reason",
+        "questionsForController.*.ref",
+        "questionsForController.*.role",
+        "questionsForController.*.session",
+        "questionsForController.*.writes",
+        "questionsForController.*.writes.*",
+        "questionsForController.*.writes.*.command",
+        "questionsForController.*.writes.*.exit",
+        "questionsForController.*.writes.*.repository",
+        "questionsForController.*.writes.*.seq"
+      ],
+      "addValues": {
+        "questionsForController.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "questionsForController.*.role",
+      "values": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
+  ]
+}

@@ -652,7 +652,7 @@ func TestTheStateRouteServesAPodItsPluginContractsPause(t *testing.T) {
 			{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1)},
 			{name: "a pod below PodUpdateContract, below every narrowing", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 			{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), served: true},
-			{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), served: true},
+			{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), served: true},
 			{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), served: true},
 			{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(pauseContract - 1), served: true},
 		} {
@@ -686,9 +686,9 @@ func TestThePauseContractIsTheContractThatAddedTheKeys(t *testing.T) {
 		t.Fatalf("pauseContract = %d, want %d, the contract whose entry in version.go added `paused` and `lastPause`",
 			pauseContract, addedPause)
 	}
-	if pauseContract > DaemonAPIVersion {
+	if pauseContract > DaemonAPIVersion() {
 		t.Fatalf("pauseContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			pauseContract, DaemonAPIVersion)
+			pauseContract, DaemonAPIVersion())
 	}
 }
 

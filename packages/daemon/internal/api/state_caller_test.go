@@ -90,7 +90,7 @@ func podClaims(contract int) []supervise.Claim {
 	return []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
 		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion()),
 	}
 }
 
@@ -752,12 +752,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, the contract 286
-		// added), `[]` where no question was passed, so a pod below it is served no key at all. A
-		// pod's claims at shapedAnswersContract or later place it in no band (podContracts), so
-		// a pod row is served the key only where it is served this daemon's own body; the callers
-		// from shapedAnswersContract to below 286 state their contract, and
-		// TestACallerStatingAContractBelowTheQuestionsIsServedNone reads them.
+		// answer loop passed to the controller (the questions-for-controller entry). If there are
+		// no questions, the key is `[]`. Callers below the entry's contract receive no key. Claims
+		// at shapedAnswersContract or later place a caller in no band (podContracts). Those callers
+		// state their contract, as TestACallerStatingAContractBelowTheQuestionsIsServedNone checks.
 		questions bool
 		// repos is whether the caller is served the repositories block this contract writes,
 		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a caller
@@ -843,11 +841,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// body this daemon writes, which carries every key and every value, the repositories block
 		// repositoriesLiveContract writes, each assignment's `plan`, the caches source,
 		// `intakeGiveUps`, `podHold`, `priority`, claim cause times, `dispatchCredential` and
-		// `questionsForController` among them. The row names DaemonAPIVersion because that is the
-		// body it receives.
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
+		// `questionsForController` among them. The row calls DaemonAPIVersion() because that is the
+		// contract of the body it receives. A caller at shapedAnswersContract that states its
+		// contract receives neither `intakeGiveUps` nor `questionsForController`.
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -1004,8 +1003,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// (withoutUnadmittedCapabilitySources, stripCachesSources above), with
 			// `dispatchCredential` gone, the key dispatchCredentialContract added
 			// (withoutDispatchCredential), and with `questionsForController` gone, the key
-			// contract 286 added, which a reader before it refuses empty as surely as filled
-			// (withoutQuestionsForController).
+			// questions-for-controller entry added. Readers before that entry refuse the key
+			// even when empty (withoutQuestionsForController).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -1117,15 +1116,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	}
 }
 
-// A plugin from shapedAnswersContract on states its contract in the header, and no pod's claims
-// place it (podContracts), so the callers from that contract to below
-// questionsForControllerContract are callers that state one of those contracts. Each is served the
-// state without `questionsForController`, from the fixture's pod or from no pod alike, and with the
-// pause, which a band below its own contract added. A caller stating pauseContract stands in the
-// band below and is served the same. A caller stating questionsForControllerContract, or a contract
-// above this daemon's own, is served the key and every question the fixture passed. A state that
-// holds no question is served `[]` to a caller at the contract and no key to a caller below it:
-// the reader before the contract refuses the key empty as surely as filled.
+// Callers from shapedAnswersContract on state their contract in the header (podContracts).
+// Callers below the questions-for-controller entry receive the pause but not
+// `questionsForController`, whether they ask from the fixture's pod or from no pod.
+// A caller at the entry's contract or above the daemon's own receives the questions.
+// When there are none, the caller at the entry receives `[]` and older callers receive no key.
 func TestACallerStatingAContractBelowTheQuestionsIsServedNone(t *testing.T) {
 	// The pod's claims record supervise.PodUpdateContract - 1, below every band, so a caller of
 	// that pod that states its contract is placed by what it states alone.
@@ -1155,10 +1150,10 @@ func TestACallerStatingAContractBelowTheQuestionsIsServedNone(t *testing.T) {
 	}{
 		{name: "a caller in no pod stating pauseContract", remote: "192.0.2.1:41000", stated: pauseContract},
 		{name: "a caller in no pod stating shapedAnswersContract", remote: "192.0.2.1:41000", stated: shapedAnswersContract},
-		{name: "a caller in no pod stating the contract before the questions", remote: "192.0.2.1:41000", stated: questionsForControllerContract - 1},
-		{name: "a caller in the pod stating the contract before the questions", remote: statePodAddr + ":41000", stated: questionsForControllerContract - 1},
-		{name: "a caller in no pod stating questionsForControllerContract", remote: "192.0.2.1:41000", stated: questionsForControllerContract, questions: true},
-		{name: "a caller in the pod stating a contract above this daemon's own", remote: statePodAddr + ":41000", stated: DaemonAPIVersion + 1, questions: true},
+		{name: "a caller in no pod stating the contract before the questions", remote: "192.0.2.1:41000", stated: entryNumber(questionsForControllerContract) - 1},
+		{name: "a caller in the pod stating the contract before the questions", remote: statePodAddr + ":41000", stated: entryNumber(questionsForControllerContract) - 1},
+		{name: "a caller in no pod stating the questions entry's contract", remote: "192.0.2.1:41000", stated: entryNumber(questionsForControllerContract), questions: true},
+		{name: "a caller in the pod stating a contract above this daemon's own", remote: statePodAddr + ":41000", stated: DaemonAPIVersion() + 1, questions: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateStating(t, stateServer(t, populatedState(t), claims), tc.remote, tc.stated)
@@ -1354,7 +1349,7 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(retiredStrandedContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), retired: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), retired: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), retired: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(retiredStrandedContract - 1), retired: true},
 	} {
@@ -1385,9 +1380,9 @@ func TestTheRetiredStrandedContractIsTheContractThatAddedTheState(t *testing.T) 
 		t.Fatalf("retiredStrandedContract = %d, want %d, the contract whose entry in version.go added `retired` to a stranded claim's state",
 			retiredStrandedContract, addedRetiredStranded)
 	}
-	if retiredStrandedContract > DaemonAPIVersion {
+	if retiredStrandedContract > DaemonAPIVersion() {
 		t.Fatalf("retiredStrandedContract = %d, above DaemonAPIVersion %d: no caller could be served a retired claim",
-			retiredStrandedContract, DaemonAPIVersion)
+			retiredStrandedContract, DaemonAPIVersion())
 	}
 }
 
@@ -1524,7 +1519,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		apps bool
 	}{
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), stated: repositoriesLiveContract - 1, apps: true},
-		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: repositoriesLiveContract - 1, apps: true},
+		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: repositoriesLiveContract - 1, apps: true},
 		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152), apps: true},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod at 152 asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(152), apps: true},
@@ -1618,8 +1613,8 @@ func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
 	}
-	if repositoriesLiveContract > DaemonAPIVersion {
+	if repositoriesLiveContract > DaemonAPIVersion() {
 		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
-			repositoriesLiveContract, DaemonAPIVersion)
+			repositoriesLiveContract, DaemonAPIVersion())
 	}
 }

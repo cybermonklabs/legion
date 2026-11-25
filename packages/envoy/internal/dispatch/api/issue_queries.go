@@ -71,7 +71,7 @@ var (
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
 func issueSummaryQuery(pinned, paged, readAdvances bool) string {
-	parameter := 15
+	parameter := 16
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -81,6 +81,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
 		left join advancing on advancing.key = i.key
+		left join advances_originating originating on originating.key = i.key
 		` + issueListFilters + `
 	)`
 	advancesColumns := issueAdvancesColumns
@@ -114,21 +115,24 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 `
 }
 
-// issueListFilters are the ten filters a listing request carries, written as thirteen parameters
-// (the priority filter takes a list and a flag for the unset, and the `advances` filter a list
-// and a flag for each of its two keywords), every one but the last written against `issues i`
-// alone, so the filtered term joins nothing. The status filter ($2) is a list of the statuses
-// named, an issue standing in any of them, and the empty list is every status. The closed
-// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
-// outside every window. The last is the `advances` filter, which no column of an issue holds and
-// whose answer a relation of an issue above it can decide: it reads one term computed once per
-// request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term still
-// resolves nothing per row and the page and the count both read it. Its four arms are a union:
+// issueListFilters are the eleven filters a listing request carries, written as fourteen
+// parameters (the priority filter takes a list and a flag for the unset, and the `advances`
+// filter a list and a flag for each of its two keywords), every one but the last written against
+// `issues i` alone, so the filtered term joins nothing. The status filter ($2) is a list of the
+// statuses named, an issue standing in any of them, and the empty list is every status. The
+// closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time,
+// is outside every window. The last is the `advances` filter, which no column of an issue holds
+// and whose answer a relation of an issue above it can decide: it reads two terms computed once
+// per request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term
+// still resolves nothing per row and the page and the count both read it. Its arms are a union:
 // the ids named ($11), the work under none ($12), and the work under any ($13), which is every
-// issue `advancing` holds and so exactly the issues the arm for none leaves out.
+// issue `advancing` holds and so exactly the issues the arm for none leaves out. `?own=true`
+// ($15) reads the arms over `originating` instead: the ids named and any, each over the issues
+// that state a matched priority no issue above them carries, and none, which matches no
+// priority, over nothing.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
-// (issueSummaryJoins), and the parameters after it are the pinned login and the page.
+// (issueSummaryJoins), and the parameters after $15 are the pinned login and the page.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
@@ -141,9 +145,11 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
-		       or coalesce(advancing.named, false)
-		       or ($12::boolean and advancing.key is null)
-		       or ($13::boolean and advancing.key is not null))`
+		       or (not $15::boolean and (coalesce(advancing.named, false)
+		           or ($12::boolean and advancing.key is null)
+		           or ($13::boolean and advancing.key is not null)))
+		       or ($15::boolean and (coalesce(originating.named, false)
+		           or ($13::boolean and originating.key is not null))))`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -249,42 +255,90 @@ var issueAdvancesTerms = `advances_chain as (
 // subject.
 const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 
-// issueAdvancesFilterTerms answer the listing's `advances` query keys, as one term computed once
+// issueAdvancesFilterTerms answer the listing's `advances` query keys, as terms computed once
 // per request rather than a read per row: $11 is the priority ids the request named, $12 is
-// whether it asked for the work that advances none and $13 whether it asked for the work that
-// advances any. `advancing` holds one row per issue that advances a live priority by either
-// route, `named` saying whether one of them is an id the request asked for, so `filtered`
-// decides every key by one join on the issue's key (issueListFilters) and still resolves nothing
-// per row.
+// whether it asked for the work that advances none, $13 whether it asked for the work that
+// advances any, and $15 whether it asked for `own`. `advancing` holds one row per issue that
+// advances a live priority by either route, `named` saying whether one of them is an id the
+// request asked for, and `advances_originating` the same of the issues that state a priority no
+// issue above them carries, so `filtered` decides every key by one join on the issue's key
+// (issueListFilters) and still resolves nothing per row.
 //
-// `advances_stated` is the issues whose own rows state an asserted relation now, by the reading
-// of the log issueAdvancesTerms makes for a page. A priority whose state is `gone` is no
-// priority, so the join to priority_nodes drops it and the work under it advances none. The seed
-// is gated on the request naming an `advances` key at all: the clause holds no column, so the
-// planner makes it a one-time filter and a listing that asks for no priority reads no tuple.
+// `advances_relations` is the relations the issues' own rows state now, one row per (issue,
+// priority), by the reading of the log issueAdvancesTerms makes for a page. A priority whose
+// state is `gone` is no priority, so the join to priority_nodes drops it and the work under it
+// advances none. The read is gated on the request naming an `advances` key at all: the clause
+// holds no column, so the planner makes it a one-time filter and a listing that asks for no
+// priority reads no tuple. `advances_stated` groups them by issue.
 //
 // `advances_spread` carries each seed down to the issues below it, which is the same
 // inheritance the read climbs, written as one descent per request instead of one climb per row;
 // it is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so a descendant
-// the cap cuts off is one no chain could have reached anyway.
-var issueAdvancesFilterTerms = `advances_stated as (
-		select newest.from_id as key, bool_or(newest.to_id = any($11::text[])) as named
+// the cap cuts off is one no chain could have reached anyway. Under `?own=true` no arm reads it,
+// so its seed is gated off there.
+//
+// `advances_originating` is advancesOriginTerms over the issues that state a matched priority,
+// read only under `?own=true`: a request without the key climbs from no issue.
+var issueAdvancesFilterTerms = `advances_relations as (
+		select newest.from_id as key, newest.to_id as priority
 		from (
 			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean or $13::boolean)`) + `
 		) newest
 		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'
 		where newest.asserted
-		group by newest.from_id
+	), advances_stated as (
+		select key, bool_or(priority = any($11::text[])) as named
+		from advances_relations
+		group by key
 	), advances_spread as (
-		select s.key, s.named, 0 as depth from advances_stated s
+		select s.key, s.named, 0 as depth from advances_stated s where not $15::boolean
 		union all
 		select c.key, a.named, a.depth + 1
 		from advances_spread a join issues c on c.parent_key = a.key
 		where a.depth < ` + parentDepthCapSQL + `
 	), advancing as (
 		select key, bool_or(named) as named from advances_spread group by key
+	), advances_origin_keys as (
+		select key from advances_stated where $15::boolean and (named or $13::boolean)
+	), ` + advancesOriginTerms("advances_relations", "advances_origin_keys") + `, advances_originating as (
+		select key, bool_or(priority = any($11::text[])) as named
+		from advances_origins
+		group by key
 	)`
+
+// advancesOriginTerms are the terms that read which priorities an issue originates: the ones
+// its own row names that no issue above it carries. relations names a term of (key, priority)
+// rows, the live `advances` relations as the issues' own rows state them, and keys a term of the
+// issues to read. An issue carries every priority it or an issue above it states, so a relation
+// is carried from above exactly when an issue on the stating issue's parent chain states the same
+// priority. It is the one writing of the rule both the second fault (priorityBacklogQuery) and the
+// listing's `?own=true` (issueAdvancesFilterTerms) read.
+//
+// `advances_above` climbs from each key to every issue above it, bounded by parentDepthCap like
+// every walk of the chain, so a raced reparent that ever committed a cycle still terminates.
+// `advances_origins` keeps each relation of a key that no issue of its climb states too.
+func advancesOriginTerms(relations, keys string) string {
+	return `advances_above as (
+		select k.key, i.parent_key as above, 1 as depth
+		from ` + keys + ` k join issues i on i.key = k.key
+		where i.parent_key is not null
+		union all
+		select a.key, p.parent_key, a.depth + 1
+		from advances_above a join issues p on p.key = a.above
+		where p.parent_key is not null and a.depth < ` + parentDepthCapSQL + `
+	), advances_origins as (
+		select r.key, r.priority
+		from ` + relations + ` r
+		where r.key in (select key from ` + keys + `)
+			and not exists (
+				select 1
+				from advances_above a
+				join ` + relations + ` up on up.key = a.above and up.priority = r.priority
+				where a.key = r.key
+			)
+	)`
+}
 
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around
 // the three `advances` columns the text was built with: either the relation read's
@@ -308,7 +362,7 @@ func issueSummaryColumns(advances string) string {
 
 // issueMovedColumns are the two cells `?moved=true` answers on a listing row, in
 // issueSummaryRow's order: when the issue was moved into `backlog` or `icebox` and who moved it
-// (parkedMoveLateral). Both are null on every row of a request that did not ask for them, and on
+// (backlogMoveLateral). Both are null on every row of a request that did not ask for them, and on
 // a row the read finds no move for.
 const issueMovedColumns = `moved.created_at, moved.actor`
 
@@ -317,7 +371,7 @@ const issueMovedColumns = `moved.created_at, moved.actor`
 // event, so a listing without the key pays nothing for the read and one with it pays for its
 // parked rows alone. An issue standing in any other status answers null although it may once
 // have been moved there, since the cells say how the issue came to stand where it stands.
-var issueMovedJoin = parkedMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityParkedStatuses)+`)`)
+var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
 
 // issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time, and the
@@ -625,8 +679,11 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
+	// `own` narrows the `advances` filter to the issues that originate a matched priority
+	// (advancesOriginTerms); without an `advances` value it filters nothing.
+	own := query.Get("own") == "true"
 	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved, own}
 	if pinned {
 		arguments = append(arguments, login)
 	}

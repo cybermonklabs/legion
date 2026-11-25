@@ -37,6 +37,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
@@ -129,9 +130,13 @@ const STATE = LegionStateResponse.parse({
 const HEALTH = LegionHealthResponse.parse({ status: "ok", project });
 
 /** The response header the daemon states its own contract in
- * (`packages/daemon/internal/api/server.go`). The number is this plugin build's own
- * `legion.daemonApiVersion`, which is the contract a daemon this build pairs with speaks. */
+ * (`packages/daemon/internal/api/server.go`). */
 const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
+/** The contract the header states: this plugin build's own (`daemonContract()`), which is the
+ * contract a daemon this build pairs with speaks. The stand-in runs from a checkout, whose
+ * manifest declares none, so it is the frozen list's greatest number plus the count of entry
+ * fixtures, the number the pack writes into the manifest it packs. */
+const DAEMON_CONTRACT = String(daemonContract(pkg, import.meta.dir));
 
 interface LogLine {
   readonly at: string;
@@ -271,7 +276,7 @@ function answer(
     if (path === "/healthz") {
       return {
         response: Response.json(HEALTH, {
-          headers: { [DAEMON_CONTRACT_HEADER]: String(pkg.legion.daemonApiVersion) },
+          headers: { [DAEMON_CONTRACT_HEADER]: DAEMON_CONTRACT },
         }),
       };
     }

@@ -994,6 +994,8 @@ type messageReplyPlan struct {
 	block *namedBlock
 	// body is the reply row's, which its index and its references were planned for.
 	body string
+	// node is the write of the reply's node, planned for the reserved id (planMessageNode).
+	node graphstore.Uncaused
 }
 
 // planMessageReply plans one session reply above every row lock the route takes: the block the
@@ -1022,7 +1024,12 @@ func (s *server) planMessageReply(
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
 		return plan, err
 	}
+	// The reply's node, in its message's issue's project or between its thread's parties
+	// (planMessageNode); a follow-up answers the first reply, in the same thread and issue.
 	var err error
+	if plan.node, err = planMessageNode(ctx, tx, plan.id, message.IssueKey, &message.ID, who, message.Target, plan.createdAt); err != nil {
+		return plan, err
+	}
 	plan.changes, plan.write, err = s.planPendingItem(
 		ctx, tx, who, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
 		plan.createdAt, message.IssueKey != nil,
@@ -1265,9 +1272,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
 		// attempt (a stale receipt, an error the session itself reported) reads as sent and answered.
 		// So the session that attempt names is a node of the store from this write on, as a
-		// settle's is, written in the same batch as the attempt's update. This child writes no
-		// message node, so the answer states the node alone and no delivered_to
-		// (queueAnsweredDelivery).
+		// settle's is, written in the same batch as the attempt's update. The store records no
+		// delivery of a message yet, though a message is a node, so the answer states the
+		// session's node alone and no delivered_to (queueAnsweredDelivery).
 		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 			b.Queue("", `
 				update message_deliveries set reply_id = $3, state = 'sent', error = null
@@ -1403,11 +1410,11 @@ func followUpRequested(r *http.Request) (bool, error) {
 // naming a block of parent stores it and previews that block's text in place of the parent's.
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
-// references were planned for them before this insert ran, the body, the block it names and the
-// step that writes its index (planMessageReply). A follow-up names no block, so the plan's
-// serves both rows the route can insert. Nothing of the body and nothing of the reply's own row
-// is read here, so this write holds the transaction id for its own statements alone
-// (INFRA-636).
+// references were planned for them before this insert ran, the body, the block it names, the
+// step that writes its index and the write of its node (planMessageReply). A follow-up names no
+// block, and its thread and issue are the first reply's, so the plan's serves both rows the route
+// can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
+// holds the transaction id for its own statements alone (INFRA-636).
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1415,12 +1422,25 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
-		returning `+messageColumns+`
-	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
-	if err != nil {
+	// The reply's node goes in before its row. The node write and the row's insert go to the
+	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
+	// a message's node and row: the node write adds no round trip while the reply holds its
+	// transaction id. What that write states is appended in the batch that appends the
+	// message.answered event below (appendCausingEvent).
+	var reply model.Message
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, plan.node)
+		b.Queue("", `
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)
+			returning `+messageColumns+`
+		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt).QueryRow(func(row pgx.Row) error {
+			var err error
+			reply, err = scanMessage(row)
+			return err
+		})
+		return nil
+	}); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	// The block was read above the route's locks, where this row did not exist yet, so the
@@ -1445,7 +1465,7 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	event, err := s.appendEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload))
+	event, err := s.appendCausingEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload), plan.node)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}

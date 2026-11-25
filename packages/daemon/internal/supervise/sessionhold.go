@@ -295,11 +295,12 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	if mark {
 		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session
 	}
-	err = m.write(ctx, func(ctx context.Context) error {
-		var err error
-		released.Freed, err = m.deps.Store.ReleaseHolds(ctx, c, free)
-		return err
-	})
+	// The exception to write's retry (Machine.write): made once under its bound, since a second try
+	// after a cut whose first try freed the names would free none and answer an empty Freed as a
+	// success, losing the names the first try freed.
+	releasing, cancel := m.bounded(ctx)
+	released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
+	cancel()
 	// The names leave the cache whatever the write answered (the doc above).
 	for _, h := range free {
 		delete(m.heldNames, h)

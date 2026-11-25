@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -290,15 +291,19 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract (275) and the questions
-	// band (286) too, the two rows above it, so it is told of all three rows, in the table's order.
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// The cause times and credential are the first two drops. Entry bands follow, including
+	// the questions-for-controller entry.
+	state = carriedState(t)
+	below := causeTimesContract - 1
+	_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	const droppedCredential = "dispatchCredential"
 	const droppedQuestions = "questionsForController"
-	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != droppedCredential ||
-		narrowings[2].Dropped != droppedQuestions {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want %q, then %q, then %q",
-			narrowings, causeTimesContract-1, dropped, droppedCredential, droppedQuestions)
+	want := narrowingsExpected(state, below)
+	if len(want) < 2 || want[0] != dropped || want[1] != droppedCredential ||
+		!slices.Contains(want[2:], droppedQuestions) {
+		t.Fatalf("a caller at %d expects narrowing lines %v, want %q and %q first, then entry bands including %q",
+			below, want, dropped, droppedCredential, droppedQuestions)
 	}
+	wantNarrowings(t, narrowings, below, want)
 }

@@ -31,7 +31,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
@@ -97,9 +96,6 @@ func (p Point) Exists() (bool, string) {
 	}
 	return true, ""
 }
-
-// reachWithin bounds every wait for a hold to be reached or an event to be reported.
-const reachWithin = 30 * time.Second
 
 // Event is one report of the hooked server, as natsserver.MeasureEvent carries it, with its
 // state decoded.
@@ -395,11 +391,12 @@ func (h *Hooks) Events(point Point, match ...Match) []Event {
 	return found
 }
 
-// Await returns the first event at point that every match accepts, waiting up to 30 seconds for
-// one, and fails t naming the point and the matches when none is reported.
+// Await returns the first event at point that every match accepts, waiting for one until the
+// test's deadline (testDeadline, computed once, when Await begins), and fails t naming the point
+// and the matches when none is reported by then, however many other events come meanwhile.
 func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 	t.Helper()
-	deadline := time.After(reachWithin)
+	bound := boundOf(t)
 	for {
 		h.mu.Lock()
 		changed := h.changed
@@ -410,10 +407,8 @@ func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 			}
 		}
 		h.mu.Unlock()
-		select {
-		case <-changed:
-		case <-deadline:
-			t.Fatalf("the hooked server reported no event at %s within %s", describe(point, match), reachWithin)
+		if bound.over() || !awaitSignal(bound, changed) {
+			t.Fatalf("the hooked server reported no event at %s by %s, short of the test's deadline", describe(point, match), bound)
 		}
 	}
 }
@@ -458,19 +453,16 @@ func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
-// Reached waits up to 30 seconds for the hold to be reached, and returns the event that reached
-// it. That event's goroutine is parked at the hold until Release, unless the hold had been
-// released before it was reached, when the event went on. It fails t, naming the point and the
-// matches, when none did.
+// Reached waits for the hold to be reached, until the test's deadline (testDeadline), and returns
+// the event that reached it. That event's goroutine is parked at the hold until Release, unless the
+// hold had been released before it was reached, when the event went on. It fails t, naming the
+// point and the matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
-	select {
-	case <-hold.reached:
-		return hold.event
-	case <-time.After(reachWithin):
-		t.Fatalf("the hold at %s was not reached within %s", hold, reachWithin)
-		return Event{}
+	if bound := boundOf(t); !awaitSignal(bound, hold.reached) {
+		t.Fatalf("the hold at %s was not reached by %s, short of the test's deadline", hold, bound)
 	}
+	return hold.event
 }
 
 func (hold *Hold) wasReached() bool {

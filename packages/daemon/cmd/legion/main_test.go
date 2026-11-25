@@ -608,6 +608,64 @@ func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
 	}
 }
 
+// `legion version --contracts` prints this build's own contract, whether its entries are numbered
+// in the merge order a stamp gives or by id, and each entry's id, number and slug, in the build's
+// order. This test binary carries no stamp, so it prints `order id`. A build linked with the
+// stamp of its own entries, as the release and the worker image link theirs (`-ldflags "-X
+// github.com/sjawhar/legion/daemon/internal/api.contractOrder=v1:<ids>"`), prints `order stamped`
+// and the same lines — the stamp `v1:` of a build of no entries among them. A build linked with a
+// stamp that names an entry it does not register runs no command, `legion version` included: it
+// exits non-zero and names the id.
+func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
+	entries := api.NumberedEntries()
+	ids := make([]string, 0, len(entries))
+	lines := []string{fmt.Sprintf("contract %d", api.DaemonAPIVersion()), ""}
+	for _, entry := range entries {
+		ids = append(ids, strconv.Itoa(entry.ID))
+		lines = append(lines, fmt.Sprintf("%d %d %s", entry.ID, entry.Number, entry.Slug))
+	}
+	want := func(order string) string {
+		lines[1] = "order " + order
+		return strings.Join(lines, "\n") + "\n"
+	}
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "version", "--contracts"}, &out, &errb); code != 0 {
+		t.Fatalf("legion version --contracts exited %d: %s", code, errb.String())
+	}
+	if got := out.String(); got != want("id") {
+		t.Errorf("legion version --contracts of a build with no stamp = %q, want %q", got, want("id"))
+	}
+
+	stamp := "v1:" + strings.Join(ids, ",")
+	const stray = "20990101000000"
+	strayStamp := "v1:" + strings.Join(append(slices.Clone(ids), stray), ",")
+	stamped, refused := filepath.Join(t.TempDir(), "legion"), filepath.Join(t.TempDir(), "legion")
+	for binary, linked := range map[string]string{stamped: stamp, refused: strayStamp} {
+		build := exec.Command("go", "build", "-ldflags", "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder="+linked, "-o", binary, ".")
+		if built, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("go build stamped %q: %v\n%s", linked, err, built)
+		}
+	}
+	printed, err := exec.Command(stamped, "version", "--contracts").Output()
+	if err != nil {
+		t.Fatalf("legion version --contracts of a build stamped %q: %v", stamp, err)
+	}
+	if got := string(printed); got != want("stamped") {
+		t.Errorf("legion version --contracts of a build stamped %q = %q, want %q", stamp, got, want("stamped"))
+	}
+
+	var refusal bytes.Buffer
+	version := exec.Command(refused, "version")
+	version.Stderr = &refusal
+	if err := version.Run(); err == nil {
+		t.Fatalf("legion version of a build stamped %q exited 0, want it refused before it runs", strayStamp)
+	}
+	if !strings.Contains(refusal.String(), stray) {
+		t.Errorf("the refusal of a build stamped %q = %q, want it to name %s", strayStamp, refusal.String(), stray)
+	}
+}
+
 // Both commands that read a configured bind dial it the same way: `legion state --config` on a
 // daemon bound to every interface reads loopback, as `legion status` does.
 func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {

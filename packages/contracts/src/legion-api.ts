@@ -713,9 +713,9 @@ const legionHeldOutboxRow = z.object({
   waitsOn: z.number().int().positive().optional(),
 });
 
-/** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` call that writes which the daemon's answer loop ran for a
- * question before it passed the question on (contract 286), a read never one: its seq among the
- * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
+/** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` write the daemon's
+ * answer loop ran before passing the question on (the questions-for-controller entry). It gives
+ * the sequence among the question's calls and the command words (`pr merge`; for `gh api`, `api PUT
  * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
  * exit status, `null` where gh answered none, since it could not start or the daemon stopped
  * while it ran. The daemon writes every field; the reader takes each as optional, since no plugin
@@ -728,9 +728,9 @@ const legionQuestionWrite = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 286): the question's id, the
- * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
- * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
+ * passed on in an `agent-question` notice (the questions-for-controller entry). It includes the
+ * question's id, the agent's issue, role and session, who asked (`user:<login>` or `session:<id>`
+ * with the asking session's title when known), where (a `dispatch://` reference or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
  * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), when, and every `gh`
  * write the loop ran for it (`writes`, never null), so the controller does not decide on the
@@ -1499,10 +1499,10 @@ const legionPaused = z.object({
  * `withoutDispatchCredential`).
  * `questionsForController` is every question the answer loop passed to the controller in the last
  * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
- * only, so a controller that starts later reads here what it missed (contract 286). It is optional
- * for the same reason `wakesWaiting` is: only a reader built before #2788 refuses the key, and a
- * later one below 286 drops it, so the route strips it for a caller below 286, read the same way,
- * and for that caller alone (`api.stateFor`, `withoutQuestionsForController`). */
+ * only, so a controller that starts later reads here what it missed. The questions-for-controller
+ * entry makes the key optional, like `wakesWaiting`. Strict readers before #2788 refuse it and
+ * newer readers below the entry discard it. The route omits it only for callers below the entry's
+ * contract (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),

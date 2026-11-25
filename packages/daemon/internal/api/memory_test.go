@@ -63,7 +63,7 @@ func issueViews(t *testing.T, body []byte) map[string]map[string]any {
 // draw has reached carries none of the three, which `omitempty` leaves off the wire rather than
 // writing as empty strings a strict reader would refuse.
 func TestTheStateShowsEveryIssueItsTreesMemoryDraw(t *testing.T) {
-	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	issues := issueViews(t, body)
 
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
@@ -195,13 +195,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// every pod below it is not.
 		assigned bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, 286), `[]` where no
-		// question was passed, so a pod below it is served no key at all: the reader before that
-		// contract refuses the key empty as surely as filled (withoutQuestionsForController). A
-		// pod's claims at shapedAnswersContract or later place it in no band, since a plugin from
-		// that contract on states its own (podContracts), so every pod row here below that
-		// contract is served no key, and the callers that stand from it to below 286 are the
-		// stated callers of state_caller_test.go.
+		// answer loop passed to the controller (the questions-for-controller entry). The state
+		// holds `[]` when there are none. Callers below the entry's contract receive no key:
+		// strict readers refuse it even when empty (withoutQuestionsForController). Claims at
+		// shapedAnswersContract or later place a caller in no band (podContracts).
+		// state_caller_test.go checks callers that state their contract.
 		questions bool
 		// answers is whether the caller is served each issue's one rendered answer and the
 		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, 85):
@@ -366,9 +364,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// in the shape contract 152 gave it and omit the repository caches' row's `source`.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: recordedContractAtOrBelow(shapedAnswersContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion, credential: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion(), credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion(), credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, questions: true, contract: DaemonAPIVersion(), credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -494,8 +492,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53 and
-			// `questionsForController` where it is below 286, since the reader before each refuses
-			// its key empty as surely as filled (withoutWakesWaiting,
+			// `questionsForController` where it is below the questions-for-controller entry.
+			// Strict older readers refuse these keys even when empty (withoutWakesWaiting,
 			// withoutQuestionsForController). The `contract` mark is read apart and taken out of
 			// both: it is the one key the caller's own recorded contract decides rather than the
 			// state, and the baseline, asked from no pod, is told the daemon's number as its
@@ -709,9 +707,9 @@ func TestTheMemoryContractIsTheContractThatAddedTheFields(t *testing.T) {
 		t.Fatalf("memoryContract = %d, want %d, the contract whose entry in version.go added the issues' memory group",
 			memoryContract, addedMemory)
 	}
-	if memoryContract > DaemonAPIVersion {
+	if memoryContract > DaemonAPIVersion() {
 		t.Fatalf("memoryContract = %d, above DaemonAPIVersion %d: no caller could be served the fields",
-			memoryContract, DaemonAPIVersion)
+			memoryContract, DaemonAPIVersion())
 	}
 }
 
@@ -725,8 +723,8 @@ func TestTheWakesWaitingContractIsTheContractThatAddedTheKey(t *testing.T) {
 		t.Fatalf("wakesWaitingContract = %d, want %d, the contract whose entry in version.go added `wakesWaiting`",
 			wakesWaitingContract, addedWakesWaiting)
 	}
-	if wakesWaitingContract > DaemonAPIVersion {
+	if wakesWaitingContract > DaemonAPIVersion() {
 		t.Fatalf("wakesWaitingContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			wakesWaitingContract, DaemonAPIVersion)
+			wakesWaitingContract, DaemonAPIVersion())
 	}
 }

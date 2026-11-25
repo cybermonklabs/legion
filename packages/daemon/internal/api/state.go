@@ -128,8 +128,9 @@ type State struct {
 	// QuestionsForController is every question to a stopped agent that the daemon's answer loop
 	// passed to the controller in the last QuestionsForControllerWindow, newest first and at most
 	// QuestionsForControllerLimit of them: the agent-question notice is a live wake only, so a
-	// controller that starts later reads here what it missed. Never null (contract 286), and left
-	// off only the body served a caller below that contract (questionsForControllerHidden).
+	// controller that starts later reads here what it missed. The array is never null. The
+	// daemon omits it only for callers below the questions-for-controller entry's contract.
+	// See questionsForControllerHidden.
 	QuestionsForController []QuestionForController `json:"questionsForController"`
 	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
 	// locator names a pod and that record one — the claims that hold a process, which are the
@@ -166,8 +167,8 @@ type State struct {
 	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
 	intakeGiveUpsHidden bool
 	// questionsForControllerHidden is the same for QuestionsForController, set on the copy the
-	// route serves a caller below shaping.go's questionsForControllerContract (api's
-	// withoutQuestionsForController): the array is written on every other body, empty included,
+	// route serves a caller below the questions-for-controller entry's contract
+	// (withoutQuestionsForController): the array is written on every other body, empty included,
 	// and a strict reader before that contract refuses the key however empty, so MarshalJSON leaves
 	// it off that one body. It composes with the other flags. A caller below wakesWaitingContract
 	// also stands below claimsToRefreshContract, intakeGiveUpsContract and this contract.
@@ -613,7 +614,7 @@ type DispatchCredentialView struct {
 // non-nil value, including empty lists for `wakesWaiting` and `questionsForController`, a zero
 // `claimsToRefresh` count, or an `intakeGiveUps` with no open records. A slice field by itself
 // could not write an empty array with `omitempty`. The bands compose: a caller below 53 is
-// below 73, 228 and 286 too and is served none of the four keys.
+// below 73, 228 and the questions-for-controller entry too and receives none of the four keys.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
