@@ -100,9 +100,8 @@ import {
   ownerWords,
   searchOperators,
   searchResultKind,
+  snippetCut,
   snippetFromSentence,
-  snippetStartsLater,
-  snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
   withoutDirectiveSyntax,
@@ -394,10 +393,10 @@ function ItemRow({
  *  than its syntax, the words the search matched marked, and each link drawn as the words around
  *  it, since a link inside the row would compete with the row's own Enter and click. The syntax
  *  of a Proof directive the window cut is taken out of its text (`snippetWithoutDirectives`; rule
- *  1, no marker text), and a window the server began on the tail of a sentence starts at the next
- *  sentence's first word (`snippetFromSentence`). A snippet the server cut out of a longer text
- *  ends with "…" (`snippetWasCut`), and begins with one where it starts later than that text
- *  (`snippetStartsLater`). */
+ *  1, no marker text). The server says where its headline window cut the text the snippet was
+ *  read out of (`snippetCut`): a line whose window began after a word of that text begins with
+ *  "…", and starts at the next sentence's first word where the window began on a sentence's tail
+ *  (`snippetFromSentence`), and a line whose window stopped before a word of it ends with "…". */
 function ResultOption({
   active,
   onSelect,
@@ -427,15 +426,13 @@ function ResultOption({
   const title = itself ? issueHitTitle(result, source) : undefined;
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
   const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
-  const cut = snippetWasCut(source);
   // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
   // time would paint the snippet again on each.
   const snippet = useMemo(() => {
+    const cut = snippetCut(result.snippet_tree);
     const drawn = snippetWithoutDirectives(result.snippet_tree);
-    if (!cut) return { later: false, tree: drawn };
-    const tree = snippetFromSentence(drawn);
-    return { later: snippetStartsLater(drawn, tree, source), tree };
-  }, [cut, result.snippet_tree, source]);
+    return { cut, tree: cut.start ? snippetFromSentence(drawn) : drawn };
+  }, [result.snippet_tree]);
   // A delete takes the post's windows with its body, so a deleted post is no hit once the
   // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
   // empty: the deleted line stands where the snippet would, as it does in the referenced-by
@@ -491,11 +488,11 @@ function ResultOption({
                 <MarkdownPreview
                   className={`min-w-0 flex-1 ${textMutedOnSurface}`}
                   highlightClassName={highlight}
-                  lead={snippet.later ? "…" : undefined}
+                  lead={snippet.cut.start ? "…" : undefined}
                   lines={1}
                   links="text"
                   markdown={withoutDirectiveSyntax(source)}
-                  trail={cut ? "…" : undefined}
+                  trail={snippet.cut.end ? "…" : undefined}
                   tree={snippet.tree}
                 />
               ) : (

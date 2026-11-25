@@ -285,7 +285,9 @@ const SENTENCE_TAIL = /^\p{Ll}[^.!?]*[.!?]+["'’”)\]]*\s+/u;
  * reads as a fragment. Where the tree's first text starts with a small letter, carries no mark -
  * no matched word, no link, no formatting - and ends its sentence inside that text, the tail
  * comes out, and the line starts at the word after it. `tree` itself where it starts any other
- * way, and where the tail is all the text its block holds.
+ * way, and where the tail is all the text its block holds. The row asks this only of a snippet
+ * whose start the server says its window cut (`snippetCut`): a whole text's first words are no
+ * tail, whatever letter they start with.
  */
 export function snippetFromSentence(tree: DisplayTree | undefined): DisplayTree | undefined {
   if (tree === undefined) return undefined;
@@ -309,50 +311,30 @@ export function snippetFromSentence(tree: DisplayTree | undefined): DisplayTree 
   return started === undefined ? tree : (started as DisplayTree);
 }
 
-/** The first text a snippet's tree draws, where it has one. */
-function firstText(node: TreeNode): string | undefined {
-  if (node.type === "text") return node.text ?? "";
-  for (const child of node.content ?? []) {
-    const text = firstText(child);
-    if (text !== undefined) return text;
-  }
-  return undefined;
+/** Where the server's headline window cut the text a hit's snippet was read out of. */
+export interface SnippetCut {
+  /** The window begins after a word of that text. */
+  readonly start: boolean;
+  /** The window stops before a word of that text. */
+  readonly end: boolean;
 }
 
 /**
- * Whether a cut snippet starts later than the text the server cut it from, which its row then
- * begins with "…", as a cut end ends with one (`snippetWasCut`): where
- * `snippetFromSentence` took the tail of a sentence off its head (`started` is not `drawn`), or
- * where its line starts on a small letter, inside a sentence, where the server's window began.
- * `words`, the snippet's plain text, stands for a snippet that came with no tree. A window that
- * began on a sentence's first word inside the text reads as the text's start: the hit carries no
- * offset that tells the two apart.
+ * Where the server's headline window cut the text a hit's snippet was read out of, as the server
+ * measured it and wrote it on the snippet tree's doc node (`pmdoc.SnippetCutStartAttr`,
+ * `pmdoc.SnippetCutEndAttr`, `packages/envoy/internal/dispatch/pmdoc/display_json.go`): the row
+ * begins the line with "…" where the start was cut and ends it with one where the end was. Only
+ * the server can say: ts_headline's window is counted in the text-search parser's tokens, and a
+ * URL or a directive's attributes are many of them, so no count of the snippet's own words tells
+ * a cut window from a whole text. A tree that says neither, and a hit that came with no tree, is
+ * the whole text.
  */
-export function snippetStartsLater(
-  drawn: DisplayTree | undefined,
-  started: DisplayTree | undefined,
-  words: string
-): boolean {
-  if (started !== drawn) return true;
-  const head = started === undefined ? words : firstText(started as TreeNode);
-  return /^\p{Ll}/u.test((head ?? "").trimStart());
-}
-
-/** How many words a hit's snippet holds where the server's headline cut its body to the
- *  headline's window: `pmdoc.SearchSnippetWords` (`packages/envoy/internal/dispatch/pmdoc/
- *  fragment.go`; `headlineOptions` in `api/search.go`, MaxWords=24). A body that fits the window
- *  comes back whole and shorter. */
-const SEARCH_SNIPPET_WORDS = 24;
-
-/**
- * Whether the server cut a hit's snippet out of a longer text, which its row then ends with "…"
- * (review R4): the server's own rule (`pmdoc.SearchSnippetMarkdown`), that a snippet as wide as
- * the headline's window was cut and a shorter one is the whole body. `snippet` is the snippet's
- * text without its marks, and its words are counted as the server counts them (`countWords`):
- * the runs between whitespace.
- */
-export function snippetWasCut(snippet: string): boolean {
-  return snippet.split(/\s+/u).filter((word) => word !== "").length >= SEARCH_SNIPPET_WORDS;
+export function snippetCut(tree: DisplayTree | undefined): SnippetCut {
+  const attrs: Record<string, unknown> =
+    typeof tree?.attrs === "object" && tree.attrs !== null
+      ? (tree.attrs as Record<string, unknown>)
+      : {};
+  return { end: attrs.cutEnd === true, start: attrs.cutStart === true };
 }
 
 /** Mirrors the server's first positive websearch token for document deep links. */

@@ -9,15 +9,15 @@ import (
 
 // searchRowShape is one row of the column shape searchQuery and searchQueryMeaning share, in the
 // order scanSearchRows reads it (search.go, the select of searchPageAndTailSQL): the totals, the
-// hit's kind and owner, its artifact, its ids, its score and its headline last. The values are a
-// document hit of an issue, which is the shape a document whose markdown is missing arrives in;
-// $1 is that row's headline, so one call gives the scan a row with a headline and another gives
-// it a row with none.
+// hit's kind and owner, its artifact, its ids, its score, its headline, and where the headline's
+// window cut its text last. The values are a document hit of an issue, which is the shape a
+// document whose markdown is missing arrives in; $1 is that row's headline, so one call gives
+// the scan a row with a headline and another gives it a row with none.
 const searchRowShape = `select 1::int, 1::int, 'document'::text, 'issue'::text,
 	'SRCH-1'::text, 'Navigation instruments'::text, 'open'::text,
 	null::text, null::text, null::text, null::text,
 	'spec'::text, 'spec.md'::text, true,
-	'0f3b7c1e-8f0a-4a2b-9c6d-2b1f5a7e4c10'::text, null::text, null::text, 0.42::float8, $1::text`
+	'0f3b7c1e-8f0a-4a2b-9c6d-2b1f5a7e4c10'::text, null::text, null::text, 0.42::float8, $1::text, true, true`
 
 // TestSearchScanTakesARowWithANullHeadline: scanSearchRows dereferenced the headline pointer, so
 // one row whose headline is null took the process down for every search on it - a nil-pointer

@@ -87,20 +87,22 @@ func TestAFragmentCutInsideACodeSpanDropsTheOpenBacktick(t *testing.T) {
 	balanced(t, "Before the cut `dispatch-deploy.y", "Before the cut dispatch-deploy.y")
 }
 
-// A search snippet is balanced only when the headline window cut it: exactly 24 words.
+// A search snippet is balanced only where its window cut the text it was read out of, as the
+// search statement measured the cut, however many runs between whitespace it holds: ts_headline
+// counts the text-search parser's tokens, so the plan.md window of the visual review's shot
+// 13-filing-line holds ten runs and is cut at both ends, where a whole text can hold any number.
 func TestASearchSnippetIsBalancedOnlyWhenTheHeadlineWindowCutIt(t *testing.T) {
 	t.Parallel()
-	// ts_headline returns a short body whole (measured: `Use ** for bold and anchor here` ->
-	// `bold and <<anchor>> here`, 4 words): the author's `**` is theirs.
-	if got := SearchSnippetMarkdown("bold and ** anchor here"); got != "bold and ** anchor here" {
-		t.Errorf("a four-word snippet was balanced: %q", got)
+	// A window of three runs whose cut took the opener of its bold.
+	for _, cut := range []SnippetCut{{Start: true}, {End: true}, {Start: true, End: true}} {
+		if got, want := SearchSnippetMarkdown("anchor** after the", cut), "anchor after the"; got != want {
+			t.Errorf("SearchSnippetMarkdown(window, %+v) = %q, want %q", cut, got, want)
+		}
 	}
-	// At the window (measured: 24 words around the match, the mark's opener left outside it).
-	window := strings.Repeat("word ", 21) + "anchor** after the"
-	if words := len(strings.Split(window, " ")); words != 24 {
-		t.Fatalf("the window holds %d words, want 24", words)
-	}
-	if got, want := SearchSnippetMarkdown(window), strings.Replace(window, "**", "", 1); got != want {
-		t.Errorf("SearchSnippetMarkdown(window) = %q, want %q", got, want)
+	// A whole text keeps the delimiter its author typed, short or as wide as any window.
+	for _, whole := range []string{"bold and ** anchor here", strings.Repeat("word ", 21) + "anchor** after the"} {
+		if got := SearchSnippetMarkdown(whole, SnippetCut{}); got != whole {
+			t.Errorf("a whole text was balanced: %q, want %q", got, whole)
+		}
 	}
 }

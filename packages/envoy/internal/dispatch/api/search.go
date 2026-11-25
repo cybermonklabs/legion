@@ -365,6 +365,42 @@ var (
 // comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
 // store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
 // item's (refs.ParseItemBlockNode).
+//
+// Beside each hit's headline the page answers where the headline's window cut the text it was
+// read out of (cut_start, cut_end), which the hit's snippet tree carries to the dashboard
+// (pmdoc.SnippetCut) and nothing else carries: the dashboard begins and ends the snippet's line
+// with "…" by it. Only this statement can say. ts_headline counts MaxWords in the text-search
+// parser's tokens, and a URL or a directive's attributes are many of them, so a window cut at
+// both ends can hold ten runs between whitespace, and no count of the headline's own words tells
+// it from a whole text (dispatch://INFRA-1588, the plan.md of shot 13-filing-line). An end is cut
+// where a word of the text stands past it: a letter or a digit in the excerpt before the place the
+// headline, its two sentinels taken out, starts in it, or after the place it ends, or the excerpt
+// itself starting after the text's first character or ending before its last, since the excerpt
+// is 4,000 characters of a text that can be longer. A word, and not any character, because
+// ts_headline drops more than whitespace at the edges of its window. Measured on Postgres 18.7
+// with this page's options: `The **astrolabe** measures altitude.` comes back
+// `astrolabe** measures altitude`, without the short word `The` (ShortWord's three letters), the
+// `**` and the full stop, and `# Instruments …` comes back without its `# `. The first is cut at
+// its start, where the window left out a word, and at neither end else; the second at neither
+// end, since all it left out is markup and spaces.
+//
+// The headline is the excerpt's own characters but for a tag: ts_headline writes one space where
+// the excerpt holds a run the parser reads as an HTML tag (`<br>`, the `<string>` of
+// `Array<string>`), so a headline holding one stands nowhere in the excerpt as it is. That
+// headline alone is found in the excerpt as ts_headline prints all of it: given a query no word
+// can match (`' '`), it prints the first MinWords words, which for MinWords=999999 is every token
+// of the excerpt, each tag a space as it is in the headline. That is a second reading of the
+// excerpt, as dear as the first (0.7 ms for 4,000 characters, measured), so the union arm that
+// makes it runs only for a headline the excerpt does not hold as it is: its `located.at = 0` is a
+// one-time filter the planner tests before it reads anything below it. A headline found in
+// neither - a text holding the sentinels themselves leaves one - is cut at both ends: a "…" too
+// many is a lesser fault than a cut line drawn as whole.
+//
+// Every lateral from the text's on ends in `offset 0`, which keeps the planner from pulling it up
+// into the select. A pulled-up subquery's column is its expression written out again wherever the
+// column is read, so the text's subselect, the excerpt and the headline would each run once per
+// reference rather than once per row: measured, the headline's lateral pulled up ran ts_headline
+// three times a row, and the text's ran a document's subselect at each of its references.
 func searchPageAndTailSQL(legsSource string, seen int) string {
 	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
 		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
@@ -379,11 +415,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       hl.headline,
+       (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true as cut_start,
+       (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true as cut_end
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -399,7 +433,35 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
+  -- The excerpt ts_headline reads: 4,000 characters of the text from 1,500 before the query's
+  -- first term, or from the text's start where the term is not in it, under search_text.
+  left join lateral (
+    select cut.start, search_text(substr(txt.text, cut.start, 4000)) as text
+      from (select greatest(1, coalesce(nullif(case when q.term <> '' then strpos(lower(txt.text), lower(q.term)) end, 0), 1) - 1500) as start
+            offset 0) cut
+    offset 0
+  ) excerpt on true
+  left join lateral (select ts_headline('english', excerpt.text, q.tsq, $5) as headline offset 0) hl on true
+  -- Where the headline, its two sentinels taken out, stands in the excerpt, and the excerpt's
+  -- text before and after it: found in the excerpt itself, or, for a headline ts_headline wrote
+  -- a tag's space into, in the excerpt as ts_headline prints all of it.
+  left join lateral (
+    select shown.words, strpos(excerpt.text, shown.words) as at
+      from (select replace(replace(hl.headline, '%[3]s', ''), '%[4]s', '') as words) shown
+    offset 0
+  ) located on true
+  left join lateral (
+    select left(excerpt.text, located.at - 1) as before, substr(excerpt.text, located.at + length(located.words)) as after
+     where located.at > 0
+    union all
+    select left(printed.text, printed.at - 1), substr(printed.text, printed.at + length(located.words))
+      from (select whole.text, strpos(whole.text, located.words) as at
+              from (select ts_headline('english', excerpt.text, $$' '$$::tsquery, 'MaxWords=1000000, MinWords=999999, MaxFragments=1') as text
+                    offset 0) whole) printed
+     where located.at = 0 and printed.at > 0
+  ) edge on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -429,7 +491,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, visibleBlock)
+`, legsSource, visibleBlock, markStart, markEnd)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -1562,8 +1624,8 @@ const embeddingProjectKeysFilledLockWait = `set local lock_timeout = '200ms'`
 const embeddingProjectKeysFilledQuery = `select done from embeddings_project_key_backfill`
 
 // scanSearchRows reads searchQuery's and searchQueryMeaning's shared column shape - every column
-// through the headline - into a SearchResponse. q is the original query text, for each result's
-// href (searchHref's own query-string echo).
+// through the headline and where its window cut its text - into a SearchResponse. q is the
+// original query text, for each result's href (searchHref's own query-string echo).
 func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (model.SearchResponse, error) {
 	response := model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}
 	for rows.Next() {
@@ -1574,6 +1636,7 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		var blockID *string
 		var matchBlockID *string
 		var rank *float64
+		var cut pmdoc.SnippetCut
 		if err := rows.Scan(
 			&response.Total,
 			&response.Reachable,
@@ -1594,6 +1657,8 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 			&matchBlockID,
 			&rank,
 			&headline,
+			&cut.Start,
+			&cut.End,
 		); err != nil {
 			return model.SearchResponse{}, err
 		}
@@ -1635,9 +1700,11 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		// A snippet's tree is no stored tree and is never primed from the table or stored in it:
 		// it is one query's own headline, cut and marked for this search alone
 		// (pmdoc.DisplaySnippetJSON), so there is nothing two readers would share. A null
-		// headline is the empty snippet here too, for the reason above: the tree of no text.
+		// headline is the empty snippet here too, for the reason above: the tree of no text. The
+		// tree alone says where the window cut the text (searchPageAndTailSQL), so the snippet
+		// every caller reads is the headline whatever the cut.
 		if trees {
-			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(headlineText, markStart, markEnd))
+			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(headlineText, markStart, markEnd, cut))
 		}
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)

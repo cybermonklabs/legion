@@ -10,9 +10,8 @@ import {
   kindLabel,
   optionId,
   ownerWords,
+  snippetCut,
   snippetFromSentence,
-  snippetStartsLater,
-  snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
   withoutDirectiveSyntax,
@@ -220,43 +219,26 @@ test("a cut snippet that begins on a sentence's tail starts at the next sentence
   expect(snippetFromSentence(undefined)).toBeUndefined();
 });
 
-// A cut snippet that starts later than the text it was cut from says so: its row begins with "…",
-// as a cut end ends with one. It starts later where `snippetFromSentence` took a
-// sentence's tail off its head, or where the server's window began inside a sentence, which its
-// small first letter shows; a snippet that starts on a sentence's first word starts as it does.
-test("a cut snippet that starts past its text's start begins with …, and one that starts a sentence does not", () => {
-  const paragraph = (...content: object[]): DisplayTree =>
-    ({ content: [{ content, type: "paragraph" }], type: "doc" }) as DisplayTree;
-  const tail = paragraph({ text: "table. A page is read once it is drawn", type: "text" });
-  expect(snippetStartsLater(tail, snippetFromSentence(tail), "")).toBe(true);
-  const inside = paragraph(
-    { text: "the page is read once ", type: "text" },
-    { marks: [{ type: "searchHighlight" }], text: "drawn", type: "text" }
-  );
-  expect(snippetFromSentence(inside)).toBe(inside);
-  expect(snippetStartsLater(inside, inside, "")).toBe(true);
-  expect(snippetStartsLater(undefined, undefined, "  the page is read once it is drawn")).toBe(
-    true
-  );
-
-  const whole = paragraph({ text: "A page is read once it is drawn", type: "text" });
-  expect(snippetStartsLater(whole, snippetFromSentence(whole), "")).toBe(false);
-  expect(snippetStartsLater(undefined, undefined, "A page is read once it is drawn")).toBe(false);
-});
-
-// The server's headline cuts a body longer than its window to 24 words, and hands a shorter body
-// back whole (`pmdoc.SearchSnippetWords`): a snippet as wide as the window is one it cut, and the
-// hit's row ends it with "…" (review R4). Words are the runs between whitespace, as the server
-// counts them, so a directive's cut syntax counts as it did there.
-test("a snippet as wide as the server's headline window was cut out of a longer text, and a shorter one is whole", () => {
-  const words = (count: number) =>
-    Array.from({ length: count }, (_, index) => `word${index + 1}`).join(" ");
-  expect(snippetWasCut(words(24))).toBe(true);
-  expect(snippetWasCut(`  ${words(12)}\n${words(12)}  `)).toBe(true);
-  expect(snippetWasCut(words(23))).toBe(false);
-  expect(snippetWasCut("The astrolabe measures altitude.")).toBe(false);
-  expect(snippetWasCut("")).toBe(false);
-  expect(snippetWasCut(`${words(22)}\n:::\n:::plan_task{#t1`)).toBe(true);
+// The server says where its headline window cut the text a snippet was read out of, on the
+// snippet tree's doc (`pmdoc.SnippetCutStartAttr`, `pmdoc.SnippetCutEndAttr`), each end only where
+// it was cut: no count of the snippet's own words can say it, since ts_headline counts the
+// text-search parser's tokens. A tree that says nothing, and a hit with no tree, is the whole
+// text, and nothing but `true` says an end was cut.
+test("a snippet's cut is the ends its tree's doc says the server's window cut, and none where it says nothing", () => {
+  const doc = (attrs?: object): DisplayTree =>
+    ({
+      ...(attrs === undefined ? {} : { attrs }),
+      content: [
+        { content: [{ text: "table. Draw each page and read", type: "text" }], type: "paragraph" },
+      ],
+      type: "doc",
+    }) as DisplayTree;
+  expect(snippetCut(doc({ cutEnd: true, cutStart: true }))).toEqual({ end: true, start: true });
+  expect(snippetCut(doc({ cutStart: true }))).toEqual({ end: false, start: true });
+  expect(snippetCut(doc({ cutEnd: true }))).toEqual({ end: true, start: false });
+  expect(snippetCut(doc())).toEqual({ end: false, start: false });
+  expect(snippetCut(doc({ cutEnd: "true", cutStart: 1 }))).toEqual({ end: false, start: false });
+  expect(snippetCut(undefined)).toEqual({ end: false, start: false });
 });
 
 test("uses the first positive websearch term for document highlighting", () => {

@@ -21,7 +21,7 @@ var (
 )
 
 // A fragment cut out of a Markdown body: one the server cut before anybody read it, which today
-// is a search hit's ts_headline snippet (the 24 words around the match). A cut can land inside a
+// is a search hit's ts_headline snippet (the 24 tokens around the match). A cut can land inside a
 // mark, and the half it leaves renders as its characters. The balancer below drops exactly the
 // delimiters that CommonMark would have paired had the cut not happened and nothing else: a run
 // the parser would read as literal text anyway (`Use ** for bold`, `2 * 3`, `snake_case`) is the
@@ -33,35 +33,17 @@ var (
 // and the shapes it must hold are the ones fragment_test.go pins. The browser's markdownHead
 // was never ported, since nothing on the server cuts a body's head.
 
-// SearchSnippetWords is how many words a search hit's snippet holds when ts_headline cut the body
-// to its window (headlineOptions in internal/dispatch/api/search.go: MaxWords=24). A body that
-// fits the window comes back whole and shorter, and is nobody's cut.
-const SearchSnippetWords = 24
-
-// SearchSnippetMarkdown is a search hit's headline as Markdown to read: the whole body when it fit
-// the headline window, balanced when the window cut it (a snippet exactly the window wide).
-func SearchSnippetMarkdown(snippet string) string {
-	if countWords(snippet) < SearchSnippetWords {
+// SearchSnippetMarkdown is a search hit's headline as Markdown to read: the headline as it is
+// where its window held every word of the text it was read out of, and balanced where the window
+// cut that text at either end, as the search statement measured the cut. Only that statement can
+// say: ts_headline's window is 24 of the text-search parser's tokens, and a URL or a directive's
+// attributes are many of them, so a window cut at both ends can hold ten runs between whitespace
+// and no count of the headline's own words tells it from a whole text.
+func SearchSnippetMarkdown(snippet string, cut SnippetCut) string {
+	if !cut.Start && !cut.End {
 		return snippet
 	}
 	return BalanceCutMarkdown(snippet)
-}
-
-// countWords is how many whitespace-separated words text holds, which is what the browser's
-// `snippet.split(/\s+/u).filter(word => word !== "")` counts.
-func countWords(text string) int {
-	words, inWord := 0, false
-	for _, char := range text {
-		if literalEnd(char) {
-			inWord = false
-			continue
-		}
-		if !inWord {
-			words++
-			inWord = true
-		}
-	}
-	return words
 }
 
 // BalanceCutMarkdown is fragment with every delimiter the cut left unmatched removed. Runs are

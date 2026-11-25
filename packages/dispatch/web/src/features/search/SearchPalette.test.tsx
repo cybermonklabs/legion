@@ -13,6 +13,7 @@ import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { correction, correctionFeed } from "../../__tests__/correction-feed";
+import { snippetTree } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { answerRoute } from "../../__tests__/send-answers";
@@ -20,6 +21,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import type {
+  DisplayTree,
   GoingConversation,
   GoingPlanAnswer,
   GoingRun,
@@ -346,45 +348,84 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
   }
 });
 
-// A snippet the server cut out of a longer text ends with "…" (review R4, 13-filing-line): the
-// headline's window is 24 words, so a snippet that wide stopped mid-phrase at the row's edge with
-// nothing to say so, and a shorter one is the whole text and ends as it does. A cut snippet whose
-// window began inside a sentence begins with "…" too, and one that begins on a
-// sentence's first word begins as it does. The issue's status stands in a column of its own
-// beside both of the hit's lines, so the snippet's line stops before it rather than running on
-// under it.
-test("a snippet the server cut ends with …, begins with … where it starts inside a sentence, a whole one ends as its text does, and the status keeps a column of its own", async () => {
+// The server says where its headline window cut the text a hit's snippet was read out of, on the
+// snippet tree's doc (review R4, 13-filing-line): a line whose window began after a word of the
+// text begins with "…", and one whose window stopped before a word of it ends with "…". The plan
+// the visual review's bar found is that tree as the server sends it: its window is cut at both
+// ends though it holds ten runs between whitespace, since ts_headline counts the parser's tokens,
+// and its line begins with "…" where it read "table." with nothing to say the line began inside
+// the text. A window whose start the server cut and that began on a sentence's tail starts at the
+// next sentence's first word, after "…". A tree that says its window held the whole text draws
+// neither and keeps every word, though it starts on a small letter, ends a sentence a few words
+// in and holds two dozen words. The issue's status stands in a column of its own beside both of
+// the hit's lines, so the snippet's line stops before it rather than running on under it.
+test("a snippet begins and ends with … where the server says its window cut the text, a whole one draws neither though it starts on a small letter, and the status keeps a column of its own", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
-  const cut =
-    "Draw each page and read it against the design before the next one is drawn so that no page of the set is left";
-  const inside =
-    "each page and read it against the design before the next one is drawn so that no page of the set is left unread";
-  const whole = "Read each page against the design.";
-  const hit = (id: string, text: string): SearchResult => ({
+  const plan: DisplayTree = {
+    attrs: { cutEnd: true, cutStart: true },
+    content: [
+      { content: [{ text: "table. :::", type: "text" }], type: "paragraph" },
+      {
+        content: [
+          {
+            text: ':::plan_task{#t1 serves="dispatch://CORE-1/artifact/requirements-md#b-r2" ',
+            type: "text",
+          },
+          { marks: [{ type: "searchHighlight" }], text: "needs", type: "text" },
+          {
+            text: '="dispatch://CORE-1/artifact/plan-md#b-t0"} Draw each page and read',
+            type: "text",
+          },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const whole =
+    "each page is read against the design. It is drawn once the next one is ready so that no page of the set is left unread";
+  const tail = "table. A page is read once it is drawn";
+  const end = "Draw each page and read it against the design before the next one";
+  const hit = (id: string, snippet: string, tree: DisplayTree): SearchResult => ({
     artifact: { name: "plan.md", slug: "plan" },
     href: `/issues/LEGION-2/artifact/plan?q=page&hit=${id}`,
     id,
     kind: "document",
     owner: { key: "LEGION-2", kind: "issue", status: "in_progress", title: "Local testing" },
     rank: 1,
-    snippet: text.replace("page", "<mark>page</mark>"),
+    snippet,
+    snippet_tree: tree,
   });
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
-      hit("document-cut", cut),
-      hit("document-whole", whole),
-      hit("document-inside", inside),
+      hit(
+        "document-plan",
+        "table.\n:::\n\n:::plan_task{#t1 serves=&#34;dispatch://CORE-1/artifact/requirements-md#b-r2&#34; <mark>needs</mark>=&#34;dispatch://CORE-1/artifact/plan-md#b-t0&#34;}\nDraw each page and read",
+        plan
+      ),
+      hit("document-whole", whole, snippetTree(whole)),
+      hit("document-tail", tail, { ...snippetTree(tail), attrs: { cutStart: true } }),
+      hit("document-end", end, { ...snippetTree(end), attrs: { cutEnd: true } }),
     ])
   );
+  // The plan's directive attributes name two blocks, which its line draws as references, each
+  // reading its block's words. No row here is about those words, so the reads are held open and
+  // the line draws each reference as the address it is.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
   const view = renderPalette();
   try {
     await searchFor(user, "page");
-    const [cutHit, wholeHit, insideHit] = within(
+    const [planHit, wholeHit, tailHit, endHit] = within(
       screen.getByRole("group", { name: "Documents" })
     ).getAllByRole("option");
-    if (cutHit === undefined || wholeHit === undefined || insideHit === undefined) {
-      throw new Error("the bar lists no three document hits");
+    if (
+      planHit === undefined ||
+      wholeHit === undefined ||
+      tailHit === undefined ||
+      endHit === undefined
+    ) {
+      throw new Error("the bar lists no four document hits");
     }
     const drawn = (option: HTMLElement): string =>
       within(option)
@@ -392,18 +433,20 @@ test("a snippet the server cut ends with …, begins with … where it starts in
         .querySelector("[data-markdown-preview]")
         ?.textContent?.replace(/\s+/gu, " ")
         .trim() ?? "";
-    await waitFor(() => expect(drawn(cutHit)).toBe(`${cut}…`));
+    await waitFor(() => expect(drawn(planHit)).toStartWith("…table. "));
+    expect(drawn(planHit)).toEndWith(" Draw each page and read…");
     await waitFor(() => expect(drawn(wholeHit)).toBe(whole));
-    await waitFor(() => expect(drawn(insideHit)).toBe(`…${inside}…`));
-    expect(within(cutHit).getByText("page", { selector: "mark" })).toBeTruthy();
+    await waitFor(() => expect(drawn(tailHit)).toBe("…A page is read once it is drawn"));
+    await waitFor(() => expect(drawn(endHit)).toBe(`${end}…`));
 
-    const status = within(cutHit).getByTestId("search-hit-status");
-    const lines = within(cutHit).getByTestId("search-hit-snippet").parentElement;
+    const status = within(planHit).getByTestId("search-hit-status");
+    const lines = within(planHit).getByTestId("search-hit-snippet").parentElement;
     expect(status.previousElementSibling).toBe(lines);
     expect(lines).toHaveClass("min-w-0", "flex-1");
     expect(status).toHaveClass("shrink-0");
   } finally {
     search.mockRestore();
+    getReferences.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }
