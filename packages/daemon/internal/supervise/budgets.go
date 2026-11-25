@@ -76,6 +76,15 @@ const (
 	// earlier daemon failed can carry it for a run of refused turns that reached the launch failure
 	// limit, which fails no claim now (turnOutcome); the sentence beside the word says which it was.
 	CauseProviderError FailureCause = "provider_error"
+	// CauseCyberPolicy: OpenAI refused the session's content for cyber policy, or Oh My Pi held a
+	// request after such a refusal, as the result of the prompt the turn ran says, or as the
+	// report of a turn that ran no prompt of the daemon's says (providerErrorTurnEnded, Oh My Pi's
+	// class `cyber_policy`). It is a provider error that cannot clear, and a word of its own because
+	// it is the one failure no retry of the daemon's own may relaunch (Claim.HeldForCyberPolicy):
+	// every prompt the daemon sends is input from outside the session, which ends Oh My Pi's hold,
+	// so the refused content would go to OpenAI again and add a refusal to the organization's
+	// record. The architect's retry of the held phase and the operator's retry relaunch it.
+	CauseCyberPolicy FailureCause = "cyber_policy"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence
 	// does not say which event wrote it.
@@ -99,6 +108,7 @@ var FailureCauses = []FailureCause{
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
+	CauseCyberPolicy,
 	CauseUnrecorded,
 }
 

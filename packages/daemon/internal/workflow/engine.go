@@ -1244,6 +1244,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // The checking role of a closed issue failing inside a look of its production check ends that look
 // as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
 // wake starts the claim again.
+//
+// A claim that failed on OpenAI's cyber-policy refusal (supervise.CauseCyberPolicy) is the
+// exception to each "starts it again" above: no start of the daemon's own relaunches it
+// (supervise.ErrHeldForCyberPolicy), so the two notices that promise one, a child's own
+// architect's and a role's outside its issue's phase, say so and name the operator's
+// `legion claims retry` instead (cyberPolicyNoRestart). A held phase is held as for any cause, and
+// its retry, the architect's or a person's decision, relaunches the claim.
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1260,8 +1267,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
+		reason := fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)
+		if fact.Cause == supervise.CauseCyberPolicy {
+			reason = fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, cyberPolicyNoRestart)
+		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
+			Reason: reason})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
@@ -1303,8 +1314,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
+		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)
+		if fact.Cause == supervise.CauseCyberPolicy {
+			reason += ", and " + cyberPolicyNoRestart
+		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
+			Reason: reason})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1332,6 +1347,14 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
 		Failure: failure, Reason: deathReason(fact, failure != nil)})
 }
+
+// cyberPolicyNoRestart is what a worker-died notice says in place of the daemon's own next start
+// for a claim that failed on OpenAI's cyber-policy refusal (claimFailed): no start of the
+// daemon's own relaunches such a claim (supervise.ErrHeldForCyberPolicy), since the relaunch
+// would send the session's content to OpenAI again, so the notice names the operator's command
+// that does. The held phase's retry, which a held issue's notice already offers, relaunches it
+// too.
+const cyberPolicyNoRestart = "it failed on OpenAI's cyber_policy refusal of its session's content, so no start of the daemon's own relaunches it: an operator's `legion claims retry` does, with --fresh-session to leave the refused session behind"
 
 // deathReason is what a worker-died notice says on the two paths that build no reason of their
 // own — the tree architect's and the held phase's. It names the supervisor's own sentence

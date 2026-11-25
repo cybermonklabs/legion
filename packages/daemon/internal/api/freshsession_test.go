@@ -855,6 +855,45 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 	refused(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
 }
 
+// A controller held for OpenAI's cyber-policy refusal is the one controller its keeper does not
+// retry (the daemon's controllerKeeper), so the operator's `legion claims retry` is its way back,
+// and both of its forms are admitted: with --fresh-session the recorded session, which holds the
+// refused content, is left behind and the controller starts in a new one; without it the session
+// is resumed, which is the operator's choice to make.
+func TestTheOperatorsRetryRelaunchesAControllerHeldForCyberPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fresh bool
+	}{{"in a new session", true}, {"in the recorded session", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := freshSessionHarness(t, &phaseRestarter{})
+			token := claim.ControllerToken(testProject)
+			m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
+				Token: token, Project: testProject, Role: claim.RoleController, Generation: 1, State: supervise.StateFailed,
+				Session: "ses_controller", SessionFile: "/tmp/controller.jsonl", FailureCause: supervise.CauseCyberPolicy,
+				Failure: "a provider error that cannot clear ended this claim's turn: OpenAI's cyber_policy refusal of this session's content",
+			}, "")
+			if err != nil {
+				t.Fatalf("create the held controller: %v", err)
+			}
+
+			recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: tc.fresh})
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the operator's retry of the held controller = %d %s, want it admitted", recorder.Code, recorder.Body)
+			}
+			m.Wait()
+			c := m.Claim()
+			if c.State != supervise.StateLaunching || c.FailureCause != "" {
+				t.Fatalf("the controller is %s (%q), want it launching with no failure record", c.State, c.FailureCause)
+			}
+			if left := c.Session != "ses_controller"; left != tc.fresh {
+				t.Fatalf("the controller records session %q; want the recorded session left behind %t", c.Session, tc.fresh)
+			}
+		})
+	}
+}
+
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
 // held for the agent it is still waiting for, and the request would answer long after the claim
 // moved on. The refusal says the claim is launching and which states a fresh session does

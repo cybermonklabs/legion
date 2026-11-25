@@ -48,7 +48,9 @@ const (
 // a death relaunches the same session, within the launch failure budget. What the machine leaves to
 // its caller is the keeper's: the claim is created when the store holds none, launched while
 // queued, resumed when suspended, and, when its budget ran out (failed) or its agent ended it
-// (retired), retried with fresh budgets after a wait that doubles while it keeps failing. At each
+// (retired), retried with fresh budgets after a wait that doubles while it keeps failing. A
+// controller held for OpenAI's cyber-policy refusal is the one failed controller it never retries
+// (supervise.Claim.HeldForCyberPolicy): an operator's `legion claims retry` brings it back. At each
 // ready it hands the controller the start message. The liveness sweep (watchController) says when
 // the controller is not registered, from a loop of its own.
 type controllerKeeper struct {
@@ -114,7 +116,8 @@ func (k *controllerKeeper) keep() error {
 		m = created
 	}
 	var request supervise.Event
-	state := m.Claim().State
+	c := m.Claim()
+	state := c.State
 	if state != supervise.StateFailed && state != supervise.StateRetired {
 		// The claim left the state a refused retry holds it in, whatever it moved to.
 		k.leaveHeld()
@@ -133,6 +136,10 @@ func (k *controllerKeeper) keep() error {
 		// only the operator's resume runs a controller the operator suspended.
 		request = supervise.RequestRuleResume{Claim: token, Reason: "the daemon keeps its controller running"}
 	case supervise.StateFailed, supervise.StateRetired:
+		if c.HeldForCyberPolicy() {
+			k.heldForCyberPolicy(c)
+			return nil
+		}
 		now := k.now()
 		if k.retryAt.IsZero() {
 			k.backoff = k.retryFirst
@@ -201,6 +208,29 @@ func (k *controllerKeeper) keep() error {
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
 	return nil
+}
+
+// cyberPolicyHeldLine is the keeper's one line for a controller held for OpenAI's cyber-policy
+// refusal (heldForCyberPolicy).
+const cyberPolicyHeldLine = "controller: the daemon's controller is held for OpenAI's cyber_policy refusal of its session's content; the keeper does not retry it"
+
+// heldForCyberPolicy is the keeper's answer to a controller held for OpenAI's cyber-policy refusal
+// (supervise.Claim.HeldForCyberPolicy): no retry, at any wait. Its retry would resume the recorded
+// session, and the start message the keeper then sends is input from outside the session, which
+// ends Oh My Pi's own hold, so the refused content would go to OpenAI again and add a refusal to
+// the organization's record; the machine refuses such a retry too (supervise's
+// ErrHeldForCyberPolicy). Only a person can change what the controller sends or where, so it
+// logs one error per episode (held, leaveHeld) naming the cause and the operator's `legion claims
+// retry`, which the machine admits for such a controller, with --fresh-session to leave the
+// refused session behind. The retry's wait starts over once the controller runs again.
+func (k *controllerKeeper) heldForCyberPolicy(c supervise.Claim) {
+	k.retryAt, k.backoff = time.Time{}, 0
+	if k.heldLogged == cyberPolicyHeldLine {
+		return
+	}
+	k.heldLogged, k.heldReason = cyberPolicyHeldLine, ""
+	k.log.Error(cyberPolicyHeldLine, "claim", c.Token, "state", c.State, "cause", string(c.FailureCause),
+		"failure", c.Failure, "retry", fmt.Sprintf("legion claims retry --claim %s --fresh-session", c.Token))
 }
 
 // held records a retry the hold refused (keep): its reason, for each later retry's Warn, and one

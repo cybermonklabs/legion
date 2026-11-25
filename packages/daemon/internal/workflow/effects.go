@@ -688,7 +688,10 @@ type startMarks struct {
 	// (record.SuperviseRequest.ResendEntry). The held phase's retry sets it (restart), because
 	// the claim it reaches may hold that very entry as its given one; sendOwedEntry sends the
 	// entry its row names too and sets it not, because the claim it reaches is behind that entry
-	// and the entry test passes the task on its own.
+	// and the entry test passes the task on its own. The outbox reads it as the mark of a retry
+	// someone decided as well (supervise.RequestRetry.Decided), the one start that relaunches a
+	// claim held for OpenAI's cyber-policy refusal, so no start the daemon makes by itself may set
+	// it.
 	resend bool
 	// resumeTask says the task is the phase's resume task (ResumeTask), so a claim that
 	// already holds a task of this generation and phase is given it once it is ready and the

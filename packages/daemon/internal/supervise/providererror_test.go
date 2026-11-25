@@ -239,11 +239,11 @@ func TestARefusalThenAMalformedRequestHoldsTheIssue(t *testing.T) {
 	h.wantPrompts(2)
 }
 
-// OpenAI's cyber-policy refusal holds the issue whatever status it came with, and nothing is sent
-// again, however long the claim waits. Each re-send would be a prompt from outside the session,
-// which ends Oh My Pi's own hold, and would send the refused content to OpenAI again. A gateway
-// relays such a refusal as a 503, which on its status alone would climb the ladder, and a request
-// Oh My Pi held after one carries no status at all.
+// OpenAI's cyber-policy refusal holds the issue whatever status it came with, under a cause word
+// of its own, and nothing is sent again, however long the claim waits. Each re-send would be a
+// prompt from outside the session, which ends Oh My Pi's own hold, and would send the refused
+// content to OpenAI again. A gateway relays such a refusal as a 503, which on its status alone
+// would climb the ladder, and a request Oh My Pi held after one carries no status at all.
 func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
 	for _, status := range []int{0, 400, 503} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
@@ -254,8 +254,8 @@ func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
 
 			h.wantState(StateFailed)
 			c := h.claim()
-			if c.FailureCause != CauseProviderError {
-				t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseProviderError)
+			if c.FailureCause != CauseCyberPolicy {
+				t.Errorf("the failure's cause is %q, want %q", c.FailureCause, CauseCyberPolicy)
 			}
 			for _, want := range []string{"cannot clear", "cyber_policy"} {
 				if !strings.Contains(c.Failure, want) {

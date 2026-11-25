@@ -611,6 +611,7 @@ var valueStrips = []valueStrip{
 	{state: withoutUnadmittedCapabilitySources, dropped: droppedCapabilitySource},
 	{issue: withoutUnadmittedHoldReason, dropped: droppedHoldReason},
 	{state: withoutUnadmittedHeldWords, dropped: droppedHeldWord},
+	{issue: withoutUnadmittedFailureCauses, dropped: droppedFailureCause},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -669,11 +670,11 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedCapabilitySource,
-// droppedHoldReason and droppedHeldWord are what the rows of valueStrips name as dropped. They are
-// named rather than written in the rows because the tests that read the daemon's log and the mixed
-// pod's body name a row by them (narrowing_test.go, shaped_answers_test.go). Each names what its
-// row takes by the table's rule rather than by today's value, so the line stays true of a value the
-// table declares later.
+// droppedHoldReason, droppedHeldWord and droppedFailureCause are what the rows of valueStrips name
+// as dropped. They are named rather than written in the rows because the tests that read the
+// daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
+// shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
+// today's value, so the line stays true of a value the table declares later.
 const (
 	droppedStrandedState    = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer       = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
@@ -681,6 +682,7 @@ const (
 	droppedCapabilitySource = "the source of every capability row of a source this caller does not admit"
 	droppedHoldReason       = "the holdReason of every issue held for a reason this caller does not admit"
 	droppedHeldWord         = "the word and heldBy of every row of admission.held whose word this caller does not admit, served as unclassified"
+	droppedFailureCause     = "the claim views' failure cause and pending cause of a word this caller does not admit, served as an older word that stands for it"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1114,9 +1116,23 @@ func withoutPriority(issue Issue) (Issue, bool) {
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the keys arrived at stays where it is. It moves only with this
+// change's own number. answers.go's SupportedContracts names the constant rather than its number
+// for that reason.
+const causeTimesContract = 256
+
+// cyberPolicyContract is the daemon contract that added `cyber_policy` to the words a claim can
+// fail under (supervise.CauseCyberPolicy, version.go's 264): a claim view's `failure.cause` and
+// `pendingCause` take it, and `POST /legion/v1/claims/turn-outcome` takes `code`. A plugin before
+// it reads both causes with a `z.enum` of the seven words before, and refuses the whole body for an
+// eighth, so a caller below it is served `provider_error` in its place
+// (withoutUnadmittedFailureCauses): the refusal is a provider error that cannot clear, which is
+// what such a reader was told of it before. It removed no key and added none to an answer.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the value arrived at stays where it is. It moves only with this
 // change's own number, and it is the last number of answers.go's SupportedContracts, which names
 // the constant rather than its number for that reason.
-const causeTimesContract = 256
+const cyberPolicyContract = 264
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1654,6 +1670,53 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 	return state, true
 }
 
+// withoutUnadmittedFailureCauses is the issue whose claim views name no failure cause restore's
+// reader does not admit, in `failure.cause` or in `pendingCause`. It follows the declared table
+// (answers.go's failureCauses) and takes any word the table holds back from restore
+// (fieldArrivals.heldBack says which words and why): today the `cyber_policy` of
+// cyberPolicyContract, and tomorrow any word the table gives a later arrival. A reader from
+// recordFieldsContract up to that contract reads both with a `z.enum` of the seven words before it
+// and refuses the whole body for another.
+//
+// The word is rewritten rather than dropped, as withoutUnadmittedHeldWords rewrites a held row:
+// `cause` is no optional key of a failure record that reader would take as absent, and an older
+// word does stand for the newer one (failureCauseStandIn). Every other key of the view and of
+// its failure record stays, the sentence that names `cyber_policy` among them, since `detail` is
+// a string any reader takes whole.
+//
+// An issue whose views name no such word is returned as it is, with no copy made; a view it
+// rewrites gets a failure record of its own, so the state the source answered is left as it was.
+// It reports whether it rewrote a view, which is what the log line of this strip is written from
+// (tookOff).
+func withoutUnadmittedFailureCauses(issue Issue, restore int) (Issue, bool) {
+	unadmitted := func(cause supervise.FailureCause) bool {
+		return cause != "" && failureCauseArrivals.heldBack(string(cause), restore)
+	}
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		if view.Failure != nil && unadmitted(view.Failure.Cause) {
+			failure := *view.Failure
+			failure.Cause = failureCauseStandIn(failure.Cause)
+			view.Failure = &failure
+		}
+		if unadmitted(view.PendingCause) {
+			view.PendingCause = failureCauseStandIn(view.PendingCause)
+		}
+		return view
+	})
+}
+
+// failureCauseStandIn is the word an older reader is served for a failure cause it does not admit
+// (withoutUnadmittedFailureCauses): `provider_error` for `cyber_policy`, since a cyber-policy
+// refusal is a provider error that cannot clear and that reader was told it under that word, and
+// `unrecorded`, the word for a failure whose cause the reader was not told, for any word the table
+// names no stand-in for. Both arrived with the field, so every reader that knows it admits them.
+func failureCauseStandIn(cause supervise.FailureCause) supervise.FailureCause {
+	if cause == supervise.CauseCyberPolicy {
+		return supervise.CauseProviderError
+	}
+	return supervise.CauseUnrecorded
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -1701,13 +1764,14 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 }
 
 // strandedStateArrivals, waitAnswerArrivals, lineKindArrivals, capabilitySourceArrivals,
-// holdReasonArrivals and heldReasonArrivals are the arrivals of `strandedClaims[].state`, of
-// `answeredBy`, of the waiting line's `kind`, of a capability row's `source`, of an issue's
-// `holdReason` and of a held row's `reason`, read once from the list the table itself is written
-// from (answers.go's strandedStates, waitAnswers, lineKinds, capabilitySources, holdReasons and
-// heldReasons). The state's row answers for the record's too: an issue's field is one field at two
-// key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue shapes the
-// issue behind both answers.
+// holdReasonArrivals, heldReasonArrivals and failureCauseArrivals are the arrivals of
+// `strandedClaims[].state`, of `answeredBy`, of the waiting line's `kind`, of a capability row's
+// `source`, of an issue's `holdReason`, of a held row's `reason` and of a claim view's
+// `failure.cause` and `pendingCause`, read once from the list the table itself is written from
+// (answers.go's strandedStates, waitAnswers, lineKinds, capabilitySources, holdReasons,
+// heldReasons and failureCauses). The state's row answers for the record's too: an issue's field
+// is one field at two key paths (answers.go's enumeratedFields), both rows take the one list, and
+// shapeIssue shapes the issue behind both answers.
 var (
 	strandedStateArrivals    = arrivalsOf(strandedStates)
 	waitAnswerArrivals       = arrivalsOf(waitAnswers)
@@ -1715,6 +1779,7 @@ var (
 	capabilitySourceArrivals = arrivalsOf(capabilitySources)
 	holdReasonArrivals       = arrivalsOf(holdReasons)
 	heldReasonArrivals       = arrivalsOf(heldReasons)
+	failureCauseArrivals     = arrivalsOf(failureCauses)
 )
 
 // arrivalsOf is one list of the declared table as the arrivals of its field: each value under

@@ -338,7 +338,10 @@ func roleList() string {
 // The project's controller is refused whatever state it is in: its keeper starts it, as that
 // keeper alone is told when it must (supervise's operatorRetry refuses the controller's retry
 // for the same reason), and the controller's own door cannot name it at all, since `controller`
-// is no role a claim token is built from (claimFreshSession).
+// is no role a claim token is built from (claimFreshSession). A controller held for OpenAI's
+// cyber-policy refusal is the exception (supervise.Claim.HeldForCyberPolicy): its keeper retries
+// it no more, so the operator's `legion claims retry --fresh-session` is how it comes back
+// without the refused session, and the machine admits that retry (operatorRetry).
 //
 // A claim stored working is in a turn, under a launch the wake pacing parks, being compacted,
 // or over no process at all, and one order tells them apart at both doors
@@ -357,7 +360,7 @@ func roleList() string {
 // launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
-	if c.Role == claim.RoleController {
+	if c.Role == claim.RoleController && !c.HeldForCyberPolicy() {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the
 		// daemon's controllerKeeper, supervise.Claim.RuleHolds), so the sentence names the
 		// suspension that keeper does lift: the daemon's own. It is the one place the keeper is

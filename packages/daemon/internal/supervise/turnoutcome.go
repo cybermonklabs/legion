@@ -140,8 +140,10 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // A turn that ran no prompt of the daemon's — a phase reminder the plugin sent (pi.sendMessage),
 // an Envoy message, a background job's result — is held to dispatch://INFRA-4508's R1 as a
 // prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
-// with CauseProviderError, so the workflow holds the issue for its architect, and the plugin's
-// reminders end: their record check drops every reminder of a failed claim. A refusal that can
+// with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
+// (RequestTurnOutcome.Code) with CauseCyberPolicy whatever its status, so the workflow holds the
+// issue for its architect, and the plugin's reminders end: their record check drops every
+// reminder of a failed claim. A refusal that can
 // clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
 // counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
 // so the project's controller is told once when that run reaches providerErrorRunTold.
@@ -169,7 +171,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
 	kept := m.recordTurnOutcome(o)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "code", r.Code, "unprompted", r.Unprompted,
 		"refusedRun", m.claim.RefusedRun())
 	switch {
 	case !kept || r.Generation != m.claim.Generation:

@@ -1216,7 +1216,11 @@ type SuperviseRequest struct {
 	// with no delivery pending, so the entry test alone would drop the retry's own task and
 	// relaunch the worker with no prompt. The outbox row-id guard still holds
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
-	// time.
+	// time. Because that start is the one a person or the issue's architect decided — the
+	// architect's retry_or_escalate, the operator's `legion claims retry`, a person's todo on a
+	// held root — the mark is also what makes the retry of a failed claim a decided one
+	// (supervise.RequestRetry.Decided), the one retry of a start row that relaunches a claim held
+	// for OpenAI's cyber-policy refusal; a start that sets it must be such a decision.
 	ResendEntry bool `json:"resendEntry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow's Engine.ResumeTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for

@@ -590,9 +590,17 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // caller — the claim runs again — and neither skips a check the other makes: it says only which
 // session the retry starts. A retry that asks for none resumes the recorded session, whatever the
 // claim's run of refused turns (freshSession).
+//
+// Decided says a person or the issue's architect asked for this retry: the outbox sets it on the
+// held phase's retry (record.SuperviseRequest.ResendEntry, workflow's restart), which the
+// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker and a
+// person's todo on a held root each start. Every other start of a failed or retired claim, and
+// the controller keeper's retry, is a retry the daemon makes by itself, and is refused for a
+// claim held for a cyber-policy refusal (Claim.HeldForCyberPolicy, ErrHeldForCyberPolicy).
 type RequestRetry struct {
 	Claim        claim.Token
 	FreshSession bool
+	Decided      bool
 }
 
 // RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
@@ -710,6 +718,8 @@ type RequestExit struct {
 // (recordTurnOutcome). HTTPStatus is the status the provider refused the turn with, 0 where the
 // producer could not read one, and Unprompted says the turn ran no prompt the daemon sent
 // (claim.TurnOutcomeRequest), which is the one kind of turn a report is judged for (turnOutcome).
+// Code is the class the producer gave the refusal, codeCyberPolicy or nothing (the route takes any
+// other word as none), which judges such a turn beside its status (unpromptedTurnEnded).
 //
 // Neither is fenced. A report naming a generation the claim has left is not stale: it is a turn of
 // that generation, which belongs in its own place in the order the run is derived in, and the
@@ -722,6 +732,7 @@ type RequestTurnOutcome struct {
 	Message    string
 	HTTPStatus int
 	Unprompted bool
+	Code       string
 }
 
 // RequestCompact takes the claim for a compaction of its Oh My Pi session, which is what a claim
@@ -1316,7 +1327,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it; a claim held for a cyber-policy refusal only by a retry someone decided", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -2830,7 +2841,15 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // what the next persist writes. A launch check that refuses after the admission — launchAfter's
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
+//
+// A claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy) is relaunched by a
+// retry someone decided alone: the held phase's retry (RequestRetry.Decided) and the operator's
+// (RequestOperatorRetry). A retry the daemon makes by itself is refused before anything moves
+// (cyberPolicyRefusal), since the relaunch would send the session's content to OpenAI again.
 func retry(m *Machine, ctx context.Context, ev Event) error {
+	if r, own := ev.(RequestRetry); own && m.claim.RetryHeld(r) {
+		return m.cyberPolicyRefusal()
+	}
 	if fresh, why := freshSession(ev); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
@@ -2865,19 +2884,30 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
 // which the route has already established before it reaches the machine (api's retryStart starts
 // the phase itself for every other one).
-// The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
-// role never changes, so the refusal cannot race the decision it guards.
+// The daemon's controller has a retry of its own, its keeper, so it alone is refused, unless it is
+// held for a cyber-policy refusal: the keeper retries such a controller no more (the daemon's
+// controllerKeeper), so the operator's retry is its one way back. A claim's role never changes,
+// so the refusal cannot race the decision it guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
 // (RequestOperatorRetry.FreshSession): retry then forgets the session, so the launch spawns a
 // fresh agent (freshSession). A launch whose session no session store holds any more starts a
 // fresh agent too (startFresh).
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
-	if m.claim.Role == claim.RoleController {
+	if m.claim.Role == claim.RoleController && !m.claim.HeldForCyberPolicy() {
 		return &RefusedError{State: m.claim.State, Request: "retry",
 			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryNotTheController)}
 	}
 	return retry(m, ctx, ev)
+}
+
+// cyberPolicyRefusal is the refusal of a retry the daemon makes by itself of a claim held for
+// OpenAI's cyber-policy refusal (retry). It names the operator's command that relaunches the
+// claim, and the flag that leaves the refused session behind.
+func (m *Machine) cyberPolicyRefusal() error {
+	return &RefusedError{State: m.claim.State, Request: "retry", Err: fmt.Errorf(
+		"%w; an operator's `legion claims retry --claim %s` relaunches it, with --fresh-session to leave the refused session behind",
+		ErrHeldForCyberPolicy, m.claim.Token)}
 }
 
 // stop ends one claim: the runtime releases it, and it retires, recording what the released

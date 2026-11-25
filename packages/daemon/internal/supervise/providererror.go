@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -27,9 +29,11 @@ const (
 	providerErrorRunTold = 6
 )
 
-// The two classes of a failed prompt (StreamPromptResult.Code, shimwire.PromptError.Code) that
-// decide something here. Oh My Pi declares them on `RpcPromptError.code`
-// (packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// The two classes of a failed prompt (StreamPromptResult.Code, shimwire.PromptError.Code) and of
+// a refused turn's report (RequestTurnOutcome.Code) that decide something here. Oh My Pi declares
+// them on `RpcPromptError.code` (packages/coding-agent/src/modes/rpc/rpc-types.ts of
+// cybermonklabs/oh-my-pi at the pinned tag); pi-legion classifies a refused turn with the host's
+// own `isCyberPolicyRefusal`, the classifier that sets that code (packages/pi-legion/src/turn-outcome.ts).
 const (
 	// codeCyberPolicy is OpenAI refusing the session's content for cybersecurity risk, or Oh My Pi
 	// holding the request because such a refusal earlier in the session still holds OpenAI's
@@ -37,9 +41,20 @@ const (
 	// refusal under, a 503 among them. It cannot clear: each copy of the content sent to OpenAI
 	// again adds a refusal to the organization's record, and the next prompt the daemon sends is
 	// input from outside the session, which ends Oh My Pi's own hold
-	// (packages/coding-agent/src/session/cyber-policy-closure.ts there). So it holds the issue,
-	// whatever its status (holdsTheIssue).
-	codeCyberPolicy = "cyber_policy"
+	// (packages/coding-agent/src/session/cyber-policy-closure.ts there). So it fails the claim
+	// under CauseCyberPolicy, whatever its status (holdsTheIssue, providerErrorTurnEnded), on the
+	// result of a prompt's turn and on the report of a turn that ran none alike, and no retry of
+	// the daemon's own relaunches that claim (Claim.HeldForCyberPolicy).
+	//
+	// One send can still go before the claim fails. The report of a turn that ran no prompt of the
+	// daemon's comes over HTTP from pi-legion and the turn's end over the worker stream, both from
+	// the one agent_end, in no fixed order. Where the end arrives first and the claim holds a task
+	// (one queued while that turn ran, an architect's notice above all), turnEnded sends it at once,
+	// since no prompt is outstanding to wait for; so does a task delivered to the idle claim before
+	// the report lands. That prompt ends Oh My Pi's hold and costs one more refusal, and its own
+	// prompt result names cyber_policy, which fails the claim here: the race costs one send at most,
+	// never a second (TestARaceBetweenTheTurnsEndAndItsReportCostsOneSendAtMost).
+	codeCyberPolicy = claim.TurnCodeCyberPolicy
 	// codeCostCap is the session reaching Oh My Pi's `session.maxCost`: Oh My Pi sent no request,
 	// and every later one ends the same way until the cap is raised, which applies to the next
 	// request (cost-gate.ts there). It can clear, and a send that is refused costs nothing, so it
@@ -108,15 +123,17 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 // send again, since whatever the claim owes, this turn did not carry it, and the reminder that
 // started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can
 // clear, or whose report carries no status, is counted and written down and nothing more, and the
-// controller's notice says that nothing is sent again. The cause is built from the status alone,
-// and the notice names no model, since a report carries none. Whether the report failed the claim
-// is what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome).
+// controller's notice says that nothing is sent again. The cause is built from the status and the
+// class the report carries (Code, pi-legion's reading of the refusal with the host's own
+// classifier), so a cyber-policy refusal fails the claim here as its prompt's result would, and
+// the notice names no model, since a report carries none. Whether the report failed the claim is
+// what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome).
 func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
 	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
-		status: r.HTTPStatus,
-		line:   "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
-		attrs:  []any{"generation", r.Generation, "sequence", r.Sequence},
-		turn:   "a turn this claim's agent ran with no prompt of the daemon's",
+		status: r.HTTPStatus, code: r.Code,
+		line:  "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
+		attrs: []any{"generation", r.Generation, "sequence", r.Sequence, "code", r.Code},
+		turn:  "a turn this claim's agent ran with no prompt of the daemon's",
 		next: "the last of them ran no prompt of the daemon's (a phase reminder, an Envoy message or a " +
 			"background job's result), so the daemon sends no task again for it",
 	})
@@ -131,7 +148,7 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 // it: the status, Oh My Pi's class of the failure and the model the error named (each zero where
 // it named none), the warning line's message and its own attributes, the failure sentence's words
 // for the turn, the notice's words for what the daemon does now, and what runs before a failure,
-// if anything. A turn-outcome report carries no class, so an unprompted turn's code is empty.
+// if anything. A turn-outcome report carries the class only for a cyber-policy refusal.
 type providerErrorTurn struct {
 	status int
 	code   string
@@ -147,9 +164,10 @@ type providerErrorTurn struct {
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the cause
 // built from the status and the class alone (providerErrorCause), one more turn in the run, the
 // warning line, the controller's notice at providerErrorRunTold, then t.before, and, for an error
-// that cannot clear (holdsTheIssue), the claim's failure under CauseProviderError, which holds the
-// issue for its architect. It answers the cause, and whether it failed the claim; what a turn
-// whose error can clear does next is its caller's.
+// that cannot clear (holdsTheIssue), the claim's failure, which holds the issue for its architect:
+// under CauseCyberPolicy for a cyber-policy refusal, which no retry of the daemon's own relaunches
+// (Claim.HeldForCyberPolicy), and under CauseProviderError for every other. It answers the cause,
+// and whether it failed the claim; what a turn whose error can clear does next is its caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	cause := providerErrorCause(t.status, t.code)
 	m.claim.ProviderErrorRun++
@@ -163,8 +181,27 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 	if !holdsTheIssue(t.status, t.code) {
 		return cause, false, nil
 	}
-	return cause, true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause)
+	word := CauseProviderError
+	if t.code == codeCyberPolicy {
+		word = CauseCyberPolicy
+	}
+	return cause, true, m.fail(ctx, word, "a provider error that cannot clear ended "+t.turn+": "+cause)
 }
+
+// HeldForCyberPolicy is whether the claim's last failure is OpenAI's cyber-policy refusal and no
+// run has started since: the record stands on a failed claim, and on one an operator stopped after
+// it failed, until a retry admits the claim (retry). Such a claim is relaunched by a retry someone
+// decided alone — the held phase's retry (RequestRetry.Decided) or the operator's
+// (RequestOperatorRetry) — and by no retry the daemon makes by itself (RetryHeld).
+func (c Claim) HeldForCyberPolicy() bool {
+	return c.FailureCause == CauseCyberPolicy && FailedOrRetired(c.State)
+}
+
+// RetryHeld is whether the machine refuses r for this claim with ErrHeldForCyberPolicy (retry): a
+// retry the daemon makes by itself of a claim held for a cyber-policy refusal. A caller that must
+// do work before the retry reads it to do none for a retry that relaunches nothing (the outbox's
+// start of a retired claim, which provisions the workspace first).
+func (c Claim) RetryHeld(r RequestRetry) bool { return !r.Decided && c.HeldForCyberPolicy() }
 
 // providerErrorRunOver puts the claim's run of provider-error turns back to zero for a turn that
 // ended with none, whatever ran it (promptResulted, turnOutcome), and logs line with
@@ -180,10 +217,10 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 }
 
 // holdsTheIssue is whether an error of this HTTP status and this class fails the claim, so that
-// the workflow holds the issue for its architect, and nothing is sent again: a cyber-policy
-// refusal (codeCyberPolicy), whatever its status, and a client error, 400 to 499, that is none of
-// 401, 403, 408 and 429. A malformed request is the case the second exists for. Every other error
-// sends the task again:
+// the workflow holds the issue for its architect, and the ladder sends nothing again: a
+// cyber-policy refusal (codeCyberPolicy), whatever its status, and a client error, 400 to 499,
+// that is none of 401, 403, 408 and 429. A malformed request is the case the second exists for.
+// Every other error sends the task again:
 //
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
@@ -206,7 +243,10 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 // A cyber-policy refusal is the one class that decides alone. Sending it again on the ladder is
 // what Oh My Pi's hold exists to stop, and the ladder cannot stop it itself: each send is a prompt
 // from outside the session, which ends that hold, and the session's content goes to OpenAI again.
-// Only a person can change what the session sends or where, so the architect gets the issue.
+// Only a person can change what the session sends or where, so the architect gets the issue, and
+// the claim fails under a word of its own (CauseCyberPolicy) that no retry of the daemon's own
+// relaunches (Claim.HeldForCyberPolicy). What this decides is the turn whose record arrived: the
+// one send a report of a turn with no prompt can race past is codeCyberPolicy's to state.
 func holdsTheIssue(status int, code string) bool {
 	if code == codeCyberPolicy {
 		return true

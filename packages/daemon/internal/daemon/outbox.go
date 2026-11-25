@@ -2401,6 +2401,34 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
+// startRetry is the retry a start row asks of a failed or retired claim (supervise.RequestRetry):
+// a new session where the row asks for one, and a decided retry where the row is the held phase's
+// retry (record.SuperviseRequest.ResendEntry, which workflow's restart alone sets, and which the
+// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker and a
+// person's todo on a held root each start). Every other start of such a claim is one the daemon
+// makes by itself, which the machine refuses for a claim held for OpenAI's cyber-policy refusal
+// (supervise.ErrHeldForCyberPolicy, retryRefused).
+func startRetry(token claim.Token, payload record.SuperviseRequest) supervise.RequestRetry {
+	return supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, Decided: payload.ResendEntry}
+}
+
+// retryRefused is a start row's answer to the machine's refusal of its retry (startRetry). The
+// refusal of a claim held for OpenAI's cyber-policy refusal finishes the row without acting: no
+// start of the daemon's own may relaunch that claim, and nothing the daemon does later lifts the
+// hold, so a row kept would retry for ever. The line is an Error, since the claim's role runs no
+// more until a person decides: it names the operator's `legion claims retry`, with
+// --fresh-session to leave the refused session behind. Every other refusal is the row's error, as
+// before, naming what the row asked (`retry`, `relaunch retired`), the claim and the refusal.
+func (r *outbox) retryRefused(token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, err error, asked string) error {
+	if !errors.Is(err, supervise.ErrHeldForCyberPolicy) {
+		return fmt.Errorf("%s claim %s: %w", asked, token, err)
+	}
+	r.log.Error("outbox start finishes without acting: its claim is held for OpenAI's cyber_policy refusal of its session's content, which no start of the daemon's own relaunches",
+		"row", row.ID, "issue", row.Issue, "role", payload.Role, "phase", payload.Phase, "claim", token,
+		"retry", fmt.Sprintf("legion claims retry --claim %s --fresh-session", token), "reason", err)
+	return nil
+}
+
 func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {
 	if r.supervisor == nil {
 		return errors.New("supervise executor has no claim supervisor")
@@ -2701,8 +2729,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A start that asks for a new session has the retry forget the recorded one, inside
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("retry claim %s: %w", token, err)
+			if err := machine.Handle(ctx, startRetry(token, payload)); err != nil {
+				return r.retryRefused(token, row, payload, err, "retry")
 			}
 		case supervise.StateRetired:
 			// A retired claim was closed with its issue (a child closed as done) or with its tree
@@ -2710,12 +2738,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// worker or a child's own architect, which supervise's exit retires), or an operator
 			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
 			// before the kept session relaunches (a new one once supervise's Machine.forgetSession
-			// has dropped it).
-			if err := r.provisionWorkspace(ctx, issue); err != nil {
-				return err
+			// has dropped it). A claim the retry is held from (supervise.Claim.RetryHeld) relaunches
+			// nothing, so nothing is provisioned for it, and the machine's refusal finishes the row.
+			retry := startRetry(token, payload)
+			if !machine.Claim().RetryHeld(retry) {
+				if err := r.provisionWorkspace(ctx, issue); err != nil {
+					return err
+				}
 			}
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
+			if err := machine.Handle(ctx, retry); err != nil {
+				return r.retryRefused(token, row, payload, err, "relaunch retired")
 			}
 		}
 		// A claim that, once brought back above, still holds a task of this row's phase and run that

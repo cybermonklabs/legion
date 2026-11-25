@@ -1381,6 +1381,14 @@ var ErrLeftPodRound = errors.New("the answer comes from a process in another pod
 // controller keeper retries instead (operatorRetry). The refusal adds who retries the claim.
 var ErrRetryNotTheController = errors.New("the operator's retry does not relaunch the daemon's controller")
 
+// ErrHeldForCyberPolicy is a retry the daemon makes by itself (RequestRetry with no decision behind
+// it) of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy): the next start
+// of its role, a re-admission of its tree, a production check's look, the controller keeper. The
+// relaunch would send the session's content to OpenAI again, so only a retry someone decided
+// relaunches the claim (retry). It is a refusal and not a wait: nothing the daemon does later
+// lifts it. The refusal adds the claim and the operator's command that brings it back.
+var ErrHeldForCyberPolicy = errors.New("the claim failed on OpenAI's cyber_policy refusal of its session's content, so no retry of the daemon's own relaunches it")
+
 // ErrHeldByOperator is the daemon's start or task meeting an operator's suspension, which no rule
 // overrides (Claim.RuleHolds): a wait, ended only by the operator's resume. RuleHoldError wraps it
 // for the outbox log.
