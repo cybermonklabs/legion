@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -416,7 +416,9 @@
+@@ -399,7 +399,9 @@
  		return true
  	}
  	for _, a := range allow {

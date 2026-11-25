@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("$\x85q\xbdUl\x80|n")
+[]byte("T\xf1\xa8]\xa3l\x89\x83'")

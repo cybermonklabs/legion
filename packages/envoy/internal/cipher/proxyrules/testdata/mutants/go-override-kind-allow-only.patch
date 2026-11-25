@@ -6,15 +6,15 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -580,7 +580,10 @@
+@@ -605,7 +605,10 @@
  		return nil, "not allowed by rule"
  	case !allowOK(b.Allow, r):
  		return nil, "not allowed by the profile's rule"
--	case (k.Allow != nil || b.Allow != nil) && hasMethodOverride(r):
+-	case listed && hasMethodOverride(r):
 +	// MUTANT: the override refusal reads the kind's allow alone, so a profile's allow under a
 +	// kind with none carries the value on a request whose X-HTTP-Method-Override names
 +	// another method.
 +	case k.Allow != nil && hasMethodOverride(r):
  		return nil, "request carries a method override header"
- 	}
- 	// A request that already carries the real value learnt it somewhere other than this
+ 	case listed && hasMethodOverrideParameter(r.Query):
+ 		return nil, "request carries a method override parameter"

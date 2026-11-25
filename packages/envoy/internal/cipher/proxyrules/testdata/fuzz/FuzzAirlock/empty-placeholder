@@ -1,2 +1,2 @@
 go test fuzz v1
-[]byte("脹\x7f")
+[]byte("\xb0p\xa8O")

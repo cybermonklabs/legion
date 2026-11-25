@@ -207,25 +207,32 @@ var (
 	// leaves alone where strings.EqualFold would not.
 	overridePool = []string{"x-http-method-override", "X-HTTP-Method-Override", "x-http-method", "X-Http-Method", "x-method-override", "X-METHOD-OVERRIDE", "x-http-method-overridden", "x-http-met\u212aod"}
 	// pathPool holds paths with no dot segment, paths that carry one, and two near misses -
-	// "..foo" and "..." are segments no reader resolves; paths with an empty segment; and paths
-	// at, past and beside the "/" boundary of each prefix of prefixPool ("/repos", "/repos/x"
-	// and "/reposX"; "/storage-limit", "/storage-limit/7" and "/storage-limitX"), so the
-	// comparison covers where each side draws each of those lines.
+	// "..foo" and "..." are segments no reader resolves; paths with an empty segment; a path
+	// with a literal backslash; and paths at, past and beside the "/" boundary of each prefix
+	// of prefixPool ("/repos", "/repos/x" and "/reposX"; "/storage-limit", "/storage-limit/7"
+	// and "/storage-limitX"), so the comparison covers where each side draws each of those
+	// lines.
 	pathPool = []string{"/", "/repos/x", "/repos", "/admin", "", "/v1/../admin", "/a/./b", "/..", "/.", "/v1/things/../../admin", "/v1/..foo", "/v1/.../x",
 		"/reposX", "/repos/", "/a//b", "//", "/repos//x", "/v1/organizations/workspaces", "/v1/organizations", "/v1/organizationsX", "/v1/messages",
-		"/storage-limit", "/storage-limitX", "/storage-limit/7"}
+		"/storage-limit", "/storage-limitX", "/storage-limit/7", `/repos\x`}
 	// portPool is the CONNECT port: 443 five times in eight, so a case reaches the refusals
 	// below the port, and otherwise a port the rules say nothing about.
 	portPool   = []uint16{443, 443, 443, 443, 443, 80, 8443, 0}
 	prefixPool = []string{"/", "/repos", "", "/r", "/admin/", "/repos/", "/v1/organizations/", "/storage-limit"}
-	// encodedSlashPool is what the raw path may hold in place of a "/": the two spellings
-	// check refuses and two near misses, an encoded "%" before "2F" and a cut-off escape.
-	encodedSlashPool = []string{"%2F", "%2f", "%252F", "%2"}
-	phPool           = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
-	valuePool        = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
-	piecePool        = []string{"user", "token ", " ", "\t", "x"}
-	schemePool       = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
-	tailPool         = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
+	// separatorPool is what the raw path may hold in place of a "/": the two spellings of an
+	// encoded "/" and the three of a "\" that check refuses under an allow list, and three near
+	// misses, an encoded "%" before "2F" or "5C" and a cut-off escape.
+	separatorPool = []string{"%2F", "%2f", "%252F", "%2", "%5C", "%5c", `\`, "%255C"}
+	// methodParameterPool is a query parameter a request may carry: "_method" in the spellings
+	// check refuses under an allow list, with a value and without, and five near misses, a name
+	// longer at either end, "_method" as a value, after a ";", which the query is not split on,
+	// and after a space.
+	methodParameterPool = []string{"_method=PUT", "_method", "_METHOD=delete", "%5Fmethod=PUT", "%5fmethod=", "x_method=PUT", "_methods=PUT", "a=_method", "a=1;_method=PUT", " _method=PUT"}
+	phPool              = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
+	valuePool           = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
+	piecePool           = []string{"user", "token ", " ", "\t", "x"}
+	schemePool          = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
+	tailPool            = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
 )
 
 func (s *src) list(n int, f func() string) []string {
@@ -339,18 +346,18 @@ func (s *src) kind() Kind {
 }
 
 // rawPath draws the path as the command sent it: the decoded path itself one time in two;
-// the path with its last "/" written as an escape of encodedSlashPool; or the path with one
-// appended, so check's "path has an encoded slash" refusal and its near misses are reached on
-// paths every other rule allows.
+// the path with its last "/" written as a pick of separatorPool; or the path with one
+// appended, so check's "path has an encoded slash" and "path has a backslash" refusals and
+// their near misses are reached on paths every other rule allows.
 func (s *src) rawPath(path string) string {
 	switch s.u8() % 4 {
 	case 2:
 		if j := strings.LastIndexByte(path, '/'); j >= 0 {
-			return path[:j] + s.pick(encodedSlashPool) + path[j+1:]
+			return path[:j] + s.pick(separatorPool) + path[j+1:]
 		}
 		return path
 	case 3:
-		return path + s.pick(encodedSlashPool)
+		return path + s.pick(separatorPool)
 	default:
 		return path
 	}
@@ -394,12 +401,18 @@ func genCase(data []byte) wireCase {
 	}
 	r.Query = s.compose(g, value, false)
 	r.Body = s.compose(g, value, false)
-	// One request in four carries a method override header, so check's refusal of one under
-	// a kind or a profile with an allow list is reached from both sides. The draw is the last
-	// one of the case, after the query and the body: a byte string that has run out answers 0
-	// here, and 0 adds nothing.
+	// One request in four carries a method override header, and one in four a method override
+	// parameter in its query, before or after what the query held, so check's refusal of each
+	// under a kind or a profile with an allow list is reached from both sides. These draws are
+	// the last of the case: a byte string that has run out answers 0 here, and 0 adds nothing.
 	if s.u8()%4 == 1 {
 		r.Headers = append(r.Headers, [2]string{s.pick(overridePool), s.compose(g, value, false)})
+	}
+	switch s.u8() % 8 {
+	case 1:
+		r.Query = s.pick(methodParameterPool) + "&" + r.Query
+	case 2:
+		r.Query += "&" + s.pick(methodParameterPool)
 	}
 	return wireCase{Rules: rules, Grant: g, Value: value, Request: r}
 }

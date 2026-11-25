@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -613,9 +613,7 @@
+@@ -640,9 +640,7 @@
  	out := *r
  	out.Headers = make([][2]string, 0, len(r.Headers))
  	for _, h := range r.Headers {

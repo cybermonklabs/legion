@@ -1,18 +1,18 @@
-# go-encoded-slash: check drops the refusal of a path the command sent with "%2F" or "%2f", so
-# an allow prefix bounds the decoded path while a service may read the escape as a byte of one
-# segment. Caught by the comparison fuzz test: the model still answers "path has an encoded
-# slash". Applied with patch -p1 from a copy.
+# go-encoded-slash: check drops the refusal of a path the command sent with "%2F" or "%2f" under
+# an allow list, so an allow prefix bounds the decoded path while a service may read the escape
+# as a byte of one segment. Caught by the comparison fuzz test: the model still answers "path
+# has an encoded slash". Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -574,8 +574,8 @@
+@@ -597,8 +597,8 @@
  		return nil, "path has a dot segment"
- 	case hasEmptySegment(r.Path):
+ 	case listed && hasEmptySegment(r.Path):
  		return nil, "path has an empty segment"
--	case hasEncodedSlash(r.RawPath):
+-	case listed && hasEncodedSlash(r.RawPath):
 -		return nil, "path has an encoded slash"
-+	// MUTANT: a path sent with an encoded "/" is no longer refused, so a service that reads
-+	// "%2F" as a byte of one segment reads another path than the allow prefix held.
++	// MUTANT: a path sent with an encoded "/" is no longer refused under an allow list, so a
++	// service that reads "%2F" as a byte of one segment reads another path than the prefix held.
+ 	case listed && hasBackslash(r.RawPath):
+ 		return nil, "path has a backslash"
  	case !allowOK(k.Allow, r):
- 		return nil, "not allowed by rule"
- 	case !allowOK(b.Allow, r):

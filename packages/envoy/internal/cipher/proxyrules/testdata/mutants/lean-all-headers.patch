@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -423,8 +423,9 @@
+@@ -450,8 +450,9 @@
  /-- A header the rewrite keeps: every one but `Cipher-Repository`, in any case spelling. -/
  def keepHeader (h : String × String) : Bool := lowerAscii h.1 != cipherRepositoryHeader
  

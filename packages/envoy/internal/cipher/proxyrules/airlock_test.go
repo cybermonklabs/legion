@@ -241,7 +241,10 @@ func TestCheckKind(t *testing.T) {
 		edit func(*Kind)
 		want []string
 	}{
-		{"no ways", func(k *Kind) { k.Ways = nil }, []string{"ways names no way", "swap, mint, sign, exchange, app-token, dpop"}},
+		{"no ways", func(k *Kind) { k.Ways = nil }, []string{"ways names no way", "swap, mint, sign, exchange, dpop"}},
+		// No path of the proxy takes an App's JSON Web Token in a call, so a kind may not say
+		// its credential goes in that way.
+		{"app-token, which no path of the proxy takes", func(k *Kind) { k.Ways = []string{WayMint, "app-token"} }, []string{`ways names "app-token", which is not one of swap, mint, sign, exchange, dpop`}},
 		{"an empty way list", func(k *Kind) { k.Ways = []string{} }, []string{"ways names no way"}},
 		{"an unknown way", func(k *Kind) { k.Ways = []string{WayMint, "sniff"} }, []string{`ways names "sniff", which is not one of swap, mint`}},
 		{"a way in another case", func(k *Kind) { k.Ways = []string{"Mint"} }, []string{`ways names "Mint", which is not one of`}},
@@ -294,7 +297,7 @@ func TestCheckKind(t *testing.T) {
 
 // TestTheRulesLookups holds the lookups the proxy and the release read the rules by: a name's
 // binding, the kind it is decided under (its inline rule, or the kind it names), its hosts, and
-// every host the rules bind, each once in the order first named.
+// the headers a kind's credential goes into.
 func TestTheRulesLookups(t *testing.T) {
 	if b := validRules.Lookup("GH"); b == nil || b.Kind != "github" {
 		t.Errorf("Lookup(GH) = %+v, want the binding of kind github", b)
@@ -316,12 +319,6 @@ func TestTheRulesLookups(t *testing.T) {
 	}
 	if got := validRules.HostsOf("UNKNOWN"); got != nil {
 		t.Errorf("HostsOf(UNKNOWN) = %q, want nil", got)
-	}
-	rules := validRules
-	rules.Kinds = append(append([]Kind(nil), rules.Kinds...), Kind{Name: "again", Hosts: []string{"example.com", "api.github.com", "new.example.com"}})
-	want := []string{"api.github.com", "*.githubusercontent.com", "example.com", "sealed.example.com", "new.example.com", "dispatch.test"}
-	if got := rules.AllHosts(); !reflect.DeepEqual(got, want) {
-		t.Errorf("AllHosts = %q, want %q", got, want)
 	}
 	if got := (Kind{}).HeaderNames(); !reflect.DeepEqual(got, []string{"authorization"}) {
 		t.Errorf("HeaderNames of a kind with no headers = %q, want the default", got)
@@ -704,55 +701,100 @@ func TestTheConnectPortAndTheDotSegmentRefusals(t *testing.T) {
 	})
 }
 
-// TestTheEmptySegmentAndTheEncodedSlashRefusals covers the two path rules beside the dot
-// segment: a path with two slashes in a row, which a reader that merges them reads as another
-// route, and a path the command sent with "/" percent-encoded, which the decoded path reads as
-// a separator and a service may read as a byte of one segment. Both are refused whatever the
-// allow lists say, a kind with none included, and above them.
-func TestTheEmptySegmentAndTheEncodedSlashRefusals(t *testing.T) {
-	decide := func(t *testing.T, anyPath bool, path, rawPath string) string {
+// TestThePathRulesUnderAnAllowList covers the three path rules beside the dot segment: a path
+// with two slashes in a row, which a reader that merges them reads as another route; a path the
+// command sent with "/" percent-encoded, which the decoded path reads as a separator and a service
+// may read as a byte of one segment; and a path the command sent with a "\" in either spelling,
+// which a reader may take for a "/". Each is refused when the kind or the profile has an allow
+// list, and above those lists. With neither list every path is allowed already, so each is
+// carried: real clients send such paths, Cloud Storage's JSON API among them, which names the
+// object dir/obj "dir%2Fobj".
+func TestThePathRulesUnderAnAllowList(t *testing.T) {
+	anyPath := []Allow{{Method: "GET", PathPrefix: "/"}}
+	// decide answers the refusal of one GET of path, sent as rawPath, with the kind's allow and
+	// the profile's set as given.
+	decide := func(t *testing.T, kindAllow, profileAllow []Allow, path, rawPath string) string {
 		t.Helper()
 		rules, r := decideRules(), decideRequest()
-		if anyPath {
-			rules.Kinds[0].Allow = nil
-		}
+		rules.Kinds[0].Allow, rules.Names[0].Allow = kindAllow, profileAllow
 		r.Path, r.RawPath = path, rawPath
 		return decided(t, rules, decideGrant(), decideValue, r)
+	}
+	const (
+		empty     = "path has an empty segment"
+		encoded   = "path has an encoded slash"
+		backslash = "path has a backslash"
+		dot       = "path has a dot segment"
+	)
+	lists := []struct {
+		name          string
+		kind, profile []Allow
+	}{
+		{"under the kind's allow", anyPath, nil},
+		{"under the profile's allow", nil, anyPath},
+		{"under both", anyPath, anyPath},
 	}
 	for _, c := range []struct {
 		name          string
 		path, rawPath string
-		want          string
+		want          string // the refusal under an allow list
 	}{
-		{"an empty segment", "/a//b", "/a//b", "path has an empty segment"},
-		{"an empty segment at the start", "//v1/things", "//v1/things", "path has an empty segment"},
-		{"the path of two slashes", "//", "//", "path has an empty segment"},
-		{"an empty segment inside the prefix", "/v1//things", "/v1//things", "path has an empty segment"},
+		{"an empty segment", "/a//b", "/a//b", empty},
+		{"an empty segment at the start", "//v1/things", "//v1/things", empty},
+		{"the path of two slashes", "//", "//", empty},
+		{"an empty segment at the end", "/v1/things//", "/v1/things//", empty},
 		{"a trailing slash is no empty segment", "/v1/things/", "/v1/things/", ""},
-		{"an encoded slash, upper case", "/a/b", "/a%2Fb", "path has an encoded slash"},
-		{"an encoded slash, lower case", "/a/b", "/a%2fb", "path has an encoded slash"},
-		{"an encoded slash at the end", "/v1/things/", "/v1/things%2F", "path has an encoded slash"},
+		{"Cloud Storage's object dir/obj", "/storage/v1/b/b/o/dir/obj", "/storage/v1/b/b/o/dir%2Fobj", encoded},
+		{"an encoded slash, lower case", "/a/b", "/a%2fb", encoded},
+		{"an encoded slash at the end", "/v1/things/", "/v1/things%2F", encoded},
 		{"an encoded percent before 2F is no encoded slash", "/v1/%2Fthings", "/v1/%252Fthings", ""},
 		{"a cut-off escape is no encoded slash", "/v1/things", "/v1/things%2", ""},
 		{"an encoded slash in the decoded path alone is not read", "/v1/%2Fthings", "/v1/things", ""},
-		{"the dot segment is read before the empty segment", "/v1/..//x", "/v1/..//x", "path has a dot segment"},
-		{"the empty segment is read before the encoded slash", "/v1//x", "/v1/%2F/x", "path has an empty segment"},
+		{"a literal backslash", `/v1\things`, `/v1\things`, backslash},
+		{"an encoded backslash that walks out of /v1/", `/v1/x\..\..\admin`, "/v1/x%5C..%5C..%5Cadmin", backslash},
+		{"an encoded backslash, lower case", `/a\b`, "/a%5cb", backslash},
+		{"an encoded percent before 5C is no backslash", "/a%5Cb", "/a%255Cb", ""},
+		{"a backslash in the decoded path alone is not read", `/a\b`, "/a/b", ""},
+		{"the dot segment is read first, and with no list too", "/v1/..//x", "/v1/..//x", dot},
+		{"the empty segment is read before the encoded slash", "/v1//x", "/v1/%2F/x", empty},
+		{"the encoded slash is read before the backslash", "/v1/x/y", "/v1/x%2F%5Cy", encoded},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := decide(t, true, c.path, c.rawPath); got != c.want {
-				t.Errorf("Decide on %q (sent as %q) with no allow list = %q, want %q", c.path, c.rawPath, got, c.want)
+			for _, l := range lists {
+				if got := decide(t, l.kind, l.profile, c.path, c.rawPath); got != c.want {
+					t.Errorf("%s, Decide on %q (sent as %q) = %q, want %q", l.name, c.path, c.rawPath, got, c.want)
+				}
+			}
+			// With neither list only the dot segment, which no client means, is refused.
+			want := ""
+			if c.want == dot {
+				want = dot
+			}
+			if got := decide(t, nil, nil, c.path, c.rawPath); got != want {
+				t.Errorf("with no allow list, Decide on %q (sent as %q) = %q, want %q", c.path, c.rawPath, got, want)
 			}
 		})
 	}
-	t.Run("both are read before the allow list", func(t *testing.T) {
-		// "/v1//things" is inside the "/v1/" prefix as written; "/v1/things" sent as
-		// "/v1%2Fthings" is too, decoded. Each is refused for its path, not let through by the
-		// rule.
-		if got := decide(t, false, "/v1//things", "/v1//things"); got != "path has an empty segment" {
-			t.Errorf("Decide = %q, want %q", got, "path has an empty segment")
+	t.Run("each is read before the allow list", func(t *testing.T) {
+		// Each path is inside the kind's "/v1/" prefix as it is written, or decoded, and is
+		// refused for its path rather than let through by the rule.
+		for _, c := range []struct{ path, rawPath, want string }{
+			{"/v1//things", "/v1//things", empty},
+			{"/v1/things", "/v1%2Fthings", encoded},
+			{`/v1/a\b`, "/v1/a%5Cb", backslash},
+		} {
+			if got := decide(t, []Allow{{Method: "GET", PathPrefix: "/v1/"}}, nil, c.path, c.rawPath); got != c.want {
+				t.Errorf("Decide on %q (sent as %q) = %q, want %q", c.path, c.rawPath, got, c.want)
+			}
 		}
-		if got := decide(t, false, "/v1/things", "/v1%2Fthings"); got != "path has an encoded slash" {
-			t.Errorf("Decide = %q, want %q", got, "path has an encoded slash")
+	})
+	t.Run("with no list the path is forwarded as it was sent", func(t *testing.T) {
+		rules, r := decideRules(), decideRequest()
+		rules.Kinds[0].Allow = nil
+		r.Path, r.RawPath = "/storage/v1/b/b/o/dir/obj", "/storage/v1/b/b/o/dir%2Fobj"
+		out := Rewrite(rules, decideGrant(), decideValue, r)
+		if out == nil || out.Path != r.Path || out.RawPath != r.RawPath {
+			t.Fatalf("Rewrite = %+v, want the request with its path and raw path as they came", out)
 		}
 	})
 }
@@ -933,6 +975,73 @@ func TestTheMethodOverrideRefusal(t *testing.T) {
 		}
 		if got := decide(t, nil, []Allow{}, header); got != "not allowed by the profile's rule" {
 			t.Errorf("Decide = %q, want %q", got, "not allowed by the profile's rule")
+		}
+	})
+}
+
+// TestTheMethodOverrideParameterRefusal covers the refusal of a query parameter a service reads
+// the method from: "_method", in the cases and the encoding a client may send it in and wherever
+// it stands in the query, with or without a value; the near misses the whole-name comparison and
+// the split on "&" draw a line at; and the one shape that is not refused, a kind and a profile
+// with no allow list, which allow every method already.
+func TestTheMethodOverrideParameterRefusal(t *testing.T) {
+	const refused = "request carries a method override parameter"
+	rows := []Allow{{Method: "GET", PathPrefix: "/v1/"}}
+	// decide answers the refusal of one request with the query given, "" for an allowed one,
+	// with the kind's allow list and the profile's set as given.
+	decide := func(t *testing.T, kindAllow, profileAllow []Allow, query string) string {
+		t.Helper()
+		rules, r := decideRules(), decideRequest()
+		rules.Kinds[0].Allow, rules.Names[0].Allow = kindAllow, profileAllow
+		r.Query = query
+		return decided(t, rules, decideGrant(), decideValue, r)
+	}
+	for _, c := range []struct{ name, query, want string }{
+		{"_method", "_method=DELETE", refused},
+		{"_method after another parameter", "page=2&_method=PUT", refused},
+		{"_method before another parameter", "_method=PUT&page=2", refused},
+		{"_method with no value", "page=2&_method", refused},
+		{"_method with an empty value", "_method=", refused},
+		{"_method naming the request's own method", "_method=GET", refused},
+		{"_METHOD, every letter folded", "_METHOD=PUT", refused},
+		{"_method with its _ percent-encoded", "%5Fmethod=PUT", refused},
+		{"_method with its _ percent-encoded in lower case", "%5fmethod=PUT", refused},
+		// Near misses: the name is compared whole, and only the text before its first "=".
+		{"a longer name that ends like it", "x_method=PUT", ""},
+		{"a longer name that starts like it", "_methods=PUT", ""},
+		{"_method as a value", "a=_method", ""},
+		{"_method after a semicolon, which the query is not split on", "a=1;_method=PUT", ""},
+		{"a name with a space before it", "page=2& _method=PUT", ""},
+		{"no query at all", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, l := range []struct {
+				name          string
+				kind, profile []Allow
+			}{{"under the kind's allow", rows, nil}, {"under the profile's allow", nil, rows}, {"under both", rows, rows}} {
+				if got := decide(t, l.kind, l.profile, c.query); got != c.want {
+					t.Errorf("%s, Decide with query %q = %q, want %q", l.name, c.query, got, c.want)
+				}
+			}
+			if got := decide(t, nil, nil, c.query); got != "" {
+				t.Errorf("with no allow list, Decide with query %q = %q, want the request allowed", c.query, got)
+			}
+		})
+	}
+	t.Run("it is read after the allow lists and the override header, before the value scan", func(t *testing.T) {
+		rules, r := decideRules(), decideRequest()
+		r.Query, r.Method = "_method=DELETE", "POST"
+		if got := decided(t, rules, decideGrant(), decideValue, r); got != "not allowed by rule" {
+			t.Errorf("a POST the kind does not allow: Decide = %q, want %q", got, "not allowed by rule")
+		}
+		r.Method = "GET"
+		r.Headers = append(r.Headers, [2]string{"X-HTTP-Method-Override", "DELETE"})
+		if got := decided(t, rules, decideGrant(), decideValue, r); got != "request carries a method override header" {
+			t.Errorf("with the header too: Decide = %q, want the header named", got)
+		}
+		r.Headers = [][2]string{{"Authorization", "Bearer " + decideValue}}
+		if got := decided(t, rules, decideGrant(), decideValue, r); got != refused {
+			t.Errorf("with the value carried too: Decide = %q, want %q", got, refused)
 		}
 	})
 }

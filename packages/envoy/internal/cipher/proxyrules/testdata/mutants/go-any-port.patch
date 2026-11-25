@@ -4,8 +4,8 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -564,8 +564,8 @@
- 		return nil, "secret not behind airlock"
+@@ -587,8 +587,8 @@
+ 	switch {
  	case !HostBound(k.Hosts, r.ConnectHost):
  		return nil, "host not bound"
 -	case r.ConnectPort != 443:

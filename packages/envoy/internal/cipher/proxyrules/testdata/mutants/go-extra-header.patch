@@ -4,7 +4,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -609,7 +609,8 @@
+@@ -636,7 +636,8 @@
  	if k == nil {
  		return nil
  	}

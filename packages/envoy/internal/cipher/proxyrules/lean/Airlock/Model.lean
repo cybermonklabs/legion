@@ -51,7 +51,8 @@ structure Kind where
 /-- One name behind the proxy: the kind it is decided under, or an inline rule (a binding
 names one or holds the other, never both), and its profile's own `allow`, `none` when the
 profile has none. `way` is the way its secret's type takes into a call, no part of the
-decision. -/
+decision. The inline rule is a transitional `dpop` proxy block's; it goes when a kind with the
+`dpop` way replaces the profiles file's `dpop` blocks. -/
 structure Binding where
   name : String
   kind : String
@@ -81,7 +82,7 @@ structure Request where
   method : String
   path : String
   /-- The path as the command sent it, percent-encoding kept: the one form that tells an
-  encoded `/` from a `/`. -/
+  encoded `/` or `\` from a `/`. -/
   rawPath : String
   headers : List (String × String)
   query : String
@@ -269,6 +270,19 @@ could have named. -/
 def hasMethodOverride (r : Request) : Bool :=
   r.headers.any fun h => methodOverrideHeaders.contains (lowerAscii h.1)
 
+/-- The query parameter names a service may read the request's method from: Laravel, Symfony
+and Express's method-override middleware read `_method`, and `%5fmethod` is that name with its
+`_` percent-encoded. Held ASCII-lower-cased, as each parameter's name is compared. -/
+def methodOverrideParameters : List String := ["_method", "%5fmethod"]
+
+/-- The query, as the command sent it, holds a parameter of one of those names, whatever its
+value or none: the query split on `"&"`, a part's name its text before its first `"="`, or the
+whole part when it has none. `String.splitOn "&"` answers as Go's `strings.Split` does, for the
+reason `hasDotSegment` gives. -/
+def hasMethodOverrideParameter (query : String) : Bool :=
+  (query.splitOn "&").any fun part =>
+    methodOverrideParameters.contains (lowerAscii (String.ofList (part.toList.takeWhile (· != '='))))
+
 /-- The path holds a segment that is `.` or `..`: the path split on `"/"`, each segment
 compared whole, so `"/v1/../admin"` and `"/a/./b"` hold one while `"/v1/..foo"` and
 `"/v1/.../x"` hold none.
@@ -280,13 +294,18 @@ def hasDotSegment (path : String) : Bool :=
   (path.splitOn "/").any fun s => s == "." || s == ".."
 
 /-- The path holds an empty segment: two slashes in a row. A reader that merges them reads
-`"/a//b"` as `"/a/b"` and one that does not reads another route, so the airlock carries
-neither. A trailing slash is no empty segment here. -/
+`"/a//b"` as `"/a/b"` and one that does not reads another route, so under an `allow` list the
+airlock carries neither. A trailing slash is no empty segment here. -/
 def hasEmptySegment (path : String) : Bool := contains path "//"
 
 /-- The path as the command sent it holds a percent-encoded `/`, `%2F` or `%2f`: the decoded
 path reads it as a separator and a service may read it as a byte of one segment. -/
 def hasEncodedSlash (rawPath : String) : Bool := contains (lowerAscii rawPath) "%2f"
+
+/-- The path as the command sent it holds a `\`, literal or percent-encoded (`%5C` or `%5c`): a
+reader that takes `\` for `/` reads another path than the literal one an `allow` prefix holds. -/
+def hasBackslash (rawPath : String) : Bool :=
+  contains rawPath "\\" || contains (lowerAscii rawPath) "%5c"
 
 def namesUnique : List String → Bool
   | [] => true
@@ -352,6 +371,10 @@ def validate (rules : Rules) : Bool :=
 
 /-! ## Decision and rewrite -/
 
+/-- The kind or the binding has an `allow` list: the rules that keep a list meaning what it
+says are read under one. -/
+def listed (k : Kind) (b : Binding) : Bool := k.allow.isSome || b.allow.isSome
+
 /-- The one decision both `decideReq` and `rewriteReq` take: the binding and the kind the
 request is carried under, or the reason it may not be. The reasons and the order they are
 reported in are the contract with Go's `check`.
@@ -365,21 +388,23 @@ name and the Host header - carries no port, so 443 is the only port the rules sp
 and another port of one name is another service. It is read above the two name comparisons
 because the port is part of what the CONNECT named.
 
-A path that holds a dot segment, an empty segment or a percent-encoded `/` is refused
-whatever the `allow` lists say, a kind with no `allow` included: an `allow` prefix bounds the
-path the service will read, and a reader that resolves dot segments (RFC 3986 section
-5.2.4), merges slashes or decodes `%2F` first reads another path than the literal one the
-prefix holds. A path two readers resolve differently is a path neither can be held to, so it
-is refused rather than resolved here. They are read directly above the `allow` tests because
-they are what makes those rules mean what they say.
+A path that holds a dot segment is refused for every kind: a reader that resolves it (RFC 3986
+section 5.2.4) reads another path than the literal one. A path that holds an empty segment, or
+a raw path that holds a percent-encoded `/` or a `\` in any spelling, is refused when, and only
+when, the kind or the profile has an `allow` list (`listed`): an `allow` prefix bounds the path
+the service will read, and a reader that merges slashes, decodes `%2F` or takes `\` for `/`
+first reads another path than the literal one the prefix holds. With neither list every path
+of the kind's hosts is allowed already, so such a path escapes no prefix. The path rules are
+read directly above the `allow` tests because they are what makes those rules mean what they
+say.
 
-A request carrying a method override header is refused when, and only when, the kind or the
-profile has an `allow` list. `allowOK` compares the method on the request line, while a
-service that reads `X-HTTP-Method-Override` (Google's APIs do) or one of its two other
-spellings acts on the method that header names, so a list allowing `{POST, /prefix}` would
-carry the value on a PATCH or a DELETE under that prefix. With neither list every method is
-allowed already, so such a header takes nothing away and is not refused. It is read directly
-below the `allow` tests.
+A request carrying a method override header, or a method override parameter in its query, is
+refused when, and only when, the kind or the profile has an `allow` list. `allowOK` compares the
+method on the request line, while a service that reads `X-HTTP-Method-Override` (Google's APIs
+do), one of its two other spellings, or a `_method` parameter acts on the method that names, so
+a list allowing `{POST, /prefix}` would carry the value on a PATCH or a DELETE under that
+prefix. With neither list every method is allowed already, so they take nothing away and are
+not refused. They are read directly below the `allow` tests.
 
 The last test reads **every** header of the request, not only the ones the kind names, and
 no way is exempt: a request that already carries the real value learnt it somewhere other
@@ -399,12 +424,15 @@ def check (rules : Rules) (g : Grant) (value : String) (r : Request) :
       else if r.sni != r.connectHost then .error "sni mismatch"
       else if r.hostHeader != r.connectHost then .error "host header mismatch"
       else if hasDotSegment r.path then .error "path has a dot segment"
-      else if hasEmptySegment r.path then .error "path has an empty segment"
-      else if hasEncodedSlash r.rawPath then .error "path has an encoded slash"
+      else if listed k b && hasEmptySegment r.path then .error "path has an empty segment"
+      else if listed k b && hasEncodedSlash r.rawPath then .error "path has an encoded slash"
+      else if listed k b && hasBackslash r.rawPath then .error "path has a backslash"
       else if !allowOK k.allow r then .error "not allowed by rule"
       else if !allowOK b.allow r then .error "not allowed by the profile's rule"
-      else if (k.allow.isSome || b.allow.isSome) && hasMethodOverride r then
+      else if listed k b && hasMethodOverride r then
         .error "request carries a method override header"
+      else if listed k b && hasMethodOverrideParameter r.query then
+        .error "request carries a method override parameter"
       else if r.headers.any (fun h => carries value h.2) then
         .error "request already carries the value"
       else .ok (b, k)
@@ -414,10 +442,9 @@ def decideReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Decis
   | .ok _ => .allow
   | .error e => .refuse e
 
-/-- The header that names the repository a GitHub request is for, which the broker reads to
-mint a token for that one repository. The proxy removes it from every request it reads, so no
-service ever sees what the broker read. ASCII-lower-cased, as every header name here is
-compared. -/
+/-- The request header a command names a repository in, for the broker to mint a GitHub token
+for that one repository. The proxy removes it from every request it reads, so no service ever
+sees it. ASCII-lower-cased, as every header name here is compared. -/
 def cipherRepositoryHeader : String := "cipher-repository"
 
 /-- A header the rewrite keeps: every one but `Cipher-Repository`, in any case spelling. -/

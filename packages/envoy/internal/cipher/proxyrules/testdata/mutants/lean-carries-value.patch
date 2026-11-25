@@ -4,10 +4,10 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -405,8 +405,7 @@
-       else if !allowOK b.allow r then .error "not allowed by the profile's rule"
-       else if (k.allow.isSome || b.allow.isSome) && hasMethodOverride r then
+@@ -433,8 +433,7 @@
          .error "request carries a method override header"
+       else if listed k b && hasMethodOverrideParameter r.query then
+         .error "request carries a method override parameter"
 -      else if r.headers.any (fun h => carries value h.2) then
 -        .error "request already carries the value"
 +      -- MUTANT: a request that already carries the real value is forwarded all the same.

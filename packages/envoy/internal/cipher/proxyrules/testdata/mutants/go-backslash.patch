@@ -1,0 +1,18 @@
+# go-backslash: check drops the refusal of a path the command sent with a "\", literal or as
+# "%5C" or "%5c", under an allow list, so an allow prefix bounds the path as it is written while
+# a service that takes "\" for "/" reads another. Caught by the comparison fuzz test: the model
+# still answers "path has a backslash". Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -599,8 +599,8 @@
+ 		return nil, "path has an empty segment"
+ 	case listed && hasEncodedSlash(r.RawPath):
+ 		return nil, "path has an encoded slash"
+-	case listed && hasBackslash(r.RawPath):
+-		return nil, "path has a backslash"
++	// MUTANT: a path sent with a "\" is no longer refused under an allow list, so a service
++	// that takes "\" for "/" reads "/v1/x\..\..\admin" as /admin.
+ 	case !allowOK(k.Allow, r):
+ 		return nil, "not allowed by rule"
+ 	case !allowOK(b.Allow, r):

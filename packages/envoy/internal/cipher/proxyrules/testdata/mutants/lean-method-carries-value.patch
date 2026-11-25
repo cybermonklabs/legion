@@ -7,7 +7,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -428,8 +428,10 @@
+@@ -455,8 +455,10 @@
  
  def rewriteReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Option Request :=
    match check rules g value r with

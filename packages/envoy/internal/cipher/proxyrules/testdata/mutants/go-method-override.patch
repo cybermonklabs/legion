@@ -6,14 +6,14 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -580,8 +580,8 @@
+@@ -605,8 +605,8 @@
  		return nil, "not allowed by rule"
  	case !allowOK(b.Allow, r):
  		return nil, "not allowed by the profile's rule"
--	case (k.Allow != nil || b.Allow != nil) && hasMethodOverride(r):
+-	case listed && hasMethodOverride(r):
 -		return nil, "request carries a method override header"
 +	// MUTANT: an allow of {GET, /prefix} alone now carries the value on a request whose
 +	// X-HTTP-Method-Override says DELETE, which the service acts on.
+ 	case listed && hasMethodOverrideParameter(r.Query):
+ 		return nil, "request carries a method override parameter"
  	}
- 	// A request that already carries the real value learnt it somewhere other than this
- 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

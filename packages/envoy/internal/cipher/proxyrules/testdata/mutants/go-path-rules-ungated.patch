@@ -1,0 +1,25 @@
+# go-path-rules-ungated: check reads the empty-segment, encoded-slash and backslash rules for
+# every kind, a kind with no allow list included, where they bound no prefix and refuse paths
+# real clients send (Cloud Storage's "dir%2Fobj"). Caught by the comparison fuzz test: the
+# model carries such a path when neither the kind nor the profile has an allow list. Applied with
+# patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/airlock.go
++++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
+@@ -595,11 +595,13 @@
+ 		return nil, "host header mismatch"
+ 	case hasDotSegment(r.Path):
+ 		return nil, "path has a dot segment"
+-	case listed && hasEmptySegment(r.Path):
++	// MUTANT: the three path rules are read for every kind, as if each had an allow list, so
++	// a client of a kind with none that sends "//", "%2F" or "\" is refused.
++	case hasEmptySegment(r.Path):
+ 		return nil, "path has an empty segment"
+-	case listed && hasEncodedSlash(r.RawPath):
++	case hasEncodedSlash(r.RawPath):
+ 		return nil, "path has an encoded slash"
+-	case listed && hasBackslash(r.RawPath):
++	case hasBackslash(r.RawPath):
+ 		return nil, "path has a backslash"
+ 	case !allowOK(k.Allow, r):
+ 		return nil, "not allowed by rule"

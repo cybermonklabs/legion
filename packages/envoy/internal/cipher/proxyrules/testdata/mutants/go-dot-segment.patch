@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -570,8 +570,8 @@
+@@ -593,8 +593,8 @@
  		return nil, "sni mismatch"
  	case r.HostHeader != r.ConnectHost:
  		return nil, "host header mismatch"
@@ -13,6 +13,6 @@
 -		return nil, "path has a dot segment"
 +	// MUTANT: a path that walks out of an allow prefix through a dot segment is no longer
 +	// refused, so "/v1/../admin" passes a "/v1/" prefix and reaches /admin.
- 	case hasEmptySegment(r.Path):
+ 	case listed && hasEmptySegment(r.Path):
  		return nil, "path has an empty segment"
- 	case hasEncodedSlash(r.RawPath):
+ 	case listed && hasEncodedSlash(r.RawPath):
