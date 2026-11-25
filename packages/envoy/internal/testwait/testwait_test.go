@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -18,17 +18,135 @@ import (
 )
 
 // childEnv tells the re-executed test binary to run the helpers below, which skip in an ordinary
-// run. One gives up on purpose under a short -timeout and the other reads the deadline under
-// -timeout 0, and the parent names each flag, so each runs in a binary of its own.
+// run. Some give up on purpose and one reads the deadline and waits under -timeout 0, and the
+// parent names each flag, so each runs in a binary of its own.
 const childEnv = "TESTWAIT_CHILD"
 
-// childTimeout is the -timeout the parent gives the child that gives up: its waits give up 5 s
-// into the run, 30 s before its deadline.
-const childTimeout = "35s"
+// stepClock is the clock a child of these tests gives the waits here (clock). Its time moves only
+// when the child sets now, or when a timer a wait armed fires, which moves it to the timer's moment
+// when that is later. A timer fires only once a wait is blocked waiting on it (fireOnceWaited), so
+// a wait that gives up without waiting never gets its tick. A wait's margin thus passes at a step
+// the child takes or at the wait's own step, never at a moment a loaded machine moves, and the
+// child reads which timers its waits armed and whether each wait took its timer's tick. Only one
+// wait of the child's runs at a time.
+type stepClock struct {
+	now    time.Time
+	timers []*stepTimer
+}
 
-// receiveChildTimeout is the -timeout TestReceiveGivesUpAtTheMargin gives its child: its first
-// Receive gives up 15 s into the run, and 30 s are left for the Receives after it.
-const receiveChildTimeout = "45s"
+// stepTimer is a timer a wait armed on a stepClock: the moment it was armed for, its channel, and
+// whether it fired. quit, closed by the timer's stop, ends the goroutine that would fire it.
+type stepTimer struct {
+	at    time.Time
+	fired chan time.Time
+	sent  bool
+	quit  chan struct{}
+}
+
+func (c *stepClock) Now() time.Time { return c.now }
+
+func (c *stepClock) Timer(at time.Time) (<-chan time.Time, func() bool) {
+	timer := &stepTimer{at: at, fired: make(chan time.Time, 1), quit: make(chan struct{})}
+	c.timers = append(c.timers, timer)
+	go c.fireOnceWaited(timer)
+	return timer.fired, func() bool { close(timer.quit); return false }
+}
+
+// fireOnceWaited fires timer, moving c's time to its moment when that is later, once a goroutine of
+// this binary is blocked in a wait's own select on its timer, which is the wait that armed it: the
+// child runs one wait at a time. It asks at the package's pace until then, and ends without firing
+// once the timer is stopped: a wait that returned without waiting has stopped it. It reads the stop
+// again after it found a wait blocked, so a timer whose wait returned while it read the stacks
+// does not fire for the next wait.
+func (c *stepClock) fireOnceWaited(timer *stepTimer) {
+	for {
+		select {
+		case <-timer.quit:
+			return
+		default:
+		}
+		if blockedInAWait() {
+			select {
+			case <-timer.quit:
+				return
+			default:
+			}
+			if timer.at.After(c.now) {
+				c.now = timer.at
+			}
+			timer.sent = true
+			timer.fired <- timer.at
+			return
+		}
+		time.Sleep(pace)
+	}
+}
+
+// waitFrames is how a goroutine's stack names the functions of this package that select on a
+// wait's timer (expiry): received, which Receive, ReceiveInHelper and so Returns wait in, then
+// Next, Span and Quiet, each after this package's path.
+var waitFrames = func() []string {
+	path := strings.TrimSuffix(runtime.FuncForPC(reflect.ValueOf(childGiveUpAt).Pointer()).Name(), "childGiveUpAt")
+	return []string{path + "received[", path + "Next[", path + "Span(", path + "Quiet["}
+}()
+
+// blockedInAWait reports whether a goroutine of this binary is blocked in a wait's select on its
+// timer: its state is a select, and one of waitFrames is a frame of its stack, the first or any
+// below it. runtime.Stack forces its own traceback level, so GOTRACEBACK cannot hide the frames; a
+// Go release that renamed a wait's frame or the select's state would, and then a child's timer
+// would never fire: the child's wait then runs into the child's alarm, which its parent gives at
+// childTimeout, and the parent fails naming it while the margin is left to it.
+func blockedInAWait() bool {
+	buffer := make([]byte, 1<<20)
+	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+		header, frames, _ := strings.Cut(stack, "\n")
+		if !strings.Contains(header, " [select") {
+			continue
+		}
+		for _, frame := range waitFrames {
+			if strings.Contains(frames, frame) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// armed is the moment of each timer the waits armed on c, in the order they armed them.
+func (c *stepClock) armed() []time.Time {
+	moments := make([]time.Time, 0, len(c.timers))
+	for _, timer := range c.timers {
+		moments = append(moments, timer.at)
+	}
+	return moments
+}
+
+// useStepClock gives the waits of this test binary a stepClock whose time is now, until t ends.
+func useStepClock(t *testing.T, now time.Time) *stepClock {
+	stepped := &stepClock{now: now}
+	clock = stepped
+	t.Cleanup(func() { clock = wallClock{} })
+	return stepped
+}
+
+// childGiveUpAt is the moment the waits of a child give up (GiveUpAt), failing t when the child has
+// no deadline: a child's -timeout is the one its parent gives it.
+func childGiveUpAt(t *testing.T) time.Time {
+	t.Helper()
+	end, bounded := GiveUpAt(t)
+	if !bounded {
+		t.Fatal("the child has no deadline: it needs the -timeout its parent gives it")
+	}
+	return end
+}
+
+// childTimeout is the -timeout a parent gives its child: what the parent's own deadline leaves less
+// the margin, so the parent has the margin to fail in when the child runs into its alarm, which only
+// a wait that never gives up does.
+func childTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	return Remaining(t, margin)
+}
 
 // A wait whose condition holds returns from its first question: it asks once and never sleeps
 // at the pace first.
@@ -147,9 +265,10 @@ func TestReceiveInHelperReturnsASentValueAndAClose(t *testing.T) {
 }
 
 // Returns waits for its function, run on a goroutine of its own, to return, and what the function
-// wrote is the caller's to read once it has. Under a short -timeout a function that never returns
-// fails the test naming what, 30 s before the deadline and before Go's alarm, with the same line on
-// stderr (TestTheWaitsGiveUpChild's "returns").
+// wrote is the caller's to read once it has. A function that never returns fails the test naming
+// what, at the margin before the deadline and before Go's alarm, with the same line on stderr: the
+// child (TestTheWaitsGiveUpChild's "returns") reads a clock it steps (stepClock), which reaches the
+// margin once the Receive that Returns waits in waits for its timer.
 func TestReturnsWaitsForItsFunctionAndFailsNamingOneThatNeverReturns(t *testing.T) {
 	release := make(chan struct{})
 	go close(release)
@@ -164,18 +283,20 @@ func TestReturnsWaitsForItsFunctionAndFailsNamingOneThatNeverReturns(t *testing.
 
 	// The child is waited for through Returns itself, and runs on Context, which ends it where that
 	// wait gives up, so this row cannot outlast its own binary's deadline.
-	child := exec.CommandContext(Context(t), os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$/^returns$", "-test.timeout="+childTimeout, "-test.v")
+	timeout := childTimeout(t)
+	child := exec.CommandContext(Context(t), os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$/^returns$", "-test.timeout="+timeout.String(), "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
 	var stdout, stderr bytes.Buffer
 	child.Stdout, child.Stderr = &stdout, &stderr
 	var ran error
-	Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	Returns(t, "the child under -timeout "+timeout.String()+" to exit", func() { ran = child.Run() })
 	if ran == nil {
 		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
 	}
 	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
 		t.Fatalf("the child's Returns ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
 	}
+	requireNoRace(t, stdout.String(), stderr.String())
 	line := "testwait: TestTheWaitsGiveUpChild/returns: gave up waiting for a function that never returns 30s before the test binary's deadline"
 	if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
 		t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
@@ -219,6 +340,39 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	}
 	if inMain, ok := mainGiveUpAt(); ok != bounded || !inMain.Equal(fromFlag) {
 		t.Fatalf("a wait in TestMain gives up at %v (%t), want where a testing.TB without Deadline does, %v (%t)", inMain, ok, fromFlag, bounded)
+	}
+}
+
+// lateBound is how long after a wall timer was armed the row below reads it as late. It is a
+// third of the margin every wait here leaves, so a timer late by more than it is later than any
+// scheduling a test of this package stands: the timer the row arms is due in 50 ms.
+const lateBound = margin / 3
+
+// The wall clock's timer fires at the moment it was armed for: not before it, and not lateBound
+// after it. The moment it sends is the moment it fired, not when this test reads it (time's
+// sendTime takes back how late the send is), so a timer that fired early reads early however late
+// the machine lets this test read it. Lateness is read as an order rather than a span: the row
+// loses only when lateBound's own timer, armed beside it, has come and the wall timer's channel
+// still holds nothing. A machine that stalls this test delays both timers alike and leaves the
+// wall timer's tick waiting, which the second read takes, so load fails no run.
+func TestTheWallClocksTimerFiresAtItsMoment(t *testing.T) {
+	at := time.Now().Add(5 * pace)
+	fired, stop := wallClock{}.Timer(at)
+	defer stop()
+	late := time.NewTimer(lateBound)
+	defer late.Stop()
+	var moment time.Time
+	select {
+	case moment = <-fired:
+	case <-late.C:
+		select {
+		case moment = <-fired:
+		default:
+			t.Fatalf("the wall clock's timer for %v had not fired %s after it was armed, which is %s past its moment", at, lateBound, lateBound-5*pace)
+		}
+	}
+	if moment.Before(at) {
+		t.Fatalf("the wall clock's timer for %v fired at %v, before its moment", at, moment)
 	}
 }
 
@@ -340,25 +494,25 @@ func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 	}
 }
 
-// Under a short -timeout every wait gives up 30 s before the deadline, before Go's alarm: it writes
-// its line to stderr and fails the test with the same text, which carries the wait's last reading
-// where it has one. A wait that starts once the margin has passed, a wait in a cleanup included,
-// asks once and fails, and so does one in a testing/synctest bubble (Bubble), whose clock starts
-// in 2000: it gives up at what was left of the test's deadline past the bubble's start, not at the
-// real clock's deadline, which the bubble's clock asking at the package's pace would reach only
-// decades on. The until wait's readings each carry their count and the child logs how many it
-// read, so the parent wants the last read to name that count: the reading it read last, whatever
-// pace the child's asks kept on a loaded machine.
+// Every wait gives up the margin before the test binary's deadline, before Go's alarm, and not
+// before the margin: it writes its line to stderr and fails the test with the same text, which
+// carries the wait's last reading where it has one. The child's waits read a clock the child moves
+// (stepClock): its Until's third reading reaches the margin, a nanosecond after its second, so
+// Until gives up at a step of the child, whenever the machine lets the child take it, and an Until
+// that gave up early names its second reading and reads twice, and fails this row by name. Every
+// wait after it begins at the margin, a wait in a cleanup included, asks once and fails. A wait in
+// a testing/synctest bubble (Bubble), whose clock starts in 2000, gives up at what was left of the
+// test's deadline past the bubble's start, less the margin, not at the real clock's deadline,
+// decades past the bubble's clock: the child moves the clock it reads to the bubble's start, then
+// past that moment, in steps of its own. The child ran under -timeout 35s before, so a child
+// stalled 5 s before its first wait gave up, or 30 s after it, failed this row on a loaded machine
+// (INFRA-3904).
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
-	stdout, stderr := runChildMeantToFail(t, "TestTheWaitsGiveUpChild", childTimeout)
-	asked := regexp.MustCompile(`the reading was asked (\d+) time\(s\)`).FindStringSubmatch(stdout)
-	if asked == nil {
-		t.Fatalf("the child logged no count of the until wait's readings; its output:\n%s", stdout)
-	}
+	stdout, stderr := runChildMeantToFail(t, "TestTheWaitsGiveUpChild")
 	name := "TestTheWaitsGiveUpChild/"
 	ending := " 30s before the test binary's deadline"
 	requireGaveUp(t, stdout, stderr, []string{
-		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + "; last read: reading " + asked[1],
+		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + `; last read: a later\nreading`,
 		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
 		"testwait: " + name + "next_on_an_empty_stream: gave up waiting for an item no one adds" + ending + "; last read: none",
 		"testwait: " + name + "next_past_unmatched_items: gave up waiting for an item that matches" + ending + `; last read: the latest\nitem`,
@@ -373,6 +527,11 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	if !strings.Contains(stdout, "the condition was asked 1 time(s)") {
 		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", stdout)
 	}
+	for _, row := range []string{"until_read_three_times", "armed_no_timer", "past_the_margin_armed_only_the_margin"} {
+		if !strings.Contains(stdout, "--- PASS: "+name+row+" (") {
+			t.Errorf("the child's row %s did not pass; its output:\n%s", row, stdout)
+		}
+	}
 }
 
 // Under -timeout 0 there is no deadline: a wait has no moment to give up at and no timer, in a
@@ -382,31 +541,65 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 // a value sent an hour after it began to wait, on a synctest bubble's clock, so no span of its own
 // shorter than that passes it. The child has no deadline, so a wait of its that never returns, or a
 // Receive that never blocks and so holds the bubble's clock still, would hold it for good: the
-// child runs under Context, which ends it at this test's give-up, and the failure then shows the
-// child's output up to the wait it hung in, rather than go test's alarm with none of it.
+// child runs under this test's Context, which ends the margin before this binary's deadline, and a
+// child still running then is killed and fails the row by name, with the child's output up to the
+// wait it hung in, rather than go test's alarm with none of it.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
-	child := exec.CommandContext(Context(t), os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
+	ctx := Context(t)
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
 	output, err := child.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("the child under -timeout 0 was still running %s before this test's deadline, so it was killed: a wait in it never returned (%v)\n%s", margin, err, output)
+	}
 	if err != nil || !strings.Contains(string(output), "--- PASS: TestNoDeadlineChild (") {
 		t.Fatalf("under -timeout 0 the child did not pass: %v\n%s", err, output)
 	}
 }
 
-// TestTheWaitsGiveUpChild is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure,
-// run under -timeout 35s: its first wait gives up 5 s in, and every later one starts past the
-// margin. It runs only when the parent re-executes this binary.
+// TestTheWaitsGiveUpChild is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure. Its
+// waits read a stepClock an hour before the margin. Until reads three times: the first at that hour,
+// the second moves the clock to a nanosecond before the margin, the third to the margin, so Until
+// gives up on the third reading and names it ("a later\nreading"), and two rows then read that
+// there were exactly three and that Until armed no timer. An Until that gave up any time before the
+// margin, a nanosecond early or an hour, gives up on the second reading instead: it names that
+// reading, which the parent finds no line for, and the count row fails. Every later wait but the
+// last then begins at the margin, a wait in a cleanup included, and asks once, and a row reads that
+// each timer they armed was for the margin or before it (ReceiveInHelper's is TestMain's moment,
+// mainGiveUpAt, which is no later), fired once its wait waited on it, and had its tick taken, so
+// no wait waited for a later moment of its own. The last wait runs in a testing/synctest bubble
+// (Bubble), whose clock the child moves its stepClock to. It runs only when the parent re-executes
+// this binary.
 func TestTheWaitsGiveUpChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure")
 	}
+	end := childGiveUpAt(t)
+	stepped := useStepClock(t, end.Add(-time.Hour))
+	asks := 0
 	t.Run("until", func(t *testing.T) {
-		asks := 0
-		t.Cleanup(func() { t.Logf("the reading was asked %d time(s)", asks) })
 		Until(t, "a reading that never holds", func() (string, bool) {
 			asks++
-			return fmt.Sprintf("reading %d", asks), false
+			switch asks {
+			case 1:
+				return "the first reading", false
+			case 2:
+				stepped.now = end.Add(-time.Nanosecond)
+				return "a reading a nanosecond before the margin", false
+			}
+			stepped.now = end
+			return "a later\nreading", false
 		})
+	})
+	t.Run("until read three times", func(t *testing.T) {
+		if asks != 3 {
+			t.Errorf("Until read %d times, want 3: it gives up at the margin, which the third reading reaches, and not before", asks)
+		}
+	})
+	t.Run("armed no timer", func(t *testing.T) {
+		if armed := stepped.armed(); len(armed) != 0 {
+			t.Errorf("Until armed timers for %v, want none: it reads the clock", armed)
+		}
 	})
 	t.Run("eventually", func(t *testing.T) {
 		asks := 0
@@ -446,44 +639,77 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("past the margin armed only the margin", func(t *testing.T) {
+		for _, timer := range stepped.timers {
+			if timer.at.After(end) || !timer.sent || len(timer.fired) != 0 {
+				t.Errorf("a wait begun at the margin, %v, armed a timer for %v (fired %t, tick left untaken %t), want one for the margin or before it that fired once the wait waited on it and whose tick the wait took: past the margin a wait asks once", end, timer.at, timer.sent, len(timer.fired) != 0)
+			}
+		}
+	})
 	t.Run("until in a bubble", func(t *testing.T) {
+		// The bubble's clock starts in 2000, and the wait in the bubble reads the stepClock moved
+		// there: its first reading is at the bubble's start, and its second moves the clock by what
+		// was left of this child's give-up just before the bubble began. A wait in a bubble gives up
+		// the margin before what was left of the test's deadline as the bubble began, past the
+		// bubble's start (Bubble), which is no later, so the second reading is the last: a wait that
+		// gave up at the bubble's start names the first, and one that gave up at the real clock's
+		// moment, decades past the bubble's, reads a third time, which fails the row.
+		left := time.Until(end)
 		Bubble(t, func(t testing.TB) {
-			Until(t, "a reading in a bubble that never holds", func() (string, bool) { return "the bubble's reading", false })
+			began := time.Now()
+			stepped.now = began
+			asks := 0
+			Until(t, "a reading in a bubble that never holds", func() (string, bool) {
+				asks++
+				switch asks {
+				case 1:
+					return "the bubble's first reading", false
+				case 2:
+					stepped.now = began.Add(left)
+					return "the bubble's reading", false
+				}
+				t.Errorf("the wait in the bubble had not given up %v past the bubble's start, what was left of the child's give-up as the bubble began: it gives up at a moment past the bubble's", left)
+				return "a reading past the bubble's give-up", true
+			})
 		})
 	})
 }
 
 // Receive gives up when the margin passes and not before, and a Receive that starts past the
-// margin takes only a value already sent and otherwise fails at once. The child runs under
-// -timeout 45s, so the margin passes 15 s in: a Receive that waited a fixed span instead, of any
-// length, fails one of the two reads, and no load can make the right Receive fail either. A span
-// under 15 s gives up before the margin, which the child reads from the clock against GiveUpAt; a
-// span of 15 s or more, taken again by each of the three Receives after it, runs past the 45 s
-// deadline, which panics the child. Load only lengthens a step, and neither read is a span.
+// margin takes only a value already sent and otherwise fails at once. The child's Receives read a
+// clock the child moves (stepClock), which fires a timer they arm only once the Receive waits on
+// it, and the child reads which timers they armed: the Receive begun before the margin must arm
+// one, for the margin, and take its tick, and the Receives begun past the margin must arm theirs
+// for the margin too, which has come, so the one with no value fails at its first wait. A Receive
+// that armed its timer for a fixed span instead, of any length, arms it for another moment than
+// the margin, and a Receive that gave up before the margin never waited for its tick: each fails a
+// row by name, at whatever speed the machine runs the child. The child ran under -timeout 45s
+// before, so a child stalled 30 s after its first Receive gave up ran into its alarm on a loaded
+// machine (INFRA-3904).
 func TestReceiveGivesUpAtTheMargin(t *testing.T) {
-	stdout, stderr := runChildMeantToFail(t, "TestReceiveGivesUpAtTheMarginChild", receiveChildTimeout)
-	if strings.Contains(stdout, "before the margin, at ") {
-		t.Errorf("the child's first Receive gave up before the margin; its output:\n%s", stdout)
-	}
+	stdout, stderr := runChildMeantToFail(t, "TestReceiveGivesUpAtTheMarginChild")
 	name := "TestReceiveGivesUpAtTheMarginChild/"
 	ending := " 30s before the test binary's deadline"
-	want := []string{"testwait: " + name + "before_the_margin: gave up waiting for a send no one makes" + ending}
-	for i := 1; i <= 3; i++ {
-		want = append(want, fmt.Sprintf("testwait: %sno_value_past_the_margin_%d: gave up waiting for a later send no one makes%s", name, i, ending))
+	want := []string{
+		"testwait: " + name + "before_the_margin: gave up waiting for a send no one makes" + ending,
+		"testwait: " + name + "no_value_past_the_margin: gave up waiting for a later send no one makes" + ending,
 	}
 	requireGaveUp(t, stdout, stderr, want)
-	if !strings.Contains(stdout, "--- PASS: "+name+"a_value_past_the_margin (") {
-		t.Errorf("a Receive past the margin did not take the value already sent; the child's output:\n%s", stdout)
+	for _, row := range []string{"the_margin_ended_the_wait", "a_value_past_the_margin", "past_the_margin_armed_only_the_margin"} {
+		if !strings.Contains(stdout, "--- PASS: "+name+row+" (") {
+			t.Errorf("the child's row %s did not pass; its output:\n%s", row, stdout)
+		}
 	}
 }
 
 // runChildMeantToFail re-executes this binary to run only the test named child, under -timeout
-// timeout and with childEnv set, and returns what the child wrote to stdout and to stderr. It
-// fails t unless the child failed before its deadline: a child that passed, and one whose waits
-// ran into go test's alarm rather than giving up at the margin, fail t at once.
-func runChildMeantToFail(t *testing.T, child, timeout string) (stdout, stderr string) {
+// childTimeout and with childEnv set, and returns what the child wrote to stdout and to stderr. It
+// fails t unless the child failed before its deadline and with no report of the race detector: a
+// child that passed, one whose waits ran into go test's alarm rather than giving up at the margin,
+// and one the detector failed, fail t at once.
+func runChildMeantToFail(t *testing.T, child string) (stdout, stderr string) {
 	t.Helper()
-	run := exec.Command(os.Args[0], "-test.run=^"+child+"$", "-test.timeout="+timeout, "-test.v")
+	run := exec.Command(os.Args[0], "-test.run=^"+child+"$", "-test.timeout="+childTimeout(t).String(), "-test.v")
 	run.Env = append(os.Environ(), childEnv+"=1")
 	var out, errOut bytes.Buffer
 	run.Stdout, run.Stderr = &out, &errOut
@@ -493,6 +719,7 @@ func runChildMeantToFail(t *testing.T, child, timeout string) (stdout, stderr st
 	if strings.Contains(out.String(), "panic: test timed out") || strings.Contains(errOut.String(), "panic: test timed out") {
 		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", &out, &errOut)
 	}
+	requireNoRace(t, out.String(), errOut.String())
 	return out.String(), errOut.String()
 }
 
@@ -512,22 +739,40 @@ func requireGaveUp(t *testing.T, stdout, stderr string, want []string) {
 	}
 }
 
-// TestReceiveGivesUpAtTheMarginChild is the child of TestReceiveGivesUpAtTheMargin, run under
-// -timeout 45s. It runs only when the parent re-executes this binary.
+// requireNoRace fails t when a child's output holds a report of the race detector: a child meant
+// to fail fails whatever the detector finds, so its parent reads the report itself.
+func requireNoRace(t *testing.T, output ...string) {
+	t.Helper()
+	for _, text := range output {
+		if strings.Contains(text, "WARNING: DATA RACE") {
+			t.Fatalf("the child reported a data race:\n%s", text)
+		}
+	}
+}
+
+// TestReceiveGivesUpAtTheMarginChild is the child of TestReceiveGivesUpAtTheMargin. Its Receives
+// read a stepClock an hour before the margin: the first arms its timer, which fires once that
+// Receive waits on it and moves the clock to the moment it was armed for, so the Receives after it
+// begin past the margin when the first armed it for the margin. It runs only when the parent
+// re-executes this binary.
 func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestReceiveGivesUpAtTheMargin")
 	}
-	end, bounded := GiveUpAt(t)
-	if !bounded {
-		t.Fatal("the child has no deadline: it needs the -timeout its parent gives it")
-	}
+	end := childGiveUpAt(t)
+	stepped := useStepClock(t, end.Add(-time.Hour))
 	t.Run("before the margin", func(t *testing.T) {
 		Receive(t, "a send no one makes", make(chan int))
 	})
-	if gaveUp := time.Now(); gaveUp.Before(end) {
-		t.Errorf("the first Receive gave up %v before the margin, at %v", end.Sub(gaveUp), gaveUp)
-	}
+	t.Run("the margin ended the wait", func(t *testing.T) {
+		if armed := stepped.armed(); len(armed) != 1 || !armed[0].Equal(end) {
+			t.Fatalf("the Receive begun before the margin armed timers for %v, want one, for the margin at %v", armed, end)
+		}
+		if timer := stepped.timers[0]; !timer.sent || len(timer.fired) != 0 {
+			t.Errorf("the Receive begun before the margin gave up without waiting for its timer (fired %t, tick left untaken %t): it gave up before the margin at %v", timer.sent, len(timer.fired) != 0, end)
+		}
+	})
+	before := len(stepped.timers)
 	t.Run("a value past the margin", func(t *testing.T) {
 		ready := make(chan int, 1)
 		ready <- 7
@@ -535,11 +780,16 @@ func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 			t.Fatalf("Receive past the margin returned %d, want the 7 sent", got)
 		}
 	})
-	for i := 1; i <= 3; i++ {
-		t.Run(fmt.Sprintf("no value past the margin %d", i), func(t *testing.T) {
-			Receive(t, "a later send no one makes", make(chan int))
-		})
-	}
+	t.Run("no value past the margin", func(t *testing.T) {
+		Receive(t, "a later send no one makes", make(chan int))
+	})
+	t.Run("past the margin armed only the margin", func(t *testing.T) {
+		for _, at := range stepped.armed()[before:] {
+			if !at.Equal(end) {
+				t.Errorf("a Receive begun past the margin at %v armed its timer for %v, want the margin, which had come: past the margin a Receive asks once and waits for no later moment", end, at)
+			}
+		}
+	})
 }
 
 // TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0. Beside

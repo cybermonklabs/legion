@@ -11,9 +11,11 @@ import (
 
 // This file holds Remaining and Left, with main's bodies, for the tests of the Envoy module that
 // have not moved to the one wait of testwait.go yet: each takes a spare from its caller, which no
-// wait of testwait.go does. All but two of the files that call them are files this pull request
-// does not edit; the two it edits are internal/cipher/helper's lapse_test.go and server_test.go,
-// which take Remaining(t, 0) for a fake lease's expiry, a register's wait and a call's deadline.
+// wait of testwait.go does. All but three of the files that call them are files this pull request
+// does not edit; the three it edits are internal/cipher/helper's lapse_test.go and server_test.go,
+// which take Remaining(t, 0) for a fake lease's expiry, a register's wait and a call's deadline,
+// and this package's testwait_test.go, whose childTimeout gives a child test binary the time left
+// to its parent's give-up as the child's -timeout (main's #5401).
 
 // unbounded is Remaining's answer under -timeout 0, which sets no deadline: 1<<60 ns, about 36
 // years, a span no wait reaches that time.Now().Add and a timer still take.
