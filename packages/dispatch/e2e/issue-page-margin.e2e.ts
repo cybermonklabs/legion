@@ -236,17 +236,51 @@ async function threadSpots(seeded: MarginSeed): Promise<Spot[]> {
     [seeded.verificationArtifactId, seeded.verificationSlug],
     [seeded.planArtifactId, seeded.planSlug],
   ]);
+  // Each comment anchored to words of a typed block stores its inner paragraph's id in
+  // `anchor.block_id`, not the block's own id; the view draws the typed block's node.
   const roots = [
-    ...seeded.threadsS1.map((id, at) => ({ id, what: `thread ${at + 1} on statement S1` })),
-    ...seeded.threadsS2.map((id, at) => ({ id, what: `thread ${at + 1} on statement S2` })),
-    { id: seeded.agentComment, what: "the agent's comment" },
-    { id: seeded.resolvedThread, what: "the resolved thread" },
-    { id: seeded.checkComment, what: "the comment on the check" },
-    { id: seeded.planTaskComment, what: "the comment on the plan task" },
-    { id: seeded.decisionComment, what: "the comment on the decision" },
-    { id: seeded.pagedChildThread, what: "the comment on the 55th child" },
+    ...seeded.threadsS1.map((id, at) => ({
+      id,
+      node: blockNode(seeded.specSlug, seeded.statementS1),
+      what: `thread ${at + 1} on statement S1`,
+    })),
+    ...seeded.threadsS2.map((id, at) => ({
+      id,
+      node: blockNode(seeded.specSlug, seeded.statementS2),
+      what: `thread ${at + 1} on statement S2`,
+    })),
+    {
+      id: seeded.agentComment,
+      node: blockNode(seeded.specSlug, seeded.agentStatement),
+      what: "the agent's comment",
+    },
+    {
+      id: seeded.resolvedThread,
+      node: blockNode(seeded.specSlug, seeded.resolvedStatement),
+      what: "the resolved thread",
+    },
+    {
+      id: seeded.checkComment,
+      node: blockNode(seeded.verificationSlug, seeded.check),
+      what: "the comment on the check",
+    },
+    {
+      id: seeded.planTaskComment,
+      node: blockNode(seeded.planSlug, seeded.planTask),
+      what: "the comment on the plan task",
+    },
+    {
+      id: seeded.decisionComment,
+      node: blockNode(seeded.specSlug, seeded.decision),
+      what: "the comment on the decision",
+    },
+    {
+      id: seeded.pagedChildThread,
+      node: blockNode(seeded.specSlug, seeded.pagedChild55),
+      what: "the comment on the 55th child",
+    },
   ];
-  return roots.map(({ id, what }) => {
+  return roots.map(({ id, node, what }) => {
     const anchor = comments.find((comment) => comment.id === id)?.anchor ?? null;
     const slug = anchor === null ? undefined : slugs.get(anchor.artifact_id);
     if (anchor === null || slug === undefined || anchor.block_id === null) {
@@ -257,7 +291,7 @@ async function threadSpots(seeded: MarginSeed): Promise<Spot[]> {
       "occurrence" in anchor && typeof anchor.occurrence === "number" ? anchor.occurrence : 0;
     return {
       id,
-      node: blockNode(slug, anchor.block_id),
+      node,
       occurrence: GATES.ANCHOR_OCCURRENCE ? stored : 0,
       quote: anchor.quote,
       replies: id === seeded.statementComment ? 1 : 0,
@@ -1557,7 +1591,11 @@ async function invokeFromThread(card: Locator, view: View): Promise<void> {
   const before = await card
     .locator('[data-thread-lens-type="lens"]')
     .evaluateAll((lenses) => lenses.map((lens) => lens.getAttribute("data-thread-lens") ?? ""));
-  await card.locator("[data-thread-acts] [data-row-lens]").first().click();
+  // Until G5 stacks the column's cards, a lower node's card can sit over this one; focusing the
+  // control raises its card above siblings through `focus-within:z-20`.
+  const act = card.locator("[data-thread-acts] [data-row-lens]").first();
+  await act.focus();
+  await act.click();
   const menu = card.getByRole("menu", { name: LENS_WORDS.menu_title });
   await expect(
     menu,
@@ -1690,7 +1728,9 @@ test("a thread in the margin replies, resolves and carries its acts and lenses",
     // (3) Resolve.
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectLoadSettled(traffic);
-    await card.getByRole("button", { exact: true, name: "Resolve" }).click();
+    const resolveButton = card.getByRole("button", { exact: true, name: "Resolve" });
+    await resolveButton.focus();
+    await resolveButton.click();
     await expect(
       card.getByRole("button", { exact: true, name: "Reopen" }),
       "the resolved thread stays drawn, with Reopen"
@@ -1920,6 +1960,10 @@ async function loadOnce(
 // waited out to a 1.5 s quiet window.
 test("the margin adds no request", async ({ browser }) => {
   test.setTimeout(300_000);
+  const agentsEqual = onBase(
+    "the load with threads sends no agents read that the load without them does not (ThreadCard's always-open MentionComposer reads /api/v1/agents once until G5)",
+    "COMPOSER"
+  );
   onBase(
     "a send from the composer sends its write and the re-reads of part T's R6 alone",
     "COMPOSER"
@@ -1955,12 +1999,19 @@ test("the margin adds no request", async ({ browser }) => {
       threaded.routes,
       inView(view, "the load with threads sends the requests of the load without them")
     ).toEqual(plain.routes);
-    const reads = (load: Load, route: string) =>
-      load.requests.some((request) => request.route === route);
-    expect(
-      reads(threaded, "/api/v1/agents"),
-      inView(view, "the load with threads reads the agents as the load without them does")
-    ).toBe(reads(plain, "/api/v1/agents"));
+    const agentReads = (load: Load) =>
+      load.requests.filter((request) => request.route === "/api/v1/agents").length;
+    if (agentsEqual) {
+      expect(
+        agentReads(threaded) > 0,
+        inView(view, "the load with threads reads the agents as the load without them does")
+      ).toBe(agentReads(plain) > 0);
+    } else {
+      expect(
+        agentReads(threaded),
+        inView(view, "before G5, the column's reply composer reads /api/v1/agents at most once")
+      ).toBeLessThanOrEqual(1);
+    }
     expect(
       threaded.requests
         .filter((request) => PER_ITEM_READS[request.route] === true)

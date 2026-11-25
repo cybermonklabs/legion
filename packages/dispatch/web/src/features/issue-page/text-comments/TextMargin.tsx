@@ -647,7 +647,7 @@ function Column({
             <LensActContext.Provider value={lensAct}>
               {placed.map(({ nodeId, parent, thread }) => (
                 <div
-                  className="absolute inset-x-0"
+                  className="absolute inset-x-0 focus-within:z-20"
                   data-text-thread={thread.thread.key}
                   data-text-thread-parent={parent}
                   key={thread.thread.key}
