@@ -185,6 +185,10 @@ type stepModelsStandin struct {
 	next, step, inStep int
 	inTurn             bool
 	list               []servedResponse
+	// asking is how many Messages requests this stand-in holds unanswered, and answered when it
+	// last ended an answer of any kind: what tells the driver the pane has gone quiet (quietFor).
+	asking   int
+	answered time.Time
 }
 
 // newStepModelsStandin serves one pane's endpoint under the provider name, which is also the
@@ -237,6 +241,15 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		_, _ = io.WriteString(w, `{"input_tokens":1000}`)
 		return
 	}
+	s.mu.Lock()
+	s.asking++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.asking--
+		s.answered = time.Now()
+		s.mu.Unlock()
+	}()
 	turn := readStepModelsTurn([]byte(body))
 	served := servedResponse{Claim: string(s.token), Asked: turn.model, Model: s.served, Turn: turn.shape}
 	served.Subagent = strings.Contains(turn.system, deepWorkerSystemLine)
@@ -404,6 +417,13 @@ func (s *stepModelsStandin) place(turn stepModelsTurn) (int, stepModelsStep, int
 		s.inTurn = false
 	}
 	return s.step, script, s.inStep
+}
+
+// quietFor says whether this stand-in holds no request and has answered none for at least d.
+func (s *stepModelsStandin) quietFor(d time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asking == 0 && time.Since(s.answered) >= d
 }
 
 // servedList is every response this stand-in answered, oldest first.
@@ -1683,22 +1703,26 @@ func (r *stepModelsLive) writeStepRecord(issue *stepModelsIssue, event stepModel
 }
 
 // stopTask is the architect's stop of issue's task a once the claim whose step another fact ends
-// is idle, three seconds after it went idle, so the end read is more than the comparator's two
-// seconds from the turn's last response.
+// sits idle and its stand-in has been quiet for three seconds: no request held and no answer
+// ended in that time. So the end read is more than the comparator's two seconds from the claim's
+// last response, a turn its harness starts of its own after the step's turn included: Claude
+// Code starts one when its background subagent finishes, after the claim has gone idle.
 func (r *stepModelsLive) stopTask(issue *stepModelsIssue, event stepModelsEvent) {
 	r.t.Helper()
-	r.await(string(event.token)+" to sit idle after its turn", stepModelsWait, func() bool {
+	pane := r.panes[event.token]
+	r.await(string(event.token)+" to sit idle with its stand-in quiet", stepModelsWait, func() bool {
 		held := r.claim(event.token)
 		r.seen[event.token] = held
-		return held.State == string(supervise.StateIdle) || held.State == string(supervise.StateReady)
+		idle := held.State == string(supervise.StateIdle) || held.State == string(supervise.StateReady)
+		return idle && pane.quietFor(stepModelsAnswerDelay)
 	})
-	time.Sleep(stepModelsAnswerDelay)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/tasks/stop",
 		api.TaskStopRequest{GrantID: r.architectGrant(issue), Issue: issue.key, Task: stepModelsTask}, false)
 	if status != http.StatusOK {
 		r.fails("the stop of the task", "stop_task of %s's task %s = %d %s, want 200", issue.key, stepModelsTask, status, body)
 	}
-	r.note("%s's step %d ended its turn and sat idle: the architect stopped %s's task %s", event.token, event.step+1, issue.key, stepModelsTask)
+	r.note("%s's step %d ended its turn, and the claim sat idle with its stand-in quiet for %s: the architect stopped %s's task %s",
+		event.token, event.step+1, stepModelsAnswerDelay, issue.key, stepModelsTask)
 }
 
 // readSteps reads `dispatch steps --issue <key>` as the person until it holds the issue's
