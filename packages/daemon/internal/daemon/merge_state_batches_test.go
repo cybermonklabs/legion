@@ -69,10 +69,48 @@ func readBatchRequest(t *testing.T, r *http.Request) []int {
 }
 
 // batchNode is one pull request as the by-number query answers it: open on main at head, with
-// GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals.
+// GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals, no review request open, and
+// the head's rollup SUCCESS, as GitHub answers a pull request whose checks are done and that asks
+// nobody for a review. A test that needs another count or rollup sets it on the node.
 func batchNode(number int, head, mergeable, state string) map[string]any {
 	return map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": fmt.Sprintf("legion/CAPTURE-%d", number-85),
-		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state}
+		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state,
+		"reviewRequests": map[string]any{"totalCount": 0}, "commits": rollupOf(head, "SUCCESS")}
+}
+
+// rollupOf is the `commits(last: 1)` of a pull request whose head commit is head and whose
+// `statusCheckRollup` state is state, or null when state is "", with the counts GitHub gives such
+// a rollup: one check run in state, IN_PROGRESS for a PENDING rollup, and no commit status.
+func rollupOf(head, state string) map[string]any {
+	if state == "" {
+		return rollupCounted(head, "", nil, nil)
+	}
+	run := state
+	if state == "PENDING" {
+		run = "IN_PROGRESS"
+	}
+	return rollupCounted(head, state, map[string]int{run: 1}, nil)
+}
+
+// rollupCounted is the `commits(last: 1)` of a pull request whose head commit is head, whose
+// rollup state is state, null when state is "", and whose check runs and commit statuses GitHub
+// counts by state as runs and statuses say, every other state counted 0, as GitHub lists each.
+func rollupCounted(head, state string, runs, statuses map[string]int) map[string]any {
+	var rollup any
+	if state != "" {
+		counted := func(states []string, by map[string]int) []any {
+			out := make([]any, 0, len(states))
+			for _, s := range states {
+				out = append(out, map[string]any{"state": s, "count": by[s]})
+			}
+			return out
+		}
+		rollup = map[string]any{"state": state, "contexts": map[string]any{
+			"checkRunCountsByState": counted([]string{"ACTION_REQUIRED", "CANCELLED", "COMPLETED", "FAILURE", "IN_PROGRESS", "NEUTRAL",
+				"PENDING", "QUEUED", "SKIPPED", "STALE", "STARTUP_FAILURE", "SUCCESS", "TIMED_OUT", "WAITING"}, runs),
+			"statusContextCountsByState": counted([]string{"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}, statuses)}}
+	}
+	return map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": head, "statusCheckRollup": rollup}}}}
 }
 
 // batchAnswer is the by-number query's answer to asked: each of nodes under its alias, and for
@@ -131,8 +169,11 @@ func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 	if pull.State != "open" {
 		state = "CLOSED"
 	}
-	node := map[string]any{"number": pull.Number, "state": state, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref,
-		"baseRefName": pull.Base.Ref, "mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
+	node := batchNode(pull.Number, pull.Head.SHA, mergeable, strings.ToUpper(pull.MergeableState))
+	node["state"], node["headRefName"], node["baseRefName"] = state, pull.Head.Ref, pull.Base.Ref
+	if count := pull.reviewsRequested(); count != nil {
+		node["reviewRequests"] = map[string]any{"totalCount": *count}
+	}
 	return http.StatusOK, batchAnswer(t, asked, node)
 }
 
@@ -548,6 +589,48 @@ func TestARateLimitedBatchReadWaitsWhatGitHubAsks(t *testing.T) {
 	defer mu.Unlock()
 	if len(at) != 2 || at[1].Sub(at[0]) < time.Second {
 		t.Fatalf("GitHub was queried at %v, want twice, the second at least the second GitHub's Retry-After asked after the first", at)
+	}
+}
+
+// A pull request owed one read (baseOwed.once, a base push's for an issue in merging, or a failed
+// start read's) leaves the batch after a read of it, whatever GitHub answered, but a query that
+// read nothing of it - one that fails, a 502 here, or one GitHub's rate limit refuses - made no read
+// of it, so it keeps its one read until a query answers (missed, readStopped): the next query
+// answers `unknown`, which ends it, and no query after that is made. The negative control is
+// missed dropping a one-read place on every read that answered nothing, as it did before: the
+// record then stands at the state it held, GitHub is queried once, and no read of the head was
+// made.
+func TestAOneReadWhoseQueryReadNothingIsMadeByTheNextQuery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		first func(header http.Header) (int, string)
+	}{
+		{name: "a failed query", first: func(http.Header) (int, string) { return http.StatusBadGateway, `{"message":"Server Error"}` }},
+		{name: "a rate limit", first: func(header http.Header) (int, string) {
+			header.Set("Retry-After", "1")
+			return http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedOnMain(t, pool, "CAPTURE-1", 86, phase.Merging, "retro", "U")
+			rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+				if query == 1 {
+					return tc.first(header)
+				}
+				return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "UNKNOWN", "UNKNOWN"))
+			})
+
+			pushOntoMain(t, pool, rig.w, "main-2")
+			testwait.Eventually(t, "the second query to answer the one read and the batch to end", func() bool {
+				return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateUnknown && rig.ended()
+			})
+			time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
+			if got := rig.queries.Load(); got != 2 {
+				t.Fatalf("GitHub was queried %d times, want twice: the first read nothing of the pull request, the second was its one read", got)
+			}
+		})
 	}
 }
 

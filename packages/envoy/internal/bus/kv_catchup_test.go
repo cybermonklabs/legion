@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -367,7 +368,7 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := newRaiseWatcher(js, 3, 1<<30, nil)
-	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -384,7 +385,7 @@ func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0
-	_, err := awaitBucketApplied(ctx, catchupBucket, BucketMissing, func() (struct{}, error) {
+	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, BucketMissing, func() (struct{}, error) {
 		reads++
 		return struct{}{}, nats.ErrBucketNotFound
 	})

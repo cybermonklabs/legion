@@ -973,6 +973,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // launching, with no process — reads as the relaunch still to make, and an owner told that no
 // replacement was started would wait for a retry nobody makes.
 func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	podGated(rig.sup)
 	const issue = "LEGION-227"

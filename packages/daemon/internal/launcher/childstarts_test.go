@@ -103,6 +103,7 @@ var heldStarts = map[string]heldStart{
 // variable; and functions an init stores into a package variable's field and element. And a
 // command only formatted, which starts nothing, must stay unnamed.
 func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testing.T) {
+	t.Parallel()
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]processStart{}
 		for _, start := range launcherProcessStarts(t, nil) {

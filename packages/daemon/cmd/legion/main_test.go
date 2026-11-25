@@ -2022,9 +2022,9 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	// before and its read an hour ago, LEGION-209's head time this morning and its read a minute
 	// ago, so the older head is the one named although its read is the older too.
 	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"reviewing","status":"needs_review",` +
-		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
-		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"blocked","stateReadAt":"2026-10-19T09:00:00Z",` +
-		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"blocked"}}`
+		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"behind","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"behind","stateReadAt":"2026-10-19T09:00:00Z",` +
+		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"behind"}}`
 	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"reviewing","status":"needs_review",` +
 		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","mergeState":"behind","stateReadAt":"2026-10-19T09:59:00Z",` +
@@ -2039,11 +2039,13 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	alsoNoStateNoStamp := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"reviewing","status":"needs_review",` +
 		`"pullRequest":{"repo":"zeta/tools","number":643,"head":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","state":"open","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","checkRuns":0}}`
-	// A wait holding `blocked` and no read time, whose `headUpdatedAt` stands before LEGION-208's,
-	// so it is the oldest head.
+	// A wait holding `draft` and no read time, whose `headUpdatedAt` stands before LEGION-208's,
+	// so it is the oldest head. A `blocked`, MERGEABLE head whose own runs have all concluded and
+	// on which no review request is open would carry no wait: that answer ends the round
+	// (classify.RoundWaitsOnMergeState).
 	stateNoStamp := `"LEGION-212":{"key":"LEGION-212","generation":1,"phase":"reviewing","status":"needs_review",` +
-		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
-		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"blocked",` +
+		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"draft","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"draft",` +
 		`"headUpdatedAt":"2026-10-17T10:00:00Z","checkRuns":1}}`
 	// A wait holding a read time and no merge state, whose `headUpdatedAt` stands before
 	// LEGION-208's, so it is the oldest head.
@@ -2059,7 +2061,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "two waiting, the oldest head not the first listed",
 			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said behind, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting with a merge state and a read time names the state and the read",
@@ -2069,7 +2071,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "a wait with no head time sorts behind one that has one",
 			issues: `{` + noStateNoStamp + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said behind, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting with no merge state and no read time says no read is recorded for its head",
@@ -2084,7 +2086,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "a merge state with no read time says the read time is not recorded",
 			issues: `{` + oldest + `,` + stateNoStamp + `,` + noStateNoStamp + `}`,
-			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said blocked, read time not recorded\n",
+			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said draft, read time not recorded\n",
 		},
 		{
 			name:   "a read time with no merge state names the read and says it carried no merge state",

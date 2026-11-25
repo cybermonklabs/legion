@@ -35,7 +35,8 @@ func TestNATSURLWithoutUserinfo(t *testing.T) {
 // The failed-reconnect WARN names the servers the client was configured with, and the refusal of
 // a remote server names that server; both are logged, so neither carries a URL's userinfo.
 func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	urls := []string{
 		"nats://user-marker-0:pw-marker-1@127.0.0.1:4222",
 		"nats://tok-marker-2@127.0.0.1:4223",
@@ -43,10 +44,9 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	}
 	secrets := []string{"user-marker-0", "pw-marker-1", "tok-marker-2", "u-marker-5", "pw-marker-3"}
 
-	options("log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, errors.New("dial refused"))
+	options(logs.logger, "log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, errors.New("dial refused"))
 
-	// Only this client's records: a client an earlier test left reconnecting logs through the same
-	// default.
+	// Only records that name the client count, so the WARN must carry its client's name.
 	var mine []map[string]any
 	for _, record := range logs.records(t) {
 		if record["name"] == "log-url-test" {
@@ -90,6 +90,7 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 // The reconnected INFO names the server the connection reached, which nats.go renders with the
 // URL's userinfo (ConnectedUrl); testnats.URL is a user:password URL, so the line must drop it.
 func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	configured, err := url.Parse(uri)
 	if err != nil {
@@ -103,9 +104,9 @@ func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(nc.Close)
-	logs := captureLogs(t)
+	logs := captureLogs()
 
-	options("reconnected-url-test", nil, nil, nil, nil, nil, nil).ReconnectedCB(nc)
+	options(logs.logger, "reconnected-url-test", nil, nil, nil, nil, nil, nil).ReconnectedCB(nc)
 
 	var logged string
 	for _, record := range logs.records(t) {

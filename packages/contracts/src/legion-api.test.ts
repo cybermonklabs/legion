@@ -1400,16 +1400,16 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
     headUpdatedAt: "2026-09-22T08:58:40Z",
     checkRuns: 0,
   });
-  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
-  // and the reviewer have been told, and the marks name the head and state told of.
+  // Stuck: GitHub answers that the head is behind its base, a state the round does not end on;
+  // the architect and the reviewer have been told, and the marks name the head and state told of.
   expect(stuck.mergeWait).toEqual({
     waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-    mergeState: "blocked",
+    mergeState: "behind",
     stateReadAt: "2026-09-22T09:16:12Z",
     headUpdatedAt: "2026-09-20T14:05:33Z",
     checkRuns: 2,
     toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-    toldState: "blocked",
+    toldState: "behind",
   });
 
   const told = stuck.mergeWait;

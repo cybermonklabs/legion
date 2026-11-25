@@ -326,12 +326,13 @@ type workflowRuntime struct {
 	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
 	// (merge_state_batches.go's baseRead): a push to that base owes them a read
 	// (queueBaseMergeStates, the engine's Config.ReadBaseMergeStates: a climb for a pull request in
-	// testing through reviewing, and one read for one in merging, classify.MergeStateReadOnce), or a
-	// ladder handed it a head GitHub still answers `unknown` for (followOnBase). baseReadOf is the
-	// base each owed issue is read under, baseWake the bases readBaseMergeStates has not started a
-	// batch ladder for yet, and baseAsks the number of the last request put in any batch
-	// (putLocked, baseOwed.asked): one count for the runtime, so a batch made again for a base whose
-	// last batch ended reuses no number a climb or a read still holds. All of it is guarded by
+	// testing through reviewing, and one read for one in merging, classify.MergeStateReadOnce), a
+	// ladder handed it a head GitHub still answers `unknown` for (followOnBase), or a start read that
+	// failed handed it the record's head, to follow or, in merging, to read once (startReadFailed).
+	// baseReadOf is the base each owed issue is read under, baseWake the bases readBaseMergeStates
+	// has not started a batch ladder for yet, and baseAsks the number of the last request put in any
+	// batch (putLocked, baseOwed.asked): one count for the runtime, so a batch made again for a base
+	// whose last batch ended reuses no number a climb or a read still holds. All of it is guarded by
 	// mergeStateMu, so a request moves an issue between a ladder of its own and its base's batch
 	// under one lock. baseChunk is how many pull requests one query of a batch asks for,
 	// baseReadChunk when zero, which a test shortens.

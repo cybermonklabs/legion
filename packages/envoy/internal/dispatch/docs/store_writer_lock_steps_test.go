@@ -272,7 +272,7 @@ func (r *docsWriterRig) tick() docsWriter {
 			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
 			r.awaitDurable(t, document)
 			return docsRun{document: document, write: func() error {
-				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1})
+				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1}, nil)
 				if err != nil {
 					return err
 				}

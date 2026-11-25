@@ -167,6 +167,12 @@ MEMBER_PERMISSIONS=(container.namespaces.create container.namespaces.update cont
   container.certificateSigningRequests.approve container.clusters.update
   "${IAM_WRITE_PERMISSIONS[@]}")
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
+# Who can make or change a Deployment Manager deployment on --project: Deployment Manager creates a
+# deployment's resources with the credentials of the project's Google APIs service agent
+# (<number>@cloudservices.gserviceaccount.com), not the caller's, and that agent holds
+# roles/editor on the project unless someone took it away, so either permission acts as roles/editor
+# there (names read from roles/deploymentmanager.editor's includedPermissions on 2026-11-23).
+DEPLOYMENT_MANAGER_PERMISSIONS=(deploymentmanager.deployments.create deploymentmanager.deployments.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
 # Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
 # Beside it, who can make a namespace or RBAC on the fleet's members: a fleet namespace and an RBAC
@@ -195,6 +201,7 @@ granting_role() {
     secretmanager.*) GRANTING_ROLE=roles/secretmanager.secretAccessor ;;
     storage.*) GRANTING_ROLE=roles/storage.objectViewer ;;
     gkehub.*) GRANTING_ROLE=roles/gkehub.admin ;;
+    deploymentmanager.*) GRANTING_ROLE=roles/deploymentmanager.editor ;;
   esac
 }
 
