@@ -216,14 +216,15 @@ func (r *vfixRig) fixBesideTheReview(place int, checks ...string) error {
 	if got := r.fixRunCheck(place); got != "k-ci" {
 		return fmt.Errorf("the start record of the fix's run names the check %q, want k-ci", got)
 	}
-	var told []string
-	for _, message := range r.told(claim.RoleReviewer) {
-		if strings.Contains(message, "k-ci") && strings.Contains(message, fixHead) {
-			told = append(told, message)
+	told := 0
+	for _, n := range r.newsOf() {
+		if n.Purpose == record.CINewsFixStarted && n.Assigned != nil && roleOf(r.t, n.Role) == claim.RoleReviewer &&
+			n.Assigned.Check == "k-ci" && n.Assigned.Head == fixHead && n.Assigned.Fix == 1 {
+			told++
 		}
 	}
-	if len(told) != 1 {
-		return fmt.Errorf("the reviewer's messages naming k-ci at %s = %q, want one: the review is told of the fix", fixHead, told)
+	if told != 1 {
+		return fmt.Errorf("the reviewer's fix-started rows of fix 1 for k-ci at %s = %d, want one: the review is told of the fix", fixHead, told)
 	}
 	return nil
 }
