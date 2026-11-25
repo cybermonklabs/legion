@@ -185,9 +185,11 @@ export interface StandIns {
 
 export interface BrowserStandIns {
   /** What the owner's invite answers: a link for an address on the list and 409
-   *  PERSON_NOT_LISTED for any other (default), or 403 BROWSER_SESSION_REQUIRED for every address,
-   *  as Dispatch answers a token that is no owner's browser session. */
-  readonly invite?: "listed" | "browser-session";
+   *  PERSON_NOT_LISTED for any other (default), as Dispatch answers the owner's browser and a
+   *  personal token of the owner's that holds approve and lists the project; or 403
+   *  OAUTH_SCOPE_REQUIRED for every address, as Dispatch answers a token of the owner's that holds
+   *  no approve, every broker-issued token among them. */
+  readonly invite?: "listed" | "no-approve";
   /** OUTSIDE_UNLISTED_PERSON names an address the list already holds, so the owner's invite makes
    *  it a link. */
   readonly unlistedListed?: boolean;
@@ -609,7 +611,7 @@ printf '%s' "$kept" >'${state}/listed'`
   const invite = script(
     join(inputs, "owner-invite.sh"),
     `#!/usr/bin/env bash
-${browser.invite === "browser-session" ? "echo '403 BROWSER_SESSION_REQUIRED'\nexit 1" : ""}
+${browser.invite === "no-approve" ? "echo '403 OAUTH_SCOPE_REQUIRED'\nexit 1" : ""}
 while IFS= read -r each; do
   if [ "$each" = "$1" ]; then
     link="https://dispatch.edge.example/enroll#${linkToken}-$RANDOM$RANDOM"

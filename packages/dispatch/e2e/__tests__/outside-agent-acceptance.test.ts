@@ -1483,10 +1483,10 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the owner rows: a token refused 403 BROWSER_SESSION_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, and OUTSIDE_PUBLIC_COMMAND is refused",
+      "the owner rows: a token refused 403 OAUTH_SCOPE_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, and OUTSIDE_PUBLIC_COMMAND is refused",
       async () => {
         const [session, listed, kept, local] = await runStandIns(
-          browserRun({ invite: "browser-session" }),
+          browserRun({ invite: "no-approve" }),
           browserRun({ unlistedListed: true }),
           browserRun({ removeNothing: true }),
           browserRun({ publicCommand: true })
@@ -1499,8 +1499,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         ) {
           throw new Error("four runs, want four");
         }
-        // Today's Dispatch answers an owner's token on the invite route 403
-        // BROWSER_SESSION_REQUIRED: no link, so no run, and nothing reads PASS from it.
+        // Dispatch answers an owner's token that holds no approve on the invite route 403
+        // OAUTH_SCOPE_REQUIRED: no link, so no run, and nothing reads PASS from it.
         expect({ verdicts: verdictsOf(session.stdout), stdout: session.stdout }).toMatchObject({
           verdicts: {
             unlisted: "UNKNOWN",
@@ -1512,7 +1512,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           },
         });
         expect(rowsOf(session.stdout).get("unlisted")?.got).toContain(
-          "refused 403 BROWSER_SESSION_REQUIRED"
+          "refused 403 OAUTH_SCOPE_REQUIRED"
         );
         expect(rowsOf(session.stdout).get("public")?.got).toContain("no invitation link");
         expect(existsSync(join(session.state, "workflow-args"))).toBe(false);

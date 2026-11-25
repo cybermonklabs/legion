@@ -542,7 +542,7 @@ inputs, no `agent-secrets` call and no full member's helper, and the workflow ge
 `routed_controls=dispatch-healthz`, the owner's one link (not the link `OUTSIDE_WORKFLOW_INPUTS`
 held), `sweep_member_issue` and the probe grant as `grants_probe_id`, on stdin, while no output holds
 the link; the full member's list of credential grants is read before the run and after it. Each
-plant holds its own row: an owner's invite refused `403 BROWSER_SESSION_REQUIRED` starts no run; an
+plant holds its own row: an owner's invite refused `403 OAUTH_SCOPE_REQUIRED` starts no run; an
 unlisted address already listed gets a link, which fails row unlisted; a remove that takes nobody
 off holds T5 at UNKNOWN; `OUTSIDE_PUBLIC_COMMAND` starts no run; a skipped window step makes no
 removal; a cookie's 401 a minute after the removal fails T5; a check's exit 1 fails its row and the
