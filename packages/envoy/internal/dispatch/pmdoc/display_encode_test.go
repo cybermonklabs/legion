@@ -14,6 +14,7 @@ import (
 // NodeType.create, which documentFromJSON calls): the result must be the tree the read made,
 // attribute for attribute.
 func TestTheDisplayEncodingLeavesOutOnlyWhatTheSchemaFillsBack(t *testing.T) {
+	t.Parallel()
 	for _, path := range displayEncodingCorpus(t) {
 		markdown, err := os.ReadFile(path)
 		if err != nil {
@@ -48,6 +49,7 @@ func TestTheDisplayEncodingLeavesOutOnlyWhatTheSchemaFillsBack(t *testing.T) {
 // block id, no list marker the schema already knows and no spread the schema already knows,
 // and keeps the one attribute whose value is not its default (a tight item's `spread`).
 func TestTheDisplayEncodingWritesNoDefaultAttribute(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(ReadForDisplay("# Title\n\n- one\n- two\n", DisplayLatest).toDisplayJSON())
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +68,7 @@ func TestTheDisplayEncodingWritesNoDefaultAttribute(t *testing.T) {
 // schema can be installed over while a tree stored under it is still served (display_encode.go),
 // so none of it is left for the reader's schema to fill back.
 func TestTheDisplayEncodingWritesATypedBlockWhole(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(ReadForDisplay(":::callout{kind=\"note\"}\nBody.\n:::\n", DisplayLatest).toDisplayJSON())
 	if err != nil {
 		t.Fatal(err)

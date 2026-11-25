@@ -65,6 +65,7 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 // (consumersLeft): such a replacement, in flight when its watcher's end ran, may be left to the
 // server to remove.
 func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	for _, test := range []struct {
 		name string

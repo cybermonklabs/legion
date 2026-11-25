@@ -201,7 +201,7 @@ async function dial(options: ConnectionOptions, named: string): Promise<NatsConn
 export async function runBridge(config: BridgeConfig): Promise<void> {
   // The production server's nkey user, when it requires one: the seed a command run from the
   // operator's shell sends to that server (operator-nats-seed.ts).
-  const seed = operatorNatsSeed(
+  const seed = await operatorNatsSeed(
     config.upstreamUrl,
     "SMOKE_UPSTREAM_NATS",
     process.env,
