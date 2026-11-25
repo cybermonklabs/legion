@@ -403,13 +403,20 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
+		// A listener that never stops fails the wait, and is killed on the way out so it outlives
+		// no test; one that stopped is past killing, and Kill only says so.
+		defer func() {
 			_ = cmd.Process.Kill()
 			<-exited
-			t.Errorf("the listener did not stop after SIGINT:\n%s", output.String())
-		}
+		}()
+		testwait.Until(t, "the listener to stop after SIGINT", func() (string, bool) {
+			select {
+			case <-exited:
+				return "", true
+			default:
+				return output.String(), false
+			}
+		})
 	})
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"
