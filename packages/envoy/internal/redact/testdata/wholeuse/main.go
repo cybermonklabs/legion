@@ -61,8 +61,6 @@ func main() {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	// The module is loaded once for each target and tag set, as the boundary census loads it, so a
-	// file a build constraint keeps from one of them is read under another.
 	pkgs := load.Modules("wholeuse", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo, patterns...).Packages
 	if len(pkgs) == 0 {
 		fmt.Fprintln(os.Stderr, "wholeuse: UNKNOWN: the patterns matched no package")
@@ -81,7 +79,6 @@ func main() {
 		}
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
-			// A file that more than one load builds is read once, by the first.
 			if strings.HasSuffix(name, "_test.go") || walked[name] {
 				continue
 			}

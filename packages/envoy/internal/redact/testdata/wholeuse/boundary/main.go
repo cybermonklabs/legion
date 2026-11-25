@@ -87,9 +87,6 @@ func main() {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	// The module is loaded once for each target and tag set, so a file a build constraint keeps
-	// from one of them (a darwin-only file on a Linux gate, an e2e file) is read under another.
-	// Each load's target is kept, so the summary names, for each target, what its builds read.
 	loaded := load.Modules("boundary", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo|packages.NeedImports, patterns...)
 	pkgs, targetOf := loaded.Packages, loaded.Target
 
@@ -155,7 +152,6 @@ func main() {
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
-			// A file that more than one load builds is read once, by the first.
 			if strings.HasSuffix(name, "_test.go") || walked[name] {
 				continue
 			}
