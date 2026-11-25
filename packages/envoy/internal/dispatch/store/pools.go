@@ -156,27 +156,27 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // median. The ceiling is picked here rather than derived from the task's CPU allotment or read
 // out of the DSN another repository's URL builder writes.
 //
-// It is 48 of one connection budget of 117 (ConnectionsPerProcess) that every pool of a process
+// It is 48 of one connection budget of 118 (ConnectionsPerProcess) that every pool of a process
 // shares, partitioned rather than grown: requests 48, background 6 (Background), live 4 (Live),
 // settlements 4 (Settlements), rooms 4, the rooms' appends 8 (RoomAppends), health 1, the five
 // listener connections (the listener pool's one dial is one of them redialling), leases
-// LeasePoolSize (28), outbox 2, compaction 2 (Compaction), the display tree fill 2 (TextTrees),
+// LeasePoolSize (29), outbox 2, compaction 2 (Compaction), the display tree fill 2 (TextTrees),
 // the event horizon 2 (Horizon) and the
 // server process registry's own 1 (registryPoolSize). The partition
 // itself added nothing: it is the 87 the process opened before, the request pool having given up
 // 16, which background, live, settlements and the leases' two spare connections took; the event
 // horizon's 2, the background loops' shared wake listener, the outbox's second connection, the
-// outbox's own listener, the compaction's 2, the display tree fill's 2, the seven lease names
+// outbox's own listener, the compaction's 2, the display tree fill's 2, the eight lease names
 // added since (the CI reconcile pass's, the CI verify loop's, the settlement resumption's, the
-// embeddings project_key fill's, the display tree fill's, the Legion sampler's and the parent
-// status fix's), the four
+// embeddings project_key fill's, the display tree fill's, the Legion sampler's, the parent
+// status fix's and the reference forms drain's), the four
 // callers of the delivery
 // intakes' holds (duty.Hold, leaseCallerConnections) and the keyword fill's two, its own
 // goroutine's and its hold's renewal's (textversions.ReserveLeases), are the
 // only connections added since, and the
 // horizon's came with the pool itself. The rooms' appends are the one pool added over the budget
 // rather than out of it: the 8 they take are the connections a room's browser updates no longer
-// take one request connection at a time, which is why the budget is 117 and not 109. A write
+// take one request connection at a time, which is why the budget is 118 and not 110. A write
 // takes a connection per statement one after another, and a read pins one for its whole length
 // (PinConnection); an issue read, which once took six statements, two more when the issue had
 // documents, two more when it had open asks, and one per artifact, now takes two batches. So
@@ -204,10 +204,14 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // one more: 116, four pods 464 of 497 and five refused at 580, so it
 // moves none either, and it takes no share of the partition: a verify pass answers its requests
 // from GitHub, and only its lease is a connection of its own. R25's boot fix of parents' statuses
-// (api.RunParentStatusFixAtBoot, lease parent-status-fix) is the last connection added: 117, four
-// pods 468 of 497 and five refused at 585, so it moves none either, and it takes no share of the
-// partition: its read of every issue and the transaction of each step run on the background pool,
-// and only its lease is a connection of its own.
+// (api.RunParentStatusFixAtBoot, lease parent-status-fix) is one more: 117, four pods 468 of 497
+// and five refused at 585, so it moves none either, and it takes no share of the partition: its
+// read of every issue and the transaction of each step run on the background pool, and only its
+// lease is a connection of its own. The reference forms drain's lease (duty.RefsFormsLease,
+// docs.Service.RunRefsFormsReconciliation, beside the block index on a goroutine of its own) is
+// the last connection added: 118, four pods 472 of 497 and five refused at 590, so it moves none
+// either, and it takes no share of the partition: its reads and each drain's transaction run on
+// the background pool, as the block index's do, and only its lease is a connection of its own.
 //
 // The database bounds the budget from above. Dispatch's database is the gcp:Dispatch component's
 // Cloud SQL Postgres instance, whose default max_connections follows its tier's memory
@@ -461,7 +465,8 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // names are leased - the document compaction, the keyed writes' maintenance sweep
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
-// the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
+// the reference forms drain (duty.RefsFormsLease, beside the block index on a goroutine of its
+// own), the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
 // (cireconcile.Lease), the CI verify loop (cireconcile.VerifyLease, taken only by a pass with a
 // verify request to answer, beside a reconcile pass that holds its own for minutes), the
 // architecture import, the delivery reconcile, the edit-notice sweep, the
@@ -493,7 +498,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // long as its process fills the keyword table. Its own goroutine takes and releases the hold and
 // runs the fill's batches and reads on this pool, one statement or one batch's transaction at a
 // time, and the hold's renewal goroutine renews it beside them, so a renewal never waits behind a
-// batch: that is two more callers (textversions.ReserveLeases), twenty-six in all.
+// batch: that is two more callers (textversions.ReserveLeases), twenty-seven in all.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -506,7 +511,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const leaseCallerConnections = 26
+const leaseCallerConnections = 27
 
 // leaseSpareConnections is the lease pool's connections beyond its callers', for what holds one
 // without being a reserved caller's statement: pgxpool's own health check and lifetime expiry
@@ -662,7 +667,7 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres, the
-// budget of 117 SharedPoolSize describes: every pool's size, the registry's own pool
+// budget of 118 SharedPoolSize describes: every pool's size, the registry's own pool
 // (processes.Register) and the event horizon's (Horizon) among them, and one connection per
 // listener it may hold at once, which the listener pool dials and hands off rather than holds (its
 // one dial in flight is one of those listeners redialling, so it is not counted twice).
@@ -752,7 +757,9 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // the architecture importer's ticker, the documents' resumption query, task progress,
 // reference-excerpt and block-index reconciliation (its object pass writes the nodes of the rows
 // another build wrote with none and states gone the orphaned document nodes, each batch in a
-// transaction of its own), the edit-notice sweep, the repair of closed and
+// transaction of its own), the reference forms drain (docs.Service.RunRefsFormsReconciliation:
+// its listing, each text's and each document's index and its count), the edit-notice sweep, the
+// repair of closed and
 // reopened issues' asks, the boot's check that every project has an owner and its grants
 // (EnsureProjectOwners), the Legion sampler's reads of its settings and records of each daemon's
 // state (legion.RunSampler), the server process registry's prune and the fleet build announcer, and

@@ -39,6 +39,7 @@ func (l *factLocks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndD
 // under the lock, the review's author's permission read first, and so is a pull request event on
 // an issue's branch.
 func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	locks := &factLocks{}

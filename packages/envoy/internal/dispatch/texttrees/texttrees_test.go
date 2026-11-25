@@ -195,6 +195,45 @@ func TestATreeStoredAtOneVersionIsNotReadAtAnother(t *testing.T) {
 	}
 }
 
+// A tree stored at display parser version 4, which read an address written after `](` on past its
+// `)` and so held an email typed straight after that `)` as text, is not served at this build's
+// version: the text is read again, and the email is the link this build's reading makes of it
+// (text.DispatchSpans ends such an address at its `)`).
+func TestATreeStoredBeforeALinkAddressEndedAtItsParenthesisIsReadAgain(t *testing.T) {
+	ctx := context.Background()
+	table := texttrees.New(storetest.Open(t).Pool)
+	const text = `Mail \[w](dispatch://ACME-1)me@example.com now.`
+	sum := pmdoc.TextSum(text)
+	old := json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[` +
+		`{"type":"text","text":"Mail [w](dispatch://ACME-1)me@example.com now."}]}]}`)
+	restore := pmdoc.SetDisplayTreeVersionForTest(4)
+	err := table.StoreTrees(ctx, pmdoc.DisplayLatest, []texttrees.Tree{{Sum: sum, Tree: old}})
+	restore()
+	if err != nil {
+		t.Fatalf("store the tree version 4 read: %v", err)
+	}
+	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{sum})
+	if err != nil {
+		t.Fatalf("read at version %d: %v", pmdoc.DisplayTreeVersion, err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("the read at version %d answered the tree stored at version 4: %s", pmdoc.DisplayTreeVersion, stored[sum])
+	}
+	reading := pmdoc.DisplayJSON(text, pmdoc.DisplayLatest)
+	if !bytes.Contains(reading, []byte(`"href":"mailto:me@example.com"`)) {
+		t.Fatalf("this build reads %q as\n\t%s\nwhich links no email", text, reading)
+	}
+	if err := table.Store(ctx, pmdoc.DisplayLatest, text); err != nil {
+		t.Fatalf("store at version %d: %v", pmdoc.DisplayTreeVersion, err)
+	}
+	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{sum}); err != nil {
+		t.Fatalf("read this version's row: %v", err)
+	}
+	if got := stored[sum]; !bytes.Equal(got, reading) {
+		t.Errorf("the tree stored at version %d is\n\t%s\nwant\n\t%s", pmdoc.DisplayTreeVersion, got, reading)
+	}
+}
+
 // An empty text has no tree and no row: a write that stored nothing leaves the table as it was.
 func TestAnEmptyTextStoresNothing(t *testing.T) {
 	ctx := context.Background()

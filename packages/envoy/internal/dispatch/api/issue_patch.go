@@ -141,6 +141,10 @@ type issueWriteCallStep struct {
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
 	sweepsLater bool
+	// options is the options of the status change that the step is a step of, which writeIssue
+	// puts on the step's one-step plan. So the step's own check of R26 and R24 reads the options
+	// that the planning check read (planStatusChangeUnderLocks). A step of R25's fix carries none.
+	options statusChangeOptions
 }
 
 // issueWriteFence is the fence of a status change that sent expected_sequence: the sequence it
@@ -352,6 +356,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// issueWriteOpened is the write's open transaction, holding the owner lock of every issue it
 	// names, the issue as that transaction read it and what the write reads beside it under those
 	// locks: whether this write closes or reopens the issue, where its parent stands after it, the
+	// labels it leaves (labelsAfter, nil for a write of no labels or a merge past the cap), the
 	// priority ids the issue advanced as that read found them (heldAdvances, set only when the
 	// write carries advances), and, for a step of a status change, the sequence of the issue the
 	// call names, the words of the call's comment and what a step of an option moves. left is that
@@ -363,6 +368,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		closing, reopening           bool
 		afterParent                  *string
 		statusChanged, parentChanged bool
+		labelsAfter                  *[]string
 		heldAdvances                 []string
 		namedLastSeq                 int
 		holdsNamed                   bool
@@ -375,10 +381,11 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	var labelsMerged error
 	// openWrite locks the rows the write names, reads the issue under them, and refuses what only
 	// those rows can decide: a stale expected_sequence or fence, an invalid parent, a closed
-	// issue, a write the parent status rule refuses, an acceptance write over an open child of
-	// another project (refuseOpenForeignChildren), a write of an issue Legion runs that the check of
-	// who writes it refuses (refuseSpecWriterOfIssueWrite), an advances write the revision rule
-	// refuses, and documents other than the ones gated. The caller rolls tx back on every refusal.
+	// issue, a write R26's status guard or the parent status rule refuses (refuseIssueWritePlan,
+	// which judges every write), an acceptance write over an open child of another project
+	// (refuseOpenForeignChildren), a write of an issue Legion runs that the check of who writes it
+	// refuses (refuseSpecWriterOfIssueWrite), an advances write the revision rule refuses, and
+	// documents other than the ones gated. The caller rolls tx back on every refusal.
 	openWrite := func(ctx context.Context, tx pgx.Tx, gated []string) (issueWriteOpened, error) {
 		// A write that asks for the open-child check of an acceptance is a dependency write too:
 		// the check and the status it guards run under the deployment dependency lock that every
@@ -514,30 +521,27 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		statusChanged := input.Status != nil && before.Status != status
 		parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
-		var statusAfter *string
-		if input.Status != nil {
-			statusAfter = &status
-		}
 		var labelsAfter *[]string
 		if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
 			labelsAfter = &labels
 		}
+		var statusAfter *string
+		if input.Status != nil {
+			statusAfter = &status
+		}
+		// The status guard judges every write, including a same-status write or a label edit.
+		// It runs before the parent-status rule, even when that rule is off.
 		plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
-		// R24 (parent_status_rule.go) judges a write that changes the status or the parent, here,
-		// after the refusals above and under the owner locks the write holds: the issue's, its
-		// current parent's and its proposed parent's. Every writer of a pair holds the parent's
-		// owner lock, so two writes of one pair are judged one after the other. A write that names
-		// the status the issue already has changes no pair and is not judged. With the rule off
-		// the plan is unjudged, so the check reads no conflict that the write would not refuse.
-		if statusChanged || parentChanged {
-			plan.unjudged = !s.deps.ParentStatusRule.On()
-			conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
-			if err != nil {
-				return issueWriteOpened{}, err
-			}
-			if conflict != nil {
-				return issueWriteOpened{}, conflict
-			}
+		plan.unjudged = !s.deps.ParentStatusRule.On()
+		if step != nil {
+			plan.options = step.options
+		}
+		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
+		if err != nil {
+			return issueWriteOpened{}, err
+		}
+		if conflict != nil {
+			return issueWriteOpened{}, conflict
 		}
 		if input.RefuseOpenForeignChildren {
 			// An open child of another project refuses the acceptance with 409
@@ -582,8 +586,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		return issueWriteOpened{
 			tx: tx, before: before, closing: closing, reopening: reopening, afterParent: afterParent,
-			statusChanged: statusChanged, parentChanged: parentChanged, heldAdvances: heldAdvances,
-			namedLastSeq: namedLastSeq, holdsNamed: holdsNamed, commentBody: commentBody, moved: moved,
+			statusChanged: statusChanged, parentChanged: parentChanged, labelsAfter: labelsAfter,
+			heldAdvances: heldAdvances, namedLastSeq: namedLastSeq, holdsNamed: holdsNamed,
+			commentBody: commentBody, moved: moved,
 		}, nil
 	}
 	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks into
@@ -622,7 +627,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{issue: before, previousLastSeq: before.LastSeq}, nil
 	}
 	afterParent, statusChanged, parentChanged, heldAdvances := opened.afterParent, opened.statusChanged, opened.parentChanged, opened.heldAdvances
-	namedLastSeq, holdsNamed, commentBody, moved := opened.namedLastSeq, opened.holdsNamed, opened.commentBody, opened.moved
+	labelsAfter, namedLastSeq, holdsNamed, commentBody, moved := opened.labelsAfter, opened.namedLastSeq, opened.holdsNamed, opened.commentBody, opened.moved
 	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks
 	// into the issue's documents, which reach their rooms through the ledger's commit. That
 	// document work runs before the patch's first write, holding no transaction id (INFRA-636); its
@@ -746,8 +751,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.Status != nil {
 		afterStatus = status
 	}
-	if input.Labels != nil || input.LabelsAdd != nil {
-		afterRow.labels = labels
+	if labelsAfter != nil {
+		afterRow.labels = *labelsAfter
 	}
 	advice, err := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),

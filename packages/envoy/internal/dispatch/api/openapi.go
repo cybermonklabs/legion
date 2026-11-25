@@ -375,11 +375,10 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // absent is one of its three states — and carries the schema that table gives it.
 //
 // A name is added to required once however often it is reflected. A shaped read shadows a field
-// of the row it embeds - architectureTreeRead declares `components` in front of the
-// model.ArchitectureTree it embeds - and the reflector walks the embedded struct's fields into
-// the object beside the shadowing one, so both reach this with the same json name. JSON Schema
-// 2020-12 §6.5.3 says the entries of required are unique, and the first of the two keeps the
-// place the emitter gave it.
+// of the row it embeds - shapedAsk declares `options` in front of the model.Ask it embeds - and
+// the reflector walks the embedded struct's fields into the object beside the shadowing one, so
+// both reach this with the same json name. JSON Schema 2020-12 §6.5.3 says the entries of
+// required are unique, and the first of the two keeps the place the emitter gave it.
 func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil

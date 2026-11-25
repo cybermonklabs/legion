@@ -273,7 +273,7 @@ func (r *docsWriterRig) tick() docsWriter {
 			r.awaitDurable(t, document)
 			background := testBackgroundPool(t, r.service)
 			return docsRun{document: document, write: func() error {
-				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, background, owedDocument{id: document, version: 1})
+				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, background, owedDocument{id: document, version: 1}, nil)
 				if err != nil {
 					return err
 				}

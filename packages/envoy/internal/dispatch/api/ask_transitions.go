@@ -545,15 +545,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// A transition writes no question text, so it reconciles none of the ask's own references.
-	// An answer is a part of the ask, though, so both transitions index the parts here, where
-	// the row write they queued comes before the index: a resolution adds no part, but its
-	// indexing still takes the ask's state row, reconciles the links its parts hold and clears
-	// owed_at, and writes every part of an ask an older build left owed. The answer a transition
-	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
-	// after it.
+	// A transition writes no question text, but it holds the ask's parts alone: an answer is a
+	// part of the ask, so both transitions index the parts here, where the row write they queued
+	// comes before the index, and the parts' step reconciles the question's references after them
+	// and settles the ask's row of the forms queue there (questionReconciled false): a resolution
+	// adds no part, but its indexing still takes the ask's state row, reconciles the links its
+	// parts hold and clears owed_at, and writes every part of an ask an older build left owed. The
+	// answer a transition wrote is queued before the event, so the ask's Replies rows are read by
+	// the event's insert, after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, false, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}

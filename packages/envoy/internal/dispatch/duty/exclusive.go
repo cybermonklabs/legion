@@ -33,6 +33,12 @@ const (
 	// that ran inside such a window would read whole documents of its own, and the peak measured
 	// there would be that pass's memory and not the request's.
 	BlockIndexLease = "block-index"
+	// RefsFormsLease is docs.RunRefsFormsReconciliation's: one pass of the reference forms drain.
+	// A lease of its own rather than BlockIndexLease: a period one process has served is skipped
+	// by the others (Exclusive), and during a rolling update the process that wins the block
+	// index's period may be one of the release before this one, which knows nothing of
+	// refs_forms_owed and would drain none of it.
+	RefsFormsLease = "refs-forms"
 	// SearchTermStatsLease is api.RunSearchTermStatsRefresh's: the term-statistics refresh that
 	// rebuilds every project's term statistics. Two processes rebuilding the same rows would be
 	// the same work twice.
