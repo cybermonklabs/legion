@@ -187,10 +187,11 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	if e.said.IsEmpty() {
-		return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.own, e.Message)
+	code := e.own
+	if !e.said.IsEmpty() {
+		code = e.said.String()
 	}
-	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.said, e.Message)
+	return fmt.Sprintf("broker answered %d %s: %s", e.Status, code, e.Message)
 }
 
 // HasCode reports whether the refusal's code is code: the broker's code compared as it came, or
