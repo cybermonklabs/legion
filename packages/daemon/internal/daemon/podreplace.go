@@ -273,7 +273,7 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 // finish of the same act, is finished already: the finish answers it not found
 // (store.PodReplacementFinish.Found) and no error, nothing is queued for it here (the Legion
 // reviewer's Important 1 on #5285 at 7da847c0), and the finish that took it ended its round
-// (endRecordedRound). attrs name the replacement on its lines.
+// (endTakenRound). attrs name the replacement on its lines.
 func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod string, yield bool, message func(recordedRead) string,
 	attrs ...any) (store.PodReplacementFinish, error) {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
@@ -369,7 +369,7 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 
 // endTakenRounds ends the round of each round's record of the issue that the finish of the launch's
 // record of operation took with it (took, store.PodReplacementFinish.Took), as the act that took its
-// pod (endRecordedRound), over the issue's claims as their machines hold them now, unmasked
+// pod (endTakenRound), over the issue's claims as their machines hold them now, unmasked
 // (machinesGroup), which no failed read of the store can keep from it. A record this daemon cannot
 // read ends nothing.
 func (s *supervision) endTakenRounds(ctx context.Context, issue, operation string, took []store.PodReplacement) {
@@ -383,46 +383,46 @@ func (s *supervision) endTakenRounds(ctx context.Context, issue, operation strin
 		if !read {
 			group, read = s.machinesGroup(issue), true
 		}
-		s.endRecordedRound(ctx, group, r, rec, true)
+		s.endTakenRound(ctx, group, r, rec)
 	}
 }
 
-// endRecordedRound ends the round of r, a round's record of a replacement whose act is made (rec is
-// r as this daemon reads it), over group, the issue's claims as their machines hold them, unmasked
-// (noticeGroup). It is the one end of a round that a finish outside the round's own call decides:
-// the sweep's, for a record it finishes and for a record the finish of another record took
-// (finishReplacements), and a launch's, for a record its finish took (tellLaunchTook; the Legion
-// reviewer's Medium 2 and fix 2 on #5285 at 4b123279).
-//
-// took is whether the finish of another act took r already, through a target both records name
-// (store.PodReplacement.Targets): a launch's act on the round's pod. That act took the pod, so the
-// round ends as that act, with the members that had not answered named on its line, and with no
-// notice of its own: that act's notice, told from the read of the records it took that tells most,
-// r's among them, is the one word of it. Otherwise r is finished here, and the round ends as the
-// replacement r records, from the read made before it (roundReplaced). A round that is over already
-// (roundOver: no claim records it any more, or the sweep has ended it) is ended no second time.
-//
-// It answers what the finish of r did, which is nothing where took is true, and whether the round is
-// over: false where the store refused the finish, and the round stays open with r for a later sweep.
-// Whom either end names is read of each member as it stands now (lostClaims, workOnRoundPod), over
-// the store's record of the disk of the round's pod (roundPodHoldsEarlierWork), as every end of a
-// round reads it.
-func (s *supervision) endRecordedRound(ctx context.Context, group []supervise.Claim, r store.PodReplacement, rec replacementRecord, took bool) (store.PodReplacementFinish, bool) {
-	if !took {
-		earlierWork := s.roundPodHoldsEarlierWork(ctx, r.Issue, rec.Round)
-		lost := lostClaims(group, rec.Round, earlierWork)
-		return s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lost, lost, rec.read(r.PodUID), group, earlierWork, r, false)
-	}
+// endRecordedRound ends the round of r, a round's record of a replacement whose act is made and
+// that no other finish took (rec is r as this daemon reads it), over group, the issue's claims as
+// their machines hold them, unmasked (noticeGroup): the sweep finishes r, and the round ends as the
+// replacement r records, from the read made before it (roundReplaced), with the members that had
+// not answered named. It answers what the finish of r did, and whether the round is over: false
+// where the store refused the finish, and the round stays open with r for a later sweep. Whom the
+// end names is read of each member as it stands now (lostClaims, workOnRoundPod), over the store's
+// record of the disk of the round's pod (roundPodHoldsEarlierWork), as every end of a round reads
+// it.
+func (s *supervision) endRecordedRound(ctx context.Context, group []supervise.Claim, r store.PodReplacement, rec replacementRecord) (store.PodReplacementFinish, bool) {
+	earlierWork := s.roundPodHoldsEarlierWork(ctx, r.Issue, rec.Round)
+	lost := lostClaims(group, rec.Round, earlierWork)
+	return s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lost, lost, rec.read(r.PodUID), group, earlierWork, r, false)
+}
+
+// endTakenRound ends the round of r, a round's record that the finish of another act took already,
+// through a target both records name (store.PodReplacement.Targets): a launch's act on the round's
+// pod (rec is r as this daemon reads it), over group, the issue's claims as their machines hold
+// them, unmasked. That act took the pod, so the round ends as that act, with the members that had
+// not answered named on its line (lostClaims, over roundPodHoldsEarlierWork, as every end of a
+// round reads them), and with no notice of its own: that act's notice, told from the read of the
+// records it took that tells most, r's among them, is the one word of it. It is the end of a round
+// that a launch's finish took, whether the launch's own (tellLaunchTook; the Legion reviewer's
+// Medium 2 and fix 2 on #5285 at 4b123279) or the sweep's (finishReplacements). A round that is
+// over already (roundOver: no claim records it any more, or the sweep has ended it) is ended no
+// second time.
+func (s *supervision) endTakenRound(ctx context.Context, group []supervise.Claim, r store.PodReplacement, rec replacementRecord) {
 	attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
 	if s.roundOver(r.Issue, group, rec.Round) {
 		s.log.Info("supervise: the finish of a launch's act took this record of a replacement of the issue's pod, whose update round is over already", attrs...)
-		return store.PodReplacementFinish{}, true
+		return
 	}
 	earlierWork := s.roundPodHoldsEarlierWork(ctx, r.Issue, rec.Round)
 	s.log.Info("supervise: the finish of a launch's act took this record of the update round's replacement of the issue's pod with it; the round ends as that act, with no notice of its own",
 		append(attrs, "unansweredMembers", namesOf(lostClaims(group, rec.Round, earlierWork)))...)
 	s.endPodUpdates(r.Issue, group, rec.Round)
-	return store.PodReplacementFinish{}, true
 }
 
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
@@ -474,8 +474,8 @@ func (s *supervision) endRecordedRound(ctx context.Context, group []supervise.Cl
 //
 //   - Gone: the deciding record's finish took it. A launch's record, or a record of the round that
 //     ended, went with it. A record of another round, which a launch's finish took, ends that
-//     round as the act that took its pod, with no notice of its own (endRecordedRound, which a
-//     launch's own finish outside a sweep calls too): the launch's notice is the one notice of
+//     round as the act that took its pod, with no notice of its own (endTakenRound, which a
+//     launch's own finish outside a sweep reaches too): the launch's notice is the one notice of
 //     the act. A round that is over already is ended no second time.
 //   - Stands: the deciding record stands (its turn is held, its read failed, the runtime cannot say
 //     whether its act was made, or the store refused its finish), so the later record stands with
@@ -517,7 +517,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 				s.log.Info("supervise: the finish of a record decided at this sweep took this record of a replacement of the issue's pod with it", attrs...)
 				continue
 			}
-			s.endRecordedRound(ctx, s.noticeGroup(claimsOf(claims, r.Issue)), r, rec, true)
+			s.endTakenRound(ctx, s.noticeGroup(claimsOf(claims, r.Issue)), r, rec)
 			continue
 		}
 		keys := targetKeys(r)
@@ -564,7 +564,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 		default:
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it: its call did not answer so, its daemon stopped, or the store refused the architect's workspace-taken notice; its round, where it is not over, ends as that replacement, from the read made before it",
 				attrs...)
-			finish, ended := s.endRecordedRound(ctx, s.noticeGroup(claimsOf(claims, r.Issue)), r, rec, false)
+			finish, ended := s.endRecordedRound(ctx, s.noticeGroup(claimsOf(claims, r.Issue)), r, rec)
 			if !ended {
 				held[r.Issue] = held[r.Issue] || holds
 			}

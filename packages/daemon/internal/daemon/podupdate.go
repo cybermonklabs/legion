@@ -80,7 +80,7 @@ import (
 // by issue read it before they ask the runtime (ReplacePod, ReplaceIssuePod), which can refuse or
 // answer that the replacement is no longer due and end nothing; the next sweep then reads it
 // again. The finish of a replacement's record outside the round's own call reads it as it ends
-// the round (endRecordedRound).
+// the round (endRecordedRound, endTakenRound).
 //
 // Everything a round decides comes from durable records, but the pod a claim's launch waits on
 // (above): the claim columns — the round, its reasons, when it opened, when each worker was asked,
@@ -1401,7 +1401,7 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // the round as it stands, and ends it then (finishReplacements, or the walk's end of a round a
 // launch replaced). It answers what the finish did, and whether this finish took the record and
 // the round is over: false where the store refused the finish, and where the finish of another
-// act on the pod took the record first and ended the round as that act (endRecordedRound).
+// act on the pod took the record first and ended the round as that act (endTakenRound).
 //
 // yield is a round's call that answered nil without asking its last word (asked false): it found
 // the pod taken already, and took nothing. Where the record of a launch's delete of the issue's
@@ -1463,7 +1463,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	// queues the architect's notice: a store that refuses that notice leaves the round open, and
 	// each later sweep tries again, so the line that says the round is over comes once, after the
 	// finish commits. A record the finish of another act on the pod took is finished already, and
-	// that finish ended the round as its act (endRecordedRound), so it is ended no second time here,
+	// that finish ended the round as its act (endTakenRound), so it is ended no second time here,
 	// and nor is a round that is over already (roundOver).
 	finish, err := s.finishReplacement(ctx, recorded.Operation, issue, pod, yield, message, "round", round)
 	switch {
@@ -3252,7 +3252,7 @@ func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim) map[stri
 // sweep's ends read it: no claim of group records it, or the sweep has ended it and a member's
 // machine has not taken the end yet (keepEndedRound). A round's record of a replacement whose round
 // is over holds nothing of the issue (finishReplacements), and its round is ended no second time
-// (endRecordedRound, roundReplaced).
+// (endTakenRound, roundReplaced).
 func (s *supervision) roundOver(issue string, group []supervise.Claim, round string) bool {
 	if !recordsRound(group, round) {
 		return true
@@ -3878,10 +3878,10 @@ func workOnRoundPod(c supervise.Claim, round string, earlierWork bool) bool {
 // from before the pod, as the store marks it (store.PodHoldsEarlierWork: a later pod of the issue's
 // kept volume). Each end of the round reads it as it ends the round, and hands the answer to
 // every reader of workOnRoundPod that end makes (replacePodForRound, replaceIssuePodForRound,
-// endRoundWhosePodWent, endRecordedRound). A read that fails must not hide a loss, so it answers
-// true, as if the disk held such work, and the error is logged, unless the daemon's own stop cut
-// the read short, which is no fault of the store's: the end then names every member with a session
-// or a pod that had not answered, as an earlier release named every member.
+// endRoundWhosePodWent, endRecordedRound, endTakenRound). A read that fails must not hide a loss,
+// so it answers true, as if the disk held such work, and the error is logged, unless the daemon's
+// own stop cut the read short, which is no fault of the store's: the end then names every member
+// with a session or a pod that had not answered, as an earlier release named every member.
 func (s *supervision) roundPodHoldsEarlierWork(ctx context.Context, issue, round string) bool {
 	pod := strings.TrimPrefix(round, supervise.PodRoundPrefix)
 	holds, err := s.supervisor.store.PodHoldsEarlierWork(ctx, issue, pod)
