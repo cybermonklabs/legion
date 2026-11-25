@@ -1082,9 +1082,11 @@ func (l *Ledger) commit(ctx context.Context) error {
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
 	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
-	// fork, which the room's durable writers move on from there (roomShadow.measure), so the
-	// write's rendering describes its fork for the last time here, under the document's advisory
-	// lock this transaction still holds (checkRendering's "commit").
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it. A write that has finished released its
+	// fork, so it has none to check.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
 		if l.service.checkRendering != nil && !write.finished {

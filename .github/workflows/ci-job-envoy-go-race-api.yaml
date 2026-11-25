@@ -73,6 +73,11 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The package's tests run 8 at once (apiTestParallelism, server_test.go), each with a
       # database and pools of its own, so this samples the service's connections every 2 s while
       # the next step runs and the step after it prints the peak against max_connections: a change

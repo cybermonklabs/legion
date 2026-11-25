@@ -915,6 +915,9 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.finishLiveWrite(write)
 	s.hooks.parkLiveWrite(write.artifactID, PauseAfterCommit)
 	defer s.closeShadow(write)
+	if s.beforePublish != nil {
+		s.beforePublish(write)
+	}
 	// Committed, the write has no more use for its fork, so the fork goes before the publish,
 	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
 	// (newShadow) and applies the room's later commits to it as it measures them, so from the

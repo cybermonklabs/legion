@@ -101,11 +101,11 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	// The write's own settlement runs once the write has ended, so nothing holds the room's
 	// record by the time the test retires the room.
 	r.service.settle = 20 * time.Millisecond
-	// The room the write forked from, read as its transaction commits (checkRendering's "commit"),
-	// the last point the fork is the write's own, just before its publish.
+	// The room the write forked from, read as its publish begins (beforePublish), before the
+	// publish releases the fork.
 	forkedFrom := make(chan *crdt.Doc, 1)
-	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "commit" && write.artifactID == r.room {
+	r.service.beforePublish = func(write *liveWrite) {
+		if write.artifactID == r.room {
 			select {
 			case forkedFrom <- write.forkedFrom.Value():
 			default:
@@ -121,7 +121,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 			t.Fatalf("the write forked from room %p, want the room the late settlement loaded (%p); nothing here is tested", from, settlementRoom)
 		}
 	default:
-		t.Fatal("the write committed nothing, so nothing here is tested")
+		t.Fatal("the write published nothing, so nothing here is tested")
 	}
 	letSettle()
 	r.awaitSocketEnd("the second room's browser")
@@ -165,7 +165,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded(t *t
 // writerTakesUpALoadingSettlementRoom holds the load of the room a late departure's settlement
 // makes while it decodes the stored history (bootstrapping), before its hook takes the room's
 // record, and opens a joined write held after its fork read. It lets the load go first, or, with
-// writeFirst, the write first, which commits while the room still loads and publishes into it.
+// writeFirst, the write first, which commits and reaches its publish while the room still loads.
 // It then requires that room to stay resident once a retirement runs after every holder has ended
 // (TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded).
 func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
@@ -211,18 +211,17 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 			<-letWrite
 		}
 	}
-	// The write as its transaction commits (checkRendering's "commit", the last point the hook
-	// sees the write): whether it forked cold, and the room resident then, which its publish after
-	// the commit goes into.
-	type atCommit struct {
+	// The write as its publish begins (beforePublish): whether it forked cold, and the room
+	// resident then, which its publish goes into.
+	type publish struct {
 		cold bool
 		held *crdt.Doc
 	}
-	commits := make(chan atCommit, 1)
-	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "commit" && write.artifactID == r.room {
+	publishes := make(chan publish, 1)
+	r.service.beforePublish = func(write *liveWrite) {
+		if write.artifactID == r.room {
 			select {
-			case commits <- atCommit{cold: write.cold, held: r.service.srv.GetDoc(r.room)}:
+			case publishes <- publish{cold: write.cold, held: r.service.srv.GetDoc(r.room)}:
 			default:
 			}
 		}
@@ -254,12 +253,12 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 		}
 		return false
 	})
-	var committed atCommit
+	var published publish
 	if writeFirst {
 		releaseWrite()
-		committed = testwait.Receive(t, "the write to commit while the settlement's room loads", commits)
-		if committed.held != nil {
-			t.Fatalf("the write committed with room %p resident, want the settlement's room still loading; nothing here is tested", committed.held)
+		published = testwait.Receive(t, "the write to reach its publish while the settlement's room loads", publishes)
+		if published.held != nil {
+			t.Fatalf("the write reached its publish with room %p resident, want the settlement's room still loading; nothing here is tested", published.held)
 		}
 		releaseLoad()
 	} else {
@@ -274,19 +273,19 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	}
 	if !writeFirst {
 		select {
-		case committed = <-commits:
+		case published = <-publishes:
 		default:
-			t.Fatal("the write committed nothing, so nothing here is tested")
+			t.Fatal("the write published nothing, so nothing here is tested")
 		}
 	}
 	// No other room of the document loaded and nothing refused the publish; the room's text, read
 	// once nothing holds the record, says the publish reached the settlement's room.
 	settlementRoom := settlementDoc.Load()
-	if loads := r.loads.Load(); loads != 3 || !committed.cold || refused.Load() {
-		t.Fatalf("after the write the document was loaded %d times, and the write forked cold: %v and had its publish refused: %v; want the settlement's room, the third load, published into by a cold write; nothing here is tested", loads, committed.cold, refused.Load())
+	if loads := r.loads.Load(); loads != 3 || !published.cold || refused.Load() {
+		t.Fatalf("after the write the document was loaded %d times, and the write forked cold: %v and had its publish refused: %v; want the settlement's room, the third load, published into by a cold write; nothing here is tested", loads, published.cold, refused.Load())
 	}
-	if !writeFirst && committed.held != settlementRoom {
-		t.Fatalf("the write committed with room %p resident, want the room the late settlement loaded (%p), which its publish goes into; nothing here is tested", committed.held, settlementRoom)
+	if !writeFirst && published.held != settlementRoom {
+		t.Fatalf("the write published into room %p, want the room the late settlement loaded (%p); nothing here is tested", published.held, settlementRoom)
 	}
 
 	r.awaitSocketEnd("the second room's browser")
@@ -459,9 +458,8 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // from what is there then, so its write is published into the very room it forked from, or forks
 // from the store where no room is. A writer is inside no Apply on the room while it holds the
 // writer slot, so ygo's own checks before its close cannot see it. The check is the room the write
-// forked from against the room the name holds as the write commits (checkRendering's "commit", the
-// last point the fork is the write's own, just before its publish), not that some room is
-// resident: a room another load put back under the name is no room the write forked from. A close
+// forked from against the room the name holds at the publish (beforePublish), not that some room
+// is resident: a room another load put back under the name is no room the write forked from. A close
 // that came later, while the writer still held its slot, is the one the check at the close's
 // return (afterRetireLeft) reads.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
@@ -488,15 +486,15 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 			signal(waiting)
 		}
 	}
-	type commit struct {
+	type publish struct {
 		cold             bool
 		forkedFrom, held *crdt.Doc
 	}
-	commits := make(chan commit, 1)
-	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "commit" && write.artifactID == r.room {
+	publishes := make(chan publish, 1)
+	r.service.beforePublish = func(write *liveWrite) {
+		if write.artifactID == r.room {
 			select {
-			case commits <- commit{cold: write.cold, forkedFrom: write.forkedFrom.Value(), held: r.service.srv.GetDoc(r.room)}:
+			case publishes <- publish{cold: write.cold, forkedFrom: write.forkedFrom.Value(), held: r.service.srv.GetDoc(r.room)}:
 			default:
 			}
 		}
@@ -547,12 +545,12 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 		t.Fatalf("the write that opened as the room retired: %v", err)
 	}
 	select {
-	case got := <-commits:
+	case got := <-publishes:
 		if !got.cold && (got.forkedFrom == nil || got.held != got.forkedFrom) {
-			t.Errorf("the write forked from room %p and found room %p under the name as it committed, want the room it forked from: the retirement closed the room under the writer holding it", got.forkedFrom, got.held)
+			t.Errorf("the write forked from room %p and found room %p under the name to publish into, want the room it forked from: the retirement closed the room under the writer holding it", got.forkedFrom, got.held)
 		}
 	default:
-		t.Fatal("the write that opened as the room retired committed nothing, so nothing here is tested")
+		t.Fatal("the write that opened as the room retired published nothing, so nothing here is tested")
 	}
 }
 
