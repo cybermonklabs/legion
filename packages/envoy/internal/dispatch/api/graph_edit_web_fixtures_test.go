@@ -187,12 +187,44 @@ type graphEditSeed struct {
 	// The nodes of the converted issue, each by the address the node routes take.
 	questionBlock, criterion, statement1, statement2, statement3, checkShared, checkAgent string
 	prose, comment, constraint, listParagraph                                             string
+	goneProse, lens                                                                       string
 	// doneStatement is a statement of the done copy, which no node route finds under key.
 	doneStatement string
 	// childParagraph is the paragraph of the child's room.
 	childParagraph string
 	// staleTag is the placement_seq the third statement held before its first move, as an If-Match.
 	staleTag string
+}
+
+// graphEditSettling is the handler the seed's requests go through, all but the create of the
+// unconverted issue (seedGraphEdit): the seed's server (moveRig), which answers a write only once
+// the versions that write left owed are written (lastHeldQuiet), and a read at once. Two writers
+// run behind a write's answer. A live write of a room that stores no version arms the room's
+// settlement, which the document service runs when its timer ends and which writes that version:
+// alice's answer writes the answered state into her `:::ask` block so
+// (docs.Service.KeepAskBlockInStep). And a settlement leaves the versions of the queries it moved
+// to the drain it runs after its commit (docs.Service.DrainOwedQueries). A write that reaches the
+// server before either has run can take that work into its own version, where the two would have
+// written one each, and the number of every later version of that document then follows how fast
+// the machine served the seed. A last_held states that number.
+//
+// depth is the count of requests being served: a request the server's test hook sends from inside
+// a write (contended) waits for nothing, and the write around it waits once it is answered. Every
+// request of the seed is sent and served on the test's goroutine, so depth takes no lock.
+type graphEditSettling struct {
+	t     *testing.T
+	rig   *moveRig
+	serve http.Handler
+	depth int
+}
+
+func (h *graphEditSettling) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.depth++
+	h.serve.ServeHTTP(w, r)
+	h.depth--
+	if h.depth == 0 && r.Method != http.MethodGet {
+		lastHeldQuiet(h.t, h.rig)
+	}
 }
 
 // TestGraphEditWebFixture writes, and with no flag holds to the committed bytes, the answers the
@@ -244,6 +276,13 @@ type graphEditSeed struct {
 //     count of its 409 DELETE_COUNT_MOVED (taken), the converted issue's tree read as the person
 //     right after it (tree_after), and each DELETE refusal (refused), keyed as refused is.
 //
+//   - targets: one batched read of a live statement and the gone statement, check, prose,
+//     lens and plan task. Each value is the handler's answer, with address parts named.
+//     The gone statement is not in the earlier tree read, so the web test must resolve its ref.
+//     A last_held states its version as the store numbered it, with no name in its place: each
+//     write of the seed is answered once its versions are written (graphEditSettling), so every
+//     run numbers them alike.
+//
 // Every tree read sends `Dispatch-Trees: 1`, as the issue page's client does, so each node carries
 // its text_tree, and its request says so (dispatch_trees).
 //
@@ -279,6 +318,7 @@ func TestGraphEditWebFixture(t *testing.T) {
 	fixture := map[string]any{"tree": trees, "paged": seed.paged(t, trees["converted"].(*graphEditReads).person)}
 	fixture["moved"] = seed.moved(t)
 	fixture["refused"], fixture["deleted"] = seed.refusals(t)
+	fixture["targets"] = seed.targets(t)
 	names.blocks(t, seed.rig.database)
 	fixture["owed"] = graphEditOwed(t, seed.rig.database, names)
 	got := names.encode(fixture)
@@ -309,6 +349,8 @@ func TestGraphEditWebFixture(t *testing.T) {
 func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	t.Helper()
 	rig := newMoveRig(t, graphEditProject)
+	ungated := rig.handler
+	rig.handler = &graphEditSettling{t: t, rig: rig, serve: ungated}
 	handler, database := rig.handler, rig.database
 	s := &graphEditSeed{rig: rig, names: names}
 
@@ -371,6 +413,7 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	if len(lens.Findings) != 1 {
 		t.Fatalf("the pre-mortem holds %d findings, want one", len(lens.Findings))
 	}
+	s.lens = lens.Address
 	risk := created201[struct {
 		ID string `json:"id"`
 	}](t, "a risk under the pre-mortem", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+s.key+"/risks", map[string]any{
@@ -388,7 +431,11 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	editSpec(t, handler, s.done, []map[string]any{{"op": "insert", "after": "end",
 		"markdown": ":::requirement{#ds1 serves=\"dispatch://" + s.done + "/spec#b-dk1\"}\nThe closed issue's statement.\n:::\n"}})
 	succeeded(t, "close the done copy", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+s.done, map[string]any{"status": "done"}, "alice"))
-	unconverted := createDigestIssue(t, handler, database, graphEditProject, "The unconverted issue",
+	// The create of the unconverted issue goes to the server itself: a process of the release
+	// before stands beside the server until the create's helper takes it back
+	// (createDigestChild), and the wait below is for the settlement of its spec, with the server
+	// alone again.
+	unconverted := createDigestIssue(t, ungated, database, graphEditProject, "The unconverted issue",
 		":::criterion{#uk1}\nThe unconverted issue's criterion.\n:::\n\n:::requirement{#us1}\nThe unconverted issue's statement.\n:::\n", true)
 	s.unconverted = unconverted.Key
 	rig.quiet(t)
@@ -633,6 +680,7 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 	s.agentEdit(t, architect, s.tree.id, "end", graphEditAgentProseWords+"\n")
 	agentProse := blockWithText(t, s.rig.database, graphEditAgentProseWords)
 	s.names.name(agentProse, "<agent-prose>")
+	s.goneProse = agentProse
 	s.move(t, architect, "<agent-prose>", agentProse, s.tag(t, "<agent-prose>", agentProse), map[string]any{"parent": s.statement3}).
 		taken(t, "the architect's move of its prose block under "+s.statement3)
 	moved := deleteRefused(codeDeleteCountMoved, "the delete of "+s.statement3+" with the count read before the architect's write",
@@ -660,6 +708,43 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 	s.contended(t, refused, refusedDeletes)
 	s.names.issue(t, s.rig.database, s.key, "")
 	return refused, map[string]any{"dry_run": dryRun, "taken": taken, "tree_after": treeAfter, "refused": refusedDeletes}
+}
+
+func (s *graphEditSeed) targets(t *testing.T) *graphEditExchange {
+	t.Helper()
+	// The prior delete took statement-3, its lens and agent-prose. Delete the check
+	// with no result and the plan task after recording the other fixture exchanges.
+	removeLastHeldNode(t, s.rig, s.key, s.checkAgent)
+	removeLastHeldNode(t, s.rig, s.key, s.tree.address("t1"))
+	// The address-fallback test also reads the earlier converted tree. Seed this statement
+	// after that read so the tree cannot answer it without asking for reference targets.
+	const goneStatement = "last-held-statement"
+	editSpec(t, s.rig.handler, s.key, []map[string]any{{"op": "insert", "after": "end",
+		"markdown": ":::requirement{#" + goneStatement + " serves=\"dispatch://" + s.key + "/spec#b-k1\"}\nThe citation keeps the last version that held its target.\n:::\n"}})
+	removeLastHeldNode(t, s.rig, s.key, s.tree.address(goneStatement))
+	_, prose, _ := strings.Cut(s.goneProse, "#")
+	addresses := []string{
+		lastHeldBlockRef(s.key, "spec", "s1"),
+		lastHeldBlockRef(s.key, "spec", goneStatement),
+		lastHeldBlockRef(s.key, model.ArtifactSlugVerification, "c2"),
+		lastHeldBlockRef(s.key, issueTreeName, prose),
+		s.lens,
+		lastHeldBlockRef(s.key, model.ArtifactSlugPlan, "t1"),
+	}
+	path := referenceTargetsOf(addresses...)
+	exchange := graphEditSend(t, s.rig.handler, graphEditPerson, http.MethodGet, path, path, "", false, nil).
+		taken(t, "the reference targets batch")
+	targets := decodeBody[model.ReferenceTargets](t, exchange.response).Targets
+	if len(targets) != len(addresses) {
+		t.Fatalf("the fixture's targets read %d members, want %d", len(targets), len(addresses))
+	}
+	for i, target := range targets {
+		wantGone, wantHistory := i != 0, i != 0 && i != 4
+		if target.Ref != addresses[i] || target.Gone != wantGone || (target.LastHeld != "") != wantHistory {
+			t.Fatalf("fixture target %s reads %+v, want gone=%t and last_held present=%t", addresses[i], target, wantGone, wantHistory)
+		}
+	}
+	return exchange
 }
 
 // contended adds the PATCH's and the DELETE's 409 PARENT_CONTENDED to refused and refusedDeletes,

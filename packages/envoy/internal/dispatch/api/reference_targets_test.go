@@ -80,8 +80,11 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	if want := (model.ReferenceTarget{Ref: held, Kind: "block", Name: "First paragraph."}); !reflect.DeepEqual(targets[0], want) {
 		t.Errorf("the block that exists answered %#v, want %#v", targets[0], want)
 	}
-	if want := (model.ReferenceTarget{Ref: gone, Kind: "block", Gone: true}); !reflect.DeepEqual(targets[1], want) {
-		t.Errorf("the deleted block answered %#v, want it gone and unnamed", targets[1])
+	// The paragraph belongs to the document, not the Spec query. Keep it gone and unnamed
+	// under its original ref, with the version before the edit as its last held address.
+	lastHeld := "dispatch://" + issue.Key + "/artifact/spec#b-" + text.EncodeBlockID(ids["Second paragraph."]) + "@v" + strconv.Itoa(edited.Number-1)
+	if want := (model.ReferenceTarget{Ref: gone, Kind: "block", Gone: true, LastHeld: lastHeld}); !reflect.DeepEqual(targets[1], want) {
+		t.Errorf("the deleted block answered %#v, want %#v", targets[1], want)
 	}
 	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[2], want) {
 		t.Errorf("the other issue answered %#v, want %#v", targets[2], want)

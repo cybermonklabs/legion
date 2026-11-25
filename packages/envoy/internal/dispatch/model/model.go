@@ -4465,6 +4465,11 @@ type ReferenceTarget struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 	Gone bool   `json:"gone"`
+
+	// LastHeld is the pinned dispatch:// address of the newest recorded version that held
+	// a gone document block the caller may see. It is absent when no such version is known.
+	LastHeld string `json:"last_held,omitempty"`
+
 	// Ambiguous is true for a reference whose short id two or more items carry in the scope
 	// that the reference names. Such a member is gone, with the name "", and every other
 	// member of the read is answered. The key is left out otherwise.

@@ -453,7 +453,7 @@
               "asks": [],
               "block_id": "d1",
               "changed_at": "<time>",
-              "changed_version": 3,
+              "changed_version": 4,
               "heading": "The graph keeps one write for each move.",
               "kept": null,
               "kind": "agent",
@@ -1790,7 +1790,7 @@
               "mark_id": "<comment-on-statement-3>",
               "orphaned": true,
               "quote": "stores nothing",
-              "version": 3
+              "version": 4
             },
             "attributes": {
               "project": "GEDIT",
@@ -2192,7 +2192,7 @@
         "owed_documents": [
           {
             "artifact_id": "<decisions>",
-            "version": 2
+            "version": 3
           }
         ],
         "tree": "<tree>",
@@ -5734,7 +5734,7 @@
                 "occurrence": 0,
                 "orphaned": false,
                 "quote": "stores nothing",
-                "version": 3
+                "version": 4
               },
               "attributes": {
                 "project": "GEDIT",
@@ -6174,7 +6174,7 @@
           "owed_documents": [
             {
               "artifact_id": "<decisions>",
-              "version": 2
+              "version": 3
             }
           ],
           "tree": "<tree>",
@@ -6789,6 +6789,59 @@
       "status": 428
     }
   },
+  "targets": {
+    "body": {
+      "targets": [
+        {
+          "gone": false,
+          "kind": "block",
+          "name": ":::requirement{#s1 serves=\"dispatch://<issue>/spec#b-k1\"}\nAn indent is one write of the node's place.\n:::",
+          "ref": "dispatch://<issue>/spec#b-s1"
+        },
+        {
+          "gone": true,
+          "kind": "block",
+          "last_held": "dispatch://<issue>/spec#b-last-held-statement@v11",
+          "name": "",
+          "ref": "dispatch://<issue>/spec#b-last-held-statement"
+        },
+        {
+          "gone": true,
+          "kind": "block",
+          "last_held": "dispatch://<issue>/artifact/verification-md#b-c2@v3",
+          "name": "",
+          "ref": "dispatch://<issue>/artifact/verification-md#b-c2"
+        },
+        {
+          "gone": true,
+          "kind": "block",
+          "last_held": "dispatch://<issue>/artifact/tree#b-<agent-prose>@v4",
+          "name": "",
+          "ref": "dispatch://<issue>/artifact/tree#b-<agent-prose>"
+        },
+        {
+          "gone": true,
+          "kind": "lens",
+          "name": "",
+          "ref": "dispatch://lens/<lens>"
+        },
+        {
+          "gone": true,
+          "kind": "block",
+          "last_held": "dispatch://<issue>/artifact/plan-md#b-t1@v1",
+          "name": "",
+          "ref": "dispatch://<issue>/artifact/plan-md#b-t1"
+        }
+      ]
+    },
+    "request": {
+      "if_match": null,
+      "login": "<person>",
+      "method": "GET",
+      "path": "/api/v1/reference-targets?ref=dispatch%3A%2F%2F<issue>%2Fspec%23b-s1&ref=dispatch%3A%2F%2F<issue>%2Fspec%23b-last-held-statement&ref=dispatch%3A%2F%2F<issue>%2Fartifact%2Fverification-md%23b-c2&ref=dispatch%3A%2F%2F<issue>%2Fartifact%2Ftree%23b-<agent-prose>&ref=dispatch%3A%2F%2Flens%2F<lens>&ref=dispatch%3A%2F%2F<issue>%2Fartifact%2Fplan-md%23b-t1"
+    },
+    "status": 200
+  },
   "tree": {
     "child": {
       "agent": {
@@ -7280,7 +7333,7 @@
                 "asks": [],
                 "block_id": "d1",
                 "changed_at": "<time>",
-                "changed_version": 3,
+                "changed_version": 4,
                 "heading": "The graph keeps one write for each move.",
                 "kept": null,
                 "kind": "agent",
@@ -8772,7 +8825,7 @@
                 "occurrence": 0,
                 "orphaned": false,
                 "quote": "stores nothing",
-                "version": 3
+                "version": 4
               },
               "attributes": {
                 "project": "GEDIT",
@@ -9259,7 +9312,7 @@
           "owed_documents": [
             {
               "artifact_id": "<decisions>",
-              "version": 2
+              "version": 3
             }
           ],
           "tree": "<tree>",
