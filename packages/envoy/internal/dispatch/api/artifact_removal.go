@@ -75,8 +75,10 @@ import (
 // on the document's node, and reads the stale lenses only where one does, so a document nothing
 // stands on holds its transaction id no longer than before. No lens stands on a block of the
 // document, since a document the removal takes holds no block, and the removal reads what it takes
-// under the issue's owner lock, which every writer of a lens, a finding or a risk takes first
-// (lockIssueOwner), and which the removal holds, so it takes no lock for them.
+// under the issue's owner lock. Writers of a lens, a finding or a risk under the issue take
+// the same lock first (lockIssueOwner, or lockReasoningOwners for a write that asserts a
+// prevented_by and for the pre-mortem conversion). The removal already holds it, so it takes
+// no lock for the stale lenses.
 //
 // The document's node is addressed by its ref_key, which a later document of the same issue and
 // slug takes again: that document's create finds the node gone and states it live under its own
@@ -140,11 +142,12 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// changed_by_run it states now, the time its gone statement takes, and whether a lens stands on
 	// it - is read here, under the locks and before the first write, so no read of it runs while the
 	// transaction holds an id (#2468's write phase): the owner's lock and the room's are held
-	// already, and every writer of the node, and of a lens, a finding or a risk under the issue
-	// (lockIssueOwner), takes the owner's lock first, so neither the node, nor its marks, nor what
-	// stands on it move before the node is stated gone below. The time is past every statement the
-	// store holds about the address, and past the first node a missing one is given below, which is
-	// dated at the document's creation.
+	// already. Writers of the node take the owner's lock first, as do the api's writers of a
+	// lens, a finding or a risk under the issue (lockIssueOwner, or lockReasoningOwners for a
+	// write that asserts a prevented_by and for the pre-mortem conversion). So neither the node,
+	// nor its marks, nor what stands on it move before the node is stated gone below. The time is
+	// past every statement the store holds about the address, and past the first node a missing
+	// one is given below, which is dated at the document's creation.
 	fits := graphstore.AddressFits(artifact.RefKey)
 	var held, lensed bool
 	var removedAt time.Time

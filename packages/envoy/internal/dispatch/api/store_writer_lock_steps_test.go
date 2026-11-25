@@ -739,12 +739,13 @@ func (r *storeWriterRig) goingRunGone() storeWriter {
 // Each run is a run of its own, its window moved an hour ahead, by a person no write has recorded,
 // and sets labels no run has set, so every run changes the issue.
 //
-// The event's append advances the issue's last_seq on the row this write has already updated
-// (events.Broker's lockEventOwner), and Postgres checks the foreign key of a row its own
-// transaction wrote whenever that transaction updates it again, so that second update takes the
-// issue's project row `for key share`. That is a lock on the project of the issue's own row, taken
-// at the event's step, which every PATCH that changes a field takes with or without a run, and not
-// the project of its event, which an issue's event does not name (projectKeyShare).
+// The statement that inserts the event (events.Broker's QueueAppendWithLogins) advances the
+// issue's last_seq on the row this write has already updated. Postgres checks the foreign key
+// of a row its own transaction wrote whenever that transaction updates it again, so that second
+// update takes the issue's project row `for key share`. That is a lock on the project of the
+// issue's own row, taken at the event's step, which every PATCH that changes a field takes with
+// or without a run, and not the project of its event, which an issue's event does not name
+// (projectKeyShare).
 func (r *storeWriterRig) issuePatchForRun() storeWriter {
 	event := eventAppendStep()
 	event.takes = append(event.takes, tableLock{"projects", rowShareMode})

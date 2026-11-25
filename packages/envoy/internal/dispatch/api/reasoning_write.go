@@ -57,9 +57,9 @@ type reasoningWrite struct {
 // lockIssueOwner takes the issue's owner lock (store.LockOwner), the lock the order on
 // api/inbox_read.go's markInboxReadThreads puts before every other, and then reads the issue's
 // project in a statement of its own, so that read sees every commit of the lock's previous holder
-// (store.LockOwnerAndRead): the first lock of every reasoning write that names no check. A write
-// that names one takes the lock before, with the owner locks of its checks' documents
-// (lockReasoningOwners), and then takes here a lock its transaction holds, which returns at once.
+// (store.LockOwnerAndRead). Writes that assert a prevented_by and all pre-mortem conversions
+// take the issue's lock before this call (lockReasoningOwners), with the owner locks of any
+// checks' documents. Taking the issue's lock again does not wait.
 // An issue that does not exist is pgx.ErrNoRows.
 func lockIssueOwner(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 	var project string

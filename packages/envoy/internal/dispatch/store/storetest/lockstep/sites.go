@@ -89,11 +89,12 @@ var storeWriteCallSites = map[string]string{
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core the
-	// PATCH and each step of a status change run), which names the issue changed: the issue's owner
-	// lock (lockPatchOwners), the issue's row, then, on a context that carries a run alone, the
-	// issue's node as PlanChangedForRun plans it (QueueNodes), the issue's own event, and what the
-	// node states with its changed_by_run under that event (QueueCaused). api's
+	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core
+	// of the PATCH and each step of a status change run), which names the issue changed: the
+	// issue's owner lock (lockPatchOwners, or lockPatchOwnersAndParent for a write of the status
+	// or the parent), the issue's row, then, on a context that carries a run alone, the issue's
+	// node as PlanChangedForRun plans it (QueueNodes), the issue's own event, and what the node
+	// states with its changed_by_run under that event (QueueCaused). api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps, through the PATCH.
 	"api/issue_patch.go#writeIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
@@ -121,9 +122,9 @@ var storeWriteCallSites = map[string]string{
 	// `for no key update`, then the run's row `for key share`, then appends the frame value through
 	// Write before the going_events row. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds
 	// both to their steps. A frame of a run a pod of the release before recorded with no node
-	// writes that node first through the one writer of a run's node from its row, which the
-	// backfill shares (lockGoingRun): it takes the run's going_requests row `for no key update` and
-	// then writes in one Write, which the same test holds a frame of such a run to, step by step.
+	// writes that node first (lockGoingRun) through the writer the backfill shares
+	// (graphstore.WriteRun): it takes the run's going_requests row `for no key update` and then
+	// writes in one Write, which the same test holds a frame of such a run to, step by step.
 	// The sweep states a run gone an hour after it was asked, in a transaction of its own and in
 	// the frame's order (goRunGone): the run's interaction node row `for no key update`, one
 	// WriteState of that node, its state tuple at the sentinel, then the delete of the run's

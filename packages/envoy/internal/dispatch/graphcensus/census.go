@@ -304,9 +304,9 @@ func (r *StoreReport) Refused() bool {
 // purpose, in both directions.
 //
 // The two block kinds hold a block to what refs.IndexBlocks projects of it and to nothing else. A
-// block of a lens's finding (lensBlock) is a block node no document holds, so no table projects
-// it and neither block kind reads it. And a tuple another writer states out of a block - a
-// requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
+// block of a lens's finding (graphstore.FindingIDSQL) is a block node no document holds, so no
+// table projects it and neither block kind reads it. And a tuple another writer states out of a
+// block - a requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
 // block_refs row names, so the block_ref kind reads only the kinds that writer projects into
 // block_refs (blockRefKinds, read from the store inside the census's own snapshot) and the block
 // kind only a block's placement.
@@ -1283,9 +1283,9 @@ func authorLogin(actor string) string {
 		end`
 }
 
-// reasoningAuthored is the author every lens, finding of one (a block whose id names its lens,
-// lensBlock), risk and constraint states now, as (kind, id, at) (storedAuthors): the far end of
-// its current authored_by into a person or a session. Their one writer (api's writeReasoningNodes)
+// reasoningAuthored is the author every lens, finding (graphstore.FindingIDSQL), risk and
+// constraint states now, as (kind, id, at) (storedAuthors): the far end of its current
+// authored_by into a person or a session. Their one writer (api's writeReasoningNodes)
 // states that tuple to the writer graphstore.AuthorOf names of the node's made_by, and that
 // writer's own node beside it (graphstore.AuthorFacts), whatever the credential proved (spec v46
 // R12), so the far end is a person or a session the store owes a node, and the owner the server

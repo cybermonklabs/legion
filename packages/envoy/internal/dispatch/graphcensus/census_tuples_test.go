@@ -180,7 +180,7 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 // a requirement's constrained_by to a constraint - is no link a block_refs row names, so the
 // block_ref kind reads only the kinds refs.IndexBlocks writes there (refs.BlockRefKindsSQL). And
 // a block of a lens's finding, whose id names its lens, is a block node no document holds, so
-// neither block kind reads it (lensBlock).
+// neither block kind reads it (graphstore.FindingIDSQL).
 //
 // Over a store the census agrees with (seedAgreeingStore), the test states both through the
 // store's writer: a constraint node and a constrained_by to it out of the inner block, which

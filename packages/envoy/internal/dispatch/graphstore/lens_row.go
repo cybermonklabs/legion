@@ -110,10 +110,10 @@ func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) {
 // retraction of the value it held, so the lens records none. A lens whose value is the one it holds
 // already states nothing. A lens placed on a document no row stands at states nothing either, and
 // the statement answers it, which refuses the write. It takes no row lock of its own and reads each
-// lens's row and the artifacts row plainly: every writer that places a lens takes the issue's owner
-// lock first (api's lockIssueOwner, which the reasoning routes' write and the pre-mortem conversion
-// take before they write), and that lock serializes the placements of a lens, so no other placement
-// moves a lens's row between this statement's read of it and its update.
+// lens's row and the artifacts row plainly. The lens route takes the issue's owner lock first
+// (api's lockIssueOwner), as does the pre-mortem conversion (api's lockReasoningOwners). That lock
+// serializes placements, so no other placement moves a lens's row between this statement's read
+// of it and its update.
 var lensArtifactIDsStatement = `
 	with placed as (
 		select placement.from_id as lens, placement.to_kind, placement.to_id, placement.at, placement.who,

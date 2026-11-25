@@ -122,7 +122,7 @@ type Node struct {
 	// block. The base attributes it states still carry its own SourceEvent, so one at NoEvent
 	// states each at the sentinel, which no repeat key drops: proposed, live and proposed again
 	// are three tuples; its node write states them itself, in its move, since the row carries no
-	// mark in place of the cause it keeps (nodeMark). A node the store does not hold is made at
+	// mark in place of the cause it keeps (nodeMarks). A node the store does not hold is made at
 	// the write's own SourceEvent, since it has no cause to keep.
 	KeepsCause bool
 	// Changed marks a node this write created or changed, which a write made for a run names as

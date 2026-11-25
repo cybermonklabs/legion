@@ -115,16 +115,17 @@ var FrameWriter = model.Actor{Kind: "system", ID: "going"}
 
 // NodeRowLockSQL takes one node's graph_nodes row `for no key update`, $1 its kind and $2 its id:
 // the lock a writer takes of the one node whose own facts it reads and then appends to, so two
-// such writes of one node queue at its row and the second reads what the first appended. Every
-// frame of a run takes its interaction's row so first, as do the sweep that states a run gone an
-// hour on and every backfill pass that writes a run's node (LockInteraction), and Retarget takes
-// the row of the node whose pointer it moves.
+// such writes of one node queue at its row and the second reads what the first appended. The
+// frame path, the sweep and the backfill's passes over frames and runs whose rows are gone try
+// to take the interaction row first (LockInteraction). Retarget takes the row of the node
+// whose pointer it moves.
 const NodeRowLockSQL = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
 
 // LockInteraction takes the interaction node row of the run whose id is run (NodeRowLockSQL), and
-// answers whether the store held that row to take: the first lock of every frame's transaction
-// and of the sweep's of a run an hour old (api's lockGoingRun), and of every backfill pass that
-// writes a run's node (graphcensus), so frames, the sweep and a pass of one run queue there.
+// answers whether the store held that row to take. Frames and the sweep (api's lockGoingRun)
+// and the backfill's passes over frames and runs whose rows are gone (graphcensus' writeRunFrames
+// and writeGoneRun) try to take that row first. The backfill of a run that has no node
+// (graphcensus' writeOwedRun) takes the going_requests row first instead (WriteRun).
 func LockInteraction(ctx context.Context, tx pgx.Tx, run string) (bool, error) {
 	tag, err := tx.Exec(ctx, NodeRowLockSQL, KindInteraction, run)
 	if err != nil {

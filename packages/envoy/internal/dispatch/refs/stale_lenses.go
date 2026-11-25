@@ -13,8 +13,8 @@ import (
 // staleLensesOn reads the row of each stale lens that is not gone (StaleSQL) whose current part_of
 // stands on the document node at the address $1 (StaleLensesOnSQL), in id order, as
 // graphstore.ScanNode reads a node row. A document any release removes holds one empty version,
-// whose index holds no block, so no lens stands on a block of it. It is built on its first read, as
-// closureQuery is, since StaleSQL reads standingKinds, which this package's init fills and no
+// whose index holds no block, so no lens stands on a block of it. The statement is built on its
+// first read, since StaleSQL reads standingKinds, which this package's init fills and no
 // initializer of the package may read.
 var staleLensesOn = sync.OnceValue(func() string {
 	return StaleLensesOnSQL(graphstore.NodeColumnsOf(`stale`), `$1`) + `
@@ -44,8 +44,9 @@ func StaleLensesOnSQL(columns, document string) string {
 // (graphstore.AttributeArtifactID) no longer stands at that address. A document's removal reads it
 // after the delete of the document's row, and takes each lens it answers gone with all that stands
 // beneath it (api's removeArtifact). It takes no lock of its own: the removal reads it under the
-// owner lock of the issue the address names, which every writer of a lens, a finding or a risk
-// under the issue takes first (api's lockIssueOwner).
+// owner lock of the issue the address names. The api's reasoning writers take the same lock
+// first (lockIssueOwner, or lockReasoningOwners for a write that asserts a prevented_by and
+// for the pre-mortem conversion).
 func StaleLensesOn(ctx context.Context, q Queryer, document string) ([]graphstore.Node, error) {
 	rows, err := q.Query(ctx, staleLensesOn(), document)
 	if err != nil {

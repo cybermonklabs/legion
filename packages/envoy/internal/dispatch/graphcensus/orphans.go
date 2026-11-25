@@ -209,9 +209,10 @@ func readStaleLenses(ctx context.Context, tx pgx.Tx) (lenses []graphstore.Node, 
 //
 // It runs in a transaction of its own, as StateOrphanedGone does, and takes the store's lock order.
 // It reads the stale lenses with no lock, and where there are none it takes no lock and writes
-// nothing; otherwise it takes the owner lock of each issue those lenses' documents name
-// (events.LockOwnerRows), which every writer of a lens, a finding, a risk or a node's state under
-// the issue takes first (api's lockIssueOwner), and reads the stale lenses again under them,
+// nothing. Otherwise it takes the owner lock of each issue those lenses' documents name
+// (events.LockOwnerRows). The api's reasoning and node-state writes take the same lock first
+// (lockIssueOwner, or lockReasoningOwners for a write that asserts a prevented_by and for
+// the pre-mortem conversion). The sweep reads the stale lenses again under those locks,
 // keeping those of an issue it locked. Each read answers the row of each stale lens, so no lens is
 // read again. It then reads the database's clock, reads what stands beneath each lens it kept, and
 // writes the nodes, in ascending (kind, id), and their state tuples, in one graphstore.Write.

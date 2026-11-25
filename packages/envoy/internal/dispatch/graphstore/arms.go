@@ -56,9 +56,10 @@ type Claim struct {
 // the arms are spliced into their caller's one statement - the publisher's record of a batch
 // above all - and a refusal decided before that statement runs has no statement of its own to run
 // in, while one decided inside it would end the record of a batch already sent. Every node an arm
-// writes is a person, a session, a role or a page (Authored, SessionRecorded, Reached, asks'
-// Follow and the publisher's own), each of a supertag the store seeds (20261109051232) and no
-// migration removes, so no arm writes a node of a type the store does not hold.
+// writes is a person, a session, a role or a page (QueueAuthored, QueueSessionRecorded,
+// QueueReached, asks' Follow and the publisher's own), each of a supertag the store seeds
+// (20261109051232) and no migration removes, so no arm writes a node of a type the store does
+// not hold.
 //
 // A node's or a tuple's SourceEvent may be LatestEvent, for a record whose event its write phase
 // appends right before this statement: every cause column is read through causeOf.
