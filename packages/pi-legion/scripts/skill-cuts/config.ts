@@ -6,12 +6,15 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys (only the last seven are optional):
+ * Keys:
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
  *   psqlCommand     absolute path of a program that runs the store's read command for the database
  *                   its first argument names, with the query on its standard input
+ *   transcriptStore (optional) `{command, hosts}`: an absolute program path that reads a
+ *                   ClickHouse query on stdin and prints its rows on stdout, and the
+ *                   `{host, context}` pairs for the hosts whose contexts are known.
  *   gatewayBaseUrl  the model gateway's base URL
  *   servedModels    the models the gateway serves, each `provider/model` (`anthropic/claude-x`);
  *                   the read count's models tables mark a session's model served when its id
@@ -103,15 +106,23 @@ const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
  *  `18.16.0-fork.20261104-021732`. build.ts reads a pinned Oh My Pi version by it. */
 export const OMP_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+const StoreContext = z.string().regex(/^(devbox|legion:[A-Z][A-Z0-9]*)$/, {
+  error: "devbox or legion:<PROJECT>",
+});
+export const TranscriptHost = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
+  error: "a host of letters, digits, dots, hyphens or underscores",
+});
+/** Transcript query directory and the prefix of each host's store label. Not a database name. */
+export const TRANSCRIPT_SOURCE = "transcripts";
+export const transcriptStoreName = (host: string) => `${TRANSCRIPT_SOURCE}@${host}`;
+
 /** A session store: its database name, which a query names only as a value, so it is held to the
  *  letters a database identifier needs, and whose sessions it holds. */
 export const Store = z.strictObject({
   name: z.string().regex(/^[a-z_][a-z0-9_]*$/, {
     error: "a database name of small letters, digits and _",
   }),
-  context: z.string().regex(/^(devbox|legion:[A-Z][A-Z0-9]*)$/, {
-    error: "devbox or legion:<PROJECT>",
-  }),
+  context: StoreContext,
 });
 export type Store = z.infer<typeof Store>;
 
@@ -154,6 +165,14 @@ export const SkillCutsConfig = z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
     gatewayBaseUrl: z.url({ protocol: /^https?$/, error: "an http or https URL" }),
+    transcriptStore: z
+      .strictObject({
+        command: z
+          .string()
+          .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
+        hosts: z.array(z.strictObject({ host: TranscriptHost, context: StoreContext })),
+      })
+      .optional(),
     servedModels: z.array(
       z.string().regex(/^[^\s/]+(\/[^\s/]+)+$/, { error: "a model as provider/model" })
     ),
@@ -200,6 +219,27 @@ export const SkillCutsConfig = z
     path: ["windowEnd"],
   })
   .superRefine((config, context) => {
+    const hosts = new Set<string>();
+    for (const [index, { host }] of (config.transcriptStore?.hosts ?? []).entries()) {
+      if (hosts.has(host)) {
+        context.addIssue({
+          code: "custom",
+          message: "a host listed twice",
+          path: ["transcriptStore", "hosts", index, "host"],
+        });
+      }
+      hosts.add(host);
+    }
+    if (
+      config.transcriptStore !== undefined &&
+      config.stores.some(({ name }) => name === TRANSCRIPT_SOURCE)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: `${TRANSCRIPT_SOURCE} is reserved for the transcript store`,
+        path: ["stores"],
+      });
+    }
     // A clone's repositories are read from the owners' listings, so each is of an owner in
     // `owners`; GitHub reads an owner's name in any case.
     const owners = new Set(config.owners.map((owner) => owner.toLowerCase()));

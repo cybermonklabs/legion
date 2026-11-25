@@ -1,0 +1,144 @@
+-- Skill reads in the transcript store for one UTC day (or hour) of call time, across hosts.
+-- count-sql --query transcript fills day_start/day_end (epoch ms) and window_start/window_end
+-- (ISO UTC instants), each start inclusive and end exclusive. store is the output label prefix.
+--
+-- Reads and copy paths follow count.sql. The latest revision of a call supplies its result line
+-- and error flag: no result is unpaired, an error is not a read. Oh My Pi's tool-result message
+-- supplies its first-line Skill file header. Claude's imported meta message may carry no source
+-- tool-use id: use an explicitly keyed Base directory first, otherwise the meta line immediately
+-- after the Skill result in the same raw file, only when that result line identifies one Skill.
+-- A missing copy header falls back to the input. No message or command text leaves the server.
+--
+-- Rows are JSON lines. Each host's store is store@host. Count rows have count.sql's shape. They
+-- retain every file's keys until the client can exclude Postgres-owned files, then choose the
+-- first holder of a shared key. The row's day is the call day (the client counts distinct files
+-- across days). Tool rows give each format/tool's raw call population before errors and dedupe.
+-- The summary has count.sql's shape: bounds are call time, files are distinct files with a tool
+-- call considered here, and parts/bytes/line totals do not apply. An end row closes the output.
+WITH
+  fromUnixTimestamp64Milli(toInt64({{day_start}}), 'UTC') AS day_from,
+  fromUnixTimestamp64Milli(toInt64({{day_end}}), 'UTC') AS day_to,
+  greatest(day_from, parseDateTime64BestEffort({{window_start}}, 3, 'UTC')) AS from_ts,
+  least(day_to, parseDateTime64BestEffort({{window_end}}, 3, 'UTC')) AS to_ts,
+  (host_name -> concat({{store}}, '@', host_name)) AS store_label,
+  (s -> substring(lower(hex(MD5(s))), 1, 16)) AS short_hash,
+  calls_in_range AS (
+    SELECT c.session_id, c.host, c.raw_file, c.call_id, c.started_at, c.result_line,
+      c.is_error, c.tool, s.format, s.path, short_hash(s.path) AS hash,
+      if(c.tool = 'Skill',
+        if(JSONType(ifNull(c.command, ''), 'skill') = 'String',
+          JSONExtractString(ifNull(c.command, ''), 'skill'), JSONExtractString(ifNull(c.command, ''), 'command')),
+        JSONExtractString(ifNull(c.command, ''), if(c.tool = 'read', 'path', 'file_path'))) AS own
+    FROM (
+      SELECT session_id, host, raw_file, call_id, started_at, result_line, is_error, tool, command
+      FROM transcripts.tool_calls FINAL
+      WHERE toYYYYMM(ifNull(started_at, toDateTime64(0, 3, 'UTC'))) = toYYYYMM(day_from)
+        AND started_at >= from_ts AND started_at < to_ts AND tool IN ('read', 'Read', 'Skill')
+    ) c
+    INNER JOIN (SELECT session_id, host, path, format FROM transcripts.sessions FINAL WHERE path != '') s
+      ON s.session_id = c.session_id AND s.host = c.host
+  ),
+  targets AS (
+    SELECT *, replaceRegexpOne(own, ':[^/]*$', '') AS q,
+      multiIf(tool = 'Skill', replaceRegexpOne(trimLeft(own, '/'), '^.*:', ''),
+        startsWith(q, 'skill://'), extract(q, '^skill://([^/]+)'),
+        match(q, '(^|/)skills/[^/]+/references/.'), extract(q, '(?:^|/)skills/([^/]+)/references/'),
+        extract(q, '([^/]+)/SKILL[.]md$')) AS skill,
+      if(tool = 'Skill' OR match(q, '^skill://[^/]+(/SKILL[.]md)?/?$'), 'read',
+        if(match(q, '^skill://[^/]+/.|(^|/)skills/[^/]+/references/.'), 'reference', 'read')) AS read_kind
+    FROM calls_in_range
+    WHERE skill != '' AND (result_line IS NULL OR NOT ifNull(is_error, false))
+  ),
+  -- Narrow the text scan by the message sort key (kind, session_id, host) and by call id.
+  headers AS (
+    SELECT session_id, host, raw_file, tool_call_id,
+      min(extract(text, '^[[]Skill file: (.+)[]](?:\\n|$)')) AS header
+    FROM transcripts.messages
+    PREWHERE kind = 'tool_result' AND role = 'toolResult' AND tool_name = 'read'
+      AND (session_id, host, raw_file, tool_call_id) IN (
+        SELECT session_id, host, raw_file, call_id FROM targets WHERE tool = 'read' AND result_line IS NOT NULL
+      )
+    WHERE match(text, '^[[]Skill file: .+[]](?:\\n|$)')
+    GROUP BY session_id, host, raw_file, tool_call_id
+  ),
+  skill_lines AS (
+    SELECT session_id, host, raw_file, result_line + 1 AS base_line
+    FROM calls_in_range
+    WHERE tool = 'Skill' AND result_line IS NOT NULL
+    GROUP BY session_id, host, raw_file, base_line
+    HAVING uniqExact(call_id) = 1
+  ),
+  meta AS (
+    SELECT session_id, host, raw_file, raw_line, tool_call_id,
+      concat(trimRight(extract(text, '^Base directory for this skill: ([^\\n]+)'), '/'), '/SKILL.md') AS base
+    FROM transcripts.messages
+    PREWHERE kind = 'system' AND role = 'user:meta' AND (session_id, host) IN (
+      SELECT session_id, host FROM targets WHERE tool = 'Skill' AND result_line IS NOT NULL
+    )
+    WHERE match(text, '^Base directory for this skill: [^\\n]+')
+  ),
+  keyed_base AS (
+    SELECT session_id, host, raw_file, tool_call_id, min(base) AS base
+    FROM meta WHERE notEmpty(tool_call_id)
+    GROUP BY session_id, host, raw_file, tool_call_id
+  ),
+  adjacent_base AS (
+    SELECT session_id, host, raw_file, raw_line, min(base) AS base
+    FROM meta WHERE empty(ifNull(tool_call_id, ''))
+      AND (session_id, host, raw_file, raw_line) IN (
+        SELECT session_id, host, raw_file, base_line FROM skill_lines
+      )
+    GROUP BY session_id, host, raw_file, raw_line
+  ),
+  reads AS (
+    SELECT t.host AS host, t.hash AS hash, t.skill AS skill, t.read_kind AS kind, t.started_at AS ts,
+      isNotNull(t.result_line) AS paired,
+      if(paired, coalesce(nullIf(h.header, ''), nullIf(k.base, ''), nullIf(a.base, ''), t.own), t.own) AS copy,
+      short_hash(concat(if(empty(t.call_id), t.path, t.call_id), ' ',
+        formatDateTime(t.started_at, '%Y-%m-%dT%H:%i:%S', 'UTC'), '.',
+        leftPad(toString(toUnixTimestamp64Milli(assumeNotNull(t.started_at)) % 1000), 3, '0'), '000Z')) AS key
+    FROM targets t
+    LEFT JOIN headers h ON t.session_id = h.session_id AND t.host = h.host AND t.raw_file = h.raw_file
+      AND t.call_id = h.tool_call_id AND t.tool = 'read'
+    LEFT JOIN keyed_base k ON t.session_id = k.session_id AND t.host = k.host AND t.raw_file = k.raw_file
+      AND t.call_id = k.tool_call_id AND t.tool = 'Skill'
+    LEFT JOIN adjacent_base a ON t.session_id = a.session_id AND t.host = a.host AND t.raw_file = a.raw_file
+      AND t.result_line + 1 = a.raw_line AND t.tool = 'Skill'
+  ),
+  firsts AS (
+    SELECT host, hash, skill, kind, copy, paired, min(ts) AS first_ts, arraySort(groupUniqArray(assumeNotNull(key))) AS keys
+    FROM reads GROUP BY host, hash, skill, kind, copy, paired
+  ),
+  totals AS (
+    SELECT host, formatDateTime(min(first_ts), '%F', 'UTC') AS day, skill, copy, kind,
+      arraySort(groupArrayIf((hash, keys), paired)) AS answered,
+      arraySort(groupArrayIf((hash, keys), NOT paired)) AS unanswered
+    FROM firsts GROUP BY host, skill, copy, kind
+  ),
+  tool_totals AS (
+    SELECT host, format, tool, count() AS n, uniqExact(hash) AS files,
+      grouping(format, tool) AS total
+    FROM calls_in_range GROUP BY GROUPING SETS ((host, format, tool), (host))
+  )
+SELECT line FROM (
+  SELECT 0 AS pos, formatRowNoNewline('JSONEachRow', 'count' AS row, store_label(host) AS store,
+    assumeNotNull(day) AS day, skill, copy, kind,
+    length(answered) AS files, arrayMap(x -> x.1, answered) AS hashes,
+    mapFromArrays(hashes, arrayMap(x -> x.2, answered)) AS calls,
+    length(unanswered) AS unpaired, arrayMap(x -> x.1, unanswered) AS unpaired_hashes,
+    mapFromArrays(unpaired_hashes, arrayMap(x -> x.2, unanswered)) AS unpaired_calls) AS line
+  FROM totals
+  UNION ALL
+  SELECT 1, formatRowNoNewline('JSONEachRow', 'tool' AS row, store_label(host) AS store,
+    format, tool, n AS calls)
+  FROM tool_totals WHERE total = 0
+  UNION ALL
+  SELECT 2, formatRowNoNewline('JSONEachRow', 'summary' AS row, store_label(host) AS store,
+    toInt64({{day_start}}) AS mtime_from, toInt64({{day_end}}) AS mtime_to, files,
+    0 AS parts, 0 AS bytes, 0 AS lines_parsed, 0 AS bad_lines, 0 AS shared_call_ids)
+  FROM tool_totals WHERE total != 0
+  UNION ALL
+  SELECT 3, formatRowNoNewline('JSONEachRow', 'end' AS row, {{store}} AS store)
+)
+ORDER BY pos, line
+FORMAT TSVRaw

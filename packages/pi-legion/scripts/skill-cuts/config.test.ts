@@ -48,6 +48,7 @@ test("a configuration with every required key loads", () => {
 test.each(
   Object.keys(SkillCutsConfig.shape).filter(
     (key) =>
+      key !== "transcriptStore" &&
       key !== "devboxClaudeConfigDir" &&
       key !== "devboxHome" &&
       key !== "clones" &&
@@ -262,4 +263,31 @@ test("storeNamed finds a store the configuration names and refuses any other", (
   expect(() => storeNamed(config, "store_c")).toThrow(
     'names no store "store_c"; it names store_a, store_b'
   );
+});
+
+test("transcriptStore is optional and holds an absolute program path and unique host contexts", () => {
+  expect(parseConfig(valid()).transcriptStore).toBeUndefined();
+  const transcriptStore = {
+    command: "/home/dev/bin/query-transcripts",
+    hosts: [
+      { host: "host-a", context: "devbox" },
+      { host: "host-b", context: "legion:ACME" },
+    ],
+  };
+  expect(parseConfig({ ...valid(), transcriptStore }).transcriptStore).toEqual(transcriptStore);
+  expect(() =>
+    parseConfig({
+      ...valid(),
+      transcriptStore: { ...transcriptStore, command: "query-transcripts" },
+    })
+  ).toThrow("transcriptStore.command: an absolute path");
+  expect(() =>
+    parseConfig({
+      ...valid(),
+      transcriptStore: {
+        ...transcriptStore,
+        hosts: [...transcriptStore.hosts, transcriptStore.hosts[0]],
+      },
+    })
+  ).toThrow("transcriptStore.hosts[2].host: a host listed twice");
 });

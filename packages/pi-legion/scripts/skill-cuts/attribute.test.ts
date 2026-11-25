@@ -52,6 +52,7 @@ import {
   type SkillCopy,
   tsv,
 } from "./copies";
+import { main as countSqlMain, fillTemplate } from "./countsql";
 import { psqlRows } from "./psql-rows";
 import { madeManifest } from "./testdata/fixtures";
 
@@ -1976,6 +1977,8 @@ test("the command writes the count, its report, each cut's ranking and the model
       tie: "",
       loaded: "no",
       status: "read",
+      transcript_store_sessions: "0",
+      partial_coverage_hosts: "",
     },
     {
       repository: "acme/skills",
@@ -1988,6 +1991,8 @@ test("the command writes the count, its report, each cut's ranking and the model
       tie: "acme/tools plugins/acme-tools/skills/beta",
       loaded: "no",
       status: "no read",
+      transcript_store_sessions: "0",
+      partial_coverage_hosts: "",
     },
     {
       repository: "acme/tools",
@@ -2000,6 +2005,8 @@ test("the command writes the count, its report, each cut's ranking and the model
       tie: "acme/skills src/beta",
       loaded: "no",
       status: "read",
+      transcript_store_sessions: "0",
+      partial_coverage_hosts: "",
     },
   ]);
   expect(JSON.parse(readFileSync(path.join(out, "skills-1", "ranking.json"), "utf8"))).toEqual([
@@ -2115,7 +2122,7 @@ test("the command writes the count, its report, each cut's ranking and the model
     "End time 2026-11-22T00:00:00Z. The window is [2026-11-20T00:00:00Z, 2026-11-22T00:00:00Z), 2 days.",
     "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 3 | 2 | 4 | 205503 | 0 | 0 | 2 | 1 |",
     "- store_a starts after the window's start: its records span 2026-11-20T02:00:00Z to the end time, 1.9 of the window's 2 days.",
-    '- The transcript store is not read: the cluster store that a pod reads holds no Claude Code transcript until the Claude Code transcripts are moved into it, so this count holds no Claude Code session. "Claude Code" below lists the skills that leaves out.',
+    "- The transcript store is not read: no transcriptStore is configured.",
     "None: each query of the window has its output, and the run log lists no failure.",
     "- store_a (devbox):",
     `  - ${via(USER_SKILLS)}: 1 session read from it; it holds 2 copies`,
@@ -2336,4 +2343,199 @@ test("one count row can read different copies in two profiles of one store", () 
     ["acme/skills", "1", "0"],
     ["acme/tools", "2", "0"],
   ]);
+});
+
+const TRANSCRIPT_CONFIG = {
+  ...CONFIG,
+  windowStart: "2026-11-07T00:00:00Z",
+  windowEnd: "2026-11-12T00:00:00Z",
+  transcriptStore: {
+    command: "/home/dev/bin/query-transcripts",
+    hosts: [{ host: "host-a", context: "devbox" }],
+  },
+};
+const transcriptDay = "2026-11-10";
+const transcriptHost = (host: string) => `transcripts@${host}`;
+const jsonLines = (rows: readonly object[]) =>
+  rows.map((row) => `${JSON.stringify(row)}\n`).join("");
+const transcriptEnd = { row: "end", store: "transcripts" };
+
+interface FixtureCoverage {
+  row: string;
+  store: string;
+  format: string;
+  profile: string;
+  first: number;
+  last: number;
+  days: string[];
+  hashes: string[];
+}
+
+function transcriptCoverage(
+  host: string,
+  format: string,
+  hashes: string[],
+  days = [transcriptDay]
+): FixtureCoverage {
+  return {
+    row: "coverage",
+    store: transcriptHost(host),
+    format,
+    profile: format === "omp" ? "default" : "unknown",
+    first: Date.parse(`${days[0]}T00:00:00Z`),
+    last: Date.parse(`${days.at(-1)}T23:59:59.999Z`),
+    days,
+    hashes,
+  };
+}
+
+function transcriptReport(
+  name: string,
+  coverage: readonly FixtureCoverage[],
+  reads: readonly QueryOutput[],
+  world: R4Tables,
+  pg: readonly string[] = []
+) {
+  const root = path.join(dir, `transcript-${name}`);
+  const [firstPg] = pg;
+  const countDir = tree(path.join(root, "count"), {
+    "store_a/hashes.txt": psqlTable(pg.map((hash) => ({ hash }))),
+    "store_a/roots.txt": fixtureRoots(...pg),
+    "store_a/2026-11-10.txt": queryText(
+      "store_a",
+      transcriptDay,
+      firstPg === undefined
+        ? []
+        : [{ skill: "alpha", copy: `${F1_PROFILE}/alpha/SKILL.md`, hashes: [firstPg] }]
+    ),
+    "transcripts/coverage.txt": jsonLines([...coverage, transcriptEnd]),
+    "transcripts/2026-11-10.txt": jsonLines([
+      ...reads.flatMap(({ rows, summary }) => [...rows, summary]),
+      transcriptEnd,
+    ]),
+    "run.log": "",
+  });
+  const out = path.join(root, "out");
+  const result = run([
+    "--config",
+    path.join(tree(root, { "config.json": JSON.stringify(TRANSCRIPT_CONFIG) }), "config.json"),
+    "--count",
+    countDir,
+    "--copies",
+    r4Dir(path.join(root, "copies"), world),
+    "--spans",
+    path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl"),
+    "--out",
+    out,
+  ]);
+  expect(result.err).toBe("");
+  expect(result.code).toBe(0);
+  return {
+    rows: parseTsv(readFileSync(path.join(out, "skill-read-count.tsv"), "utf8")),
+    report: readFileSync(path.join(out, "skill-read-count.md"), "utf8"),
+  };
+}
+
+test("R1 v3 row 1: a Postgres file is counted there, even if a second overlap had no Postgres read", () => {
+  const store = transcriptHost("host-a");
+  const { rows, report } = transcriptReport(
+    "dedupe",
+    [transcriptCoverage("host-a", "omp", [H1, H2, H3])],
+    [
+      query(store, transcriptDay, [
+        { skill: "alpha", copy: `${F1_PROFILE}/alpha/SKILL.md`, hashes: [H1, H2, H3] },
+      ]),
+    ],
+    f7World(),
+    [H1, H2]
+  );
+  expect(rows.find((row) => row.name === "alpha")).toMatchObject({
+    sessions: "2",
+    transcript_store_sessions: "1",
+  });
+  expect(report).toContain("| 3 | 1 | 1 |");
+});
+
+test("R1 v3 row 2: the copy resolved by a Claude Code Skill call has a count", () => {
+  const { rows, report } = transcriptReport(
+    "claude",
+    [transcriptCoverage("host-a", "claude", [H1]), transcriptCoverage("host-a", "codex", [H2])],
+    [
+      query(transcriptHost("host-a"), transcriptDay, [
+        { skill: "delta", copy: `/home/dev/cc/${DELTA.path}/SKILL.md`, hashes: [H1] },
+      ]),
+    ],
+    hostsWorld()
+  );
+  expect(rows.find((row) => row.name === "delta")).toMatchObject({
+    sessions: "1",
+    status: "read",
+  });
+  expect(rows.find((row) => row.name === "epsilon")?.status).toBe("no read");
+  expect(report).toContain("no read, Read or Skill calls");
+});
+
+test("R1 v3 row 3: an unconfigured host's path can place a read, but its context cannot", () => {
+  const { rows, report } = transcriptReport(
+    "context",
+    [transcriptCoverage("host-b", "omp", [H1, H2, H3])],
+    [
+      query(transcriptHost("host-b"), transcriptDay, [
+        { skill: "alpha", copy: `${F1_PROFILE}/alpha/SKILL.md`, hashes: [H1] },
+        { skill: "beta", copy: "skill://beta", hashes: [H2] },
+        { skill: "alpha", copy: "/home/dev/skills/src/alpha/SKILL.md", hashes: [H3] },
+      ]),
+    ],
+    f7World()
+  );
+  expect(rows.find((row) => row.name === "alpha")?.sessions).toBe("2");
+  expect(rows.find((row) => row.name === "beta")?.unattributed_sessions).toBe("1");
+  expect(report).toContain("the host's context is not known");
+});
+
+test("R1 v3 row 4: the mark lists the gap host and the late host", () => {
+  const { rows, report } = transcriptReport(
+    "coverage",
+    [
+      transcriptCoverage(
+        "host-a",
+        "omp",
+        [H1],
+        ["2026-11-07", "2026-11-09", "2026-11-10", "2026-11-11"]
+      ),
+      transcriptCoverage("host-b", "omp", [H2], ["2026-11-09", "2026-11-10", "2026-11-11"]),
+    ],
+    ["host-a", "host-b"].map((host, index) =>
+      query(transcriptHost(host), transcriptDay, [
+        { skill: "alpha", copy: `${F1_PROFILE}/alpha/SKILL.md`, hashes: [index === 0 ? H1 : H2] },
+      ])
+    ),
+    f7World()
+  );
+  expect(rows.find((row) => row.name === "alpha")?.partial_coverage_hosts).toBe("host-a; host-b");
+  expect(report).toContain("gap days: 2026-11-08");
+  expect(report).toContain("starts after the window's start");
+});
+
+test("R1 v3 row 5: the transcript SQL fills the UTC day and window and rejects an unbound placeholder", () => {
+  const root = tree(path.join(dir, "transcript-template"), {
+    "config.json": JSON.stringify(TRANSCRIPT_CONFIG),
+  });
+  const out: string[] = [];
+  const err: string[] = [];
+  const status = countSqlMain(
+    ["--config", path.join(root, "config.json"), "--query", "transcript", "--day", transcriptDay],
+    { out: (text) => out.push(text), err: (text) => err.push(text) }
+  );
+  expect(err).toEqual([]);
+  expect(status).toBe(0);
+  const sql = out.join("");
+  expect(sql).toContain(String(Date.parse("2026-11-10T00:00:00Z")));
+  expect(sql).toContain(String(Date.parse("2026-11-11T00:00:00Z")));
+  expect(sql).toContain("2026-11-07T00:00:00.000Z");
+  expect(sql).toContain("2026-11-12T00:00:00.000Z");
+  expect(sql).not.toContain("{{");
+  expect(() => fillTemplate(`${sql}\n{{missing}}`, {})).toThrow(
+    "no value for the placeholder missing"
+  );
 });

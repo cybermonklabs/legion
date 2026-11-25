@@ -419,7 +419,9 @@ its answer names that finding. It exits 0 when the control held, 1 when it did n
 
 ```
 bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
-bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --query roots
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --query roots|hashes
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --query transcript-coverage [--run]
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --query transcript --day <YYYY-MM-DD> [--hour <0-23>] [--run]
 ```
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
@@ -438,6 +440,46 @@ and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a
 call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
 that two files hold counts in the file whose file hash (md5 of its path, 16 hex characters) sorts
 first in byte order, and `shared_call_ids` counts such keys.
+
+To include the ClickHouse transcript store, add this optional key to the private configuration:
+
+```json
+{
+  "transcriptStore": {
+    "command": "/home/dev/bin/query-transcripts",
+    "hosts": [
+      { "host": "host-a", "context": "devbox" },
+      { "host": "host-b", "context": "legion:ACME" }
+    ]
+  }
+}
+```
+
+`command` is an executable at an absolute path. It receives the SQL on stdin with no arguments,
+prints results on stdout, puts diagnostics on stderr, and exits nonzero on failure. `--run`
+uses it for either transcript query. Without `--run`, `count-sql` prints the SQL as for Postgres.
+The config's `hosts` lists context mappings, not a filter: the queries include unlisted hosts.
+
+1. For each configured Postgres store, run `--query hashes` with no day through
+   `psqlCommand <db>` and save its output as `<count>/<db>/hashes.txt`. It returns the same file
+   hashes as the count, for files whose mtime is at or after the window start, even if the file
+   does not contain a skill read.
+2. Run `--query transcript-coverage --run` once, saving stdout as
+   `<count>/transcripts/coverage.txt`. It returns per-host and per-format coverage and the hashes
+   needed to decide which sessions are new.
+3. Run `--query transcript --day <YYYY-MM-DD> --run` once per UTC day in the window, saving stdout
+   as `<count>/transcripts/<YYYY-MM-DD>.txt`. If you split a day into hours, save the 24 outputs as
+   `<count>/transcripts/<YYYY-MM-DD>T<HH>.txt` instead. Use `transcripts` as the store label in
+   `run.log`. Save output files only on success.
+
+The daily query aggregates call-time reads in ClickHouse, tagged `transcripts@<host>`. It emits
+the same count rows as Postgres, with file hashes and call keys, plus tool counts per format. It
+does not return tool calls or messages. An Oh My Pi read uses the answer's skill-file header
+when present. A Claude Code `Skill` read uses its base-directory message when the import can
+pair it with the call; otherwise it uses the input. The import may omit the source tool-use id
+on the base-directory message. In that case the query uses the meta line immediately after the
+result in the same file, provided the line identifies only one Skill call. Failed answers are
+excluded. Calls with no result in their file are listed apart and are not reads.
 
 ### `load`
 
@@ -782,6 +824,9 @@ It infers which units each group installed from those reads. It places a new rea
 that group supplies one copy of the name. It does not borrow copies from another profile
 in the same store. If `roots.txt` does not identify the session's profile, this step cannot
 place the read. `attribute` refuses a count output without the corresponding `roots.txt`.
+The transcript-store coverage query supplies the Oh My Pi profiles for transcript hosts. A host
+with no configured context uses only the two path rules; if neither decides, its read stays
+unattributed because the host's context is not known.
 The default profile of a `devbox` store also has each unit that the dev box's own installers
 install into Oh My Pi, whether or not the session read from it. The dev box's repository is the
 one repository of `manifests.tsv` that holds both an installer script (`installers/*.sh`) and
@@ -835,6 +880,22 @@ one of its reads of it counts in it. `build-cases` reads the count by the same r
 by an earlier `count.sql`, whose rows have no `calls`, fails the command (exit 1). The report's
 store table gives the call ids two files of one query hold, the call ids files of two queries
 hold, and the pairs of files of two queries that hold one.
+
+`attribute` keeps a file already owned by Postgres out of the transcript-store count. If more
+than one transcript host imports another file, the first host label in byte order owns it. The
+same shared-call-key rule applies across the remaining transcript files, including across hosts.
+The Stores section gives first and last records and gap days per host and format. It reports
+the number of sessions in the window, the number added after dedupe, and how many added sessions
+read a skill or reference. Formats with no `read`, `Read` or `Skill` calls in the query results
+give no reads. A copy's `transcript_store_sessions` is its number of added read sessions.
+`partial_coverage_hosts` lists the contributing partial hosts when more than half of those
+sessions come from host/format pairs with a gap or an incomplete start or end. A gap is a UTC
+day with no active session between days that have sessions.
+
+With Claude Code coverage, a Claude-only install has a read count like any other copy. Without
+`transcriptStore`, the count reports that it did not query ClickHouse. Rankings include added
+sessions; the ranked skills' sessions and corresponding model files for `build-cases` and
+`behaviour` still use Postgres sessions, which the case builder can pull.
 
 ### `build-cases` and `build-tasks`
 

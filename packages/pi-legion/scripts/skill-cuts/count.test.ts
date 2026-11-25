@@ -13,6 +13,7 @@ import {
   countSql,
   digestTimesSql,
   fillTemplate,
+  hashesSql,
   main,
   modelsSql,
   mtimeRange,
@@ -230,7 +231,9 @@ describe("countsql.ts fills the SQL", () => {
       countSql(CONFIG, "store_a", "2026-11-20"),
     ]);
     expect(main([...day, "--query", "pull"], io)).toBe(2);
-    expect(err).toEqual(['countsql: --query "pull" is none of count, models and roots']);
+    expect(err).toEqual([
+      'countsql: --query "pull" is none of count, models, roots, hashes, transcript and transcript-coverage',
+    ]);
   });
 
   test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {
@@ -756,6 +759,22 @@ describe.skipIf(serverDsn === undefined)(
           a.hash < b.hash ? -1 : 1
         )
       );
+    });
+
+    test("hashes.sql includes files at the start bound and files modified after the window", () => {
+      const all = ROOTS.map(([stored]) => ({ hash: fileHash(stored) }));
+      const afterEnd = hashesSql(
+        { ...CONFIG, windowStart: "2026-11-19T00:00:00Z", windowEnd: "2026-11-20T00:00:00Z" },
+        "store_a"
+      );
+      expect(run(names.roots, afterEnd)).toEqual(expect.arrayContaining(all));
+      const onStart = hashesSql({ ...CONFIG, windowStart: "2026-11-20T02:00:00.000Z" }, "store_a");
+      expect(run(names.roots, onStart)).toHaveLength(all.length);
+      const beforeStart = hashesSql(
+        { ...CONFIG, windowStart: "2026-11-20T02:00:00.001Z" },
+        "store_a"
+      );
+      expect(run(names.roots, beforeStart)).toEqual([]);
     });
 
     test("the first database: alpha one read and one reference session, the missing skill none, beta one read in the subagent's file, F4's Skill call one read", () => {
