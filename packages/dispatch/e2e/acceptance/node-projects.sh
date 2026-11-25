@@ -173,9 +173,21 @@ if [[ -n "$harness" ]]; then
   pass setup "made project $project and agent session $AGENT_SESSION on the harness"
 fi
 
+# quotable SECTION WHAT VALUE...: fails unless each VALUE holds no single quote, the one character
+# that ends the SQL string literal a statement names it in, as the checks below name an id or a
+# party.
+quotable() {
+  local section="$1" what="$2" value
+  shift 2
+  for value in "$@"; do
+    [[ "$value" != *"'"* ]] || fail "$section" "$what" "'$value' holds a single quote, which would end the SQL string that names it"
+  done
+}
+
 # node_names_project SECTION KIND ID: the node KIND/ID is in the project, and its `project` value
 # tuple says so.
 node_names_project() {
+  quotable "$1" "the $2 node of $3 names $project" "$3"
   query "$1" "the $2 node of $3 names $project" \
     "select coalesce((select project_key from graph_nodes where kind = '$2' and id = '$3'), '(no node)')"
   [[ "$answer" == "$project" ]] || fail "$1" "the $2 node of $3 names $project" "it names '$answer'"
@@ -191,6 +203,7 @@ node_names_parties() {
   local section="$1" kind="$2" id="$3" want
   shift 3
   want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  quotable "$section" "the $kind node of $id is between $want" "$id" "$want"
   query "$section" "the $kind node of $id is between $want" \
     "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
   [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
@@ -225,8 +238,12 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
 want_status 201 "$section" "create an issue"
 key="$(jq -r .key "$work/body")"
-# The issue key and the ask's id below are read from the server's answer and go into the SQL text
-# query passes to psql, so each is held to its shape before any statement names it.
+# Each value read from the server's answer goes into the SQL text query passes to psql, or into a
+# request's path, so each is checked before a statement or a path names it: the issue key, the
+# ask's id and the empty document's id and address are held to their shapes, and
+# node_names_project, node_names_parties and sender_party refuse an id or a party that holds a
+# single quote (quotable).
+readonly uuid_shape='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 [[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
 pass "$section" "created $key"
 node_names_project "$section" issue "$key"
@@ -247,7 +264,7 @@ node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
 want_status 201 "$section" "open an ask"
 ask="$(jq -r .id "$work/body")"
-[[ "$ask" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
+[[ "$ask" =~ $uuid_shape ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
 node_names_project "$section" ask "$ask"
 
 send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"
@@ -281,6 +298,7 @@ node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 # the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
 # $answer. It reads the row the create wrote, not the node under test.
 sender_party() {
+  quotable "$section" "read the sender of $1" "$1"
   query "$section" "read the sender of $1" \
     "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
 }
@@ -305,6 +323,9 @@ send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $
 want_status 201 "$section" "$person makes an empty document"
 scratch="$(jq -r .artifact.id "$work/body")"
 scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+[[ "$scratch" =~ $uuid_shape ]] || fail "$section" "$person makes an empty document" "the answer's id is '$scratch', not a uuid"
+[[ "$scratch_ref" =~ ^"$key"/[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  fail "$section" "$person makes an empty document" "the answer's ref_key is '$scratch_ref', not a document address of $key"
 send_as_person DELETE "/api/v1/artifacts/$scratch"
 want_status 204 "$section" "$person removes the empty document"
 query "$section" "the removed document's node is gone" \

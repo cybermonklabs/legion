@@ -69,14 +69,13 @@ import (
 // node is live, the second's gone and named orphaned by no census, and the third's and fourth's
 // live, and once the previous build stops the census names no project row or node at all.
 //
-// After the last cure the census names no project row or node at all. Each order beside a build
-// that writes no node has its control. The first and fourth orders' is the tick's object pass
-// taken out of docs' ReconcileBlockIndex: the census then names both rows gone for as long as the
-// test waits after the previous build stopped. The second's is this file run in main's tree before
-// #5491, where this build's removal states nothing gone and the census prints no orphaned field,
-// so it fails at its first census. The third's is the gone step taken out of this build's create
-// (api's storeArtifact): the node then keeps the removed row's live statement, and the census
-// names the new row gone.
+// Each order beside a build that writes no node has its control. The first and fourth orders' is
+// the tick's object pass taken out of docs' ReconcileBlockIndex: the census then names both rows
+// gone for as long as the test waits after the previous build stopped. The second's is this file
+// run in main's tree before #5491, where this build's removal states nothing gone and the census
+// prints no orphaned field, so it fails at its first census. The third's is the gone step taken
+// out of this build's create (api's storeArtifact): the node then keeps the removed row's live
+// statement, and the census names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -90,6 +89,18 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	t.Logf("the %s writes document nodes: %t", builds.previousName(), writesNodes)
 	// The rows this build's tick cures, read once the previous build has stopped.
 	var forTheTick []string
+	// leaveForTheTick ends the first and fourth orders at the row at ref: beside a build that
+	// writes document nodes, its node is live and the census names nothing of it; beside one that
+	// writes none, the row is left for the tick.
+	leaveForTheTick := func(t *testing.T, ref string) {
+		t.Helper()
+		if writesNodes {
+			requireDocumentNodeState(t, builds, ref, graphstore.StateLive)
+			requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), ref)
+			return
+		}
+		forTheTick = append(forTheTick, ref)
+	}
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
 		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
@@ -122,12 +133,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, removed.ref)
 		}
-		if writesNodes {
-			requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-			requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), again.ref)
-			return
-		}
-		forTheTick = append(forTheTick, again.ref)
+		leaveForTheTick(t, again.ref)
 	})
 
 	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
@@ -149,12 +155,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, document.ref)
 		}
-		if writesNodes {
-			requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-			requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), again.ref)
-			return
-		}
-		forTheTick = append(forTheTick, again.ref)
+		leaveForTheTick(t, again.ref)
 	})
 
 	t.Run("the previous build stops and this build's tick cures what it left", func(t *testing.T) {

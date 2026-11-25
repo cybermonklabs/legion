@@ -24,14 +24,7 @@ func TestARollTickStatesGoneTheNodeOfADocumentThePreviousReleaseRemoved(t *testi
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	registerProcess(t, database, previousReleaseCommit)
-	var ref string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
-		values ('CORE-1', 'CORE', 'scratch-md', 'Scratch.md', 'doc', '{"kind":"user","id":"alice"}')
-		returning ref_key
-	`).Scan(&ref); err != nil {
-		t.Fatalf("upload the document as the release before: %v", err)
-	}
+	ref := uploadAsThePreviousRelease(t, database, "scratch-md", "Scratch.md")
 	if tick := awaitedBlockIndexTick(t, service); !tick.AnotherBuild || tick.ObjectNodes < 1 {
 		t.Fatalf("the roll's first tick wrote %d object node(s) and found another build %t, want the document's node", tick.ObjectNodes, tick.AnotherBuild)
 	}
@@ -104,14 +97,7 @@ func TestTheFirstTickWithAProvenHorizonOwesTheObjectPassThoughATickBeforeAnyHori
 	stopped := time.Now()
 	service.now = func() time.Time { return stopped }
 	previousLeaves := registerProcess(t, database, previousReleaseCommit)
-	var ref string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
-		values ('CORE-1', 'CORE', 'rolled-md', 'Rolled.md', 'doc', '{"kind":"user","id":"alice"}')
-		returning ref_key
-	`).Scan(&ref); err != nil {
-		t.Fatalf("upload the document as the release before: %v", err)
-	}
+	ref := uploadAsThePreviousRelease(t, database, "rolled-md", "Rolled.md")
 
 	early := reconcileBlockIndex(t, service, "")
 	if !early.AnotherBuild || early.ObjectNodes != 3 {
@@ -169,6 +155,21 @@ func writeDocumentWithItsNode(t *testing.T, database *store.Store, slug string) 
 	}); err != nil {
 		t.Fatalf("write the document %s with its node: %v", slug, err)
 	}
+}
+
+// uploadAsThePreviousRelease uploads a document of CORE-1 at slug, named name, as the release
+// before this one does: the row alone, with no node. It answers the document's ref_key.
+func uploadAsThePreviousRelease(t *testing.T, database *store.Store, slug, name string) string {
+	t.Helper()
+	var ref string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ('CORE-1', 'CORE', $1, $2, 'doc', '{"kind":"user","id":"alice"}')
+		returning ref_key
+	`, slug, name).Scan(&ref); err != nil {
+		t.Fatalf("upload the document as the release before: %v", err)
+	}
+	return ref
 }
 
 // removeAsThePreviousRelease removes the document at ref as the release before this one does: the

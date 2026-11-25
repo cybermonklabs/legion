@@ -170,7 +170,8 @@ func scopeColumns(project *string, parties []string) (*string, *string, error) {
 		return nil, nil, err
 	}
 	if value != "" {
-		partiesColumn = &value
+		held := value
+		partiesColumn = &held
 	}
 	return projectColumn, partiesColumn, nil
 }
