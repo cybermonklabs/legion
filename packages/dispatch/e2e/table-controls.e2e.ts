@@ -303,6 +303,8 @@ async function seedInboxHeight(count: number): Promise<void> {
 // from the top of the window with no narrowing on, with the filter panel open, with the display
 // menu open, with three narrowings on and with one row selected. A panel and the selection bar
 // draw over the page, and the chips stay in the bar's one line, so none takes room in the layout.
+// Before it measures, the row reads that the seed draws its twenty-four items in three kinds at
+// least.
 test("k-inbox-height: the Inbox's first item starts within 203 px of the window at 1440x900 and 1280x800, whatever is narrowed, open or selected", async ({
   page,
 }) => {
@@ -327,6 +329,21 @@ test("k-inbox-height: the Inbox's first item starts within 203 px of the window 
     await page.goto("/");
     await expect(firstRow).toBeVisible();
     await expect(rows).toHaveCount(count);
+    // The kinds the seed's items are drawn as, each by its row's own kind mark (`RowKindIcon`).
+    const kinds = await rows.evaluateAll((nodes) =>
+      [
+        ...new Set(
+          nodes.map(
+            (node) =>
+              node.querySelector("[data-inbox-kind]")?.getAttribute("data-inbox-kind") ?? "none"
+          )
+        ),
+      ].sort()
+    );
+    expect(
+      kinds.length,
+      `${at}: the Inbox draws its ${count} items in ${kinds.length} kinds (${kinds.join(", ")}), want three at least`
+    ).toBeGreaterThanOrEqual(3);
     await resetScroll(page, firstRow);
     const lastBottom = await rows.last().evaluate((node) => node.getBoundingClientRect().bottom);
     expect(lastBottom, `${at}: the Inbox list is not longer than the window`).toBeGreaterThan(
