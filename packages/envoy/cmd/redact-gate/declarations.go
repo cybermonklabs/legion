@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -101,9 +102,9 @@ func spliceDeclarations(head, base []byte, file, pkg string, names []string) ([]
 			return nil, fmt.Errorf("two of the names in %s are one declaration of the base's", file)
 		}
 	}
-	out := append([]byte(nil), base...)
+	out := slices.Clone(base)
 	for _, e := range edits {
-		out = append(out[:e.start:e.start], append([]byte(e.text), out[e.end:]...)...)
+		out = slices.Replace(out, e.start, e.end, []byte(e.text)...)
 	}
 	for _, text := range added {
 		out = append(append(append(out, '\n'), text...), '\n')
