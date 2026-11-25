@@ -149,11 +149,14 @@ func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
 			t.Run(read.name+", gh "+strings.Join(args, " "), func(t *testing.T) {
 				stub, record := visibilityReadGh(t, read.gh(t))
 				curl := newFakeGitHub(t, "ghs_acme_write", read.curl(t))
+				// The fixture rule file is named: with no rule file the guard reads no
+				// destination's visibility.
 				code, stdout, stderr := legionGh(t, map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"GH_TOKEN": "", "GITHUB_TOKEN": "", "XDG_STATE_HOME": t.TempDir(),
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
-					testCurlEnv:         curl.program,
+					"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+					leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+					testCurlEnv:            curl.program,
 				}, args...)
 				if code != 2 || stdout != "" {
 					t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and nothing on stdout", args, code, stdout, stderr)
@@ -206,14 +209,15 @@ func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
 // refusedRefDeletion is git's pre-push line for a push that deletes a ref named for a host the
 // rules refuse: its name is the push's one record, so a scan refuses the push and no scan passes
 // it, and no git reads a commit.
-var refusedRefDeletion = "refs/heads/work " + noSHA + " refs/heads/legion/" + theLeakCheckHost + " " + noSHA + "\n"
+var refusedRefDeletion = "refs/heads/work " + noSHA + " refs/heads/legion/" + leakguardtest.RulesHost + " " + noSHA + "\n"
 
 // pushVisibilityReadEnv readies the in-process `legion leak-check pre-push` of a push to
 // noSuchRepo, whose visibility the guard reads as read says: through the pane's `gh` wrapper to
 // `legion gh`, which runs the stand-in real gh, and after gh could not reach GitHub through the
-// stand-in curl leakguardCurl names, under a stand-in check that passes, in a working directory of
-// the test's own, with a git that records each run and fails. It answers the stand-in real gh's
-// record, the stand-in curl and git's record.
+// stand-in curl leakguardCurl names, under a stand-in check that passes and the fixture rule file
+// (leakguardtest.WriteRules), in a working directory of the test's own, with a git that records
+// each run and fails: with no rule file named the guard reads no destination's visibility. It
+// answers the stand-in real gh's record, the stand-in curl and git's record.
 func pushVisibilityReadEnv(t *testing.T, root, defaultDir string, read visibilityReadCase) (record string, curl fakeGitHub, gitRecord string) {
 	t.Helper()
 	stub, record := visibilityReadGh(t, read.gh(t))
@@ -229,7 +233,8 @@ func pushVisibilityReadEnv(t *testing.T, root, defaultDir string, read visibilit
 		testMainEnv: "1", "PATH": ghWrapperDir(t) + ":" + bin + ":" + os.Getenv("PATH"),
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"GH_TOKEN": "", "GITHUB_TOKEN": "", "XDG_STATE_HOME": t.TempDir(),
-		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 	} {
 		t.Setenv(name, value)
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -19,7 +20,7 @@ import (
 func TestAWritesNameAndASetupFailureWriteNoControlByteRaw(t *testing.T) {
 	const name = "the push to /tmp/a\x1b[2Kb.git"
 	written := map[string]string{
-		"a refusal": (&Refusal{What: name, By: byRules, Lines: []string{"notes.md: " + theClass}}).Error(),
+		"a refusal": (&Refusal{What: name, By: byRules, Lines: []string{"notes.md: " + leakguardtest.RulesHostClass}}).Error(),
 		"a setup failure": (&SetupFailure{
 			What: name,
 			Why:  "the push's commits could not be read\x7f",
@@ -93,7 +94,7 @@ func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 	const token = "FAKEtok3nZQ9x"
 	what := PushName("https://x-access-token:" + token + "@github.com/acme/wid\x1b[2Kgets.git")
 	for _, answer := range []error{
-		&Refusal{What: what, By: byRules, Lines: []string{"notes.md: " + theClass}},
+		&Refusal{What: what, By: byRules, Lines: []string{"notes.md: " + leakguardtest.RulesHostClass}},
 		&SetupFailure{What: what, Why: "the read failed", Err: errors.New("fatal: unable to access 'https://u:" + token + "@github.com/x\x07y/'")},
 		&NotFound{What: what, Repo: "acme/widgets"},
 	} {
