@@ -3,11 +3,13 @@ package record
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // PhaseRowOf is role's row among rows now, read with no walk: the row with the highest entry, and
@@ -74,12 +76,95 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 // it beside the claim of the row the task stands at, so a turn of another agent of the role is told
 // apart from a turn of the same agent's other run (intake.EntryFence).
 func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row.Claim
+	row, _ := rowOnEntry(rows, role, entry)
+	return row.Claim
+}
+
+// rowOnEntry is role's row among rows that stands on entry, and whether one does: none for entry
+// 0, and at most one otherwise, since no two rows of a role stand on one entry (workflow's enter).
+// The run a completion serving entry reports is read through it (ServedClaim, CompletionRow).
+func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) {
+	if entry > 0 {
+		for _, row := range rows {
+			if row.Role == role && row.Entry == entry {
+				return row, true
+			}
+		}
+	}
+	return PhaseRow{}, false
+}
+
+// AgentsReviewedHead is the commit agent's newest deciding review of role on task read, among rows:
+// the commit (ReviewedHead) of a row that each of agent's deciding reviews writes it onto, every
+// row of role on task other than the step at place that names agent's claim (AgentsOtherRow,
+// workflow's shareReviewedHead), and "" where no such row holds one, so agent reads the whole
+// change. Those rows hold one commit, the newest, so whichever is read holds it. A run of agent's
+// step at place is named it as its own where workflow's stepRunRow says so. A row is agent's only
+// while it names agent's claim, and only a run writes another claim on it (workflow's enter): where
+// another agent's run has taken every row of role on task that agent worked, agent is named "",
+// though a review of its own read a commit before. A later version of the plan that gives agent's
+// step to another agent, with no run of it, takes no row. agent "" (an issue whose key names no
+// claims) has no row the reviews write onto, and is named "".
+func AgentsReviewedHead(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
+	step := PhaseRow{Role: role, StepTask: task, StepPlace: place, Claim: agent}
+	for _, other := range rows {
+		if AgentsOtherRow(step, other) && other.ReviewedHead != "" {
+			return other.ReviewedHead
 		}
 	}
 	return ""
+}
+
+// AnotherAgentsReview is the commit another agent's review on row's task read, which the task of a
+// review step names beside its own `none` (reviewround.AnotherAgentsSentence), among rows: where row
+// holds no commit of its own (ReviewedHead ""), the commit held by the row of row's role on row's
+// task at the nearest earlier place, from 1, whose agent (its Claim) is another than row's and whose
+// review read one. "" for every other row: one that holds a commit, one that names no agent of its
+// own (NamesItsAgent), and one with no such row before it. A row holds no commit while its agent
+// has no deciding review of its own on the task (AgentsReviewedHead), so such an agent reads the
+// whole change and is told what another agent's review read, so it can see what changed since.
+func AnotherAgentsReview(rows []PhaseRow, row PhaseRow) string {
+	if row.ReviewedHead != "" || !NamesItsAgent(row) {
+		return ""
+	}
+	commit, nearest := "", 0
+	for _, other := range rows {
+		if other.Role == row.Role && other.StepTask == row.StepTask && other.StepPlace > nearest && other.StepPlace < row.StepPlace &&
+			NamesItsAgent(other) && other.Claim != row.Claim && other.ReviewedHead != "" {
+			commit, nearest = other.ReviewedHead, other.StepPlace
+		}
+	}
+	return commit
+}
+
+// AgentsOtherRow says whether other is a row of another step of row's role on row's task that
+// row's agent ran: it names row's claim. A deciding review's commit is written onto row and onto
+// each such row (workflow's shareReviewedHead), and read from them (AgentsReviewedHead). False for
+// every other where row names no agent of its own (NamesItsAgent).
+func AgentsOtherRow(row, other PhaseRow) bool {
+	return NamesItsAgent(row) && other.Role == row.Role && other.StepTask == row.StepTask &&
+		other.StepPlace != row.StepPlace && other.Claim == row.Claim
+}
+
+// AgentsRowOf is role's row among rows that agent ran last, the row whose commit and entry a task
+// queued for agent names (workflow's queuedRow): the role's row now (PhaseRowOf) where that row is
+// agent's, names no agent of its own (NamesItsAgent), or agent is "" (an issue whose key names no
+// claims). Where the row now is the step of another agent of the role, it is the highest of agent's
+// own rows of role that run a step (rowAbove), and the zero row of role where agent ran none, which
+// names no commit and no entry. So a wake of an earlier step's agent is never named another agent's
+// commit as its own.
+func AgentsRowOf(rows []PhaseRow, role claim.Role, agent claim.Token) PhaseRow {
+	now := PhaseRowOf(rows, role)
+	if agent == "" || !NamesItsAgent(now) || now.Claim == agent {
+		return now
+	}
+	own, found := PhaseRow{Role: role}, false
+	for _, row := range rows {
+		if row.Role == role && NamesItsAgent(row) && row.Claim == agent && (!found || rowAbove(row, own)) {
+			own, found = row, true
+		}
+	}
+	return own
 }
 
 // StartLeft says whether a start of role's phase entry entry is of work the role has left, read
@@ -95,8 +180,9 @@ func StartLeft(rows []PhaseRow, role claim.Role, entry int64) (int64, bool) {
 }
 
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
-// at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
-// each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
+// at, whose steps are steps. A role can stand at two steps of a task, of one agent or of two (a
+// second agent of the role, `implementer-2`), and each run of a step keeps a row of its own
+// (StepTask, StepPlace), so the row read is the row of
 // one of the role's places in the task: its step at at where the step there is the role's; else
 // its latest place before at, the retro, the implementer's (phase.RoleFor), and the merge, the
 // merger's, standing after every step; else its first place after at, so a read or a write before
@@ -174,10 +260,8 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 	if works {
 		return PhaseRowAt(rows, role, task, at, steps)
 	}
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row
-		}
+	if row, ok := rowOnEntry(rows, role, entry); ok {
+		return row
 	}
 	if now := PhaseRowOf(rows, role); now.Role == role {
 		return now
@@ -188,9 +272,8 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 // RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
 // task whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro,
 // the implementer's (phase.RoleFor), and the merge, the merger's; from 1 for a step, 0 for the
-// retro, the merge and a role the task gives no place. It is also the place a completion's key
-// names where the role stands at two steps and its row is of no step (StandsTwice; api's
-// completion route).
+// retro, the merge and a role the task gives no place. It is also the place of a row of no step
+// (RunPlace).
 func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	var places []TaskPlace
 	for _, step := range steps {
@@ -208,6 +291,18 @@ func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	return place.Position
 }
 
+// RunPlace is the place of the step whose run row holds, on a task whose steps are steps standing
+// at at: the step row ran (PhaseRow.StepPlace), and for a row of no step, one a new generation
+// cleared or the release before wrote, which is its role's one row, its role's place nearest at
+// (RolePlace). The completion route keys a completion of a role at two steps by it (StandsTwice;
+// api's completion route), and the workflow reads the run a report is of by it (Walk.runPlace).
+func RunPlace(row PhaseRow, at TaskPlace, steps []PlanStep) int {
+	if row.StepTask == "" {
+		return RolePlace(row.Role, at, steps)
+	}
+	return row.StepPlace
+}
+
 // StandsTwice says whether steps name role at two places or more: a role that stands at two steps
 // of one task, whose runs keep a row each.
 func StandsTwice(role claim.Role, steps []PlanStep) bool {
@@ -220,15 +315,34 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 	return places >= 2
 }
 
+// NamesItsAgent says whether row names the agent whose runs wrote it: the claim (PhaseRow.Claim)
+// that a step's entry writes on a row that runs a step of the issue's plan (StepTask set). It is
+// false for a row of an issue with no plan rows, a row the issue's own new generation cleared
+// (ClearGeneration, and ClearTreeGeneration for the root it re-admits, clear StepTask and keep
+// Claim), a row no entry was raised on, and a row the release before wrote, whose entry writes no
+// claim. Only RowWorker reads such a row as the role's own token's. The entry fence asks another
+// question, which claim ran a given entry, and reads the claim alone (ServedClaim, and the row's
+// claim in intake.EntryFence): there a row naming no claim is no other agent's turn.
+func NamesItsAgent(row PhaseRow) bool { return row.StepTask != "" && row.Claim != "" }
+
+// RowWorker is the claim of the agent whose runs wrote row, role's phases row of issue: the claim
+// row names where it names its agent (NamesItsAgent), and the role's own token,
+// claim.NewToken(project, issue, role), for every other row. A step's agent can be a second agent
+// of the role in a task, whose claim has a name of its own (`…-implementer-2` beside
+// `…-implementer`), or the agent of a key, whose claim is the one it started on an earlier step of
+// another role, so a role's own token does not name it. project is the project's token, as
+// claim.NewToken takes it, and a role that is
+// no role of Legion yields its refusal. The worker of a role now (WorkerClaim) and the agent whose
+// review a step's row holds the commit of (workflow's stepRunRow) are read through it.
+func RowWorker(project, issue string, role claim.Role, row PhaseRow) (claim.Token, error) {
+	if NamesItsAgent(row) {
+		return row.Claim, nil
+	}
+	return claim.NewToken(project, issue, role)
+}
+
 // WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
-// the claim role's row names (PhaseRow.Claim) while that row runs a step of the issue's plan
-// (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
-// claim is the one it started on an earlier step of another role, so a role's own token does not
-// name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
-// plan rows, a row the issue's own new generation cleared (ClearGeneration, and ClearTreeGeneration
-// for the root it re-admits, clear StepTask and keep Claim), a row no entry was raised on, and a row
-// the release before wrote. project is the project's token, as claim.NewToken takes it, and a role
-// that is no role of Legion yields its refusal.
+// the worker (RowWorker) of role's row now (PhaseRowOf).
 //
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
 // names a role reaches the agent that works that role's step when the row runs. It is one rule with
@@ -237,13 +351,10 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 // at is the role's own: an issue a new generation put back at admitted, a run of the release
 // before, whose plans name no key, and an issue with no plan rows. The clear of a tree leaves the
 // steps of every member whose generation it keeps (Store.ClearTreeGeneration), so no row loses its
-// step while its issue stands at a step of a keyed agent, and the start of a step and every reader
-// of its worker name one agent.
+// step while its issue stands at a step of a second agent of a role or of a keyed agent, and the
+// start of a step and every reader of its worker name one agent.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
-	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
-		return row.Claim, nil
-	}
-	return claim.NewToken(project, issue, role)
+	return RowWorker(project, issue, role, PhaseRowOf(rows, role))
 }
 
 // WorkerClaimOf is WorkerClaim over entries, a batched read of many issues' phases rows
@@ -251,6 +362,48 @@ func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim
 func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
 	entry := entries[PhaseRole{Issue: issue, Role: role}]
 	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
+}
+
+// StartClaim is the claim a start row of role on issue acts on: the claim the row names
+// (SuperviseRequest.Claim), the one a phase worker's start was queued for, or, for a row that names
+// none, one the release before wrote, the claim WorkerClaim gives role's step over rows. It is the
+// one rule of that claim: the outbox's start acts on it, and the served state and the idle
+// release's notice name a start that waits for its pod by it, so all three name one claim. Its
+// error is WorkerClaim's, for a role or an issue no token spells.
+func StartClaim(project, issue string, role claim.Role, named claim.Token, rows []PhaseRow) (claim.Token, error) {
+	if named != "" {
+		return named, nil
+	}
+	return WorkerClaim(project, issue, role, rows)
+}
+
+// StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), with
+// the claim it starts in its Claim (StartClaim over rows), each once and in the order of starts: a
+// row that names a claim and a row of its role that names none can start one claim, and two rows
+// can be one start queued twice. The readers of those rows keep each row (Store.StartsWaitingForPod,
+// pods.IdleView.StartsWaitingForPod), so this is the one place they are made distinct.
+func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]pods.WaitingStart, error) {
+	claims := make([]pods.WaitingStart, 0, len(starts))
+	for _, start := range starts {
+		token, err := StartClaim(project, issue, start.Role, start.Claim, rows)
+		if err != nil {
+			return nil, fmt.Errorf("the claim of %s's start of %s that waits for its pod: %w", issue, start.Role, err)
+		}
+		if started := (pods.WaitingStart{Role: start.Role, Claim: token}); !slices.Contains(claims, started) {
+			claims = append(claims, started)
+		}
+	}
+	return claims, nil
+}
+
+// IdlePhaseRows is the phases rows an idle view keeps (pods.IdleView.Phases), one of each role
+// with its claim and the task of the step it runs, as the rows WorkerClaim and StartClaim read.
+func IdlePhaseRows(view pods.IdleView) []PhaseRow {
+	rows := make([]PhaseRow, 0, len(view.Phases))
+	for role, row := range view.Phases {
+		rows = append(rows, PhaseRow{Issue: view.Issue, Role: role, Claim: row.Claim, StepTask: row.StepTask})
+	}
+	return rows
 }
 
 // PhaseReader reads an issue's phases rows (Store.Phases), what ReadWorkerClaim needs of a store.

@@ -18,9 +18,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
-// A pane that resumes the session its claim recorded runs the model the operator's settings put
-// on the `default` role, not the one that session saved: the pane's command carries `--model
-// @default`, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
+// A pane of a role that names no model, resuming the session its claim recorded, runs the model
+// the operator's settings put on the `default` role, not the one that session saved: the pane's
+// command carries `--model @default`, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
 // session saved on one model, the profile's `modelRoles.default` moved to another, and the pane's
 // own command answering with the profile's current model. The same command with the flag taken
 // out is the control, and reports the saved model instead.

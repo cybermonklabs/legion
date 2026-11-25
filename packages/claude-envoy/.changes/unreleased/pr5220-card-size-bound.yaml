@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr5220
+body: |-
+  A message whose structured payload would make a card larger than 1 MiB and than twice its own
+  text, such as a JSON array nested 9,999 levels deep, is now shown as the text its sender sent.
+  Before, 20 KB of such text made a card of 100 MB in the session. The stderr line that names a
+  message shown as its text is now written once per message, not again for a copy Envoy sends
+  again.

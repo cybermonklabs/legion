@@ -159,6 +159,10 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "example-worker" })}, names: "example-worker"},
 		{name: "an account with no namespace",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-worker" })}, names: "system:serviceaccount:example-worker"},
+		{name: "an account with text after it",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-ns:example-public===x" })}, names: "example-public===x"},
+		{name: "an account with text before it",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "xsystem:serviceaccount:example-ns:example-public" })}, names: "xsystem:serviceaccount:example-ns:example-public"},
 		{name: "an empty account",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "" })}, names: "account entry 1"},
 		{name: "an account with no project",
@@ -169,6 +173,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "legion daemon" })}, names: workerAccount},
 		{name: "an account whose fixed session is too long",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
+		{name: "an account whose fixed session is a wildcard",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "*" })}, names: workerAccount},
 		{name: "the same account twice",
 			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
 		{name: "a repository that is not <owner>/<name>",
@@ -252,6 +258,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry whose session is too long",
 			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry whose session holds a wildcard",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader.>" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "the same read account twice",
 			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
 		{name: "an account an account entry and a read entry both list",
@@ -300,6 +308,85 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	}
 	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
 		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
+	}
+}
+
+// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project,
+// which is a job's own entry (<service account>==): its tokens act as the account itself. The set
+// boots with it, and its pods' tokens are named, name no person and no project, and carry the
+// account as their service, which is what Dispatch records their writes under, beside the account
+// as the principal their session names belong to. An entry that fixes a session answers that
+// session and no pod uid, and its session is reserved for the account as any fixed one is. A
+// request naming a project is refused as under any entry naming none, and MappedProjects and
+// ProjectsForAccount answer neither a person nor a project.
+func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
+	set, err := exchange.NewSet([]exchange.AccountEntry{
+		{Account: workerAccount},
+		{Account: daemonAccount, Session: fixedSession},
+	}, nil, nil, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet with account entries naming no person and no project = %v, want them taken", err)
+	}
+	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
+	want := exchange.Claims{Session: "public-session-1", Service: workerAccount, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
+	if err != nil || !reflect.DeepEqual(claims, want) {
+		t.Fatalf("Pod under an entry naming no person = %+v, %v; want %+v: named, no person, no project, the account as its service", claims, err, want)
+	}
+	fixed, err := set.Pod(podToken(daemonAccount, podUID), "", nil)
+	wantFixed := exchange.Claims{Session: fixedSession, Service: daemonAccount, Scope: exchange.ProjectScopeNamed, Principal: daemonPrincipal}
+	if err != nil || !reflect.DeepEqual(fixed, wantFixed) {
+		t.Fatalf("Pod under an entry naming no person that fixes its session = %+v, %v; want %+v", fixed, err, wantFixed)
+	}
+	if got := set.Reservations(); !reflect.DeepEqual(got, []exchange.Reservation{{Session: fixedSession, Principal: daemonPrincipal}}) {
+		t.Fatalf("Reservations = %v, want the fixed session held for %s", got, daemonPrincipal)
+	}
+	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
+		t.Fatalf("a request naming %s under an entry naming no person = %v, want ErrProjectsFixed", project, err)
+	}
+	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != "" || projects != nil || !ok {
+		t.Fatalf("MappedProjects = %q, %v, %v; want no person, no project, true", gotPerson, projects, ok)
+	}
+	if projects, ok := set.ProjectsForAccount(workerAccount); projects != nil || !ok {
+		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
+	}
+}
+
+// TestAPersonlessEntryNamesNoProject: only an account entry that names no project may name no
+// person: an entry that names a project names its person, so no token held to a project is
+// personless. An account entry naming a project and no person is refused, naming the entry and
+// that rule; a person that is blank without being empty is refused whatever the project; and a
+// workflow entry still needs a person, whether or not it names a project.
+func TestAPersonlessEntryNamesNoProject(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		accounts  []exchange.AccountEntry
+		workflows []exchange.WorkflowEntry
+		names     []string
+	}{
+		{name: "an account entry naming a project and no person",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Project: project}},
+			names:    []string{workerAccount, "names no person only when it names no project"}},
+		{name: "an account entry naming no project and a blank person",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Person: " "}},
+			names:    []string{workerAccount, "the person is required"}},
+		{name: "a workflow entry naming a project and no person",
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project}},
+			names:     []string{workflow, "the person is required"}},
+		{name: "a workflow entry naming neither",
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref}},
+			names:     []string{workflow}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := exchange.NewSet(c.accounts, nil, c.workflows, nil, signInDomain)
+			if err == nil {
+				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
+			}
+			for _, name := range c.names {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("NewSet(%s) refused with %q, which does not name %q", c.name, err, name)
+				}
+			}
+		})
 	}
 }
 
@@ -672,6 +759,9 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a request naming no session", credential: credentialID, approver: person, session: "", want: exchange.ErrSessionRequired, names: person},
 		{name: "a request naming a session with whitespace", credential: credentialID, approver: person, session: "ada devbox", want: exchange.ErrSessionInvalid, names: person},
 		{name: "a request naming a session past the cap", credential: credentialID, approver: person, session: strings.Repeat("s", exchange.MaxSessionBytes+1), want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming the wildcard session *", credential: credentialID, approver: person, session: "*", want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming the wildcard session >", credential: credentialID, approver: person, session: ">", want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming a session holding a wildcard", credential: credentialID, approver: person, session: "ada-*", want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			claims, err := set.Machine(c.credential, c.approver, c.session, nil)
@@ -691,6 +781,19 @@ func TestSessionAtTheCapIsUsable(t *testing.T) {
 	claims, err := set.Pod(podToken(workerAccount, podUID), name, nil)
 	if err != nil || claims.Session != name {
 		t.Fatalf("Pod(a session of exactly %d bytes) = %+v, %v; want it answered", exchange.MaxSessionBytes, claims, err)
+	}
+}
+
+// TestASessionNameHoldsNoWildcard: ValidSession takes every shape of session name a deployment
+// trades under, now that it refuses a name holding a NATS wildcard ('*' or '>', whose rows are
+// TestMachineRefusesWhatItCannotDecide's): an Envoy session id, the Legion daemon's fixed session,
+// a run pod's fixed session holding a slash, the read entry's, and a person's sign-in
+// (cipherclient.SessionFor), which holds the person's address and so a '.'.
+func TestASessionNameHoldsNoWildcard(t *testing.T) {
+	for _, name := range []string{"01930000-0000-7000-8000-000000000001", "ses_agent", fixedSession, "run-holds/example-run", readerSession, "signin-ada@example.com-abcdefghijkl"} {
+		if !exchange.ValidSession(name) {
+			t.Errorf("ValidSession(%q) = false, want true", name)
+		}
 	}
 }
 

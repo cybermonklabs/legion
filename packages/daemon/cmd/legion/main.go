@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -31,10 +32,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 const (
@@ -45,31 +48,38 @@ const (
 	// signal before then waits out the boot step under way first, each bounded by the boot's own
 	// 30 s (the daemon package's Run).
 	stopTimeout = 30 * time.Second
-	// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
-	// commands make, rather than one per route, because a budget sized for a small body and a
-	// second sized for a large one drift apart and nobody re-sizes either as the fleet grows.
-	//
-	// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an
-	// issue pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads
-	// of `GET /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in
-	// 7.05 s, 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole
-	// 4.0 MB body. That is a dated reading of one deployment and no property of the daemon: the
-	// body grows with the issues a project holds, and the issue that reading came from adds a
-	// sentence to every waiting issue and an answer to every issue that is not working. A reader
-	// who needs another number re-sizes from that measurement rather than from a guess, and
-	// takes a reading of the deployment in hand.
-	//
-	// What it buys and what it costs, both halves, since the second is the price of the first. A
-	// daemon that is merely slow is read instead of given up on, which is the common case, and a
-	// command that cannot run at all is the worse failure. A daemon that accepts a connection and
-	// then hangs now keeps an operator waiting a minute, where five seconds used to end it; a
-	// daemon that is down refuses the connection and still fails at once, so the minute is the
-	// hung case alone. The refusal names the route, how long the read took and this budget
-	// (get), so that minute reads as a budget passed rather than as a mystery.
-	requestTimeout = 60 * time.Second
 	// aliveInterval is how often a wait re-asks whether a process is gone.
 	aliveInterval = 20 * time.Millisecond
 )
+
+// requestTimeout bounds a CLI read of a daemon's HTTP API: one budget for every read these
+// commands make, rather than one per route, because a budget sized for a small body and a second
+// sized for a large one drift apart and nobody re-sizes either as the fleet grows.
+//
+// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an issue
+// pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads of `GET
+// /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in 7.05 s,
+// 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole 4.0 MB body.
+// That is a dated reading of one deployment and no property of the daemon: the body grows with
+// the issues a project holds, and the issue that reading came from adds a sentence to every
+// waiting issue and an answer to every issue that is not working. A reader who needs another
+// number re-sizes from that measurement rather than from a guess, and takes a reading of the
+// deployment in hand.
+//
+// What it buys and what it costs, both halves, since the second is the price of the first. A
+// daemon that is merely slow is read instead of given up on, which is the common case, and a
+// command that cannot run at all is the worse failure. A daemon that accepts a connection and then
+// hangs now keeps an operator waiting a minute, where five seconds used to end it; a daemon that
+// is down refuses the connection and still fails at once, so the minute is the hung case alone.
+// The refusal names the route, how long the read took and this budget (get), so that minute reads
+// as a budget passed rather than as a mystery. It is a variable so that this package's tests can
+// give it their own deadline (programbound): a stand-in daemon a loaded machine made slower than
+// the minute would be given up on, and the row would read the refusal.
+var requestTimeout = 60 * time.Second
+
+func init() {
+	programbound.Register(&requestTimeout)
+}
 
 // revision is the commit the binary was built from, linked in by the worker image's build
 // (packages/daemon/docker/worker.Dockerfile) and the legion release (.github/workflows/release.yaml)
@@ -190,8 +200,8 @@ func pluginsLine(cfg config.Config) string {
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
-	// the order the workflow reaches them, then each role of the deployment it puts there, in the
-	// file's order; the loader refuses any other.
+	// claim.Roles' order (the default steps' order), then each role of the deployment it puts
+	// there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
@@ -294,7 +304,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
-	for _, warning := range append(slices.Clone(cfg.Warnings), warnings...) {
+	for _, warning := range slices.Concat(cfg.Warnings, warnings) {
 		fmt.Fprintln(stdout, warning)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
@@ -383,7 +393,7 @@ func roleLine(role config.Role) string {
 // acceptance for a project that names none), as the file would write the list (plan.Words), and
 // what they decide.
 func defaultStepsLine(key string, project config.Project) string {
-	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge",
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
 		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
@@ -447,6 +457,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
@@ -500,13 +511,11 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
-// theirs on the operator's terminal without it.
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
@@ -602,7 +611,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag (--json for all of it)",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag, the intake's open give-ups (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -679,6 +688,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
+		fmt.Fprintln(stdout, line)
+	}
+	for _, line := range intakeGiveUpLines(state.IntakeGiveUps) {
 		fmt.Fprintln(stdout, line)
 	}
 	// In a pane, the issue record is what a relaunched worker re-reads.
@@ -944,7 +956,7 @@ func experimentLine(name string, counts map[armDraw]int) string {
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
-// answered root stands in that line, among the issues whose work came back, oldest first
+// answered root stands in that line, within its priority, among the issues whose work came back, oldest first
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
@@ -1147,61 +1159,92 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 		len(waits), oldest.issue, number, head, reading)
 }
 
-// issueRound is one update round an issue has open, and the claims in it, by role: the round a
-// pod's drift opened over every role of the issue (`pod:<pod uid>`), which is the one round this
-// daemon opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's,
-// and a boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this
-// reads one only in the moments before that pass.
+// issueRound is one update round an issue has open, and the claims in it: the round a pod's
+// drift opened over every claim of the pod (`pod:<pod uid>`), which is the one round this daemon
+// opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's, and a
+// boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this reads
+// one only in the moments before that pass.
 type issueRound struct {
-	issue string
-	round string
-	roles []string
+	issue  string
+	round  string
+	claims []roundClaim
+}
+
+// roundClaim is one claim in an update round: the role it holds, its name in its issue
+// (api.ClaimNameInIssue), and the head its worker reported when it answered the round, "" before
+// it answers (api.ClaimView.UpdateHead).
+type roundClaim struct {
+	role legionclaim.Role
+	name string
+	head string
+}
+
+// issueClaim is one claim of an issue that the state serves: the role it holds and its view.
+type issueClaim struct {
+	role legionclaim.Role
+	view api.ClaimView
+}
+
+// issueClaims is each claim of issue that the state serves, in one order: its architect, its
+// workers by role, and its other claims (api.Issue.OtherClaims), where the second claim of a role
+// stands, such as the `implementer-2` a plan that runs the role twice starts beside the role's own
+// agent in a slot of the same pod, or the agent of another role's name that holds the role for a
+// step. A controller's claim is on no issue (internal/projection puts it on none) and is read with
+// `legion claims list` instead.
+func issueClaims(issue api.Issue) []issueClaim {
+	claims := make([]issueClaim, 0, 1+len(issue.Workers)+len(issue.OtherClaims))
+	if issue.Architect != nil {
+		claims = append(claims, issueClaim{role: legionclaim.RoleArchitect, view: *issue.Architect})
+	}
+	for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
+		claims = append(claims, issueClaim{role: role, view: issue.Workers[role].Claim})
+	}
+	for _, other := range issue.OtherClaims {
+		claims = append(claims, issueClaim{role: other.Role, view: other.Claim})
+	}
+	return claims
 }
 
 // openRounds is every update round the state's issues have open, by issue and then round, each
-// with its claims in role order: a round is the daemon holding a process back from replacement
-// until its worker has pushed its work and answered.
+// with its claims by role and then name, so the role's own claim comes before each other claim of
+// its role: a round is the daemon holding a process back from replacement until its worker has
+// pushed its work and answered. Each claim of each issue is read (issueClaims).
 func openRounds(issues map[string]api.Issue) []issueRound {
 	rounds := map[string]*issueRound{}
-	var keys []string
-	add := func(issue, role string, view api.ClaimView) {
+	add := func(issue string, role legionclaim.Role, view api.ClaimView) {
 		if view.UpdateRound == "" {
 			return
 		}
 		key := issue + " " + view.UpdateRound
 		if _, open := rounds[key]; !open {
 			rounds[key] = &issueRound{issue: issue, round: view.UpdateRound}
-			keys = append(keys, key)
 		}
-		named := role
-		if view.UpdateHead != "" {
-			// The head is the worker's own word, which nothing verifies, so it is quoted: a
-			// newline in it would otherwise forge a row of this summary (claims.go's
-			// quotedOrNone).
-			named += " answered at " + strconv.Quote(view.UpdateHead)
-		}
-		rounds[key].roles = append(rounds[key].roles, named)
+		rounds[key].claims = append(rounds[key].claims, roundClaim{
+			role: role, name: api.ClaimNameInIssue(role, view.Token), head: view.UpdateHead,
+		})
 	}
 	for key, issue := range issues {
-		if issue.Architect != nil {
-			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
-		}
-		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			add(key, string(role), issue.Workers[role].Claim)
+		for _, c := range issueClaims(issue) {
+			add(key, c.role, c.view)
 		}
 	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(rounds))
 	open := make([]issueRound, len(keys))
 	for i, key := range keys {
 		open[i] = *rounds[key]
+		slices.SortFunc(open[i].claims, func(a, b roundClaim) int {
+			return cmp.Or(cmp.Compare(a.role, b.role), cmp.Compare(a.name, b.name))
+		})
 	}
 	return open
 }
 
 // roundsSummary is the one line an operator reads for the update rounds still open: how many, and
-// each by issue, round and the roles in it, with the head a role reported when it answered. While
-// a round is open the daemon holds those roles' next tasks and replaces nothing, so a round that
-// does not end is work that is not moving.
+// each by issue, round and the claims in it, with the head a claim's worker reported when it
+// answered. A claim is named as api.ClaimNameInIssue names it: its role, and its token beside it
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart. While a round is open the daemon holds those claims' next tasks and replaces nothing, so
+// a round that does not end is work that is not moving.
 func roundsSummary(issues map[string]api.Issue) string {
 	rounds := openRounds(issues)
 	if len(rounds) == 0 {
@@ -1209,52 +1252,67 @@ func roundsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(rounds))
 	for i, round := range rounds {
-		named[i] = fmt.Sprintf("%s on %s: %s", round.issue, round.round, strings.Join(round.roles, ", "))
+		claims := make([]string, len(round.claims))
+		for j, c := range round.claims {
+			claims[j] = c.name
+			if c.head != "" {
+				// The head is the worker's own word, which nothing verifies, so it is quoted: a
+				// newline in it would otherwise forge a row of this summary (claims.go's
+				// quotedOrNone).
+				claims[j] += " answered at " + strconv.Quote(c.head)
+			}
+		}
+		named[i] = fmt.Sprintf("%s on %s: %s", round.issue, round.round, strings.Join(claims, ", "))
 	}
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
 }
 
-// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
-// of the call (api.StepView).
+// claimCall is one claim's open tool call: the issue and role whose claim it is, the claim's name
+// (api.ClaimName), and the record of the call (api.StepView).
 type claimCall struct {
 	issue string
-	role  string
+	role  legionclaim.Role
+	name  string
 	step  api.StepView
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
+// the start of and no end of, by issue, then role, then the claim's name, so the role's own claim
+// comes before each other claim of its role: a working claim whose openCallWord is non-empty.
+// openCallsSummary names each of these rows with that word. That is the shape a stalled turn
+// leaves behind: the daemon reads the same record to decide a turn has stopped moving, and this is
+// where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. Each claim of each issue is read
+// (issueClaims). A controller's claim is in none of these — internal/projection puts it on no
+// issue — and is read with `legion claims list` instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
-	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
+	open := func(issue string, role legionclaim.Role, view api.ClaimView) {
+		if view.State != string(supervise.StateWorking) || openCallWord(view.Step) == "" {
 			return
 		}
-		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
+		name := api.ClaimName(issue, role, view.Token)
+		calls = append(calls, claimCall{issue: issue, role: role, name: name, step: *view.Step})
 	}
 	for key, issue := range issues {
-		if issue.Architect != nil {
-			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
-		}
-		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			open(key, string(role), issue.Workers[role].Claim)
+		for _, c := range issueClaims(issue) {
+			open(key, c.role, c.view)
 		}
 	}
 	slices.SortFunc(calls, func(a, b claimCall) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role),
+			cmp.Compare(a.name, b.name))
 	})
 	return calls
 }
 
 // openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
-// many, and each by issue and role with the call its stream named and when that call started
+// many, and each by its claim's name with the call its stream named and when that call started
 // (claims.go's openCallWord, Go-quoted because the tool and the call id are the agent's own
-// word). A call that has been open for hours is this issue's whole shape — the daemon's backstop
+// word). The name is api.ClaimName's: the issue and the role, and the claim's token beside them
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart. A call that has been open for hours is this issue's whole shape — the daemon's backstop
 // ends such a turn, and until it does this line says which agent is in one.
 //
 // The call's arguments are in no column of it: the daemon keeps their length and a fingerprint
@@ -1266,7 +1324,7 @@ func openCallsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(calls))
 	for i, call := range calls {
-		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+		named[i] = call.name + " " + strconv.Quote(openCallWord(&call.step))
 	}
 	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
 }
@@ -1294,8 +1352,8 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
-// the claim of an agent named for another role) under the move that brings it back
+// and each by its name (api.ClaimName: its issue and role, and its token beside them for
+// the claim of an agent not named for its role) under the move that brings it back
 // (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
 // move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
 // which `legion claims list --json` shows;
@@ -1317,8 +1375,9 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
 // named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// that role was given (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running
+// step, the role the state's two numbers are of), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
@@ -1453,7 +1512,7 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	if len(stranded) == 0 || op.bearer == "" {
 		return nil
 	}
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
 	if err != nil || status/100 != 2 {
@@ -1554,6 +1613,61 @@ func consumerLines(consumers []api.ConsumerLagView, startedAt, now time.Time) []
 		lines[i] = line
 	}
 	return lines
+}
+
+// plainStateGiveUps is how many of the open give-ups the state lists `legion state` prints a line
+// for: the newest, which say what is failing now, while the counts above them say how many there
+// are and `legion state --json` lists every one the state carries. Ten lines fit beside the rest
+// of the plain output on one screen, and a burst of one cause reads the same in ten as in fifty.
+const plainStateGiveUps = 10
+
+// intakeGiveUpLines are the lines an operator reads for the intake's open give-ups
+// (api.IntakeGiveUpsView): one per consumer with any, `intake give-ups <consumer>: <n> open,
+// newest seq <seq>`, the newest sequence being what `legion intake replay` and `legion intake
+// discard` take as --through-seq to reach all of them; then the newest at most plainStateGiveUps,
+// `intake give-up <id> <consumer> <subject> seq <n> gave up <time> after <d> deliveries
+// (<reason>): <first line of the error>`, each id what --give-up takes. The subject and the error
+// are terminalText: the publisher wrote the subject, and the error can quote it. With none open
+// the one line says so.
+func intakeGiveUpLines(giveUps api.IntakeGiveUpsView) []string {
+	if len(giveUps.Consumers) == 0 {
+		return []string{"intake give-ups: none"}
+	}
+	listed := giveUps.Newest[:min(len(giveUps.Newest), plainStateGiveUps)]
+	lines := make([]string, 0, len(giveUps.Consumers)+len(listed))
+	for _, consumer := range giveUps.Consumers {
+		lines = append(lines, fmt.Sprintf("intake give-ups %s: %d open, newest seq %d", consumer.Name, consumer.Open, consumer.NewestSeq))
+	}
+	for _, giveUp := range listed {
+		firstLine, _, _ := strings.Cut(giveUp.LastError, "\n")
+		lines = append(lines, fmt.Sprintf("intake give-up %d %s %s seq %d gave up %s after %d deliveries (%s): %s",
+			giveUp.ID, giveUp.Consumer, terminalText(giveUp.Subject), giveUp.StreamSeq, giveUp.GaveUpAt.UTC().Format(time.RFC3339),
+			giveUp.Deliveries, giveUp.Reason, terminalText(firstLine)))
+	}
+	return lines
+}
+
+// terminalText is text another party wrote, as a line of the operator's terminal shows it: each
+// character that does not print is written as its Go escape (`\x1b`, `\a`, `\u202e`), so an ESC
+// or a BEL in it cannot clear the screen, set the window title or reorder the line. Text that
+// prints is left as it is, so the line keeps the form the guides show. The state's text holds no
+// NUL and no byte that is not UTF-8 (storetext.Text), but it can still hold these characters.
+func terminalText(text string) string {
+	first := strings.IndexFunc(text, func(r rune) bool { return !unicode.IsPrint(r) })
+	if first < 0 {
+		return text
+	}
+	var shown strings.Builder
+	shown.WriteString(text[:first])
+	for _, r := range text[first:] {
+		if unicode.IsPrint(r) {
+			shown.WriteRune(r)
+			continue
+		}
+		quoted := strconv.QuoteRune(r)
+		shown.WriteString(quoted[1 : len(quoted)-1])
+	}
+	return shown.String()
 }
 
 // stateAddress is where a daemon answers: the configured bind and port, with --port overriding
@@ -1747,13 +1861,14 @@ func findLegion(team string) (registry.Entry, bool, error) {
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
 // cancellation is not that case and keeps the error it has.
 func get(ctx context.Context, url string) ([]byte, error) {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	budget := programbound.Of(&requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	began := time.Now()
 	refuse := func(err error) error {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
-				url, time.Since(began).Round(time.Millisecond), requestTimeout)
+				url, time.Since(began).Round(time.Millisecond), budget)
 		}
 		return fmt.Errorf("read %s: %w", url, err)
 	}

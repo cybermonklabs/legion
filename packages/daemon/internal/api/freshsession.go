@@ -16,12 +16,11 @@ import (
 // (claim.IsRole, which refuses the controller). The fresh session and the
 // compaction take the same members, so they take one type (controllerClaim).
 //
-// Claim, from contract 222, names the claim by its token: two claims of one issue can hold one
-// role — the agent of a key on a step of another role, beside that role's own claim of an earlier
-// version of the plan — and the issue and the role reach the one that works the role's step, while
+// Claim, from contract 259, names the claim by its token: two claims of one issue can hold one role
+// (record.WorkerClaim), and the issue and the role reach the one that works the role's step, while
 // a notice of provider errors can name the other. It must be a claim of Issue that holds Role.
-// Without it the request reaches the worker on the role's step, as it did before 222; a daemon
-// below 222 refuses the member as unknown.
+// Without it the request reaches the worker on the role's step, as it did before 259; a daemon
+// below 259 refuses the member as unknown.
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
@@ -163,7 +162,7 @@ type controllerTarget struct {
 
 // controllerClaim is the door both of the controller's claim recoveries come through
 // (claimFreshSession, claimCompact): the claim is named by its issue and role, and from contract
-// 222 by its token too, and the caller is its project's controller rather than the operator. It
+// 259 by its token too, and the caller is its project's controller rather than the operator. It
 // answers every refusal of the body, the grant and the lookup itself, and reports false when it
 // has; only the effect behind it differs between the two.
 //
@@ -273,9 +272,9 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on: Legion's six, in the order the workflow reaches
-// them, each role the deployment defines and each role the plan of an issue defines, which a claim
-// of an issue's step is on.
+// roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, each role the
+// deployment defines and each role the plan of an issue defines, which a claim of an issue's step
+// is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
@@ -493,9 +492,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// owes a task keeps it — the resume sends that one — and an architect is never started
 	// through a phase at all. The daemon's own delivery of a relaunch's record is no task it
 	// owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing, and
-	// the phase's task takes its place (supervise's queue).
+	// the phase's task takes its place (supervise's queue). Nor is a task of news of the approved
+	// design alone (supervise.HoldsWork): the phase's task is restarted beside it, and waits behind
+	// it until a turn has taken it.
 	status = http.StatusOK
-	if !supervise.HoldsTask(m.Claim().Pending) {
+	if !supervise.HoldsWork(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {
@@ -756,7 +757,7 @@ func relaunchWaits(view supervise.ClaimView) bool {
 // the suspended claim, the retry for a failed or retired one, which a resume is refused for
 // (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
-	return state == supervise.StateSuspended || failedOrRetired(state)
+	return state == supervise.StateSuspended || supervise.FailedOrRetired(state)
 }
 
 // agentRunning is whether a claim runs an agent that is in no turn: one registered, ready or

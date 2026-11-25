@@ -660,20 +660,20 @@ test("API client sends comment edits to their endpoint, and the reopen with no b
   expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
 });
 
-test("API client sends repository project mapping requests to their settings routes", async () => {
-  const stub = stubFetch(() => Response.json({ repo: "owner/repo", project: "CORE" }));
+test("API client sends project default repository requests to their route", async () => {
+  const stub = stubFetch(() => Response.json({ project: "CORE", repo: "owner/repo" }));
   const settingsApi = createApiClient(stub.fetch);
 
-  await settingsApi.listRepoProjects();
-  await settingsApi.putRepoProject("owner/repo", { project: "CORE" }, keyed("put-1"));
-  await settingsApi.deleteRepoProject("owner/repo", keyed("delete-1"));
+  await settingsApi.putProjectDefaultRepository("CORE", { repo: "owner/repo" }, keyed("put-1"));
+  await settingsApi.putProjectDefaultRepository("CORE", { repo: null }, keyed("put-2"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/settings/repo-projects"],
-    ["PUT", "/api/v1/settings/repo-projects/owner/repo"],
-    ["DELETE", "/api/v1/settings/repo-projects/owner/repo"],
+    ["PUT", "/api/v1/projects/CORE/default-repository"],
+    ["PUT", "/api/v1/projects/CORE/default-repository"],
   ]);
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ project: "CORE" });
+  // A set names the repository, and a clear sends null rather than leaving the member out.
+  expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ repo: "owner/repo" });
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ repo: null });
 });
 
 test("API client sends architecture source requests to their routes", async () => {
@@ -857,7 +857,7 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
     ["GET", "/api/v1/artifacts/artifact-1/comments"],
     ["POST", "/api/v1/artifacts/artifact-1/comments"],
     ["GET", "/api/v1/artifacts/artifact-1/blocks"],
-    ["GET", "/api/v1/issues/CORE-1/references"],
+    ["GET", "/api/v1/issues/CORE-1/references?versions=latest"],
   ]);
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     content: "# Design notes\n",

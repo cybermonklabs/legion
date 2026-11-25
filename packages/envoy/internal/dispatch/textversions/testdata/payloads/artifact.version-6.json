@@ -1,0 +1,44 @@
+{
+  "id": 15001,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 7,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a156a6-a3da-7351-87e3-0e1570f22e4d",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit a",
+      "cwd": "lore",
+      "session_title": "lorem ipsum dolor sit ame"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-24T02:51:46.286627Z",
+  "payload": {
+    "name": "lorem i",
+    "version": {
+      "size": 10128,
+      "named": false,
+      "number": 2,
+      "authors": [
+        {
+          "id": "01a156a6-a3da-7351-87e3-0e1570f22e4d",
+          "kind": "session",
+          "origin": {
+            "cwd": "lore",
+            "host": "lor",
+            "machine": "lorem ipsum dolor sit a",
+            "session_title": "lorem ipsum dolor sit ame"
+          }
+        }
+      ],
+      "summary": null,
+      "created_at": "2026-10-24T02:51:46.286627Z"
+    },
+    "artifact_id": "2214cd25-3bf7-4264-ae3f-66f9b02242a7",
+    "references_changed_truncated": true
+  }
+}

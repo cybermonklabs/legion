@@ -413,7 +413,8 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // read on the reviewer's row (record.PhaseRow.ReviewedHead), and the start of round 2 names it in
 // its task (namingTheReviewRound), before the sentence of its entry, which ends the task. The
 // first round of a generation has no earlier review, and its task names no commit; nor does a task
-// of any other of Legion's roles.
+// of any other of Legion's roles (a review step of a role of the deployment or of the plan names
+// its own commit).
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
@@ -598,7 +599,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.repairSilence(ctx, tx, *issue, *issue, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)),
+			return engine.repairSilence(ctx, tx, *issue, *issue, reviewClaim,
 				record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))

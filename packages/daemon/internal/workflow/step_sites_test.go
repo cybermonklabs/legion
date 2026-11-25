@@ -23,7 +23,13 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 // stepEngine is the engine the step record tests drive: testEngine with no design gate, the fixed
 // clock stepClock, and agent as the daemon's read of a step's agent (nil reads none).
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
-	engine := testEngine(config.DesignGateOff, nil)
+	return gatedStepEngine(config.DesignGateOff, agent)
+}
+
+// gatedStepEngine is stepEngine on a deployment whose design gate is policy, as the daemon builds
+// its engine at boot.
+func gatedStepEngine(policy config.DesignGate, agent func(claim.Token) StepAgent) *Engine {
+	engine := testEngine(policy, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
 	if agent != nil {
 		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }
@@ -421,7 +427,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	})
 }
 
-// The report of a step is the handoff its role's completion named, whichever of that completion
+// The report of a step whose role writes a handoff is the handoff its role's completion named, whichever of that completion
 // and the review event lands first: an event that decides the round first ends the review before
 // the reviewer completes, and the completion then names its handoff on that ended run's record,
 // so one write of the run carries it. That write is the run's: its id, its role, its type, its
@@ -627,7 +633,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				stepChild(t, pool, "LEGION-209", at, nil)
 				seedChildPR(t, pool, record.PullRequestOpen)
 				if tc.state != "" {
-					seedArchitectClaimIn(t, pool, "LEGION-209", tc.state, tc.by)
+					seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-209", 1, tc.state, tc.by)
 				}
 				engine := stepEngine(agent)
 				enter(pool, engine)

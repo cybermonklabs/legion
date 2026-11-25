@@ -260,7 +260,7 @@ func (r *keyRecorder) generations() []uint64 {
 
 // TestEachProcessRegistersAtItsLaunchGeneration: every registration carries the launch generation
 // of the process it registers — the claim's generation, which each launch raises and stores before
-// it starts the process (launchNow), and which the locator records (SandboxLocator.Generation) — so
+// it starts the process (launchTries), and which the locator records (SandboxLocator.Generation) — so
 // the broker can order two processes' writes of one (pod, session) row. A relaunch in the same pod
 // registers at a higher generation than the process it replaced, and a daemon restart, which
 // registers the running process again at its shim's first hello, sends that process's own

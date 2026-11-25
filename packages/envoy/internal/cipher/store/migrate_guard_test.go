@@ -18,6 +18,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
@@ -262,6 +264,169 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 	}
 }
 
+// A guard row that makes migrate wait out a lock timeout holds the broker's migration lock
+// (lockAndPin's pg_advisory_xact_lock(8330001)) for all of that wait, and an advisory lock's key
+// is database-wide. So such a row migrates in a database of its own (emptySchemaStore), and a
+// broker migration on the shared database, which storetest.URL runs for every broker test and
+// every broker boot runs, does not queue behind it. Here a holder takes that lock in an open
+// transaction on the database emptySchemaStore gives, and a migration of a fresh schema of the
+// shared database, made and migrated as storetest.URL makes and migrates one, must return while
+// the holder still holds the lock. The row fails as soon as it reads the migration's backend
+// waiting on a lock behind the holder. The control holds the lock on the shared database itself:
+// there the migration is read waiting behind the holder, and returns once the holder ends, so the
+// reading sees a wait where there is one.
+func TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration(t *testing.T) {
+	t.Run("a holder on a guard row's database", func(t *testing.T) {
+		ctx := context.Background()
+		s := emptySchemaStore(t)
+		held, holderPID := holdMigrationLock(t, s.Pool.Config().ConnConfig)
+		defer held.Rollback(ctx)
+		migration := migrateASharedSchema(t)
+		got := testwait.Until(t, "the shared schema's migration to return or to wait behind the holder", migration.reading(t, holderPID))
+		if got.Waiting != "" {
+			t.Fatalf("the migration of schema %s of the shared database waits behind the holder (pid %d) of the broker's migration lock on the database emptySchemaStore gave: %s", migration.schema, holderPID, got.Waiting)
+		}
+		if got.Err != nil {
+			t.Fatalf("migrate schema %s of the shared database: %v", migration.schema, got.Err)
+		}
+		var holds bool
+		if err := held.QueryRow(ctx, `select exists (select from pg_locks
+			where locktype = 'advisory' and pid = pg_backend_pid() and objid = 8330001 and granted)`).Scan(&holds); err != nil {
+			t.Fatalf("read the holder's locks: %v", err)
+		}
+		if !holds {
+			t.Fatal("the holder no longer holds the broker's migration lock, so the migration's return proves nothing")
+		}
+	})
+	t.Run("control: a holder on the shared database", func(t *testing.T) {
+		ctx := context.Background()
+		config, err := pgx.ParseConfig(testDatabaseURL(t))
+		if err != nil {
+			t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
+		}
+		held, holderPID := holdMigrationLock(t, config)
+		defer held.Rollback(ctx)
+		migration := migrateASharedSchema(t)
+		got := testwait.Until(t, "the shared schema's migration to return or to wait behind the holder", migration.reading(t, holderPID))
+		if got.Returned {
+			t.Fatalf("the migration of schema %s returned (%v) while a holder on the shared database held the broker's migration lock: the reading never saw it wait, so it cannot tell a wait from none", migration.schema, got.Err)
+		}
+		t.Logf("the migration waits behind the holder (pid %d): %s", holderPID, got.Waiting)
+		if err := held.Rollback(ctx); err != nil {
+			t.Fatalf("end the holder's transaction: %v", err)
+		}
+		if err := testwait.Receive(t, "the shared schema's migration to return once the holder ended", migration.done); err != nil {
+			t.Fatalf("migrate schema %s of the shared database once the holder ended: %v", migration.schema, err)
+		}
+	})
+}
+
+// holdMigrationLock takes the broker's migration lock, the advisory lock lockAndPin takes, in a
+// transaction it begins on a connection of its own to config's database, and answers that
+// transaction and its backend's pid. The caller ends the transaction; the connection is closed
+// when t ends.
+func holdMigrationLock(t *testing.T, config *pgx.ConnConfig) (pgx.Tx, uint32) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect the holder: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	held, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder's transaction: %v", err)
+	}
+	if _, err := held.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
+		_ = held.Rollback(ctx)
+		t.Fatalf("take the broker's migration lock: %v", err)
+	}
+	return held, conn.PgConn().PID()
+}
+
+// sharedMigration is a broker migration of a fresh schema of the BROKER_TEST_DATABASE_URL
+// database, running in a goroutine of its own (migrateASharedSchema).
+type sharedMigration struct {
+	// schema is the schema it migrates, and the application_name of its connections, by which
+	// pg_stat_activity tells them from every other test's.
+	schema string
+	// done receives what Migrate returned.
+	done chan error
+}
+
+// migrateASharedSchema creates a fresh schema on the BROKER_TEST_DATABASE_URL database, opens a
+// store whose search_path is that schema, and starts its Migrate in a goroutine, as storetest.URL
+// creates and migrates the schema of every broker test. The store is closed and the schema dropped
+// when t ends; the close waits for the migration to return.
+func migrateASharedSchema(t *testing.T) sharedMigration {
+	t.Helper()
+	raw := testDatabaseURL(t)
+	schema := "broker_shared_migration_" + randomSuffix(t)
+	adminExec(t, raw, "create schema "+schema)
+	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", errors.Unwrap(err))
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	query.Set("application_name", schema)
+	parsed.RawQuery = query.Encode()
+	s, err := Open(context.Background(), parsed.String())
+	if err != nil {
+		t.Fatalf("open schema %s of the shared database: %v", schema, err)
+	}
+	t.Cleanup(s.Close)
+	migration := sharedMigration{schema: schema, done: make(chan error, 1)}
+	go func() { migration.done <- s.Migrate(context.Background()) }()
+	return migration
+}
+
+// migrationReading is one look at a sharedMigration: whether it had returned, and what it
+// returned, or else which of its backends wait on a lock behind the holder, as pg_stat_activity
+// shows them ("" for none).
+type migrationReading struct {
+	Returned bool
+	Err      error
+	Waiting  string
+}
+
+// reading answers a read for testwait.Until that holds once the migration has returned or one of
+// its backends waits on a lock behind holderPID's backend: on a lock that backend holds, or on one
+// that a backend already counted holds or is ahead of it for. That is the query
+// storetest.LockWaitersBehind runs, which this package cannot import (storetest imports it). It
+// reads on a connection of its own to the shared database, closed when t ends; pg_stat_activity
+// and pg_blocking_pids see the backends of every database on the server.
+func (m sharedMigration) reading(t *testing.T, holderPID uint32) func() (migrationReading, bool) {
+	t.Helper()
+	ctx := context.Background()
+	watch, err := pgx.Connect(ctx, testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("connect the watch: %v", err)
+	}
+	t.Cleanup(func() { watch.Close(context.Background()) })
+	return func() (migrationReading, bool) {
+		select {
+		case err := <-m.done:
+			return migrationReading{Returned: true, Err: err}, true
+		default:
+		}
+		var waiting string
+		if err := watch.QueryRow(ctx, `with recursive waiting(pid) as (
+				select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+				union
+				select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+			)
+			select coalesce(string_agg(format('pid %s of %s on database %s waits on a lock of type %s in: %s',
+				a.pid, a.application_name, a.datname, a.wait_event, a.query), '; ' order by a.pid), '')
+			from pg_stat_activity a join waiting w on w.pid = a.pid
+			where a.application_name = $2`, int32(holderPID), m.schema).Scan(&waiting); err != nil {
+			t.Fatalf("read the backends waiting behind pid %d: %v", holderPID, err)
+		}
+		return migrationReading{Waiting: waiting}, waiting != ""
+	}
+}
+
 // On a broker_schema_migrations an earlier runner created, the ALTER TABLE that adds the identity
 // columns takes ACCESS EXCLUSIVE on the table, and a request's read of the table
 // (requests.writtenBeforeMigration13) queues behind that lock. The runner commits the ALTER in a
@@ -314,8 +479,7 @@ func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.
 func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
 	ctx := context.Background()
 	s := emptySchemaStore(t, "pool_max_conns=4")
-	schema := "broker_migrate_leak_" + randomSuffix(t)
-	t.Cleanup(func() { adminExec(t, testDatabaseURL(t), "drop schema if exists "+schema+" cascade") })
+	schema := "broker_migrate_leak"
 	leaked := schema + ", public"
 	set := fstest.MapFS{
 		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
@@ -383,20 +547,25 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 	}
 }
 
-// emptySchemaStore opens a store on a schema of its own on the BROKER_TEST_DATABASE_URL server,
-// created empty and dropped when t ends, with params, extra connection parameters as key=value
-// (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own needs one:
-// the server's shared schema already records the broker's real versions, which would pass over
-// the test set's numbers as applied.
+// emptySchemaStore opens a store on a schema created empty in a database of the test's own on the
+// BROKER_TEST_DATABASE_URL server (testdb.DatabaseOn, which drops the database when t ends), with
+// params, extra connection parameters as key=value (e.g. "pool_max_conns=4"), added to the URL. A
+// test that migrates a set of its own needs an empty schema: the shared database's schemas already
+// record the broker's real versions, which would pass over the test set's numbers as applied. The
+// schema is the URL's search_path, a connection option, as storetest.URL sets it for every broker
+// test. And the test needs a database of its own because migrate holds the broker's migration
+// lock (lockAndPin's pg_advisory_xact_lock(8330001)) to the end of each of its transactions, and
+// an advisory lock's key is database-wide: on the shared database, a row that makes migrate wait
+// out a lock timeout would hold every other broker test's migration and every broker boot there
+// behind it for that long (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
-	raw := testDatabaseURL(t)
-	schema := "broker_migrate_test_" + randomSuffix(t)
-	adminExec(t, raw, "create schema "+schema)
-	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
-	parsed, err := url.Parse(raw)
+	databaseURL := testdb.DatabaseOn(t, testDatabaseURL(t), "broker_migrate_test")
+	const schema = "broker_migrate_test"
+	adminExec(t, databaseURL, "create schema "+schema)
+	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	query := parsed.Query()
 	query.Set("search_path", schema)

@@ -15,9 +15,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// defaultTask is the id of the one task of an issue whose owner gives no plan (plan.DefaultTask):
-// the task of the project's default steps, and of today's steps of a run with no plan rows
-// (todaysSteps), under which the steps of each are recorded.
+// defaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none (plan.DefaultTask): the task of the project's default steps, and
+// of today's steps of a run with no plan rows (todaysSteps), under which the steps of each are
+// recorded.
 const defaultTask = plan.DefaultTask
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
@@ -362,12 +363,18 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // placeToken is the claim token of the agent of the work issue stands in at, read on the walk of
-// issue's run (stepToken), and role's own token where the walk holds no place for at.
+// issue's run (walkToken).
 func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role) (claim.Token, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
+	return e.walkToken(issue, w, at, role)
+}
+
+// walkToken is the claim token of the agent of the work issue stands in at, read on w, issue's
+// walk (stepToken), and role's own token where w holds no place for at.
+func (e *Engine) walkToken(issue record.Issue, w Walk, at phase.Phase, role claim.Role) (claim.Token, error) {
 	place, ok := w.placeIn(at)
 	if !ok {
 		return stepClaim(issue, issue.Key, role)
@@ -442,7 +449,7 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // store records it, and a claim whose start is only queued does not hold its role yet
 // (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
-// re-admission's promotion, which brings back a member's suspended architect (admit's
+// re-admitted tree's first run, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //

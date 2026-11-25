@@ -21,7 +21,7 @@ export function classifySession(env: NodeJS.ProcessEnv): LegionSessionKind {
 
   if (env.LEGION_ROLE === undefined) return { kind: "not-legion" };
 
-  // A phase worker's role is one of Legion's six, a role of the deployment (contract 221) or a role
+  // A phase worker's role is one of Legion's six, a role of the deployment (contract 258) or a role
   // of its issue's plan.
   if (!isStepRole(env.LEGION_ROLE)) {
     throw new Error(`LEGION_ROLE "${env.LEGION_ROLE}" is not a Legion role`);
@@ -43,20 +43,20 @@ export function requiredEnvironment(env: NodeJS.ProcessEnv, key: string): string
   return value;
 }
 
-/** `<key>_FILE` (trimmed file contents) ahead of `<key>`: the daemon hands every pane secret over
- * as a 0600 file pointer, never as a tmux `-e` argv value. A set pointer is authoritative — a
- * missing, unreadable, or blank file throws naming the variable and the read error's code, never
- * the path, which is what a secret pasted into the variable would be (`readSecretFile`), and never
- * falls back to `<key>`. Either way the secret is held, so every line this process prints is
- * scrubbed of it (`@legion/contracts/held-secrets`). */
-export function requiredSecret(env: NodeJS.ProcessEnv, key: string): string {
+/** `<key>_FILE` (trimmed file contents, read without holding the event loop) ahead of `<key>`: the
+ * daemon hands every pane secret over as a 0600 file pointer, never as a tmux `-e` argv value. A
+ * set pointer is authoritative — a missing, unreadable, or blank file rejects naming the variable
+ * and the read error's code, never the path, which is what a secret pasted into the variable would
+ * be (`readSecretFile`), and never falls back to `<key>`. Either way the secret is held, so every
+ * line this process prints is scrubbed of it (`@legion/contracts/held-secrets`). */
+export async function requiredSecret(env: NodeJS.ProcessEnv, key: string): Promise<string> {
   const fileKey = `${key}_FILE`;
   const file = env[fileKey];
   if (file !== undefined) return readSecretFile(fileKey, file);
   return holdSecret(requiredEnvironment(env, key));
 }
 
-export function requiredControllerCapability(env: NodeJS.ProcessEnv): string {
+export async function requiredControllerCapability(env: NodeJS.ProcessEnv): Promise<string> {
   if (env.LEGION_CONTROLLER_SECRET_FILE !== undefined) {
     return readSecretFile("LEGION_CONTROLLER_SECRET_FILE", env.LEGION_CONTROLLER_SECRET_FILE);
   }

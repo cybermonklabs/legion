@@ -41,6 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -130,8 +131,9 @@ type Requests interface {
 	// JudgePolicy answers, for the enrollment that made a pending request, what the live
 	// policy says about one of its names at this moment: the decision policy.Set.Evaluate
 	// makes for that enrollment's requester, whether the name is withheld from the
-	// session, and whether the secret is an administrator's (policy.Secret.Admin, the
-	// admin: "true" tag). The judge asks the machine one question instead of reading the
+	// session, and whether a person approves every release of the secret
+	// (policy.Secret.PersonApprovesEveryRelease: true for a secret tagged admin: "true" and for an
+	// anthropic-federation secret). The judge asks the machine one question instead of reading the
 	// policy itself, because what a requester is — the person it acts for, the service its
 	// account still proves, and the names its operator took back from it — is read from the
 	// database and is the machine's to answer (requests.Machine.requester).
@@ -461,12 +463,13 @@ func decidesNothingFor(name string) string {
 }
 
 // decidedByAPerson is the sentence the admin check writes, and the one a person reads in the
-// request.judged row of a request the judge handed over for being an administrator's. It says
-// both halves of why: what the key is, and that the promise its tag makes is unconditional —
-// every release of such a credential is approved by a person, and no rules file that gives the
-// judge seconds of the name can undo that (policy.TagAdmin, the broker's concepts document).
+// request.judged row of a request the judge handed over for naming a secret a person approves
+// every release of (policy.Secret.PersonApprovesEveryRelease). It says both halves of why: what
+// the key is, and that the promise is unconditional — every release of such a credential is
+// approved by a person, and no rules file that gives the judge seconds of the name can undo that
+// (policy.TagAdmin, the broker's concepts document).
 func decidedByAPerson(name string) string {
-	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
+	return fmt.Sprintf("%s is an administrator's secret or an Anthropic federation secret, and a person approves every release of one", name)
 }
 
 // issue reads the Dispatch issue the signed reason names, when it names one, into data, so the
@@ -687,13 +690,16 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 // while the judge was reading: the session's operator withheld a key or its owner tagged it an
 // administrator's (the two guards currentPolicyAdmits makes for the judge alone), the key's owner
 // changed, its max-grant fell below the request's lifetime, or the request became a private
-// project's. Each is the ordinary outcome of losing a race and no fault of the judge's (D10), and
-// the policy's all answer record.ErrNotApprover. The broker stopping under the approval
+// project's, all of which answer record.ErrNotApprover; or a profiles roll took the request's
+// target out of its profile, which the approval's own target check answers
+// requests.ErrTargetRefused. Each is the ordinary outcome of losing a race and no fault of the
+// judge's (D10). The broker stopping under the approval
 // (context.Canceled in what the approval answered), a COMMIT that failed and, by the row
 // LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not answering the
-// approval's check, and the run's time running out before the approval landed are no refusal
-// either. Any other refusal is one the judge should not have reached at all, and is an ERROR even
-// while the broker stops.
+// approval's check, Dispatch not saying what kind of member the session's person is
+// (*projectaccess.MemberKindUncheckable), and the run's time running out before the approval
+// landed are no refusal either. Any other refusal is one the judge should not have reached at all,
+// and is an ERROR even while the broker stops.
 func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
 	attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 	switch {
@@ -701,7 +707,8 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 		slog.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
 			attrs...)
 	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) ||
-		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover):
+		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover) ||
+		errors.Is(err, requests.ErrTargetRefused):
 		slog.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
 			attrs...)
 	case errors.Is(err, context.Canceled):
@@ -712,6 +719,9 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 			attrs...)
 	case errors.Is(err, requests.ErrProjectAccessUnavailable) || errors.Is(err, context.DeadlineExceeded):
 		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
+			attrs...)
+	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
+		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not say whether the session's person is a restricted member; the request waits for its person",
 			attrs...)
 	default:
 		slog.Error("broker judge: the judge's grant was refused", attrs...)

@@ -222,6 +222,7 @@ func startDispatchNATS(t *testing.T, urls []string, overrides map[string]string)
 // goroutine, because testnats.Server.Start, testnats.Server.Stop and testnats.Cluster.AwaitReady
 // call t.Fatal, which Go forbids off the test goroutine.
 func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	cluster := testnats.StartCluster(t, 3)
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
@@ -246,6 +247,7 @@ func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
 // the deployment's settings (ENVOY_NATS_REPLICAS=3 and the byte limit), and with both settings
 // unset, a replica count of 1 and no byte limit, which neither lowers the copies nor drops the limit.
 func TestADispatchStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	for _, drift := range bustest.StreamDrifts() {
 		for _, settings := range []struct {
 			name      string
@@ -272,6 +274,7 @@ func TestADispatchStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 // `redeliver-webhooks` with ENVOY_NATS_REPLICAS=3 raises the R1 webhook redelivery bucket an
 // earlier sweep at the default created to three copies, as the server's sweeper does.
 func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
@@ -338,6 +341,7 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 // On a single server with the default settings, the Dispatch server's start creates the stream and
 // the webhook redelivery bucket at one copy, and its next start creates and updates nothing.
 func TestADefaultDispatchStartOnASingleServerCreatesEverythingAtOneCopyAndTheNextWritesNothing(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	_, url := testnats.Start(t)
 	streams := []string{bus.Stream, "KV_" + bus.WebhookRedeliveryBucket}
 
@@ -364,6 +368,7 @@ const keeperRestoreWait = 30 * time.Second
 // reconcile has run: an operator who lowers the stream to one copy and half the byte limit finds
 // both back at the deployment's settings within one keeper period.
 func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
 	startDispatchStream(t, cluster.URLs(), map[string]string{"ENVOY_NATS_REPLICAS": "3", "ENVOY_STREAM_MAX_BYTES": strconv.Itoa(bustest.StreamMaxBytes)}, bus.WithKeepInterval(keeperPeriod))

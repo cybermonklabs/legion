@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -66,7 +67,7 @@ func operatorSQL(t *testing.T, dsn, statement, conforming string) int64 {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +96,7 @@ func operatorSQL(t *testing.T, dsn, statement, conforming string) int64 {
 // its quotes doubled, as before; with the setting off the statement moves every row of the
 // table, the session another claim holds included.
 func TestTheSettleStatementMovesOnlyItsNameUnderEitherStringSetting(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -133,6 +135,7 @@ func TestTheSettleStatementMovesOnlyItsNameUnderEitherStringSetting(t *testing.T
 // machine still answers the hold it cached, and it resumes the session the rightful claim
 // resumes too.
 func TestAWrongSettleRunIsUndoneByTheDocumentedSteps(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {

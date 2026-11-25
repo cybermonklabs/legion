@@ -62,6 +62,15 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Settings the server is given beside the ones below, for a row that needs a deployment the
+   * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
+   * verifies projected service-account tokens, and an issuer nothing serves makes every such
+   * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`). A name the stack sets itself is refused,
+   * so a row cannot quietly take the server's database, port or token away from it.
+   */
+  readonly env?: Readonly<Record<string, string>> | undefined;
   /** Called with the port the stack chooses for the server, before the server starts. */
   readonly portChosen?: PortChosen;
 }
@@ -138,10 +147,8 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       "dispatch",
       "DISPATCH_LISTEN_FD",
       options.portChosen,
-      (port) => ({
-        command: [path.join(bin, "dispatch")],
-        cwd: ENVOY_MODULE,
-        env: {
+      (port) => {
+        const settings: Record<string, string> = {
           PATH: SHELL_PATH,
           HOME: home,
           DATABASE_URL: databaseUrl.toString(),
@@ -154,9 +161,22 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
           DISPATCH_PORT: String(port),
           DISPATCH_SERVER_URL: `http://127.0.0.1:${port}`,
           DISPATCH_WEB_DIST: WEB_DIST,
-        },
-        log,
-      })
+        };
+        for (const [name, value] of Object.entries(options.env ?? {})) {
+          if (name in settings) {
+            throw new Error(
+              `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+            );
+          }
+          settings[name] = value;
+        }
+        return {
+          command: [path.join(bin, "dispatch")],
+          cwd: ENVOY_MODULE,
+          env: settings,
+          log,
+        };
+      }
     );
     child = started.child;
     const url = `http://127.0.0.1:${started.port}`;

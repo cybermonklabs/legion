@@ -299,13 +299,6 @@ func (e *ErrInvalidPrecondition) Error() string {
 // ErrPreconditionBusy reports that a room's bounded conditional-edit queue is full.
 var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 
-// ErrPreconditionRequired reports a whole-document upload replacing a document that already
-// exists and naming no token for the version it replaces, which every replacement names. The
-// write read the live tree to decide it and left it untouched. Its caller knows the document by
-// name and tells its reader where that token is printed, so the refusal a client reads is
-// written there (api's uploadBaseAdvice).
-var ErrPreconditionRequired = errors.New("an upload replacing a document must name the token of the version it replaces")
-
 // ErrPreconditionUnavailable reports a whole-document upload repairing a document whose live
 // tree is outside the Proof schema and naming a token for the version it replaces. Such a tree
 // renders no markdown and has no token at all, so the caller named a token this document has
@@ -2220,6 +2213,9 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if op.Find == "" {
 		return nil, invalidOp("find")
 	}
+	// A replace that names no with, or carries a member replace does not take, is refused by
+	// the edit route before the batch reaches here (api.replaceFieldsRefusal), since only the
+	// request body says which members a replace named.
 	r, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return nil, err

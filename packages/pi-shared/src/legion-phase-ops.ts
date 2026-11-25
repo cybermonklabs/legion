@@ -30,7 +30,7 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  /** One of Legion's six, a role of the deployment (contract 221) or a role of the issue's plan. */
+  /** One of Legion's six, a role of the deployment (contract 258) or a role of the issue's plan. */
   readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
@@ -318,8 +318,11 @@ export const PHASE_OP_SENTENCES = {
     "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
+    "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
+    "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. " +
+    "A move to another phase that two earlier steps run as goes to the later of them, unless `return_to` names the earlier one. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -360,24 +363,24 @@ export function legionToolDescription(host: {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
-    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester, a role of the deployment or a role of the issue's plan on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-    "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-    "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
-    "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+    "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+    "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
+    "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
     "(RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion, a step of a role of the deployment and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -395,9 +398,10 @@ export function legionToolDescription(host: {
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
-    "nothing, so fix what it names and complete again. " +
+    "nothing, so fix what it names and complete again, unless it says to end this turn without completing or not to complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
     "names. It can end earlier, once every agent the round asks has answered, no agent of the issue is in a turn and the last " +
@@ -448,8 +452,9 @@ export interface PhaseOpRuntime {
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
    * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
-   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
-   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
+   * that left phase has none or the implementer's left record names no head, or at `step`, the
+   * phase of a role of the deployment, which writes no record. Throws naming the remedy when the
+   * phase the role works writes records and has none, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;

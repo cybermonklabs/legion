@@ -56,7 +56,7 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 		{name: "the address in AGENT_SECRETS_URL", wantReread: true},
 		{name: "an address ending in slashes", suffix: "//", wantReread: true},
 		{name: "no AGENT_SECRETS_URL in the shell", noVar: true, wantSaid: "~/.config/agent-secrets/config"},
-		{name: "a broker refusing the reread", refuse: http.StatusTooManyRequests, wantSaid: "429"},
+		{name: "a broker refusing the reread", refuse: http.StatusTooManyRequests, wantSaid: "returned error: 429"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))

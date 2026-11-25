@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Daemon claim, state and recovery shapes identify keyed agents separately from the roles of their steps. Role-holder records include the claim and whether it works the current step.
+time: 2026-11-24T20:14:11Z
+custom:
+    Issue: pr5156

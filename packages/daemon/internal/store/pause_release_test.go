@@ -99,33 +99,34 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	}
 }
 
-// Decision 12 and departure 4 of dispatch://INFRA-3759: a release whose save has not run when the
-// pause begins is cancelled at its save, for the pause; a save that ran before the pause acts, and
-// the release's role stop after the pause still acts, since only the save reads the pause.
-func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
+// Under a project pause, a release whose workspace check has not run
+// when the pause begins is cancelled at its check, for the pause; a check that ran before the
+// pause acts, and the release's role stop after the pause still acts, since only the check reads
+// the pause.
+func TestAReleaseCheckIsCancelledWhileTheProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	first, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 
-	before, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	before, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || before.Act != ReleaseActs {
-		t.Fatalf("the save before the pause = %s, %v; want it to act", before.Act, err)
+		t.Fatalf("the check before the pause = %s, %v; want it to act", before.Act, err)
 	}
 	pauseLegion(t, st, pausedAt)
-	paused, err := st.IssueReleaseSave(ctx, "legion", rootIssue, first)
+	paused, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil || paused.Act != ReleaseCancel || paused.Cause != ReleaseCausePaused {
-		t.Fatalf("the save while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
+		t.Fatalf("the check while paused = %s for %s, %v; want %s for %s", paused.Act, paused.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 	if stop, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary); err != nil || stop.Act != ReleaseActs {
-		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release that saved finishes", stop.Act, err)
+		t.Fatalf("the role stop while paused = %s, %v; want it to act: a release whose check ran finishes", stop.Act, err)
 	}
 }
 
 // otherIssue is an issue of another project whose pod this project's daemon runs: the operator's
 // spawn (`legion claims spawn`) makes a claim of any issue key under the daemon's own project
 // token, and such a claim is part of this project's pause as every other claim is. No production
-// row reaches a release's save or its cancel for such an issue (IssueReleaseSave,
+// row reaches a release's check or its cancel for such an issue (IssueReleaseCheck,
 // CancelIssueRelease): a release's rows are keyed by its issue, the release queues no row keyed by
 // another project's issue (insertOutboxRow, claim.KeyOfProject) and so marks no release of it, and
 // the daemon's outbox runs only the rows of its own project's keys. The tests below write the mark
@@ -137,34 +138,34 @@ const otherIssue = "OTHER-5"
 // role stop.
 const otherFirst, otherBoundary = 18, 20
 
-// Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the save of its
+// For the pod of another project's issue, the check of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so it is cancelled while LEGION is paused.
-func TestASaveOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
+func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseLegion(t, st, pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseCancel || saved.Cause != ReleaseCausePaused {
-		t.Fatalf("the save of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause saves no workspace and deletes no pod",
-			otherIssue, saved.Act, saved.Cause, err, ReleaseCancel, ReleaseCausePaused)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseCancel || checked.Cause != ReleaseCausePaused {
+		t.Fatalf("the check of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause deletes no pod",
+			otherIssue, checked.Act, checked.Cause, err, ReleaseCancel, ReleaseCausePaused)
 	}
 }
 
 // The inversion of the test above: a pause of the issue key's project is not this project's, so
-// the save of the same release acts while only OTHER is paused and LEGION runs.
-func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
+// the check of the same release acts while only OTHER is paused and LEGION runs.
+func TestACheckOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseProject(t, st, "OTHER", pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
-	if err != nil || saved.Act != ReleaseActs {
-		t.Fatalf("the save of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
-			otherIssue, saved.Act, saved.Cause, err)
+	checked, err := st.IssueReleaseCheck(ctx, "legion", otherIssue, otherFirst)
+	if err != nil || checked.Act != ReleaseActs {
+		t.Fatalf("the check of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
+			otherIssue, checked.Act, checked.Cause, err)
 	}
 }
 
@@ -251,6 +252,62 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 					held, open, tc.woken, pause.ID)
 			}
 		})
+	}
+}
+
+// A cancel made while the project is paused arms the backstop of the worker of the issue's open
+// phase serving the issue's generation, and at step that worker is the role of the running step,
+// which the issue's plan rows name and the phase alone does not. The released checker of an issue
+// at step 2 of `implementer checker` gets the backstop, and the released implementer none.
+func TestACancelWhilePausedAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T) {
+	const checker = claim.Role("checker")
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	records := record.NewStore()
+	inTx(t, st, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: rootIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: claim.Token("legion-legion-legion-208-architect"), GivenAt: pausedAt}
+		task := record.PlanTask{Issue: rootIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 1, Role: string(claim.RoleImplementer), Type: "implementation"},
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+	})
+	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'step' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("move %s to step: %v", rootIssue, err)
+	}
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	servingReleasedClaim(t, st, checker)
+	markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer, checker)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	at := pausedAt.Add(time.Minute)
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: at, Backstop: time.Hour, OpenWorker: func(ctx context.Context, tx pgx.Tx, issue string) (claim.Token, error) {
+			return record.ReadWorkerClaim(ctx, records, tx, "legion", issue, checker)
+		}})
+	if err != nil {
+		t.Fatalf("cancel the release while paused: %v", err)
+	}
+	if cancelled.Pause != pause.ID || !slices.Equal(cancelled.Stopped, []claim.Role{checker, claim.RoleImplementer}) {
+		t.Fatalf("the cancel = %+v; want pause %d with the checker and the implementer stopped", cancelled, pause.ID)
+	}
+	rows, err := st.Pool().Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired and due_at = $2 order by role`,
+		rootIssue, at.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", rootIssue, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", rootIssue, err)
+	}
+	if want := []string{string(checker)}; !slices.Equal(armed, want) {
+		t.Fatalf("the cancel at step 2 armed the backstops of %v, want %v, the role of the running step", armed, want)
 	}
 }
 
@@ -569,13 +626,21 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 // holds carries with each hold the latest let-out of a launch its own pause held for a role of the
 // pod, the greatest stuck clock of the issue's resumes that pause held, and reads a hold that ended
 // before since where that let-out came after it. A resume no pause held moves nothing.
+//
+// A hold whose pause still owes a launch of the pod is read whatever since: the resume of that
+// launch is open (no first turn, not closed, no ready), and its stuck clock is still the moment of
+// the project's resume until the wake pacing lets the launch out. The third pod's hold is that
+// hold. A round that opened after the hold ended reads it, so the round keeps the pod for the owed
+// launch (internal/daemon's podHolds.owes). Each launch the other two pods' holds owed has taken
+// its first turn, so those holds are read by their let-outs alone. Without the read of the open
+// resume, the third pod's hold is missing from every read since a moment after the resume.
 func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
-	const other = "LEGION-300"
+	const other, owed = "LEGION-300", "LEGION-301"
 	resumedAt := pausedAt.Add(time.Hour)
-	for _, issue := range []string{rootIssue, other} {
+	for _, issue := range []string{rootIssue, other, owed} {
 		if _, err := holdPod(st, pause, issue, pausedAt); err != nil {
 			t.Fatalf("hold the pod of %s: %v", issue, err)
 		}
@@ -588,11 +653,15 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		role    claim.Role
 		letOut  time.Duration
 		byPause bool
+		// launched is whether the launch took its first turn a minute after its let-out
+		// (MarkPodResumeFirstTurn), which ends the resume's wait.
+		launched bool
 	}{
-		{rootIssue, claim.RoleImplementer, 3 * time.Minute, true},
-		{rootIssue, claim.RoleArchitect, 10 * time.Minute, true},
-		{rootIssue, claim.RoleTester, 20 * time.Minute, false},
-		{other, claim.RoleImplementer, 5 * time.Minute, true},
+		{rootIssue, claim.RoleImplementer, 3 * time.Minute, true, true},
+		{rootIssue, claim.RoleArchitect, 10 * time.Minute, true, true},
+		{rootIssue, claim.RoleTester, 20 * time.Minute, false, false},
+		{other, claim.RoleImplementer, 5 * time.Minute, true, true},
+		{owed, claim.RoleImplementer, 0, true, false},
 	} {
 		var held *int64
 		kind := "delivery"
@@ -603,19 +672,25 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
-			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7)`, resume.issue, string(resume.role), string(token), kind,
-			pausedAt.Add(time.Minute), resumedAt.Add(resume.letOut), held); err != nil {
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, resume.issue, string(resume.role), string(token), kind,
+			pausedAt.Add(time.Minute), resumedAt.Add(resume.letOut), held).Scan(&id); err != nil {
 			t.Fatalf("record the resume of %s's %s: %v", resume.issue, resume.role, err)
+		}
+		if resume.launched {
+			if err := st.MarkPodResumeFirstTurn(ctx, id, resumedAt.Add(resume.letOut+time.Minute)); err != nil {
+				t.Fatalf("stamp the first turn of %s's %s: %v", resume.issue, resume.role, err)
+			}
 		}
 	}
 	for _, tc := range []struct {
 		since time.Duration
 		want  map[string]time.Duration
 	}{
-		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute}},
-		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute}},
-		{since: 10 * time.Minute},
+		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute, owed: 0}},
+		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, owed: 0}},
+		{since: 10 * time.Minute, want: map[string]time.Duration{owed: 0}},
 	} {
 		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
 		if err != nil {
@@ -631,5 +706,167 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 			t.Fatalf("the let-outs of the holds read since the resume %+v = %v, want %v", tc.since, got, tc.want)
 		}
+	}
+}
+
+// Decision 12 of dispatch://INFRA-3759, as review rounds 3 and 4 of dispatch://INFRA-4109 set it:
+// the sweep's read names, for each hold, every claim of the pod that the hold's own pause still
+// owes a launch (PausePodHold.Owed). A round keeps the pod for a claim only while the pause still
+// owes that claim a launch, so the daemon reads it claim by claim and never from the latest
+// let-out of all the claims.
+//
+// Both pods were held by the pause and their holds ended at the resume. On the first pod, the
+// pause still owes the own claims of the implementer and the tester a launch: each has a resume of
+// that pause that no first turn stamped, nothing closed and no ready stamped, and each is named,
+// in token order. The architect became ready (MarkPodResumeReady) and its resume stays open, as a
+// role the daemon suspended before its first turn leaves it. The reviewer took its first turn, and
+// the merger's resume was closed. None of those three is owed, and neither is the planner, whose
+// open resume is of a later pause. The second pod has the same four resumes and no other: its hold
+// is read where it ended or its pause let a launch out after since, and is missing from a read
+// past both, whatever its open, ready resume. The latest let-out still counts every resume of the
+// pause (PausePodHold.LetOut).
+func TestTheSweepsReadOfTheHoldsNamesEachClaimItsPauseStillOwesALaunch(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	const nothingOwed = "LEGION-300"
+	resumedAt := pausedAt.Add(time.Hour)
+	for _, issue := range []string{rootIssue, nothingOwed} {
+		if _, err := holdPod(st, pause, issue, pausedAt); err != nil {
+			t.Fatalf("hold the pod of %s: %v", issue, err)
+		}
+		if _, err := st.EndPausePodHold(ctx, "LEGION", issue, PausePodHoldResumed, resumedAt); err != nil {
+			t.Fatalf("end the hold of %s at the resume: %v", issue, err)
+		}
+	}
+	endPause(t, st, pause.ID, resumedAt)
+	later, _ := pauseLegion(t, st, resumedAt.Add(time.Minute))
+	endPause(t, st, later.ID, resumedAt.Add(2*time.Minute))
+
+	// own is the token of the own claim of issue's role, the claim each resume below names.
+	own := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	// resume writes the resume of the own claim of issue's role that held held, with its stuck
+	// clock letOut after the resume, and answers its id.
+	resume := func(issue string, role claim.Role, held Pause, letOut time.Duration) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, issue, string(role), string(own(issue, role)), pods.WakePause,
+			pausedAt.Add(time.Minute), resumedAt.Add(letOut), held.ID).Scan(&id); err != nil {
+			t.Fatalf("record the resume of %s's %s: %v", issue, role, err)
+		}
+		return id
+	}
+	for _, issue := range []string{rootIssue, nothingOwed} {
+		if err := st.MarkPodResumeReady(ctx, resume(issue, claim.RoleArchitect, pause, 5*time.Minute), resumedAt.Add(6*time.Minute)); err != nil {
+			t.Fatalf("stamp the ready of %s's architect: %v", issue, err)
+		}
+		if err := st.MarkPodResumeFirstTurn(ctx, resume(issue, claim.RoleReviewer, pause, time.Minute), resumedAt.Add(2*time.Minute)); err != nil {
+			t.Fatalf("stamp the first turn of %s's reviewer: %v", issue, err)
+		}
+		resume(issue, claim.RoleMerger, pause, 2*time.Minute)
+		merger := own(issue, claim.RoleMerger)
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			_, err := CloseRoleOpenResumeTx(ctx, tx, "legion", issue, merger, resumedAt.Add(3*time.Minute))
+			return err
+		}); err != nil {
+			t.Fatalf("close the resume of %s's merger: %v", issue, err)
+		}
+		resume(issue, claim.RolePlanner, later, 4*time.Minute)
+	}
+	resume(rootIssue, claim.RoleImplementer, pause, 3*time.Minute)
+	resume(rootIssue, claim.RoleTester, pause, 0)
+
+	owed := fmt.Sprint([]claim.Token{own(rootIssue, claim.RoleImplementer), own(rootIssue, claim.RoleTester)})
+	for _, tc := range []struct {
+		since time.Duration
+		// want is each hold the read returns, by issue, with the claims its pause owes a launch.
+		want map[string]string
+	}{
+		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Token(nil))}},
+		{since: 10 * time.Minute, want: map[string]string{rootIssue: owed}},
+	} {
+		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
+		if err != nil {
+			t.Fatalf("read the holds since the resume %+v: %v", tc.since, err)
+		}
+		got := map[string]string{}
+		for _, hold := range holds {
+			if hold.Pause != pause.ID || !hold.LetOut.Equal(resumedAt.Add(5*time.Minute)) {
+				t.Fatalf("a hold read since the resume %+v = %+v, want pause %d's, with the latest let-out of its resumes %s",
+					tc.since, hold, pause.ID, resumedAt.Add(5*time.Minute))
+			}
+			got[hold.Issue] = fmt.Sprint(hold.Owed)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("the claims the holds owe a launch, read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+		}
+	}
+}
+
+// The launch a pause owes is the claim's it stopped (the owed start names that claim,
+// record.SuperviseRequest.Claim), so the sweep's read names each claim the hold's pause still owes
+// a launch (PausePodHold.Owed), not its role. Two claims hold the tester's role on LEGION-208's
+// pod: the agent of key a, `…-implementer`, on the tester's step, and the tester's own claim. The
+// pause stopped both, and each has a resume of that pause that no first turn stamped, nothing
+// closed and no ready stamped, so the read names both, in token order. A third claim on the
+// tester's step, the agent of key b, `…-reviewer`, became ready since, so the pause owes it nothing
+// and the read leaves it out. A read by role names the tester twice, and a reader of the role
+// takes the launch one claim is owed as owed to each claim of the role.
+func TestTheSweepsReadOfTheHoldsNamesEachOfTwoClaimsOfOneRoleItsPauseOwesALaunch(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	resumedAt := pausedAt.Add(time.Hour)
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
+		t.Fatalf("hold the pod of %s: %v", rootIssue, err)
+	}
+	if _, err := st.EndPausePodHold(ctx, "LEGION", rootIssue, PausePodHoldResumed, resumedAt); err != nil {
+		t.Fatalf("end the hold of %s at the resume: %v", rootIssue, err)
+	}
+	endPause(t, st, pause.ID, resumedAt)
+
+	// agent is the token of the agent named for role on LEGION-208.
+	agent := func(role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("legion", rootIssue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	keyA, own, keyB := agent(claim.RoleImplementer), agent(claim.RoleTester), agent(claim.RoleReviewer)
+	// resume writes the resume of the pause for the claim of, on the tester's step, with its stuck
+	// clock at the resume, and answers its id.
+	resume := func(of claim.Token) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, rootIssue, string(claim.RoleTester), string(of), pods.WakePause,
+			pausedAt.Add(time.Minute), resumedAt, pause.ID).Scan(&id); err != nil {
+			t.Fatalf("record the resume of %s on the tester's step: %v", of, err)
+		}
+		return id
+	}
+	resume(keyA)
+	resume(own)
+	if err := st.MarkPodResumeReady(ctx, resume(keyB), resumedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("stamp the ready of %s: %v", keyB, err)
+	}
+
+	holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("read the holds since the resume: %v", err)
+	}
+	want := fmt.Sprint([]claim.Token{keyA, own})
+	if len(holds) != 1 || holds[0].Pause != pause.ID || fmt.Sprint(holds[0].Owed) != want {
+		t.Fatalf("the holds read past the resume = %+v, want pause %d's hold of %s, owing a launch to %s", holds, pause.ID, rootIssue, want)
 	}
 }

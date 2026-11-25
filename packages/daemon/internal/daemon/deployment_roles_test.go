@@ -80,6 +80,7 @@ const (
 // rows are deleted before its gate opens starts a planner, and the walk's assertion fails on it;
 // (3) with checker taken out of the settings, register_plan of B's plan is refused naming checker.
 func TestEachIssueWalksItsOwnStepsWithADeploymentRole(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Default walk lands its change", "Checker verifies widget output", "Reviewer precedes tester ordering",
@@ -234,6 +235,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // zero place in place of plan_tasks.position, as a store that lost that place would answer; the
 // tester's pass then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueThatRanBeforeDeploymentRolesGoesOn(t *testing.T) {
+	t.Parallel()
 	r := newEarlierReleaseRig(t, deploymentRolesMigration)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
@@ -319,7 +321,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Deployment roles"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for place, title := range titles {
 		var created struct {
 			Key               string `json:"key"`
@@ -356,8 +358,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	t := r.t
 	t.Helper()
-	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: title, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -372,6 +373,7 @@ func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	ctx := context.Background()
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
@@ -631,7 +633,7 @@ func newEarlierReleaseRig(t *testing.T, below string) *earlierReleaseRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Earlier release"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	const title = "Earlier release issue continues"
 	var created struct {
 		Key     string `json:"key"`
@@ -732,23 +734,24 @@ func (r *earlierReleaseRig) seedIssueAtTesting(title, status, rank string, seq i
 		values ($1, 1, 1, 'owner', $2, $3, now() - interval '5 hours')`, key, "plan-"+key, string(r.token(claim.RoleArchitect)))
 	exec("the task a of "+key, `insert into plan_tasks (issue, generation, task, plan_version, block_text, state, running_kind, position)
 		values ($1, 1, 'a', 1, $2, 'running', 'step', 2)`, key, deploymentTaskText)
-	// The earlier release's plan_steps names each step's agent only where that release holds
-	// 20261117213545_plan_step_agent, which adds the column: a store below the deployment's roles
-	// does, and one below the plan's roles does not, where that migration names every step it finds
-	// when this release's migrations run. The column's presence says which.
+	// The name of each step's agent (plan_steps.agent, the plan_step_agent migration) is written
+	// only where the release before holds the column: a release whose schema stops below that
+	// migration has none, and the migration names each step with no key for its role, the name
+	// written here where the column stands.
 	var agentColumn bool
 	if err := r.st.Pool().QueryRow(ctx, `select exists (select 1 from information_schema.columns
 		where table_schema = current_schema() and table_name = 'plan_steps' and column_name = 'agent')`).Scan(&agentColumn); err != nil {
-		t.Fatalf("read whether the earlier release's plan_steps names each step's agent: %v", err)
+		t.Fatalf("read whether the release before holds plan_steps.agent: %v", err)
 	}
+	steps := `insert into plan_steps (issue, generation, task, position, role, type)
+		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'tester', 'testing'),
+		($1, 1, 'a', 3, 'reviewer', 'review')`
 	if agentColumn {
-		exec("the steps of task a of "+key, `insert into plan_steps (issue, generation, task, position, role, type, agent)
-			values ($1, 1, 'a', 1, 'implementer', 'implementation', 'implementer'), ($1, 1, 'a', 2, 'tester', 'testing', 'tester'),
-			($1, 1, 'a', 3, 'reviewer', 'review', 'reviewer')`, key)
-	} else {
-		exec("the steps of task a of "+key, `insert into plan_steps (issue, generation, task, position, role, type)
-			values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'tester', 'testing'), ($1, 1, 'a', 3, 'reviewer', 'review')`, key)
+		steps = `insert into plan_steps (issue, generation, task, position, role, type, agent)
+		values ($1, 1, 'a', 1, 'implementer', 'implementation', 'implementer'), ($1, 1, 'a', 2, 'tester', 'testing', 'tester'),
+		($1, 1, 'a', 3, 'reviewer', 'review', 'reviewer')`
 	}
+	exec("the steps of task a of "+key, steps, key)
 	exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
 		last_handoff, completed_at, step_task, step_place) values ($1, 'implementer', $2, $3, 0, 0, '', 'implemented', $4,
 		now() - interval '2 hours', 'a', 1)`, key, implementer, stepRecordsHead, "implement-record-"+key)
@@ -876,13 +879,19 @@ func wayBackOf(t *testing.T, suffix string) string {
 
 // runSQL runs sql on a connection of its own to dsn, as psql runs it under ON_ERROR_STOP: a
 // statement that fails ends the run with its error, and the transaction it stood in is rolled
-// back.
+// back. dsn is a URL a pgx pool reads (testdb.Database), which holds pgxpool's keys, and
+// pgx.Connect would send them to the server as settings it does not know, so the connection is
+// made to the same database by the URL with those keys taken out (testdb.DatabaseURL).
 func runSQL(t *testing.T, dsn, sql string) error {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	plain, err := testdb.DatabaseURL(dsn, "")
 	if err != nil {
-		t.Fatalf("connect to %s: %v", dsn, err)
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, plain)
+	if err != nil {
+		t.Fatalf("connect to %s: %v", plain, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, sql); err != nil {

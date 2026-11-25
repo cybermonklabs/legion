@@ -2,9 +2,12 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
@@ -26,20 +29,22 @@ const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 character
 
 // Validate is what Legion cannot carry out in any release: a plan with no task; each role the plan
 // defines whose name or type Dispatch's step record cannot hold, or whose name the deployment or
-// Legion holds already (IsLegionName); each role whose model the deployment does not list, at the
-// first step of each task that names it, or for the whole plan where no step names it; each agent
-// (AgentOf) whose steps name roles of two models or two harnesses, once, and each role the key
-// owner does at a step of a task whose model is not the owner's, at its first such step; and each
-// step that names a role neither d nor the plan defines, refused once for each role at the first
-// step of each task that names it. A type no list holds, and a role with no type or no model, are
-// taken. It refuses no plan for a step the plan lacks, and it holds a role's prompt to no bound of
-// its own.
+// Legion holds already (IsLegionName); each role the plan defines that would share a name with an
+// agent of another role (numberedRoleRefusals); each role whose model the deployment does not
+// list, at the first step of each task that names it, or for the whole plan where no step names
+// it; each agent (AgentOf) whose steps name roles of two models or two harnesses, once, and each
+// role the key owner does at a step of a task whose model is not the owner's, at its first such
+// step; and each step that names a role neither d nor the plan defines, refused once for each role
+// at the first step of each task that names it. A type no list holds, and a role with no type or
+// no model, are taken. It refuses no plan for a step the plan lacks, and it holds a role's prompt
+// to no bound of its own.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
 	}
 	roles := RolesOf(p, d)
-	refusals := append(roleReasons(p, d), modelReasons(p, d, roles)...)
+	refusals := append(roleReasons(p, d), numberedRoleRefusals(p, d)...)
+	refusals = append(refusals, modelReasons(p, d, roles)...)
 	refusals = append(refusals, agentReasons(p, roles)...)
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
@@ -50,6 +55,40 @@ func Validate(p Plan, d Deployment) []Refusal {
 			refused[step.Role] = true
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
+		}
+	}
+	return refusals
+}
+
+// numberedRoleRefusals is a refusal for each role the plan defines, in the document's order, whose
+// name is the name Legion gives a second or later agent of another role (claim.NumberedAgentRole),
+// of Legion's, of the deployment's or of the plan's own, or a second or later agent of which
+// Legion would name as a role of the deployment: an agent of each role would hold one claim token,
+// and so one slot and one session. The settings loader refuses such a name among the deployment's
+// own roles (config's readRoles), so the deployment's roles alone give no refusal here.
+func numberedRoleRefusals(p Plan, d Deployment) []Refusal {
+	const held = ", so an agent of each role would hold one claim."
+	deployment := slices.Sorted(maps.Keys(d.Roles))
+	names := make([]claim.Role, 0, len(deployment)+len(p.Roles))
+	for _, name := range deployment {
+		names = append(names, claim.Role(name))
+	}
+	for _, role := range p.Roles {
+		names = append(names, claim.Role(role.Name))
+	}
+	var refusals []Refusal
+	for _, role := range p.Roles {
+		if of, ok := claim.NumberedAgentRole(role.Name, names); ok {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+				"the plan defines the role %s, the name Legion gives a second or later agent of the role %s%s", role.Name, of, held)})
+			continue
+		}
+		for _, name := range deployment {
+			if _, ok := claim.NumberedAgentRole(name, []claim.Role{claim.Role(role.Name)}); ok {
+				refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+					"the plan defines the role %s, whose second or later agent Legion would name %s, the deployment's role%s", role.Name, name, held)})
+				break
+			}
 		}
 	}
 	return refusals
@@ -316,17 +355,17 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // deployment's or of the plan's alike, in step order. The owner does the accepting step in this
 // release, so a key on it but owner would name an agent Legion does not run it in.
 func stepReasons(t Task, roles map[string]RoleDef) []string {
-	var keys []string
+	var reasons []string
 	implementerAt := 0 // the place of the first step of the implementer, 0 before it
 	var unopened, retro []string
 	for i, step := range t.Steps {
 		at := i + 1
 		switch {
 		case step.Role == "acceptance" && step.Key == "":
-			keys = append(keys, fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID))
+			reasons = append(reasons, fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID))
 		// The key owner and the role acceptance go together: either one without the other is refused.
 		case step.Key != "" && (step.Key == "owner") != (step.Role == "acceptance"):
-			keys = append(keys, fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key))
+			reasons = append(reasons, fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key))
 		}
 		if readsPullRequest[step.Role] && implementerAt == 0 {
 			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads; a role of this deployment that reports pass or fail needs none.",
@@ -340,7 +379,6 @@ func stepReasons(t Task, roles map[string]RoleDef) []string {
 			implementerAt = at
 		}
 	}
-	reasons := keys
 	if implementerAt == 0 {
 		reasons = append(reasons, fmt.Sprintf("task %s has no step implementer.", t.ID))
 	}

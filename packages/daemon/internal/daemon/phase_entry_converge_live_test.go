@@ -19,23 +19,27 @@
 // one (convergeWakeRate, convergeWakeBurst), and the boot's relaunch of the implementer spends the
 // burst, so the daemon's wake pacing has not yet let the next role's launch run and that role's
 // start waits for it. The implementer's completion, made from a turn of its own that it goes on in,
-// hands testing to the tester, whose phases row is raised to entry 1 with that entry's own task,
-// and whose claim is queued that task while its launch waits. The pace then lets the launch run,
-// and the tester comes up on its own worker-stream connection with that task still held on its
-// claim: the daemon sends no role a task that adopts the issue's working copy while another role
-// of the issue is in a turn (supervise's sendPending), and the implementer is in its. The issue's
-// phase then changes twice while the claim holds that task. The tester asks for the work back with
-// its own backward move (POST /legion/v1/phase/backward, behind_entry_fence_live_test.go's
+// hands testing to the tester, whose phases row is raised to its first entry with that entry's own
+// task, and whose claim is queued that task while its launch waits. The pace then lets the launch
+// run, and the tester comes up on its own worker-stream connection with that task still held on
+// its claim: the daemon sends no role a task that adopts the issue's working copy while another
+// role of the issue is in a turn (supervise's sendPending), and the implementer is in its. The
+// issue's phase then changes twice while the claim holds that task. The tester asks for the work
+// back with its own backward move (POST /legion/v1/phase/backward, behind_entry_fence_live_test.go's
 // moveBack), from a turn of its own, since the engine takes a backward move from no role but the
 // one running the issue's phase (workflow's Engine.backward, BACKWARD_REFUSED); and the
 // implementer, still in its turn, pushes a second head and completes there, which hands testing
-// out again, raises the tester's row to entry 2 and writes that entry's own task. The claim still
-// holds the task of entry 1 (supervise's queue refuses a second delivery while one is pending), so
-// the start row of entry 2 waits behind it. Once both turns end, the tester is sent the task it
-// held, entry 1's; the completion the tester reports for it is refused 409 HANDOFF_STALE_ENTRY
-// naming both entries and recording nothing, and the entry the phase is on then reaches the same
-// connection as a task of its own, whose completion the daemon takes. That is the whole of R5 on a
-// running daemon, and the entry on each delivery is what tells the two tasks apart
+// out again, raises the tester's row to a second entry and writes that entry's own task. Each
+// entry is one above the highest entry of every row of the issue at the moment it is raised, of
+// any role (workflow's enter), so the driver reads both off the rows rather than naming a number:
+// the tester's second entry stands above the implementer's raise, not one above the tester's
+// first. The claim still holds the first entry's task (supervise's queue refuses a second delivery
+// while one is pending), so the start row of the second waits behind it. Once both turns end, the
+// tester is sent the task it held, the first entry's; the completion the tester reports for it is
+// refused 409 HANDOFF_STALE_ENTRY naming both entries and recording nothing, and the entry the
+// phase is on then reaches the same connection as a task of its own, whose completion the daemon
+// takes. That is the whole of R5 on a running daemon, and the entry on each delivery is what
+// tells the two tasks apart
 // (record.PhaseRow.Entry, supervise.Claim.GivenEntry, both on GET /legion/v1/state as `phaseEntry`
 // and `givenEntry`).
 //
@@ -80,6 +84,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -139,22 +144,27 @@ type phaseEntryConvergeLive struct {
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
-	// queued is the delivery of entry 1's task, which the tester's claim is queued while its
-	// launch waits and holds until run one's last check sends it.
+	// queued is the delivery of the tester's first entry's task, which its claim is queued while
+	// its launch waits and holds until run one's last check sends it.
 	queued string
+	// first and second are the two entries the tester's phases row is raised to, each read off
+	// the rows rather than counted here: every entry of an issue is one above the highest entry
+	// of every row of that issue, whatever role it is of (workflow's enter), so the numbers a
+	// run reaches depend on what else the issue raised.
+	first, second int64
 }
 
 // TestAPhaseEntryConvergesOnARunningDaemonLive drives the proof's five checks against one booted
 // daemon, in the order each one's state follows from the last: the tester's start waiting for the
 // launch the pacing holds, the phase changing twice while the tester's claim, up on that launch,
-// holds the task of entry 1, the entry the phase is on reaching the tester after that held task
+// holds the task of its first entry, the entry the phase is on reaching the tester after that held task
 // is sent and its completion refused, a start row deleted before any lane runs it whose work the
 // sweep sends all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)
 	r.step("run1-the-testers-start-waits-for-the-launch-the-pace-holds", r.theStartWaitsForTheLaunch)
-	r.step("run1-the-phase-changes-twice-while-the-testers-claim-holds-the-task-of-entry-1", r.phaseChangesWhileTheClaimHoldsItsTask)
+	r.step("run1-the-phase-changes-twice-while-the-testers-claim-holds-the-task-of-its-first-entry", r.phaseChangesWhileTheClaimHoldsItsTask)
 	r.step("run1-the-held-task-is-refused-and-the-entry-the-phase-is-on-is-worked", r.theHeldTaskIsRefusedAndTheEntryIsWorked)
 	r.step("run2-a-start-row-deleted-before-any-lane-ran-it-loses-no-work", r.aDeletedStartRowLosesNoWork)
 	r.step("the-state-carries-the-phase-entry-and-the-entry-the-role-was-given", r.stateCarriesBothNumbers)
@@ -248,6 +258,21 @@ func (r *phaseEntryConvergeLive) entries() (phaseEntry, givenEntry int64) {
 	r.t.Helper()
 	issue := r.issue(r.key)
 	return issue.PhaseEntry, issue.GivenEntry
+}
+
+// topEntryOfOtherRoles is the highest entry the phases rows of the proof's issue hold of every
+// role but role, and 0 where it has no other row: what the entry role's next raise takes is one
+// above it (workflow's enter counts one counter for the issue, whatever role a row is of). No
+// route shows the table, and a check that named a number of its own would pass a counter that
+// counted the role's own rows alone.
+func (r *phaseEntryConvergeLive) topEntryOfOtherRoles(role claim.Role) int64 {
+	r.t.Helper()
+	var top int64
+	if err := r.st.Pool().QueryRow(context.Background(),
+		`select coalesce(max(entry), 0) from phases where issue = $1 and role <> $2`, r.key, string(role)).Scan(&top); err != nil {
+		r.t.Fatalf("read the entries of the rows of %s that are no %s's: %v", r.key, role, err)
+	}
+	return top
 }
 
 // convergeClaimant is one role's claim as its agent reaches it: the registered session
@@ -390,12 +415,13 @@ func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
 
 // Check 1 of run one. The seeded implementer completes implementing from a turn of its own, and
 // goes on in that turn, as an agent does that has more to do once it has reported: the completion
-// hands testing to the tester. The transition raises the tester's phases row to entry 1 and writes
-// that entry's own task in its own transaction (workflow.Engine.enter), and the start it writes
-// creates the tester's claim and queues it that task. The launch of that claim does not run: the
-// boot's relaunch of the implementer spent the burst of the pace this daemon is held to, so the
-// daemon's wake pacing has not let this one run yet and the start waits for it, which the state
-// names (api.State.WakesWaiting).
+// hands testing to the tester. The transition raises the tester's phases row to its first entry,
+// one above the highest entry of every other row of the issue (workflow.Engine.enter), and writes
+// that entry's own task in its own transaction, and the start it writes creates the tester's claim
+// and queues it that task. The launch of that claim does not run: the boot's relaunch of the
+// implementer spent the burst of the pace this daemon is held to, so the daemon's wake pacing has
+// not let this one run yet and the start waits for it, which the state names
+// (api.State.WakesWaiting).
 func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
@@ -410,8 +436,9 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
-	// The task of entry 1 is on the tester's claim, and its launch has not run: the claim records
-	// the entry it was queued, and the state names the wake the pacing holds and when it is due.
+	// The task of that entry is on the tester's claim, and its launch has not run: the claim
+	// records the entry it was queued, and the state names the wake the pacing holds and when it
+	// is due.
 	// The claim itself is what the start row creates, so the wait reads the listing rather than
 	// asking for one token: a read made before that row's lane has run lists the implementer
 	// alone, which is this wait's own first answer and not a failure.
@@ -433,9 +460,10 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 		t.Fatalf("the fake runtime was asked to start a process for %s, want no launch while the pace holds it", tester)
 	}
 	phaseEntry, givenEntry := r.entries()
-	if phaseEntry != 1 || givenEntry != 1 || queued.Phase != phase.Testing {
-		t.Fatalf("the state reads phaseEntry %d, givenEntry %d with the tester holding %+v, want entry 1 queued as the testing phase's task",
-			phaseEntry, givenEntry, queued)
+	r.first = phaseEntry
+	if others := r.topEntryOfOtherRoles(claim.RoleTester); phaseEntry != others+1 || givenEntry != phaseEntry || queued.Phase != phase.Testing {
+		t.Fatalf("the state reads phaseEntry %d, givenEntry %d beside the other rows' highest entry %d, with the tester holding %+v, want its first entry one above those rows, given, and queued as the testing phase's task",
+			phaseEntry, givenEntry, others, queued)
 	}
 	if _, held = r.waitingLaunch(tester); !held || r.launched(tester) {
 		t.Fatalf("the launch of %s has run while this check read the start, want it still held by the pace", tester)
@@ -446,19 +474,21 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 }
 
 // Check 2 of run one. The pace lets the tester's launch run, and the tester comes up on its own
-// worker-stream connection with the task of entry 1 still held on its claim and sent nowhere: the
-// task adopts the working copy every role of the issue shares, and the daemon sends no such task
-// while another role of the issue is in a turn (supervise's sendPending), as the implementer is.
-// The issue's phase then changes twice while the claim holds that task. The tester, in a turn of
-// its own that no task of the daemon's began, asks for the work back with its own backward move
-// to implementing, which raises the implementer's entry; that entry's task waits on the
-// implementer's claim, since the implementer is in its turn and the tester in its own. The
-// implementer, still in the turn its first completion was made from, pushes a head of its own and
-// completes there — its claim has served no entry, so its completion is of the entry the task it
-// holds carries (supervise's serving) — which hands testing out again, raises the tester's row to
-// entry 2 and writes that entry's own task. The claim still holds the task of entry 1 (supervise's
-// queue refuses a second delivery while one is pending), so the start row carrying entry 2 waits
-// behind it.
+// worker-stream connection with the task of its first entry still held on its claim and sent
+// nowhere: the task adopts the working copy every role of the issue shares, and the daemon sends
+// no such task while another role of the issue is in a turn (supervise's sendPending), as the
+// implementer is. The issue's phase then changes twice while the claim holds that task. The
+// tester, in a turn of its own that no task of the daemon's began, asks for the work back with
+// its own backward move to implementing, which raises the implementer's entry; that entry's task
+// waits on the implementer's claim, since the implementer is in its turn and the tester in its
+// own. The implementer, still in the turn its first completion was made from, pushes a head of
+// its own and completes there — its claim has served no entry, so its completion is of the entry
+// the task it holds carries (supervise's serving) — which hands testing out again, raises the
+// tester's row to a second entry and writes that entry's own task. That entry is one above the
+// highest entry of every other row of the issue, the implementer's raise among them, so it is
+// above the tester's first entry by more than one. The claim still holds the first entry's task
+// (supervise's queue refuses a second delivery while one is pending), so the start row carrying
+// the second waits behind it.
 func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	t := r.t
 	tester, implementer := r.token(claim.RoleTester), r.token(claim.RoleImplementer)
@@ -472,7 +502,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	ready := r.d.claim(tester)
 	if (ready.State != string(supervise.StateReady) && ready.State != string(supervise.StateIdle)) ||
 		ready.Pending == nil || ready.Pending.ID != r.queued || ready.Pending.DeliveredAt != nil {
-		t.Fatalf("the tester is %s holding %+v, want it ready with the task of entry 1 (%s) held and unsent", ready.State, ready.Pending, r.queued)
+		t.Fatalf("the tester is %s holding %+v, want it ready with the task of entry %d (%s) held and unsent", ready.State, ready.Pending, r.first, r.queued)
 	}
 	r.note("read back over %s: the tester is %s on its own connection, holding delivery %s unsent while the implementer's turn runs", liveSettle, ready.State, r.queued)
 
@@ -500,43 +530,45 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	}
 	r.note("drove the implementer's push of %s and GitHub's synchronize of #%d to it, then its completion there, still in its first turn: 200", convergeSecondHead, r.number)
 	r.waitFor("the issue in testing again", func(got api.Issue) bool { return got.Phase == phase.Testing })
-	testwait.Eventually(t, "the tester's phases row raised to entry 2", func() bool {
+	testwait.Eventually(t, "the tester's phases row raised above its first entry", func() bool {
 		phaseEntry, _ := r.entries()
-		return phaseEntry == 2
+		return phaseEntry > r.first
 	})
 	phaseEntry, givenEntry := r.entries()
+	r.second = phaseEntry
 	if now := r.d.claim(tester).Pending; now == nil || now.ID != r.queued || now.DeliveredAt != nil {
-		t.Fatalf("the tester holds %+v, want the task of entry 1 (%s) it was queued before the phase changed, still unsent", now, r.queued)
+		t.Fatalf("the tester holds %+v, want the task of entry %d (%s) it was queued before the phase changed, still unsent", now, r.first, r.queued)
 	}
-	if phaseEntry != 2 || givenEntry != 1 {
-		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester's claim holds entry 1's task, want 2 and 1", phaseEntry, givenEntry)
+	if others := r.topEntryOfOtherRoles(claim.RoleTester); phaseEntry != others+1 || givenEntry != r.first {
+		t.Fatalf("the state reads phaseEntry %d, givenEntry %d beside the other rows' highest entry %d, where the tester's claim holds the task of entry %d, want the raise one above those rows with the claim still on %d",
+			phaseEntry, givenEntry, others, r.first, r.first)
 	}
 	starts := r.startRows()
-	if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].entry != 2 {
-		t.Fatalf("the start rows of %s = %+v, want the one the second testing entry wrote for the tester", r.key, starts)
+	if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].entry != phaseEntry {
+		t.Fatalf("the start rows of %s = %+v, want the one the second testing entry, %d, wrote for the tester", r.key, starts, phaseEntry)
 	}
-	r.note("read back: phaseEntry %d, givenEntry %d — the tester still holds entry 1's task (%s) unsent, and the start row of entry 2 (#%d, %d attempt(s)) waits: %s",
-		phaseEntry, givenEntry, r.queued, starts[0].id, starts[0].attempts, starts[0].lastErr)
+	r.note("read back: phaseEntry %d, givenEntry %d — the tester still holds the task of entry %d (%s) unsent, and the start row of entry %d (#%d, %d attempt(s)) waits: %s",
+		phaseEntry, givenEntry, r.first, r.queued, starts[0].entry, starts[0].id, starts[0].attempts, starts[0].lastErr)
 }
 
-// Check 3 of run one. The tester's turn ends, and the task of entry 1 still waits, since the
-// implementer's turn runs. Then the implementer's turn ends: the task its move back raised, queued
-// for the implementing phase the issue has left, is dropped unsent (supervise's phaseHolds), and
-// the tester is sent the task its claim held throughout, entry 1's. The completion it reports for
-// that work is refused 409 HANDOFF_STALE_ENTRY, which names the entry the phase is on and says
-// that entry's task is owed and arrives by itself, and records nothing. The turn ends, the task of
-// entry 2 reaches the same connection, and the completion reported for it is taken: the issue moves
-// to reviewing.
+// Check 3 of run one. The tester's turn ends, and the task of its first entry still waits, since
+// the implementer's turn runs. Then the implementer's turn ends: the task its move back raised,
+// queued for the implementing phase the issue has left, is dropped unsent (supervise's
+// phaseHolds), and the tester is sent the task its claim held throughout, the first entry's. The
+// completion it reports for that work is refused 409 HANDOFF_STALE_ENTRY, which names the entry
+// the phase is on and says that entry's task is owed and arrives by itself, and records nothing.
+// The turn ends, the task of the second entry reaches the same connection, and the completion
+// reported for it is taken: the issue moves to reviewing.
 func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	t := r.t
 	implementer := r.token(claim.RoleImplementer)
 	r.test.endTurn()
-	r.note("the tester's own turn ended; the task of entry 1 still waits, since the implementer is in its turn")
+	r.note("the tester's own turn ended; the task of entry %d still waits, since the implementer is in its turn", r.first)
 	r.imp.endTurn()
 	r.note("the implementer's turn ended")
-	first := r.test.awaitPrompt("the task of entry 1 the tester's claim held", convergeOwedBound)
+	first := r.test.awaitPrompt(fmt.Sprintf("the task of entry %d the tester's claim held", r.first), convergeOwedBound)
 	if first.DeliveryID != r.queued {
-		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, r.queued)
+		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry %d its claim held while the phase changed", first.DeliveryID, r.queued, r.first)
 	}
 	testwait.Eventually(t, "the implementer's task of the implementing phase dropped unsent", func() bool {
 		return r.d.claim(implementer).Pending == nil
@@ -545,43 +577,43 @@ func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 		t.Fatalf("the implementer was sent %s, want no task: the one its entry held was for implementing, which the issue has left", sent[0].DeliveryID)
 	}
 	phaseEntry, givenEntry := r.entries()
-	if phaseEntry != 2 || givenEntry != 1 {
-		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester works entry 1's task, want 2 and 1", phaseEntry, givenEntry)
+	if phaseEntry != r.second || givenEntry != r.first {
+		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester works the task of entry %d, want %d and %d", phaseEntry, givenEntry, r.first, r.second, r.first)
 	}
 	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d; the implementer's implementing task was dropped unsent",
 		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
 
 	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
-		t.Fatalf("the completion of entry 1's work = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
+		t.Fatalf("the completion of the work of entry %d = %d %s %s, want 409 HANDOFF_STALE_ENTRY", r.first, status, failure.Code, failure.Error)
 	}
-	r.note("read back: the completion the tester reported for entry 1's work = 409 %s — %s", failure.Code, failure.Error)
+	r.note("read back: the completion the tester reported for the work of entry %d = 409 %s — %s", r.first, failure.Code, failure.Error)
 	if after := r.issue(r.key); after.Phase != phase.Testing {
 		t.Fatalf("%s is in %s after the refused completion, want testing: a refusal records nothing", r.key, after.Phase)
 	}
 	r.note("read back: %s is still in testing — the refusal recorded nothing", r.key)
 
 	// The turn ends, which retires the task it worked, and the entry the phase is on reaches the
-	// same connection as a task of its own: the start row of entry 2, which waited behind the task
-	// the claim held, hands it over on its next attempt.
+	// same connection as a task of its own: the start row of the second entry, which waited behind
+	// the task the claim held, hands it over on its next attempt.
 	r.test.endTurn()
 	second := r.test.awaitPrompt("the task of the entry the phase is on", convergeOwedBound)
 	if second.DeliveryID == first.DeliveryID {
-		t.Fatalf("the tester was sent delivery %s again, want a task of its own for entry 2", second.DeliveryID)
+		t.Fatalf("the tester was sent delivery %s again, want a task of its own for entry %d", second.DeliveryID, r.second)
 	}
 	testwait.Eventually(t, "the tester given the entry the phase is on", func() bool {
 		phaseEntry, givenEntry = r.entries()
-		return phaseEntry == 2 && givenEntry == 2
+		return phaseEntry == r.second && givenEntry == r.second
 	})
 	r.note("read back: the tester was sent %s (%s), and the state reads phaseEntry %d, givenEntry %d",
 		second.DeliveryID, firstLine(second.Message), phaseEntry, givenEntry)
 
 	if status, failure := r.test.complete("tested the fix", convergeSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
-		t.Fatalf("the completion of entry 2's work = %d %s %s, want 200", status, failure.Code, failure.Error)
+		t.Fatalf("the completion of the work of entry %d = %d %s %s, want 200", r.second, status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()
 	moved := r.waitFor("the issue in reviewing", func(got api.Issue) bool { return got.Phase == phase.Reviewing })
-	r.note("drove POST /legion/v1/handoff/complete in the turn entry 2's task started: 200, and %s is in %s", r.key, moved.Phase)
+	r.note("drove POST /legion/v1/handoff/complete in the turn the task of entry %d started: 200, and %s is in %s", r.second, r.key, moved.Phase)
 }
 
 // Run two. A start row is deleted before any lane runs it, and the work it carried reaches its
@@ -630,7 +662,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
 	// lane of this daemon can claim a lifecycle row of the issue, so the row the move writes below
 	// is a row no lane has run.
-	lock, err := r.st.Pool().Begin(ctx)
+	lock, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("take the lane's lock: %v", err)
 	}

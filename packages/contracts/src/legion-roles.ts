@@ -19,7 +19,7 @@ export const LEGION_ROLES = [
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
 /** The role of a phase worker's claim: one of Legion's six, a role the deployment defines in its
- * settings' `roles` (contract 221), or a role the plan of its issue defines in a `plan_role` block,
+ * settings' `roles` (contract 258), or a role the plan of its issue defines in a `plan_role` block,
  * a name of the step grammar (`isStepRole`). */
 export type LegionStepRole = LegionRole | string;
 
@@ -58,9 +58,10 @@ const ENVOY_ROLE_TOKEN = /^[a-z0-9][a-z0-9_-]*$/;
 const PROJECT_TOKEN = /^[a-z0-9]+$/;
 /** A Dispatch issue key: uppercase project, then a numeric suffix — `IssueKey`'s sole shape. */
 export const DISPATCH_KEY_PATTERN = /^([A-Z][A-Z0-9]*)-([0-9]+)$/;
-/** The issue part of a claim token, `<issue project>-<number>`, and the agent's name after it, the
- * role of the agent's first step. Neither part of the issue holds a `-`, so the name is everything
- * after the second one, and may hold a `-` of its own (`code-checker`); the Go daemon's
+/** The issue part of a claim token, `<issue project>-<number>`, and the agent's name after it: the
+ * role of the agent's first step, or a numbered name such as `implementer-2` for a second agent of
+ * one role. Neither part of the issue holds a `-`, so the name is everything after the second one,
+ * and may hold a `-` of its own (`code-checker`); the Go daemon's
  * `claim.Token.Cut` reads it by the same fields. */
 const DISPATCH_ROLE_PART = /^([a-z0-9]+)-([0-9]+)-(.+)$/;
 /** The role grammar of Dispatch's step record, which each of Legion's six matches; the Go daemon's
@@ -83,9 +84,11 @@ export function isStepRole(role: string): role is LegionStepRole {
  * The role that works a phase, the TypeScript mirror of the daemon's own table
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's
- * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
- * phase worker alone, so the architect's two phases never remind anyone.
+ * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's turn
+ * on the issue it developed after the task's last step, however many steps it worked. `step` has
+ * none either, since the role at work there is the issue's `stepRole`, the role of its running
+ * step, which no phase names. The one reader here, the phase reminder, runs for a phase worker
+ * alone, so the architect's two phases never remind anyone.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {
@@ -132,10 +135,11 @@ export function assertLegionProjectToken(project: string): void {
 }
 
 /** The claim token of the agent named for `role` on `issue`, byte for byte the Go daemon's
- * `claim.NewToken`: the role's own claim, which a step of no key runs in. A keyed agent's token
- * ends in its own name, the role of its first step, whatever role its step is on now. A role
- * outside the step grammar (`isStepRole`), the controller's among them, is refused as Go refuses
- * it. */
+ * `claim.NewToken`: the role's own claim, which a step of no key runs in where no other agent of
+ * the plan holds the role's name. Any other agent's token ends in its own name, whatever role its
+ * step is on now: the role of its first step, or a numbered name such as `implementer-2` for a
+ * second agent of one role. A role outside the step grammar (`isStepRole`), the controller's among
+ * them, is refused as Go refuses it. */
 export function roleToken(project: string, issue: IssueKey, role: LegionStepRole): string {
   assertLegionProjectToken(project);
 

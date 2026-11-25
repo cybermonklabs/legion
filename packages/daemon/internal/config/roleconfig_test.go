@@ -33,8 +33,8 @@ func TestRoleConfigFilesGiveEachRoleItsOwnOverlays(t *testing.T) {
 	}
 }
 
-// Every shape no role could load is refused at load, naming the entry: a name that is not a Legion
-// role, an empty list, a relative or unclean path, one holding PI_CONFIG_FILES' separator, a repeat,
+// Every shape no role could load is refused at load, naming the entry: a name that is neither a
+// Legion role nor one of `roles`, an empty list, a relative or unclean path, one holding PI_CONFIG_FILES' separator, a repeat,
 // the controller's entry with no controller the daemon launches, a role on a harness that reads
 // no overlay, and an overlay every pane already names.
 func TestRoleConfigFilesRefusals(t *testing.T) {

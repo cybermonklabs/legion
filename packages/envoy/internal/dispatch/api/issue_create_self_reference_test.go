@@ -47,6 +47,7 @@ func namesReference(references []model.ChangedReference, kind, id string) bool {
 // document's address. Both name rows this very transaction writes, so the edge the bare key
 // stores and the targets the issue.created event names are read from what it has queued.
 func TestIssueCreateSpecCitingTheIssueItOpensStoresAndCountsIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

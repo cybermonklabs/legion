@@ -62,7 +62,7 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 
 	// The lane's credit comes, the relaunch waits its paced turn, and the turn replaces the
 	// process. The task is still the claim's own through all of it.
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: h.m.deps.RefreshGate.Admit()})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.advance(waiting.At.Sub(h.clock.Now()))
 

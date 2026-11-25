@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -33,14 +34,17 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // failure: the client's own text of that answer, cut to 1,024 bytes on a rune boundary though a
 // three-byte character straddles byte 1,024 of it, and ended with how long it was. The probe still
 // answers 200 with ok true, and the three reads that sent nothing (no architecture source, no
-// delivery settings, no mapped repository) read no_attempt. Once GitHub answers the listing, the
-// entry reads succeeded, with no cause and a later time. A process of the same binary on the same
-// database with no GitHub App names no read: github is null.
+// delivery settings, no project's default repository) read no_attempt. Once GitHub answers the
+// listing, the entry reads succeeded, with no cause and a later time. A process of the same
+// binary on the same database with no GitHub App names no read: github is null.
 //
 // The first sweep can meet NATS still connecting and record nothing, so each wait polls. Each
 // wait's failure prints the last status and body /healthz answered, which is what the check's
 // negative control reads: a build without the member answers 200, ok true and no github at all.
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
+	t.Parallel()
+	// Two Dispatch processes at once, the second started while the first runs.
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// failure is the body GitHub answers the webhook's deliveries listing with, with a 503; nil
@@ -60,17 +64,19 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 	}})
 	// The failure the client notes is "<METHOD> <target>: status <n>: <body>" (githubapp's
-	// failedAnswer). The body is padded so that a three-byte character starts at byte 1,023 of
-	// that text, and is three-byte characters from there on, so one straddles byte 1,024 and one
+	// failedAnswer), with the body as githubapp.ShownBody shows it: its first 512 runes and its
+	// length. The body is padded so that a three-byte character starts at byte 1,023 of that
+	// text, and is three-byte characters from there on, so one straddles byte 1,024 and one
 	// straddles the cut inside it, wherever the marker's length puts the cut.
 	prefix := "GET " + github.URL + "/app/hook/deliveries?per_page=100: status 503: "
 	pad := strings.Repeat("x", (1023-len(prefix))%3)
 	body := pad + strings.Repeat("€", (4096-len(pad))/3)
-	if uncut := prefix + body; utf8.RuneStart(uncut[1024]) {
+	text := prefix + githubapp.ShownBody(body)
+	if utf8.RuneStart(text[1024]) {
 		t.Fatalf("byte 1,024 of the failure's text starts a character; want one straddling it")
 	}
 	failure.Store(&body)
-	marker := " … (cut from " + strconv.Itoa(len(prefix)+len(body)) + " bytes)"
+	marker := " … (cut from " + strconv.Itoa(len(text)) + " bytes)"
 
 	env := githubAppEnv(t, github.URL)
 	env["DISPATCH_TEST_HOOKS"] = "1"
@@ -129,18 +135,19 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 
 // main.go gives each of the four loops that read GitHub under a lease its recorder, and each its
 // own read's name: the real binary, with NATS, the App's settings and a loopback GitHub that
-// answers every request 503, and a database holding what makes each loop send a request (a mapped
-// repository and the CI state bucket, the delivery settings, and one enabled architecture
-// source), names all four failed, each with a cause that names a request of its own loop. A loop
-// left without its recorder leaves its entry no_attempt, and two loops given each other's names
-// put a cause under the wrong key; either fails naming the entry.
+// answers every request 503, and a database holding what makes each loop send a request (a
+// project's default repository and the CI state bucket, the delivery settings, and one enabled
+// architecture source), names all four failed, each with a cause that names a request of its own
+// loop. A loop left without its recorder leaves its entry no_attempt, and two loops given each
+// other's names put a cause under the wrong key; either fails naming the entry.
 //
 // The test settings bring every loop's pass inside the test's window: the sweep's and the CI
 // reconcile's intervals, and a first pass at start for the delivery reconcile and the
 // architecture import, whose first ticks are otherwise jittered over five minutes.
 func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
+	seedCIReconcileDefault(t, database)
 	seedDeliverySettings(t, database)
 	if _, err := database.Pool.Exec(t.Context(), `
 		insert into projects (key, name, default_assignee) values ('ARCH', 'ARCH', 'alice');
@@ -178,7 +185,7 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	if answer.status != http.StatusOK || !answer.OK {
 		t.Fatalf("/healthz with every GitHub read failed = %d %s, want 200 with ok true", answer.status, answer.body)
 	}
-	// What a request of each loop names: the sweep's listing, the CI reconcile's mapped repository
+	// What a request of each loop names: the sweep's listing, the CI reconcile's default repository
 	// (GitHub-cased where GitHub named it), the delivery settings' deploy repository, and the
 	// architecture source's repository or its installation's token mint, whichever the import's
 	// resolve sends first.

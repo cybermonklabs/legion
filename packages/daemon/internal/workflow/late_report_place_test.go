@@ -133,10 +133,10 @@ func TestARolesReportOfItsEarlierStepIsTakenAfterAStopAtItsLaterStep(t *testing.
 	implementer := agentToken(t, "implementer")
 	reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 	reviewApprovedNow(t, pool, engine, root.Key)
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
 	rows := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)
 	if rows[2].Completed() || rows[4].Completed() || rows[2].Entry >= rows[4].Entry {

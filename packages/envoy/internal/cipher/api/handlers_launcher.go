@@ -10,9 +10,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
-// launcherLoginKey is the per-login bucket a person's machine login spends: person:<login>, the
-// person its login_hint names. A request naming a service never reaches the limiter
-// (spendDeviceLoginBucket refuses it first).
+// launcherLoginKey is the per-login bucket a person's machine login spends on the broker's own
+// address: person:<login>, the person its login_hint names. At the edge the key also names the
+// caller's address (edgePersonKey). A request naming a service never reaches the limiter:
+// Deps.DeviceLogin (machine.Service.LoginDevice) refuses it first.
 func launcherLoginKey(obj record.RequestObject) string {
 	return "person:" + record.CanonicalLogin(obj.LoginHint)
 }
@@ -55,8 +56,9 @@ type tokenLoginResponse struct {
 // that lives longer than an hour from its issue 401 TOKEN_TOO_LONG_LIVED, one whose account
 // BROKER_SERVICE_LOGINS does not name for the requested service 403 ACCOUNT_NOT_LISTED, a request
 // object that does not verify or repeats a jti 400 REQUEST_INVALID, a key another live credential
-// holds 409 KEY_HOLDS_LIVE_CREDENTIAL, and a broker that trusts no Kubernetes token issuer
-// answers 404 TOKEN_LOGIN_OFF.
+// holds 409 KEY_HOLDS_LIVE_CREDENTIAL, a key a live read token is bound to 409
+// KEY_BINDS_READ_TOKEN, and a broker that trusts no Kubernetes token issuer answers 404
+// TOKEN_LOGIN_OFF.
 func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	// The route takes no credential of the broker's, but the login is the token it carries: a
 	// refusal before that token verifies is the authentication's, and after it the service's.
@@ -112,6 +114,8 @@ func writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete 
 		writeError(w, http.StatusBadRequest, "REQUEST_INVALID", err.Error())
 	case errors.Is(err, machine.ErrKeyHoldsLiveCredential):
 		writeError(w, http.StatusConflict, "KEY_HOLDS_LIVE_CREDENTIAL", err.Error())
+	case errors.Is(err, machine.ErrKeyBindsReadToken):
+		writeError(w, http.StatusConflict, "KEY_BINDS_READ_TOKEN", err.Error())
 	default:
 		writeInternal(w, "token login", err)
 		return true

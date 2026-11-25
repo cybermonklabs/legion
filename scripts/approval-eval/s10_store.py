@@ -33,7 +33,11 @@ STARTED_FILE = "started.json"
 STARTED_REASON = "a run started the request and stopped before its outcome; it is never judged again"
 # Where an outcome the analysis's parser refuses is kept, beside the `shape` deviation in its place.
 UNREAD_FILE = "unread-outcome.json"
-# Where each run's preflight keeps its sandbox's result, `preflights/<n>/`, before any request starts.
+# Where an outcome built whole is kept when its read-back did not run: the next run reads that
+# outcome back and commits it, and judges nothing again (point 6).
+PENDING_FILE = "pending-outcome.json"
+# Where the preflight before each request keeps its sandbox's result, `preflights/<n>/`, before that
+# request starts.
 PREFLIGHT_DIRECTORY = "preflights"
 
 

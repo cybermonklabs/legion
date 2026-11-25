@@ -46,8 +46,8 @@ const (
 //   - Everything left is `open`.
 //
 // A claim that answered and reported no head reads `answered` like any other. That is the case
-// `updateHead` alone cannot tell from a claim nobody ever asked, because a planner before its
-// first push answers with an empty head (supervise.Claim.UpdateHead).
+// `updateHead` alone cannot tell from a claim nobody ever asked, because a planner step that runs
+// before the branch's first push answers with an empty head (supervise.Claim.UpdateHead).
 func UpdateStateOf(c supervise.Claim) UpdateState {
 	switch {
 	case c.UpdateSignalledAt != nil:

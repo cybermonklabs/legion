@@ -66,6 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Status:       issue.Status,
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
+			Priority:     issue.Priority,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -176,8 +177,15 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
-// server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until
+// the server release that has the route. A Dispatch that has the route but not an entry's `holds`
+// ignores that member, as it ignores every member a body carries that it does not declare (its
+// decodeJSON), and answers 200: the publish finishes, and that Dispatch keeps no `holds` for the
+// row. Its advice then reads the row by the project's gated steps, so a `criteria` row a root
+// registered beside a deployment whose list names `spec` and not `criteria` is left out of the
+// superseded-approval advice until the set is published again, which every daemon boot does
+// (queueRecordedGatesPublish). So deploy Dispatch first, or restart the daemon once Dispatch has
+// the column.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -188,9 +196,10 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 	}, nil)
 }
 
-// PutRoleHolders publishes the session of each Legion role of the issue through PUT
-// /api/v1/issues/{key}/role-holders, as the daemon's own session, which is the one caller that
-// route takes. The write replaces the issue's whole set, appends no event and notifies nobody.
+// PutRoleHolders publishes the session of each role of the issue, Legion's and each role of the
+// deployment, through PUT /api/v1/issues/{key}/role-holders, as the daemon's own session, which
+// is the one caller that route takes. The write replaces the issue's whole set, appends no event
+// and notifies nobody.
 // The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
 // body that names no list, and the empty list is the publication that removes every holder.
 // Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
@@ -297,9 +306,11 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
-// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
-// document under (messageArtifact).
+// other. It names no token, so it is meant as a first upload, and the outbox uploads only a name
+// the issue lists no document under (messageArtifact). Since legion-envoy-v32.36.1 Dispatch stores
+// an upload naming no token over a name the issue already holds, as it did before it began to ask
+// for one, and counts it (envoy_dispatch_document_replacements_unguarded_total); a token behind
+// the live document is still refused 409 PRECONDITION_FAILED.
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -322,7 +333,8 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
-// decoder, with its own sequence.
+// decoder, with its own sequence. A page that holds an event that does not decode, or whose seq is
+// not above the sequence read before it, fails the read with an *EventLogError naming that event.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
 	events := []json.RawMessage{}
 	for {
@@ -338,10 +350,11 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 				Seq int64 `json:"seq"`
 			}
 			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, fmt.Errorf("page issue events for %s: %w", key, err)
+				return nil, &EventLogError{Event: len(events) + 1, Err: fmt.Errorf("page issue events for %s: %w", key, err)}
 			}
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 			events = append(events, raw)
@@ -352,13 +365,31 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose seq is not above the sequence read before it. The intake's walk of the log
+// (walkIssueEvents in internal/intake) gives it for an event that it cannot decode. Event is the
+// event's place in the log read, counted from 1. Seq is the event's sequence where the event
+// decoded, and 0 where it did not. Err names the cause and, from EventsAfter, the issue; Error
+// returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
+
 const eventPageLimit = 200
 
 // MessageBodiesSince reads newest-first issue events until the bounded outbox recovery window.
 // Message bodies are carried by message.created events, which hold at most the first part of a
 // long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
 // body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
-// body and the cut would drop it.
+// body and the cut would drop it. A message its author deleted keeps its message.created event,
+// whose every read carries deleted_at and no body: it is no notice the outbox posted, so the read
+// passes over it, and any other event with no body is still refused.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -385,12 +416,16 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				ID            string `json:"id"`
-				Body          string `json:"body"`
-				BodyTruncated bool   `json:"body_truncated"`
+				ID            string          `json:"id"`
+				Body          string          `json:"body"`
+				BodyTruncated bool            `json:"body_truncated"`
+				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
+			}
+			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
+				continue
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -531,6 +566,72 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 	return document, nil
 }
 
+// ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
+// between versions from and to, both positive and from below to, as Dispatch answers them (a pair
+// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal (documentNotFound): Dispatch holds no
+// document of that id, a document deleted since its gate recorded it, and the caller records the
+// pair unreadable at once, since a deleted document does not come back. The router's `404
+// NOT_FOUND` `no route for <METHOD> <path>`, and a 405, are ErrNoChangesRoute wrapped the same
+// way: the build that answered has no such route. During a roll of Dispatch two builds answer,
+// and the next attempt can reach the one that has it, so the caller retries that answer as any
+// other failure within its bounded attempts. Dispatch also answers 404 NOT_FOUND for a version
+// the document does not have, which the daemon does not ask for, since the versions it reads are
+// the ones its gate recorded; that answer, and every other failure, is the request's own, which a
+// caller rides out.
+func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error) {
+	query := url.Values{}
+	query.Set("from", fmt.Sprint(from))
+	query.Set("to", fmt.Sprint(to))
+	var changes ArtifactChanges
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/changes?"+query.Encode(), nil, &changes); err != nil {
+		var refusal *Error
+		switch {
+		case !errors.As(err, &refusal):
+		case artifactNotFound(refusal):
+			return ArtifactChanges{}, documentNotFound(err)
+		case NoRoute(err), refusal.Status == http.StatusMethodNotAllowed:
+			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
+		}
+		return ArtifactChanges{}, err
+	}
+	return changes, nil
+}
+
+// ApprovedVersionBefore reads GET /api/v1/artifacts/{id}/reviews, every review of the document,
+// newest first, and answers the highest version below version that one of them approved, 0 when
+// none did: the version a holder whose told version the record does not know is taken to have
+// worked from. It takes the highest such version wherever it stands in the list, so the answer
+// rests on no order of the list: a changes request names no approved version, and a review of a
+// version at or above the one asked about is not before it. A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal, as ArtifactChanges answers it: a
+// document deleted since its gate recorded it, whose review history the caller records unread at
+// once rather than read again on its backoff.
+func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error) {
+	var reviews []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &reviews); err != nil {
+		var refusal *Error
+		if errors.As(err, &refusal) && artifactNotFound(refusal) {
+			return 0, documentNotFound(err)
+		}
+		return 0, err
+	}
+	approved := 0
+	for _, review := range reviews {
+		if review.State == "approved" && review.Version < version && review.Version > approved {
+			approved = review.Version
+		}
+	}
+	return approved, nil
+}
+
+// documentNotFound is Dispatch's 404 ARTIFACT_NOT_FOUND, err, as the reads of one document answer
+// it: ErrDocumentNotFound wrapped around Dispatch's own refusal, so errors.Is finds it and the
+// message keeps what Dispatch said.
+func documentNotFound(err error) error {
+	return fmt.Errorf("%w: %w", ErrDocumentNotFound, err)
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -649,6 +750,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -663,6 +765,7 @@ type issueResponse struct {
 	Status            string         `json:"status"`
 	Parent            *string        `json:"parent"`
 	Rank              string         `json:"rank"`
+	Priority          *int           `json:"priority"`
 	Labels            []string       `json:"labels"`
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
@@ -680,6 +783,7 @@ func (r issueResponse) issue() Issue {
 		Status:            r.Status,
 		Parent:            r.Parent,
 		Rank:              r.Rank,
+		Priority:          r.Priority,
 		Labels:            r.Labels,
 		HandedOver:        CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID: r.PrimaryArtifactID,
@@ -787,6 +891,13 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+}
+
+// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
+// version it was given on and its state (`approved` or `changes_requested`) alone.
+type reviewResponse struct {
+	Version int    `json:"version"`
+	State   string `json:"state"`
 }
 
 type actor struct {

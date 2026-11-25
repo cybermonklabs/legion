@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The Dispatch schemas name the Legion board's twelfth column, `step`, which holds an issue at a
+  step of a role the Legion deployment defines.
+time: 2026-11-23T07:52:25Z
+custom:
+    Issue: pr5164

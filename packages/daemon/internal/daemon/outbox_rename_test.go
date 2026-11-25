@@ -185,6 +185,7 @@ func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, owner s
 // (adoptIdentity), hand it the recorded repository and leave the owner to it. With no pair
 // configured the same record is minted for sjawhar, as it always was.
 func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwnerGitHubServes(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	for _, tc := range transferStates {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,6 +215,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 // the review App's. A role nothing defines gets no identity: the mint is refused before any
 // lease is asked for.
 func TestTheGitIdentityOfADeploymentRoleIsItsAppsBot(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	tc := transferStates[0]
 	owner := ghrepo.MustParse(tc.want).Owner()
@@ -272,6 +274,7 @@ func TestTheGitIdentityOfARoleOfAPlanIsTheBotOfItsType(t *testing.T) {
 // branch created under the name the repository moved away from is created nowhere and every
 // role of the tree would push to a branch that does not exist.
 func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"}
 	for _, tc := range transferStates {

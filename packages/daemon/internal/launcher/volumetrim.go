@@ -22,12 +22,12 @@ import (
 // oldest entries of the four reclaimable roots, and the episode number a report is counted
 // under. The report itself is volumereport.go's and the size walk it carries volumewalk.go's.
 // It runs in the launcher process, which is PID 1 of an issue pod's roles container, beside the
-// six roles whose caches fill the one volume they share, 50 GiB by default (INFRA-2009: a pod
-// filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
+// roles of the issue, whose caches fill the one volume they share, 50 GiB by default
+// (INFRA-2009: a pod filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
-// (volumeusage_linux.go), and the rest are the fields of the trimmer below.
+// (volumeusage.go), and the rest are the fields of the trimmer below.
 
 // volumeTrimLog begins every line the trimmer writes, but the stack lines below a recovered
 // panic's own line (fault), which do not carry it. In an issue pod every line the trimmer
@@ -144,9 +144,9 @@ const (
 // validates them too, but it is another binary across a connection this design expects to carry
 // version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
 // time.NewTicker panics on a non-positive period, a fault on each start of the interval loop, so
-// three in a row would switch off the one guard of the volume six live roles share (run), a high
-// mark of 0 would sweep the caches of a volume that is empty, and an age of 153,722,868 minutes
-// or more can wrap the sweep's cutoff past the sweep's own start, which makes every entry of
+// three in a row would switch off the one guard of the volume the pod's live roles share (run), a
+// high mark of 0 would sweep the caches of a volume that is empty, and an age of 153,722,868
+// minutes or more can wrap the sweep's cutoff past the sweep's own start, which makes every entry of
 // every root eligible however recently it was written (sweep, shimwire.VolumeMinAgeMax). The
 // ranges themselves are the wire's own (shimwire.VolumeMarkMin and the five beside it). The
 // daemon's loader reads the three maxima among them, and its minimum of 1 is its own
@@ -196,9 +196,9 @@ type trimmer struct {
 	// a freshly allocated copy of the struct.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
-	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
-	// connection is up, or the connection that is up answered the hello with no settings and so
-	// has no case for a report (manager.sendVolumeReport).
+	// the trimmer sends on the next attempt: no connection is up, or the connection that is up
+	// answered the hello with no settings and so has no case for a report
+	// (manager.sendVolumeReport).
 	send func(shimwire.LauncherVolumeReport) error
 	now  func() time.Time
 	// ticks is the interval clock; a test drives it. The runner takes the channel and a stop.
@@ -625,14 +625,17 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // again, and the ending what the interval loop must do now (trimEnding).
 //
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
-// practice — no production path of it outside this trimmer recovers a panic it did not expect,
-// because a process that cannot keep its invariants should die and be restarted (the one recover
-// outside the trimmer, leakguard's compile, turns the panic regexp.MustCompile raises on a pattern
-// of the embedded rule file into an error) — because this goroutine runs in the process that is
-// PID 1 of the roles container: its panic takes the container down and costs six live roles their
-// round, over a cache sweep that nothing depends on. The fault is logged with its stack and
-// carried into the next report, and three in a row of one kind of work stop the trimmer until
-// the launcher process restarts (fault, run), which no other ending of the four does.
+// practice: a process that cannot keep its invariants should die and be restarted, so no
+// production path of it outside this trimmer recovers a panic it did not expect, but in two cases.
+// One is leakguard's compile, which turns the panic regexp.MustCompile raises on a pattern of the
+// embedded rule file into an error. The other is the memory guard, which recovers its loop
+// (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers its loop
+// (Guest.step) and its wake's reader (readModified), for this trimmer's reason: that code runs in
+// PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles container, so
+// its panic takes the container down and costs the pod's live roles their round, over a cache
+// sweep that nothing depends on. The fault is logged with its stack and carried into the next
+// report, and three in a row of one kind of work stop the trimmer until the launcher process
+// restarts (fault, run), which no other ending of the four does.
 //
 // Each kind keeps a row of its own (faultRow). The reading's is the interval's reading of the
 // settings and of the volume, with the line that says what the interval decided
@@ -1217,8 +1220,8 @@ type sweepOutcome struct {
 // only answer yes; the platforms where a handle could keep a name rather than a descriptor —
 // GOOS=plan9 and GOOS=js, where os.Root does (`go doc os.Root`) — run no sweep at all, because
 // this binary opens no directory of the volume outside Linux and the reading every interval
-// starts from refuses by name there (volumedir_other.go, readVolumeUsage in
-// volumeusage_other.go).
+// starts from refuses by name there (volumedir_other.go, and readVolumeUsage through
+// volumestat.Read, volumestat_other.go).
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself

@@ -4,6 +4,11 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./actor-text": {
+      "types": "./src/actor-text.ts",
+      "bun": "./src/actor-text.ts",
+      "default": "./dist/actor-text.js"
+    },
     "./askgate-marker": {
       "types": "./src/askgate-marker.ts",
       "bun": "./src/askgate-marker.ts",
@@ -119,6 +124,21 @@
       "bun": "./src/excerpt.ts",
       "default": "./dist/excerpt.js"
     },
+    "./inbound-card": {
+      "types": "./src/inbound-card.ts",
+      "bun": "./src/inbound-card.ts",
+      "default": "./dist/inbound-card.js"
+    },
+    "./inbound-connection": {
+      "types": "./src/inbound-connection.ts",
+      "bun": "./src/inbound-connection.ts",
+      "default": "./dist/inbound-connection.js"
+    },
+    "./listener-relay": {
+      "types": "./src/listener-relay.ts",
+      "bun": "./src/listener-relay.ts",
+      "default": "./dist/listener-relay.js"
+    },
     "./machine": {
       "types": "./src/machine.ts",
       "bun": "./src/machine.ts",
@@ -138,6 +158,16 @@
       "types": "./src/process-ancestry.ts",
       "bun": "./src/process-ancestry.ts",
       "default": "./dist/process-ancestry.js"
+    },
+    "./process-group": {
+      "types": "./src/process-group.ts",
+      "bun": "./src/process-group.ts",
+      "default": "./dist/process-group.js"
+    },
+    "./relay-registration": {
+      "types": "./src/relay-registration.ts",
+      "bun": "./src/relay-registration.ts",
+      "default": "./dist/relay-registration.js"
     },
     "./secret-file": {
       "types": "./src/secret-file.ts",
@@ -171,6 +201,18 @@
     "./test/fake-dispatch": {
       "types": "./test/fake-dispatch.ts",
       "bun": "./test/fake-dispatch.ts"
+    },
+    "./test/nats-server": {
+      "types": "./test/nats-server.ts",
+      "bun": "./test/nats-server.ts"
+    },
+    "./test/relay-socket-stand-in": {
+      "types": "./test/relay-socket-stand-in.ts",
+      "bun": "./test/relay-socket-stand-in.ts"
+    },
+    "./test/replay-grant-scenario": {
+      "types": "./test/replay-grant-scenario.ts",
+      "bun": "./test/replay-grant-scenario.ts"
     },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
@@ -211,7 +253,7 @@
     }
   },
   "scripts": {
-    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
+    "build": "bun build src/actor-text.ts src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/inbound-card.ts src/inbound-connection.ts src/listener-relay.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/process-group.ts src/relay-registration.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test --timeout 30000",
     "lint": "bunx biome check src/ bin/ test/"

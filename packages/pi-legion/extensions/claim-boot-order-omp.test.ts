@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
   messageStream,
   ompRoot,
@@ -173,6 +174,9 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   const kept = `KEPT-${randomUUID().slice(0, 8)}`;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   let receipt: Promise<unknown> | undefined;
   let relayedSeq = 0;

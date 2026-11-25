@@ -185,3 +185,88 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		}
 	})
 }
+
+// A role's name is never the name Legion gives a second or later agent of another role
+// (claim.NumberedAgentName), whether that role is Legion's or the deployment's, defined before it
+// or after it in the file, and in the form whose role is cut so that the name holds 32 bytes: an
+// agent of each role would hold one claim token, and so one slot and one session. The control is a
+// file of names that only look numbered or hold another role's name, each taken beside the role it
+// resembles.
+func TestARoleNamedAsAnotherRolesNumberedAgentIsRefused(t *testing.T) {
+	role := func(name string) string { return name + ": {type: testing, prompt_file: checker.md}" }
+	refused := func(name, of string) string {
+		return "roles." + name + " is the name Legion gives a second or later agent of the role " + of +
+			", so an agent of each role would hold one claim: give the role another name"
+	}
+	long := "a-role-name-of-thirty-two-letter"
+	for _, tc := range []struct{ name, roles, want string }{
+		{"a second agent of Legion's planner", role("planner-2"), refused("planner-2", "planner")},
+		{"a twelfth agent of Legion's implementer", role("implementer-12"), refused("implementer-12", "implementer")},
+		{"a second agent of a role defined before it", role("checker") + ", " + role("checker-2"), refused("checker-2", "checker")},
+		{"a third agent of a role defined after it", role("checker-3") + ", " + role("checker"), refused("checker-3", "checker")},
+		{"a second agent of a role of 32 characters, the role cut", role(long) + ", " + role(long[:30]+"-2"), refused(long[:30]+"-2", long)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(rolesFile(t, "roles: {"+tc.roles+"}\n", "checker.md"), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	names := []string{"checker", "security-reviewer", "planner2", "code-checker", "checker-1", "planner-02", "reviewer-two"}
+	blocks := make([]string, len(names))
+	for i, name := range names {
+		blocks[i] = role(name)
+	}
+	cfg, err := Load(rolesFile(t, "roles: {"+strings.Join(blocks, ", ")+"}\n", "checker.md"), noEnv)
+	if err != nil {
+		t.Fatalf("Load of names no agent of another role takes: %v", err)
+	}
+	got := make([]string, len(cfg.Roles))
+	for i, r := range cfg.Roles {
+		got[i] = string(r.Name)
+	}
+	if !reflect.DeepEqual(got, names) {
+		t.Errorf("Roles = %v, want %v", got, names)
+	}
+}
+
+// A role of the type review acts as the review App: the account that reviews a change is never
+// the one that wrote it, a review step's fail counts a review round, and GitHub refuses an
+// approval from a pull request's author. So the loader refuses a review role that names the
+// implement App, naming the role, the key and both Apps, and loads one that names the review App
+// or none. A role of every other type, one of role_types among them, may act as either App.
+func TestAReviewRoleActsAsTheReviewApp(t *testing.T) {
+	_, err := Load(rolesFile(t, "roles: {critic: {type: review, prompt_file: critic.md, github_app: implement}}\n", "critic.md"), noEnv)
+	if err == nil {
+		t.Fatal("Load took a role of the type review acting as the implement App")
+	}
+	for _, word := range []string{"roles.critic", "github_app", RoleAppImplement, RoleAppReview} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal %q does not name %s", err, word)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, block, rest, roleType, app string
+	}{
+		{"a review role that names no App", "{type: review, prompt_file: critic.md}", "", "review", RoleAppReview},
+		{"a review role that names the review App", "{type: review, prompt_file: critic.md, github_app: review}", "", "review", RoleAppReview},
+		{"a design role on the implement App", "{type: design, prompt_file: critic.md, github_app: implement}", "", "design", RoleAppImplement},
+		{"a planning role on the implement App", "{type: planning, prompt_file: critic.md, github_app: implement}", "", "planning", RoleAppImplement},
+		{"an implementation role on the implement App", "{type: implementation, prompt_file: critic.md, github_app: implement}", "", "implementation", RoleAppImplement},
+		{"a testing role on the implement App", "{type: testing, prompt_file: critic.md, github_app: implement}", "", "testing", RoleAppImplement},
+		{"a role of role_types on the implement App", "{type: security, prompt_file: critic.md, github_app: implement}", "role_types: [security]\n", "security", RoleAppImplement},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(rolesFile(t, "roles: {critic: "+tc.block+"}\n"+tc.rest, "critic.md"), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.Roles) != 1 || cfg.Roles[0].Type != plan.Type(tc.roleType) || cfg.Roles[0].GitHubApp != tc.app {
+				t.Errorf("Roles = %+v, want the critic of the type %s on the %s App", cfg.Roles, tc.roleType, tc.app)
+			}
+		})
+	}
+}

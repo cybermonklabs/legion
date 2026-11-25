@@ -68,8 +68,9 @@
 //                                          Approve, which is the review
 //   seed.ts capture-spec <file> <run dir>  what the run wrote on the issue, the seeded asks left
 //                                          out: spec.md, spec-versions.json and spec-versions/<n>.md,
-//                                          agent-asks.json, agent-texts.json, documents/<slug>.md and
-//                                          plan.md (the run directory table of judge.ts and score.ts)
+//                                          agent-asks.json, agent-texts.json (no message or comment
+//                                          the run deleted), documents/<slug>.md and plan.md (the run
+//                                          directory table of judge.ts and score.ts)
 //   seed.ts askgate <file>                 one run's own issue, with an empty spec and one comment
 //                                          by the person alice; writes {issue, comment,
 //                                          comment_ref} to <file>
@@ -510,11 +511,25 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   );
 
   // The run's session is the one its transcript's header names; a run with no transcript wrote
-  // nothing.
+  // nothing. A message or comment the run deleted is left out and counted, as
+  // fetch-spec-sources.ts's `standing` leaves a deleted post out: Dispatch reads it with its body
+  // empty, which the judges would take as something the run said (dispatch://INFRA-1523).
   const runSession = sessionId(session(runDir));
   const texts: AgentText[] = [];
-  const add = (id: string, kind: AgentText["kind"], author: Actor, body: string, at: string) => {
+  let deleted = 0;
+  const add = (
+    id: string,
+    kind: AgentText["kind"],
+    author: Actor,
+    body: string,
+    at: string,
+    deletedAt: string | null
+  ) => {
     if (author.kind !== "session" || author.id !== runSession) return;
+    if (deletedAt != null) {
+      deleted += 1;
+      return;
+    }
     texts.push({
       id,
       kind,
@@ -529,15 +544,29 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
       lines.push(option.label);
       if (option.description) lines.push(option.description);
     }
-    add(ask.id, "ask", ask.author, lines.join("\n"), ask.created_at);
+    add(ask.id, "ask", ask.author, lines.join("\n"), ask.created_at, null);
   }
   for (const thread of await listIssueMessages(fixture.issue, reader)) {
     for (const message of [thread.message, ...(thread.replies ?? [])]) {
-      add(message.id, "message", message.author, message.body, message.created_at);
+      add(
+        message.id,
+        "message",
+        message.author,
+        message.body,
+        message.created_at,
+        message.deleted_at
+      );
     }
   }
   for (const comment of await listComments(fixture.issue, undefined, reader)) {
-    add(comment.id, "comment", comment.author, comment.body, comment.created_at);
+    add(
+      comment.id,
+      "comment",
+      comment.author,
+      comment.body,
+      comment.created_at,
+      comment.deleted_at
+    );
   }
   // Dispatch's times carry microseconds, which Date.parse drops; two texts of one time keep the order
   // the capture read them in.
@@ -562,7 +591,7 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
     );
   }
   console.log(
-    `captured ${fixture.issue}: ${(spec.versions ?? []).length} spec versions, ${asks.length} asks, ${texts.length} texts, ${documents.length} documents`
+    `captured ${fixture.issue}: ${(spec.versions ?? []).length} spec versions, ${asks.length} asks, ${texts.length} texts (${deleted} deleted posts left out), ${documents.length} documents`
   );
 }
 

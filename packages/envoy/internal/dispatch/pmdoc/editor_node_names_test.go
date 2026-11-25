@@ -36,6 +36,7 @@ var editorMarkDifferences = map[string]string{}
 // deliberate difference is listed above with its reason, so dropping a name from either side
 // fails here, and so does listing a name that is no longer a difference.
 func TestEditorNodeAndMarkNamesMatchTheGoLists(t *testing.T) {
+	t.Parallel()
 	var editor struct {
 		Nodes []string `json:"nodes"`
 		Marks []string `json:"marks"`
@@ -46,8 +47,8 @@ func TestEditorNodeAndMarkNamesMatchTheGoLists(t *testing.T) {
 	if len(editor.Nodes) == 0 || len(editor.Marks) == 0 {
 		t.Fatal("schema/editor-node-names.json lists no nodes or no marks: run `bun run gen` in gen/")
 	}
-	requireSameNames(t, "node", editor.Nodes, active.nodes, editorNodeDifferences)
-	requireSameNames(t, "mark", editor.Marks, active.marks, editorMarkDifferences)
+	requireSameNames(t, "node", editor.Nodes, active.Load().nodes, editorNodeDifferences)
+	requireSameNames(t, "mark", editor.Marks, active.Load().marks, editorMarkDifferences)
 }
 
 // requireSameNames fails t for a name editor or own holds alone that declared does not explain,

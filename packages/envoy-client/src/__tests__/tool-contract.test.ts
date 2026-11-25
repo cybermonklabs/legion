@@ -5,6 +5,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { delivered } from "../../test/delivered";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
@@ -238,12 +239,14 @@ describe("publishConfirmationText", () => {
         );
       },
     });
-    const publish = (role: string) =>
-      client.publish({
-        sourceSessionID: "ses_sender",
-        topic: `notifications.role.${role}`,
-        message: "the worker is stalled",
-      });
+    const publish = async (role: string) =>
+      delivered(
+        await client.publish({
+          sourceSessionID: "ses_sender",
+          topic: `notifications.role.${role}`,
+          message: "the worker is stalled",
+        })
+      );
     const named = { senderNamed: true };
 
     // A role nobody claims: the line names kept_until as a UTC time, and says that a message

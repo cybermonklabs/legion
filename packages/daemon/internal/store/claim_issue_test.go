@@ -25,9 +25,9 @@ func TestClaimIssueIsTheIssueTheClaimIsOn(t *testing.T) {
 	}
 }
 
-// A claim's role is its stored role, the role of the step its agent does now, which is not the
-// name its token ends in for a keyed agent on a step of another role; a token no claim holds is
-// refused.
+// A claim's role is its stored role, the role of the step its agent does now, which need not be the
+// name its token ends in (here the implementer's token on the tester's step); a token no claim
+// holds is refused.
 func TestClaimRoleIsTheClaimsStoredRole(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)

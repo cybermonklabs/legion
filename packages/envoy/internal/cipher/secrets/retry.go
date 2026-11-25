@@ -43,9 +43,9 @@ const (
 var backoffCeilings = [mintAttemptsPerCall - 1]time.Duration{2 * time.Second, 4 * time.Second}
 
 // The outcome of one attempt, as broker_mint_attempts_total names it: the answer the call wanted;
-// an upstream failure (a 5xx, no usable answer, an answer past its cap or of a status no call
-// wants); a rate limit (rateLimited); a 4xx that is not one; and a call the caller's context
-// ended.
+// an upstream failure (a 5xx, a 408, no usable answer, an answer past its cap or of a status no
+// call wants); a rate limit (rateLimited); a refusal, a 4xx that is no 408 and no rate limit
+// (mintStatusError.refused); and a call the caller's context ended.
 const (
 	attemptOK          = "ok"
 	attemptUpstream    = "upstream"
@@ -177,9 +177,11 @@ func (r *Retry) start(secretType string) *mintRetry {
 	return &mintRetry{retry: r, secretType: secretType, waitLeft: mintWaitBudget}
 }
 
-// startOnce is the share of calls nobody waits on, a give-back's revokes (GitHubApp.GiveBack): one
-// attempt of each call, counted under type as every other, and no retry, so it draws nothing from
-// the process-wide budget the mints a caller waits on retry from.
+// startOnce is the share of a call made once, counted under type as every other and never retried,
+// so it draws nothing from the process-wide budget the retried mints share. It has two callers: a
+// give-back's revokes (GitHubApp.GiveBack), which nobody waits on; and an Anthropic federation
+// exchange (AnthropicFederation.Mint), which a release waits on, and which is not sent again
+// because the identity token it presents may be good for one use only.
 func (r *Retry) startOnce(secretType string) *mintRetry {
 	return &mintRetry{retry: r, secretType: secretType, once: true}
 }

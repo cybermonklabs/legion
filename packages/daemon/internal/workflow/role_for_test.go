@@ -8,9 +8,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// roleForAnswers is the role that works each phase, written out here rather than read from
-// phase.RoleFor, so a phase added to the daemon fails this test until somebody decides what role
-// works it. The architect works two of them: admitted, where a root's own architect reads its
+// roleForAnswers is the role phase.RoleFor answers for each phase, written out here rather than
+// read from phase.RoleFor, so a phase added to the daemon fails this test until somebody decides
+// what role works it. Step answers none: the role that works it is the issue's own, the role of
+// its running step (record.Issue.RoleAt). The architect works two of them: admitted, where a root's own architect reads its
 // spec and decomposes its tree, and accepting, where it signs the work off. No row of the table
 // starts either (Table), and every site that starts, resumes or reports a phase's worker skips
 // the architect, which internal/textcheck's TestEveryReaderOfRoleForLeavesTheArchitectUnchanged

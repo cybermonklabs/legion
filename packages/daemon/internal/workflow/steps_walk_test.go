@@ -230,8 +230,9 @@ func assertRowsName(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, when 
 
 // Each phases row of an issue with plan rows names the step its role runs: the task and
 // the step's place in it, written by the start that raises the row's entry (enter), so the facts
-// of that row are the facts of that step's run. The implementer's row names its step 1 until the
-// retro's start raises it again, at the retro's place 0, and the merger's names the merge, at 0.
+// of that row are the facts of that step's run. The implementer's row names its step 1, and the
+// retro's start raises a row of the implementer's own beside it, at the retro's place 0, which the
+// engine reads from then on; the merger's names the merge, at 0.
 // An issue with no plan rows keeps no task and place 0 on each row, as it always did.
 func TestEachPhaseRowNamesItsStep(t *testing.T) {
 	t.Run("the plan implementer reviewer", func(t *testing.T) {

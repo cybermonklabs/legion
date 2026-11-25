@@ -298,7 +298,7 @@ test("register_gate waits out a restarting daemon", async () => {
   expect(updates).toHaveLength(1);
 });
 
-// The owner's plan (contract 211): a registration is keyed by its issue, generation, document and
+// The owner's plan (contract 219): a registration is keyed by its issue, generation, document and
 // version, and a stop of a task already stopped changes nothing, so each waits out a restart.
 test("register_plan and stop_task wait out a restarting daemon", async () => {
   const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";

@@ -76,8 +76,9 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 //
 // The resume task made because the stored text is empty (a clear emptied it, and no entry was
 // raised since) names no entry, `none`, since no review of that entry moves the commit. A task of
-// any other of Legion's roles names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry);
-// a role of the deployment or of the plan whose step is of the type review is told its own commit alone.
+// any other of Legion's roles names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry).
+// A review step of a role of the deployment or of the plan names its commit alone
+// (namingTheReviewRound).
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
@@ -111,7 +112,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				pool, _, _ := reviewRoundTwoNaming(t, noCommit)
 				for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 					if task := roleRow(t, pool, role).EntryTask; task == "" || strings.Contains(task, reviewround.EntryLabel) || strings.Contains(task, reviewround.CommitLabel) {
-						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: of Legion's roles only the reviewer is told them", role, task)
+						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: only the reviewer and a review step of a role of the deployment or of the plan are told one", role, task)
 					}
 				}
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
@@ -149,7 +150,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)), row)
+					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 				})
 				return pool, strings.TrimSuffix(row.EntryTask, reviewedPartOf(commitNamed(row))+reviewEntryPartOf(row.Entry))
 			},
@@ -190,7 +191,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.repairSilence(ctx, tx, *issue, *issue, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)),
+					return engine.repairSilence(ctx, tx, *issue, *issue, reviewClaim,
 						record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 						intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 						reviewTestedAt.Add(2*time.Hour))
@@ -222,7 +223,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				}
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)), row)
+					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 				})
 				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work."
 			},
@@ -350,7 +351,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 			}
 			outboxRan(t, pool)
 			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)), row)
+				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, row)
 			})
 			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
 				t.Fatalf("the owed entry is delivered as %q, want the stored task %q word for word: the row's commit moved to %s since", delivered, stored, tc.moved)
@@ -537,7 +538,7 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 //
 // namingTheReviewRound gives each task of the reviewer those two sentences, in each phase, `none`
 // where its row holds no commit or no entry's task and `none` for both outside reviewing, and
-// gives them to no other role. The controls are its three other cases: a woken role that is not
+// gives them to no other of Legion's roles. The controls are its three other cases: a woken role that is not
 // the reviewer, given the wake's task alone; a woken reviewer whose row the generation's clear
 // left with no task and no commit (record.Store.ClearGeneration); and a woken reviewer whose issue
 // has left reviewing, whose row still holds both, whose wake is delivered once the issue is back

@@ -21,7 +21,7 @@
 #     enrollment are both refused, with or without F's check.
 #   * carol's session naming nothing: PUB_KEY granted, PRIV_KEY denied project-not-named.
 #   * the machine's own session: PUB_KEY as today (granted: shared and agent tier), PRIV_KEY denied.
-#   * PRIV's pod behind the airlock: the stack's rules bind PRIV_KEY to the airlock's bound host,
+#   * PRIV's pod behind the airlock: the stack's profiles file binds PRIV_KEY to the airlock's bound host,
 #     so the pod's grant of it is spent through the proxy. A request through the proxy is served
 #     by the bound host (its own answer is read, not the stands' records: the stands run in a
 #     container); then carol, the person of the pod's exchange entry, is taken off PRIV, and the
@@ -51,7 +51,9 @@
 #
 # It needs what dev-stack.sh needs (go unless --binaries, psql, curl, jq, python3, and docker for the
 # airlock's stands), bun with this repository's packages installed, and a Postgres server to create
-# this run's databases on: --database-url, else LEGION_TEST_PG_DSN, else DATABASE_URL.
+# this run's databases on: --database-url, else LEGION_TEST_PG_DSN, else DATABASE_URL. Prefer either
+# variable to the option for a URL that holds a password: the option stays in this script's own
+# arguments, in the process list for any user of the machine to read, and the environment is not.
 #
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged
@@ -61,6 +63,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PRINT_TRADE="$REPO_ROOT/packages/cipher-client/scripts/print-trade.ts"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 # The two people of the rows besides PRIV's owner: bob, on PRIV's access list, and alice, who
 # cannot see PRIV. Both are in the stack's sign-in domain (BROKER_SIGNIN_DOMAIN, example.com).
@@ -92,7 +97,10 @@ Drive dispatch://INFRA-3862's R11 on the binaries production runs: a private pro
 only to a credential that names the project. With no --broker-url it starts one dev-stack.sh run
 of its own and drives every caller against it.
 
-  --database-url   the Postgres server dev-stack.sh creates this run's databases on
+  --database-url   the Postgres server dev-stack.sh creates this run's databases on; else
+                   LEGION_TEST_PG_DSN, else DATABASE_URL. Prefer either variable for a URL that
+                   holds a password: a process's arguments are in the process list for any user
+                   of the machine to read, and its environment is not
   --binaries       prebuilt binaries, as dev-stack.sh --project-access takes them, so
                    dev-airlock-stands among them
   --control untagged
@@ -387,9 +395,12 @@ STACK_LOG="$WORK_DIR/dev-stack.log"
 start_stack() {
   : >"$STACK_LOG"
   local -a options=(--project-access)
-  [ -z "$DATABASE_URL_OPTION" ] || options+=(--database-url "$DATABASE_URL_OPTION")
   [ -z "$BINARIES_OPTION" ] || options+=(--binaries "$BINARIES_OPTION")
-  bash "$SCRIPT_DIR/dev-stack.sh" "${options[@]}" >"$STACK_LOG" 2>&1 &
+  # A --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN, which it reads when it is given
+  # no option, set for that one command: in its arguments the URL's password would be in the
+  # process list. Without the option the caller's value stays, and dev-stack.sh reads "" as unset.
+  LEGION_TEST_PG_DSN="${DATABASE_URL_OPTION:-${LEGION_TEST_PG_DSN:-}}" \
+    bash "$SCRIPT_DIR/dev-stack.sh" "${options[@]}" >"$STACK_LOG" 2>&1 &
   PIDS+=("$!")
   local waited=0
   # A first run builds every binary, so the wait is long: 20 minutes.
@@ -456,7 +467,7 @@ DISPATCH_DB="$(grep -o 'dev_stack_dispatch_[a-z0-9]*' "$STACK_LOG" | head -n1 ||
 [ -n "$DISPATCH_DB" ] || setup_fail "the stack's banner names no Dispatch database"
 [[ "$ADMIN_URL" =~ ^(postgres(ql)?://[^/?]+)/[^/?]*(\?.*)?$ ]] || setup_fail "the Postgres URL is not postgres://<user>@<host>:<port>/<database>"
 DISPATCH_DATABASE_URL="${BASH_REMATCH[1]}/${DISPATCH_DB}${BASH_REMATCH[3]:-}"
-dispatch_psql() { psql "$DISPATCH_DATABASE_URL" -v ON_ERROR_STOP=1 -q -At -F '|' "$@"; }
+dispatch_psql() { pg_url_run "$DISPATCH_DATABASE_URL" psql -v ON_ERROR_STOP=1 -q -At -F '|' "$@"; }
 priv_row() {
   dispatch_psql -c "select p.visibility, p.owner, coalesce((select string_agg(a.principal, ' ' order by a.principal) from project_access a where a.project_key = p.key), '') from projects p where p.key = '$PRIV_PROJECT';" 2>&1 || true
 }

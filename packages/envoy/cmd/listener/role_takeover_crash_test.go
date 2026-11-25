@@ -32,6 +32,7 @@ import (
 // kept lane alone. Every other row is a case: such a build gives the role's next holder none of the
 // messages, and it has no seam to force a row's fault, so a row that waits for its seam fails there.
 func TestATakeoverCopyThatStopsOrRunsAgainLosesNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("1 a listener stopped after the claim write leaves the copy to the next sweep", crashStoppedAfterTheClaimWrite)
 	t.Run("1b a record whose claim never landed leaves the holder that kept the role its own messages", crashRecordWhoseClaimNeverLanded)
 	t.Run("1c an older pass paused before its last write leaves a newer takeover of the holder to copy", crashOlderPassPausedBeforeItsLastWrite)
@@ -127,8 +128,11 @@ func crashKeptByItsHolder(t *testing.T, rig *crashRig, standIn *sessionStandIn, 
 			t.Fatalf("after sweep %d %s's own subject holds %v; want its three role messages alone, %v", i+1, holder, events, sent)
 		}
 	}
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, holder)
+	// The new epoch restarts the relay at the holder's floor, which deletes the consumer holding
+	// its three frames and creates it again (awaitSessionConsumerStored).
+	awaitSessionConsumerStored(t, rig.lane, holder)
 	back := startSessionStandIn(t, rig.url, holder, answerDone)
 	rig.register(rig.mux, holder, "epoch-2")
 	crashAwaitEvents(t, back, sent, nil, holder+", back and holding the role, from its own consumer")
@@ -326,7 +330,7 @@ func crashReleasedBeforeAnyPass(t *testing.T) {
 // window: the holder stops and deregisters, and its claim is aged past the window.
 func crashReapedBeforeAnyPass(t *testing.T) {
 	crashEndedBeforeAnyPass(t, "4p", "", func(rig *crashRig, standIn *sessionStandIn, holder, role string) {
-		standIn.conn.Close()
+		standIn.close()
 		if recorder := rig.send(rig.mux, http.MethodDelete, "/v1/sessions/"+holder, ""); recorder.Code != http.StatusOK {
 			rig.t.Fatalf("DELETE /v1/sessions/%s: status %d %s", holder, recorder.Code, recorder.Body.String())
 		}
@@ -393,7 +397,7 @@ func crashRoleTakenBack(t *testing.T) {
 		sent = append(sent, item.EventID)
 	}
 	crashAwaitEvents(t, first, sent, nil, a+"'s frames, each answered received alone")
-	first.conn.Close()
+	first.close()
 	awaitNoRelaySubscriber(t, rig.url, a)
 	rig.gone(b)
 	rig.claim(rig.away, b, role)
@@ -405,6 +409,9 @@ func crashRoleTakenBack(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("%s's own subject holds %v", b, rig.events(toB))
+	// A's new epoch restarts its relay at its floor, which deletes the consumer holding the three
+	// frames A received and creates it again (awaitSessionConsumerStored).
+	awaitSessionConsumerStored(t, rig.lane, a)
 	back := startSessionStandIn(t, rig.url, a, answerDone)
 	rig.register(rig.mux, a, "epoch-2")
 	awaitAcked(t, rig.consumers, a, rig.seqOn(agent, sent[len(sent)-1]))

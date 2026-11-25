@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -44,7 +45,7 @@ func recordPodWake(t *testing.T, st *store.Store, res store.PodResume) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var id int64
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		id, _, err = store.RecordPodWakeTx(ctx, tx, res)
 		return err
@@ -67,6 +68,7 @@ func recordListenerReady(t *testing.T, pool *store.Pool, at time.Time) {
 // fifteen minutes. The gate runs before the pass reads a single pod, so a daemon that has heard
 // nothing releases nothing at all rather than deciding each pod and then declining.
 func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
+	t.Parallel()
 	t.Run("no report at all", func(t *testing.T) {
 		w, _, logged := wakeRuntime(t)
 		w.releaseIdlePods(context.Background())
@@ -98,6 +100,7 @@ func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
 // issue, the role and the step it waits on, and is marked, so it warns once however many passes
 // read it. The clock is the test's: every time comes from the pass's own now.
 func TestAStuckResumeIsWarnedAboutOnceAtTenMinutes(t *testing.T) {
+	t.Parallel()
 	w, pool, logged := wakeRuntime(t)
 	ctx := context.Background()
 	woke := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -158,6 +161,7 @@ func stuckMark(t *testing.T, pool *store.Pool, id int64) bool {
 // starts. The row is read from the database the restarted daemon opens, and the pass applies one
 // fact per row under the row's own id, so the backstop fires once.
 func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -194,6 +198,7 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 // is read as the release's teardown reads it before it arms (outbox.issue, releaseIssue), so its
 // running role comes from its plan rows.
 func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
+	t.Parallel()
 	const key, checker = "LEGION-208", claim.Role("checker")
 	for _, c := range []struct {
 		name    string
@@ -209,11 +214,11 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 			records := record.NewStore()
 			putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: "LEGION", Tree: key, Title: "root", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 				task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-				steps := record.NameAgents(nil, nil, []record.PlanStep{
+				steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 					{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: key, Generation: 2, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
 				})
@@ -269,16 +274,17 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 // that claim over and leave the worker's backstop due: nothing else brings the worker back while it
 // waits on a deploy run.
 func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.T) {
+	t.Parallel()
 	const key, checker = "LEGION-208", claim.Role("checker")
 	ctx := context.Background()
 	runner, sup, pool := runnerIn(t, phase.Step, "in_progress", &outboxPublisher{}, quietLogger())
 	runner.backstop = time.Hour
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
 		})
@@ -346,6 +352,96 @@ func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.
 	}
 }
 
+// A backstop that comes due wakes its pod's lifecycle lane once, whether its fact's commit reply
+// came back or was lost and the store said it committed: the fact's wake queues the role's start
+// row through the project's records, which wake that row's lane once the fact commits
+// (projectRecords.wakeOnCommit), so the pass wakes nothing beside it. The wake's two lines — the
+// close of the resume a pod that went away left open, and the pod coming back — say what the
+// fact's transaction wrote, so each is a hook of its commit: a fact whose commit never landed
+// writes neither, and the pass's retry, which fires the backstop, writes each once.
+func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cut  testdb.Cut
+	}{{name: "committed"}, {name: "reply_lost", cut: testdb.CutAfterCommit}, {name: "rollback", cut: testdb.CutBeforeCommit}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, pool, _ := wakeRuntime(t)
+			ctx := context.Background()
+			faulted, fault := faultedPoolOf(t, pool)
+			w.pool = faulted
+			putOutboxIssue(t, pool, record.NewStore(), record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main",
+				GitHubRepo: "acme/widgets", Project: "LEGION", Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing,
+				Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5})
+			implementer := mustClaimToken(t, pauseIssue, claim.RoleImplementer)
+			if err := w.idleStore.PutClaim(ctx, supervise.Claim{Token: implementer,
+				Project: "legion", Tree: pauseIssue, Issue: pauseIssue, Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1,
+				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer"}); err != nil {
+				t.Fatalf("store the released implementer: %v", err)
+			}
+			// An earlier wake's resume, open when the pod went away again: the release recorded
+			// after it stands above it, so this wake closes it before it takes its own.
+			woke := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+			recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: pauseIssue,
+				Role: string(claim.RoleImplementer), Claim: string(implementer), Kind: pods.WakeBackstop, At: woke})
+			if _, _, err := w.idleStore.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: pauseIssue, Generation: 1,
+				Roles: []string{string(claim.RoleImplementer)}, At: woke.Add(time.Minute)}); err != nil {
+				t.Fatalf("record the pod's release: %v", err)
+			}
+			if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: pauseIssue,
+				Claim: implementer, Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+				t.Fatalf("arm the backstop: %v", err)
+			}
+			podRecords, err := w.idleStore.PodRecordsOf("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			logs := &syncBuffer{}
+			records := projectRecords{Store: record.NewStore(), project: "LEGION", wake: w.wakeOutbox, log: quietLogger()}
+			w.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Pods: podRecords, Linger: time.Hour},
+				slog.New(slog.NewTextHandler(logs, nil)))}
+			wakes := recordLaneWakes(w, pauseIssue)
+			starts := func() int {
+				t.Helper()
+				var n int
+				if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = 'supervise' and issue = $1
+					and payload->>'op' = 'start' and payload->>'wakeKind' = $2`, pauseIssue, pods.WakeBackstop).Scan(&n); err != nil {
+					t.Fatalf("count the backstop's start rows: %v", err)
+				}
+				return n
+			}
+			want := func(n int, when string) {
+				t.Helper()
+				if got := starts(); got != n {
+					t.Fatalf("%s: start rows of the backstop's wake = %d, want %d", when, got, n)
+				}
+				if got := wakes(); got != n {
+					t.Errorf("%s: wakes of %s's lifecycle lane = %d, want %d: the start row's own wake", when, pauseIssue, got, n)
+				}
+				for _, line := range []string{`msg="wake: a released pod is coming back"`, `msg="wake: a pod went away under an open resume`} {
+					if got := count(logs, line); got != n {
+						t.Errorf("%s: lines %s = %d, want %d", when, line, got, n)
+					}
+				}
+			}
+			if tc.cut != 0 {
+				fired := fault.Cut(faultMatch, tc.cut)
+				w.fireDueBackstops(ctx, time.Now().UTC())
+				testdb.Met(t, fired)
+			} else {
+				w.fireDueBackstops(ctx, time.Now().UTC())
+			}
+			if tc.cut == testdb.CutBeforeCommit {
+				want(0, "after a fact whose commit never landed")
+				w.fireDueBackstops(ctx, time.Now().UTC())
+				want(1, "after the pass fired the backstop again")
+				return
+			}
+			want(1, "after the backstop fired")
+		})
+	}
+}
+
 // backstopHandler is the workflow engine's backstop arm as this test needs it: it counts the
 // facts it is handed and fires the row conditionally, as the engine does, so a backstop two
 // passes read is seen to fire once.
@@ -404,6 +500,7 @@ func (h *terminalHandler) applied() []string {
 // R5: the first turn is stamped from the woken claim reaching working, not from a delivery's
 // confirmation, because a wake for a notice or a hook prompt carries no delivery.
 func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	facts := &terminalHandler{}
 	w.handlers = []intake.Handler{facts}

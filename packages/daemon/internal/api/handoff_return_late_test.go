@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -32,12 +33,12 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 		LastDispatchSeq: 3})
 	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
 	roles := plan.BuiltinRoles()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		ctx, store := context.Background(), record.NewStore()
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		store := record.NewStore()
 		v := record.PlanVersion{Issue: root, Generation: 1, Version: 3, ArtifactID: planDoc, Source: record.PlanSourceOwner,
 			GivenBy: architect.token, GivenAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
 		task := record.PlanTask{Issue: root, Generation: 1, Task: "a", PlanVersion: 3, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: root, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: roles["implementer"].Type},
 			{Issue: root, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: roles["reviewer"].Type},
 		})

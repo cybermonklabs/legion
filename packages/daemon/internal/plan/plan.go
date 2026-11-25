@@ -4,9 +4,10 @@
 // out yet. It reads the blocks of one version of the plan document (FromBlocks) and
 // compares two versions (ChangedTasks); it holds no store and calls nothing.
 //
-// It imports internal/phase and internal/claim alone, so both the configuration loader, which
-// reads a project's default steps with this grammar and these checks, and the workflow, which walks
-// the line they make (Line), can import it.
+// It imports internal/phase and internal/claim alone, phase imports claim alone, and claim
+// imports no package of Legion's, so both the configuration loader, which reads a project's
+// default steps with this grammar and these checks, and the workflow, which walks the line they
+// make (Line), can import it.
 package plan
 
 import (
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -93,21 +95,23 @@ func (id AgentID) Key() (string, bool) {
 	return key, ok && key != ""
 }
 
-// StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
-// name is stored: the last part of that agent's claim token, the one rule every reader of a stored
-// step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's
-// agents for an issue pod's slots). A step of the key owner names none, since its agent is the
-// tree's architect, whose token names the tree and no name on the issue. Every other step holds
-// its name: 20261117213545 named every step a release before the stored names wrote.
-func StoredAgentName(task string, place int, s Step, stored string) string {
-	if AgentOf(task, place, s).Owner() {
+// StoredAgentName is the name of the agent of a step whose agent key is key and whose stored name
+// is stored: the last part of that agent's claim token, the one rule every reader of a stored step
+// names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's agents for
+// an issue pod's slots). A step of the key owner names none, since its agent is the tree's
+// architect, whose token names the tree and no name on the issue. Every other step holds its name,
+// which 20261124213820 gave every step a release before the stored names wrote, except where the
+// first form of that migration ran: a row it left holds "" and reads as no name, and the third pass
+// of record.NameAgents leaves such a step to its fourth.
+func StoredAgentName(key, stored string) string {
+	if (Agent{Key: key}).Owner() {
 		return ""
 	}
 	return stored
 }
 
-// DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
-// project's default steps.
+// DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"
 
 // Task is one `plan_task` block of a plan, as FromBlocks reads it.
@@ -273,6 +277,14 @@ func (p Plan) role(name string) *PlanRole {
 	return nil
 }
 
+// Defines says whether a step of the deployment can name role: one of Legion's own step roles or a
+// role its settings define. A role it does not define is one a daemon restarted without, whose
+// step no role may start (the workflow's Walk.lostAt) and whose claim no message reaches.
+func (d Deployment) Defines(role string) bool {
+	_, defined := d.Roles[role]
+	return defined
+}
+
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
@@ -393,3 +405,69 @@ func Line(steps []Step) []phase.Phase {
 	}
 	return append(line, phase.Retro, phase.Merging)
 }
+
+// MovesBackPairs is every move back a task this release takes can make, each written
+// "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
+// from on the Line of some task that Supported and Validate take, since a task moves back from a
+// phase of its line to any phase before it (workflow's backwardRows). It is read off those two
+// checks, over every order of every choice of Legion's five roles and two roles of a deployment,
+// so a later release whose checks take another line moves the set with them. A step of a role the
+// deployment defines runs as step wherever it stands, whatever its name, so two such roles of the
+// type testing, which may stand before the implementer or after it, stand for every role a
+// deployment defines, and make the pairs of step, step-step among them. The other pairs are a move
+// back of no line: each step phase to retro or to merging, and retro to merging, since the retro
+// and the merge end every line; and implementing to testing, reviewing or accepting, since every
+// tester, reviewer and acceptance step comes after the implementer's (stepReasons). The
+// configuration loader takes a hook's moves from this set alone (config's readHookMoves), so no
+// hook names a move that never fires. The answer is a fresh slice.
+func MovesBackPairs() []string {
+	return slices.Clone(movesBackPairs())
+}
+
+// CanMoveBack says whether from-to is a pair MovesBackPairs holds.
+func CanMoveBack(from, to phase.Phase) bool {
+	return slices.Contains(movesBackPairs(), phase.Pair(from, to))
+}
+
+// movesBackPairs is MovesBackPairs, built at its first read.
+var movesBackPairs = sync.OnceValue(func() []string {
+	roles := slices.Clone(builtinRoles)
+	for _, name := range []string{"deployment-a", "deployment-b"} {
+		roles = append(roles, RoleDef{Name: name, Type: TypeTesting})
+	}
+	d := Deployment{Roles: map[string]RoleDef{}}
+	for _, role := range roles {
+		d.Roles[role.Name] = role
+	}
+	found := map[string]bool{}
+	var choose func(steps []Step)
+	choose = func(steps []Step) {
+		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
+		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
+			line := Line(steps)
+			for at, from := range line {
+				for _, to := range line[:at] {
+					found[phase.Pair(from, to)] = true
+				}
+			}
+		}
+		for _, role := range roles {
+			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
+				continue
+			}
+			step := Step{Role: role.Name}
+			if role.Name == "acceptance" {
+				step.Key = "owner" // Supported takes acceptance with this key alone
+			}
+			choose(append(slices.Clone(steps), step))
+		}
+	}
+	choose(nil)
+	pairs := make([]string, 0, len(found))
+	for _, pair := range phase.MovePairs() {
+		if found[pair] {
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+})

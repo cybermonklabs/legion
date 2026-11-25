@@ -15,6 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
+var _ runtime.IssuePodReplacer = (*Runtime)(nil)
+
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
 // deletes the disk they work on, with everything unpushed on it. The daemon opens an update round
@@ -23,22 +25,36 @@ import (
 // every asked role has answered, no turn runs and no claim's activity report holds it
 // (internal/daemon's roundEnd.holding), or at the round's bound (pod_update_grace_minutes)
 // whatever the roles answered and whatever runs, an operator's suspension excepted. PodDrift is
-// what the round is opened on, and ReplacePod what ends the round; the round itself, its ask and
-// its sweep are the daemon's (internal/daemon).
+// what the round is opened on, and ReplacePod what ends the round, or ReplaceIssuePod where no
+// role process is left in the pod to name it through; the round itself, its ask and its sweep
+// are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
-// roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
-// what ends the roles already running there. A pod no round covers has no such round to wait for,
-// so its launch replaces it for every kind of drift, as every launch did before the round existed.
+// roundCovers): it keeps the pod and starts its role in it, where the pod was built with that role
+// (a role the deployment defined since waits, runtime.ErrAwaitsPodUpdate), since the round, not the
+// launch, is what ends the roles already running there. The one exception is the round's own:
+// where the round over the pod is over and no role process runs in it (Options.RoundPodEnds), the
+// launch replaces the pod as that round's replacement, under the round's mark, rather than start a
+// role the round would end a moment later. A pod no round covers has no such round to wait for,
+// so its launch replaces it for every kind of drift, as every launch did before the round existed
+// — save a launch installing a stale-plugin pair, which replaces such a pod for its shape only
+// where the pod was built on another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
 // answers nothing for a pod it excludes, so no round is ever opened over one; a launch into a live
 // pod it excludes replaces that pod for the facets its roles' addresses carry, for the
-// ServiceAccount it runs as and, unless the launch is installing a stale-plugin pair, for the
-// shape its template was built from (relaunch, movedInPod, accountDrift, shapeDrift), where a
-// launch into a pod it covers keeps the pod — for the account as for every other kind of drift —
-// and leaves it to its round.
+// ServiceAccount it runs as and for the shape its template was built from (relaunch, movedInPod,
+// accountDrift, shapeDrift), where a launch into a pod it covers keeps the pod — for the account
+// and the image as for every other kind of drift — and leaves it to its round, unless that round
+// is over with no role process in the pod, when the launch makes the round's own replacement
+// (Options.RoundPodEnds). A launch installing a stale-plugin pair reads one key of an excluded
+// pod's shape alone, the image (podImageDrift): it replaces a controller pod built on another
+// image, and keeps a controller pod whose other facets alone drifted — its reservation, an
+// operator volume or mount, its disk — and installs the pair into it. A drifted pod a round
+// covers, every issue pod, it keeps as every launch does, whatever of the shape moved, the image
+// included, and installs the pair into it; where that pod's round is over with no role process
+// in it, it makes the round's replacement as every launch does, and installs nothing.
 //
 // A round covers every issue pod and nothing else. The project controller's pod is the one kind it
 // excludes: the controller holds no issue workspace and has nothing to push, so there is nobody in
@@ -86,21 +102,28 @@ type podShapeRecord struct {
 	Roles []string `json:"roles,omitempty"`
 }
 
-// sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
-// RuntimeClass (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its
-// disk is on (diskSpec), whether it keeps its volume (keptVolume), and the metadata endpoint its
-// launcher serves, nil for none — each runtime.kubernetes.sandbox.microvm's own (MicroVM). A gVisor
-// pod records none (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did
-// before the setting existed and the setting's arrival opens no round over a gVisor pod, and the
-// gVisor pods' storage class stays out of every shape as it always was. KeepVolume is written only
-// when it is true, so a shape with keep_volume off encodes byte for byte as it did before that
-// setting existed. A change of the microVM block's storage class, keep_volume or metadata endpoint
-// opens a round over each microVM pod and no other, and a change of an issue's sandbox one over
-// that issue's pod, from null to a microVM or back.
+// sandboxShape is the sandbox a microVM pod runs in, as its shape records it: the RuntimeClass
+// (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its disk is on
+// (diskSpec), whether it keeps its volume (keptVolume), and the metadata endpoint its launcher
+// serves, nil for none — each runtime.kubernetes.sandbox.microvm's own (MicroVM). The StorageClass
+// is a microVM issue pod's alone: the controller's disk stays on runtime.kubernetes.storage_class
+// in either sandbox (diskSpec), so the controller's shape records none, and the key is left out of
+// its encoding (omitempty), which changes no issue pod's, whose class is never empty (New refuses
+// an empty one while an issue pod runs in a microVM). A gVisor pod records none
+// (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
+// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor pods'
+// storage class stays out of every shape as it always was. KeepVolume is written only when it is
+// true, so a shape with keep_volume off, and the controller's, which ignores the setting
+// (keptVolume), encodes byte for byte as it did before that setting existed. A change of the
+// microVM block's storage class, keep_volume or metadata endpoint opens a round over each microVM
+// issue pod and no other, and a change of an issue's sandbox one over that issue's pod, from null
+// to a microVM or back; a change of the block's metadata endpoint or compute class, or of the
+// project's type, has the controller's next launch that installs nothing replace its pod, and a
+// change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
-	StorageClass string                `json:"storage_class"`
+	StorageClass string                `json:"storage_class,omitempty"`
 	KeepVolume   bool                  `json:"keep_volume,omitempty"`
 	Metadata     *sandboxMetadataShape `json:"metadata,omitempty"`
 }
@@ -116,9 +139,9 @@ type sandboxMetadataShape struct {
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
 // operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
 // microVM, where that microVM runs and whether the pod keeps its volume (microVM, launch.microVM;
-// nil for a gVisor pod, which records no sandbox). An encoding failure is unreachable — every field
-// is an API object, a string or a bool — and is logged and recorded as no shape, compared by image
-// alone.
+// nil for a gVisor pod, which records no sandbox), its disk's class an issue pod's alone
+// (microVMDiskClass). An encoding failure is unreachable — every field is an API object, a string
+// or a bool — and is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
@@ -128,7 +151,7 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	var where *sandboxShape
 	if microVM != nil {
 		where = &sandboxShape{
-			RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass,
+			RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVMDiskClass(kind, microVM),
 			KeepVolume: keptVolume(kind, microVM),
 		}
 		if endpoint := microVM.Metadata; endpoint != nil {
@@ -151,15 +174,15 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 		Roles:     roles,
 	})
 	if err != nil {
-		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
+		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image and roles alone", "error", err)
 		return ""
 	}
 	return string(encoded)
 }
 
 // podShapeKey is what picks the shape a pod is built from and compared with (r.podShapes): its
-// kind, and the sandbox it runs in. An issue pod has one shape per sandbox, the controller's pod
-// one, in gVisor, whatever the configuration names.
+// kind, and the sandbox it runs in. An issue pod has one shape per sandbox, and so has the
+// controller's pod, whose sandbox is the project's type (SandboxConfig.Controller).
 type podShapeKey struct {
 	kind    podKind
 	sandbox SandboxType
@@ -167,7 +190,10 @@ type podShapeKey struct {
 
 // podShapes are the shapes the runtime's pods are built from now, each encoded once (podShape):
 // an issue pod's in gVisor and, where the configuration names a microvm block, in a microVM, and
-// the controller's pod's in gVisor.
+// the controller's pod's in gVisor and, where the project's type is microvm
+// (SandboxConfig.Controller), in a microVM. Without that last key a microVM controller's template
+// would record no shape, which podShapeDrift reads as no drift, so no launch would ever move the
+// controller's pod into or out of a microVM.
 func podShapes(r *Runtime) map[podShapeKey]string {
 	shapes := map[podShapeKey]string{
 		{kind: issuePod{}, sandbox: SandboxGVisor}:      podShape(r, issuePod{}, nil),
@@ -175,12 +201,16 @@ func podShapes(r *Runtime) map[podShapeKey]string {
 	}
 	if microVM := r.sandboxConfig.MicroVM; microVM != nil {
 		shapes[podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}] = podShape(r, issuePod{}, microVM)
+		if r.sandboxConfig.Controller() == SandboxMicroVM {
+			shapes[podShapeKey{kind: controllerPod{}, sandbox: SandboxMicroVM}] = podShape(r, controllerPod{}, microVM)
+		}
 	}
 	return shapes
 }
 
 // shapeKey is the key of the shape l's pod is built from: its kind, in the sandbox prepare decided
-// for it from its issue (launch.microVM).
+// for it (launch.microVM), an issue pod's from its issue and the controller's from the project's
+// type.
 func (l launch) shapeKey() podShapeKey {
 	if l.microVM != nil {
 		return podShapeKey{kind: l.kind, sandbox: SandboxMicroVM}
@@ -188,16 +218,14 @@ func (l launch) shapeKey() podShapeKey {
 	return podShapeKey{kind: l.kind, sandbox: SandboxGVisor}
 }
 
-// storedShapeKey is the key of the shape the pod of the stored Sandbox u, a pod of kind, is
-// compared with now: an issue pod's in the sandbox the configuration now gives the issue the
-// Sandbox is labelled with (labelIssue, SandboxConfig.ofIssueLabel), the issue a launch decides its
-// pod's sandbox from (prepare), and the controller's pod's in gVisor.
-func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) podShapeKey {
-	if _, issue := kind.(issuePod); !issue {
-		return podShapeKey{kind: kind, sandbox: SandboxGVisor}
-	}
+// storedShapeKey is the key of the shape the issue pod of the stored Sandbox u is compared with
+// now: the issue pod's in the sandbox the configuration now gives the issue the Sandbox is labelled
+// with (labelIssue, SandboxConfig.ofIssueLabel), the issue a launch decides its pod's sandbox from
+// (prepare). PodDrift, its one caller, asks it only of a pod a round covers (roundCovers), an issue
+// pod.
+func (r *Runtime) storedShapeKey(u *unstructured.Unstructured) podShapeKey {
 	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
-	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.ofIssueLabel(label)}
+	return podShapeKey{kind: issuePod{}, sandbox: r.sandboxConfig.ofIssueLabel(label)}
 }
 
 // ofIssueLabel is Of for the issue whose legion.dev/issue label holds label. The label holds an
@@ -225,10 +253,11 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 // requirements at admission, so a pod need not match the template it was made from, which is why
 // the repository cache's own check reads the template too (templateResized).
 //
-// A template carrying no shape at all was written before this release, and is compared by image
-// alone, exactly as imageDrift compares a pod: such a Sandbox never reads as having drifted
-// resources, volumes or mounts, whatever its pod holds, since nothing recorded what it was built
-// from and a guess would replace pods the operator never changed.
+// A template carrying no shape at all was written before this release, and is compared here by
+// image alone, exactly as imageDrift compares a pod (its roles are read apart, from its launcher's
+// command, rolesDrift): such a Sandbox never reads as having drifted resources, volumes or mounts,
+// whatever its pod holds, since nothing recorded what it was built from and a guess would replace
+// pods the operator never changed.
 //
 // Equality is semantic, not textual: a quantity spelled otherwise (1024Mi for 1Gi) is the same
 // reservation and the same disk, and a configuration that encodes differently but means the same
@@ -292,7 +321,8 @@ func sameQuantity(held, want string) bool {
 	return heldErr == nil && wantErr == nil && heldQuantity.Cmp(wantQuantity) == 0
 }
 
-// templateImageDrift is how a Sandbox written before this release is compared: the first container
+// templateImageDrift is how a Sandbox written before this release is compared by image (its roles
+// are compared apart, rolesDrift): the first container
 // of its stored template — an init container or the pod's own — running an image other than the
 // one this runtime launches every container with, as one reason. A pod is built whole from one
 // image, so one container's drift is the pod's.
@@ -309,11 +339,51 @@ func templateImageDrift(s *sandbox, image string) []string {
 //
 // It is the one reading of a pod's shape, which both sides of a drifted pod's replacement take:
 // the round names its reasons in the task it opens with (PodDrift, storedShapeKey), and a launch
-// into a live pod no round covers replaces that pod when it answers anything (relaunch,
-// launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's shape has
-// moved, or about which kind's shape, in which sandbox, it is compared with.
+// into a live pod no round covers that installs nothing replaces that pod when it answers anything
+// (relaunch, launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's
+// shape has moved, or about which kind's shape, in which sandbox, it is compared with. A launch
+// installing a stale-plugin pair into such a pod reads the image key of that same shape alone
+// (podImageDrift).
 func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 	return podShapeDrift(s, r.podShapes[key])
+}
+
+// podImageDrift is whether the pod of the Sandbox read as s was built from an image other than the
+// one want names, want being the shape a pod of its kind is built from now (podShape,
+// r.podShapes): the image its recorded shape holds, or, for a Sandbox whose template records no
+// shape, the image a container of that template runs, read as templateImageDrift reads it
+// (imageOtherThan). It is podShapeDrift's image key, read from the shape as data and never from
+// the phrase podShapeDrift names it in.
+//
+// It is what a launch installing a stale-plugin pair into a live pod no round covers, the project
+// controller's, replaces that pod for (relaunch). The install puts the release's plugins under the
+// agent and nothing more: a pod built on another image would go on running another release's
+// legion launcher as its process 1 and another release's Oh My Pi, where a fresh pod on the
+// configured image carries the release's own launcher, Oh My Pi and plugins. A pod whose other
+// facets alone drifted answers false, and that launch keeps it and installs into it.
+//
+// A recorded shape this daemon cannot read answers false as well: it names no image, and this
+// reading guesses none. Such a launch then goes on as it did before this was asked: keptBy reads
+// that same record, cannot read it either, and the launch replaces the pod as it replaces any pod
+// whose template says nothing it can read.
+func podImageDrift(s *sandbox, want string) bool {
+	held := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
+	if held == want {
+		return false
+	}
+	var now podShapeRecord
+	if err := json.Unmarshal([]byte(want), &now); err != nil {
+		return false
+	}
+	if held == "" {
+		_, drifted := imageOtherThan(&s.Spec.PodTemplate.Spec, now.Image)
+		return drifted
+	}
+	var was podShapeRecord
+	if err := json.Unmarshal([]byte(held), &was); err != nil {
+		return false
+	}
+	return was.Image != now.Image
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
@@ -322,8 +392,8 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
-// disk, and the sandbox its issue's pod runs in — and leakCheckDrift, the leak check digest its
-// install is held to), the ServiceAccount the pod runs as
+// disk, and the sandbox its issue's pod runs in — rolesDrift, the roles its launcher runs, and
+// leakCheckDrift, the leak check digest its install is held to), the ServiceAccount the pod runs as
 // (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
 // first — the operator's volume and mount holding its role's overlays, the secrets broker's
 // enrollment, the session store, and the GitHub owners its
@@ -355,11 +425,11 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 // The sweep asks this of every claim of the deployment at every tick, so the steady state — a
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
 // of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
-// the stored template records, against the shape the runtime holds for that kind in that issue's
-// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. It
-// reads nothing of the store: the slots the issue's plan names are a question of the pod, which the
-// sweep asks once for each issue (PodSlotsDrift). The Sandbox itself is decoded only where the two
-// shapes differ, which is the pod a round may be about to be opened over.
+// the stored template records, against the shape the runtime holds for an issue pod in that
+// issue's sandbox (r.podShapes, storedShapeKey), all strings of the object this call already
+// holds. It reads nothing of the store: the slots the issue's plan names are a question of the
+// pod, which the sweep asks once for each issue (PodSlotsDrift). The Sandbox itself is decoded
+// only where the two shapes differ, which is the pod a round may be about to be opened over.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
@@ -397,7 +467,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, nil
 	}
 	var drifted []string
-	shape := r.storedShapeKey(kind, u)
+	shape := r.storedShapeKey(u)
 	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
 		// Only a template whose recorded shape differs is decoded, which is the pod a round is
 		// about to be opened over; shapeDrift reads that same recorded shape against that same
@@ -432,13 +502,13 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 // ReplacePod satisfies runtime.Runtime: it ends the pod k's process runs in, once its update round
 // is over, and waits until the cluster no longer has it. It is what a launch does to a live pod it
 // replaces, and nothing more — under the pod's launch turn, the Suspended patch that names the
-// replaced pod on the Sandbox in the same write (displacing, suspendAnnotating), then the wait for
-// the pod's end — so every role still running there is reported ended by the daemon's own act
+// replaced pod on the Sandbox in the same write (displacing, suspendOver), then the wait for the
+// pod's end — so every role still running there is reported ended by the daemon's own act
 // (Displaced) and resumed uncharged on its session, as it is for a pod a launch replaces. That one
 // patch names the pod under the round's own mark as well (roundDisplacedAnnotation,
-// roundReplacement), which no launch writes: it is what a sweep reading the Sandbox before the pod
-// ends tells this replacement by, where a launch's replacement of the same pod is a pod gone
-// (PodDrift).
+// roundReplacement), which no launch writes for a reason of its own: it is what a sweep reading
+// the Sandbox before the pod ends tells this replacement by, where a launch's replacement of the
+// same pod is a pod gone (PodDrift).
 //
 // It creates and provisions nothing: the first of those resumes finds the Sandbox Suspended and
 // provisions a fresh pod from the current configuration, which is the launch path a replacement
@@ -467,15 +537,46 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return err
 	}
-	name := k.Locator.Sandbox.Name
+	return r.replaceRoundPod(ctx, k.Locator.Sandbox.Name, k.Locator.Sandbox.PodUID, due, "claim", string(k.Claim))
+}
+
+// ReplaceIssuePod satisfies runtime.IssuePodReplacer: it ends the pod podUID of issue's Sandbox,
+// once the update round over that pod is over and no role process runs in it, and waits until
+// the cluster no longer has it. It is ReplacePod's act keyed by the issue rather than by a
+// claim's locator: the round's claims record no process in the pod, so no locator names it, and
+// the Sandbox is the issue's one Sandbox (issueSandboxName). The act is ReplacePod's own
+// (replaceRoundPod): the launch turn, the round's own displaced-pod mark, the reset mark of a pod
+// that failed on its kept volume, the wait for the pod's end, and due asked last. So a sweep that
+// reads the Sandbox before the pod ends tells this replacement from a launch's, as it tells
+// ReplacePod's (PodDrift).
+//
+// It is a no-op when the issue has no Sandbox, when the Sandbox is already suspended, and when
+// the pod the Sandbox holds is not podUID: there is then no pod of that round to end. An issue
+// key no Sandbox name can be built from is an error.
+func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("sandbox runtime: replace the pod of %s: %w", issue, err)
+	}
+	return r.replaceRoundPod(ctx, name, podUID, due, "issue", issue)
+}
+
+// replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
+// Sandbox named name, it ends that Sandbox's pod podUID as a finished update round's own
+// replacement and waits until the cluster no longer has it. It answers nil having written nothing
+// for a Sandbox that is absent or already suspended, and for a Sandbox whose own pod is not
+// podUID. due is asked last, one statement before the suspension, and its error is returned
+// having written nothing. key and of name what the caller replaces the pod for, the claim or the
+// issue, in an error and on the line.
+func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due func(context.Context) error, key, of string) error {
 	release, err := r.lockPod(ctx, name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", of, err)
 	}
 	defer release()
 	s, err := r.storedSandbox(name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: %w", of, err)
 	}
 	if s == nil || s.mode() == modeSuspended {
 		return nil
@@ -483,19 +584,19 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	// The pod the Sandbox owns, as every other reader of the two together takes it (viewOf): a
 	// same-named pod it does not own is some earlier Sandbox's, and no pod of this round.
 	v := r.viewOf(name, s)
-	if v.pod == nil || string(v.pod.UID) != k.Locator.Sandbox.PodUID {
+	if v.pod == nil || string(v.pod.UID) != podUID {
 		return nil
 	}
 	if err := due(ctx); err != nil {
 		return err
 	}
 	if _, err := r.suspendOver(ctx, s, v.pod, displacing(v.pod.UID, roundReplacement)); err != nil {
-		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", of, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
-		return fmt.Errorf("replace %s's pod: wait out its pod: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: wait out its pod: %w", of, err)
 	}
-	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", v.pod.UID, "claim", k.Claim)
+	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", v.pod.UID, key, of)
 	return nil
 }
 
@@ -515,6 +616,15 @@ func podKindFor(role claim.Role) podKind {
 // a template no launcher of this layout wrote.
 func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
+}
+
+// templateLacks answers, for a role, whether the Sandbox s's template was built without it: a
+// template that holds roles (templateRoles) lacks each role it does not hold, and a template no
+// launcher of this layout wrote holds none and lacks nothing. It is the one rule both a launch into
+// a kept pod (runtime.PodLacks, in relaunch) and PodLacksRole judge a pod by.
+func templateLacks(s *sandbox) func(role claim.Role) bool {
+	held := templateRoles(s)
+	return func(role claim.Role) bool { return len(held) > 0 && !slices.Contains(held, role) }
 }
 
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
@@ -618,22 +728,16 @@ func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.
 	return []string{"slots " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(now)}, nil
 }
 
-// PodLacksRole satisfies runtime.IssuePodRoles: podLacks of name, which the outbox asks both as
-// the slot of a claim (claim.Token.Slot, the agent its token ends in, which can be a name no role
-// has, such as the second implementer of a plan, `implementer-2`) and as the role of a start's
-// step, whose own resources (its role_config_files overlays among them) a pod built before the
-// deployment defined it lacks as it lacks a slot of that name: a claim's slot and its step's role
-// can be two names, a keyed agent's on the step of another role, and the claim's token names the
-// slot alone.
+// PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
+// template was built without name (templateLacks), and true; "" and false where the issue has no
+// Sandbox, no live pod, or a pod built with name, and for a template no launcher of this layout
+// wrote, which binds none. It reads the informers' stores alone and makes no API call. The outbox
+// asks name both as the slot of a claim (claim.Token.Slot, the agent its token ends in, which can
+// be a name no role has, such as the second implementer of a plan, `implementer-2`) and as the role
+// of a start's step, whose own resources (its role_config_files overlays among them) a pod built
+// before the deployment defined it lacks as it lacks a slot of that name: a slot is named by its
+// agent, not by its step's role, and the claim's token names the slot alone.
 func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
-	return r.podLacks(issue, name)
-}
-
-// podLacks is the uid of the issue's live pod (livePod) whose template was built without name
-// (templateRoles), and true; "" and false where the issue has no Sandbox, no live pod, or a pod
-// built with name, and for a template no launcher of this layout wrote, which binds none. It reads
-// the informers' stores alone and makes no API call.
-func (r *Runtime) podLacks(issue string, name claim.Role) (string, bool) {
 	sandbox, err := issueSandboxName(r.project, issue)
 	if err != nil {
 		return "", false
@@ -646,7 +750,7 @@ func (r *Runtime) podLacks(issue string, name claim.Role) (string, bool) {
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, name) {
+	if !templateLacks(s)(name) {
 		return "", false
 	}
 	return string(pod.UID), true

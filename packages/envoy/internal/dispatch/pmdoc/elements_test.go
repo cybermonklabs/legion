@@ -11,6 +11,7 @@ import (
 // A heading weighs four elements, its block and its text, so a document of 16,384 headings weighs
 // the limit exactly and is read, and one heading more is refused, naming the line that passes it.
 func TestAWriteAtTheElementLimitIsReadAndOneElementMoreIsRefused(t *testing.T) {
+	t.Parallel()
 	headings := MaxDocumentElements / 4
 	if _, err := ParseForWrite(strings.Repeat("# a\n", headings), nil); err != nil {
 		t.Fatalf("%d headings, %d elements: %v, want them read", headings, MaxDocumentElements, err)
@@ -26,6 +27,7 @@ func TestAWriteAtTheElementLimitIsReadAndOneElementMoreIsRefused(t *testing.T) {
 // paragraph's three: 16,384 lines weigh the limit exactly and are read, and one line more is
 // refused, naming the line that passes it.
 func TestHardBreaksWeighAsTheirTextAndABlock(t *testing.T) {
+	t.Parallel()
 	lines := MaxDocumentElements / 4
 	for _, line := range []string{"a  \n", "a\\\n"} {
 		if _, err := ParseForWrite(strings.Repeat(line, lines), nil); err != nil {
@@ -130,6 +132,7 @@ func TestMarkdownPastTheElementLimitIsRefusedBeforeItIsBuilt(t *testing.T) {
 // One write's markdown spends one budget, however many operations carry it: two fragments and an
 // inline replacement that each fit the limit alone are refused together once they pass it.
 func TestAWritesFragmentsShareOneElementBudget(t *testing.T) {
+	t.Parallel()
 	half := strings.Repeat("# a\n", MaxDocumentElements/4/2)
 	budget := NewWriteBudget()
 	if _, err := ParseFragment(half, false, budget); err != nil {
@@ -146,6 +149,7 @@ func TestAWritesFragmentsShareOneElementBudget(t *testing.T) {
 // A read-back parses a rendering the server wrote of a document it already holds, so it counts no
 // elements: a mebibyte of `a_`, which a caller's write may not make, reads back whole.
 func TestAReadBackCountsNoElements(t *testing.T) {
+	t.Parallel()
 	if _, err := ParseRendering(strings.Repeat("a_", 1<<19)); err != nil {
 		t.Fatalf("read back a mebibyte of a_: %v", err)
 	}
@@ -155,6 +159,7 @@ func TestAReadBackCountsNoElements(t *testing.T) {
 // upload takes measure within the element limit, and one unit more measures past it. Front matter
 // is counted by neither, so it and 16,384 headings fit, as the headings alone do.
 func TestMeasureDocumentCountsWhatAnUploadCounts(t *testing.T) {
+	t.Parallel()
 	repeated := func(unit string) func(int) string {
 		return func(units int) string { return strings.Repeat(unit, units) }
 	}
@@ -211,6 +216,7 @@ func TestMeasureDocumentCountsWhatAnUploadCounts(t *testing.T) {
 // one, and the guard stops reading its blocks on line 131,073; 70,000 such lines it stops reading in
 // their inline syntax, on line 61,074, ahead of the 65,534th, where their weight passes the limit.
 func TestARefusalAtTheGuardSaysWhereReadingStopped(t *testing.T) {
+	t.Parallel()
 	for lines, stopped := range map[int]int{1 << 19: 131_073, 70_000: 61_074} {
 		_, err := ParseForWrite(strings.Repeat("a\n", lines), nil)
 		if want := fmt.Sprintf("more than 65536 elements, too many to read past line %d;", stopped); !errors.Is(err, ErrTooManyElements) || !strings.Contains(err.Error(), want) {
@@ -223,6 +229,7 @@ func TestARefusalAtTheGuardSaysWhereReadingStopped(t *testing.T) {
 // the caller's markdown: it charges the write nothing, so a row costs its own weight - the row, its
 // cells and their text - and a refusal names a line of the caller's markdown, never the header's.
 func TestATableRowInsertIsChargedItsRowsAlone(t *testing.T) {
+	t.Parallel()
 	width := 100
 	table := strings.Repeat("| h ", width) + "|\n" + strings.Repeat("| - ", width) + "|\n| A10 " + strings.Repeat("| x ", width-1) + "|\n"
 	doc, err := Parse(table)
@@ -254,6 +261,7 @@ func TestATableRowInsertIsChargedItsRowsAlone(t *testing.T) {
 // escape, and the text a plain-text write sends is weighed before it is made into markdown: an
 // element for each character its markdown escapes or reads as syntax, two for each line feed.
 func TestAnEscapeWeighsAnElement(t *testing.T) {
+	t.Parallel()
 	units := (MaxDocumentElements - 4) / 2
 	if _, err := ParseForWrite(strings.Repeat(`\)\_`, units), nil); err != nil {
 		t.Fatalf("%d units of \\)\\_: %v, want them read", units, err)
@@ -282,6 +290,7 @@ func TestAnEscapeWeighsAnElement(t *testing.T) {
 // its two tags and its text, so 13,106 spans weigh 65,533 and are read, 13,107 weigh 65,538 and are
 // refused, and MeasureDocument counts the same.
 func TestInlineHTMLWeighsTwoElements(t *testing.T) {
+	t.Parallel()
 	spans := (MaxDocumentElements - 3) / 5
 	if _, err := ParseForWrite(strings.Repeat("<b>a</b>", spans), nil); err != nil {
 		t.Fatalf("%d spans: %v, want them read", spans, err)
@@ -298,6 +307,7 @@ func TestInlineHTMLWeighsTwoElements(t *testing.T) {
 // the paragraph the refused table is left as: a 101-column header over 200 one-cell rows, which
 // would pad 20,000 cells, measured 407 elements, where it weighs 82,111 written whole.
 func TestATableThePaddingRefusesMeasuresPastTheLimit(t *testing.T) {
+	t.Parallel()
 	table := strings.Repeat("| h ", 101) + "|\n" + strings.Repeat("| - ", 101) + "|\n" + strings.Repeat("| x |\n", 200)
 	if _, err := ParseForWrite(table, nil); !errors.Is(err, ErrTablePadding) {
 		t.Fatalf("the table's upload: %v, want ErrTablePadding", err)
@@ -317,6 +327,7 @@ func TestATableThePaddingRefusesMeasuresPastTheLimit(t *testing.T) {
 // container's included, and a node type the schema gains fails this test until it is given a
 // spelling and a weight. The document and its front matter, one a document, are not spelled.
 func TestEveryNodeOfTheSchemaWeighsWhatItMakes(t *testing.T) {
+	t.Parallel()
 	repeated := func(unit string) func(int) string {
 		return func(units int) string { return strings.Repeat(unit, units) }
 	}
@@ -362,11 +373,11 @@ func TestEveryNodeOfTheSchemaWeighsWhatItMakes(t *testing.T) {
 	}
 	oneADocument := map[string]bool{"doc": true, "frontmatter": true}
 	types := typedBlockNames()
-	for typeName := range active.nodes {
+	for typeName := range active.Load().nodes {
 		types = append(types, typeName)
 	}
 	for typeName := range oneADocument {
-		if !active.nodes[typeName] {
+		if !active.Load().nodes[typeName] {
 			t.Errorf("%s is no node type of the schema", typeName)
 		}
 	}

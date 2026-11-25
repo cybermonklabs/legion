@@ -3,7 +3,7 @@
 
 usage:
   held-port.py exec [--host H | --from SOCKPATH] [--port-file F] --fd-env NAME
-                    [--env K=V]... -- CMD [ARG]...
+                    [--env K=V]... [--pass NAME]... -- CMD [ARG]...
   held-port.py keep [--host H] --port-file F --socket SOCKPATH
 
 exec
@@ -14,6 +14,12 @@ exec
   with the socket's port, sets each --env K=V and NAME=3 in the environment, writes the port
   and a newline to F (atomically: a temporary file in F's directory, then a rename) and executes
   CMD in its own process. The PID stays the same, so a shell's $! is the server's PID.
+
+  With --pass, CMD's environment is exactly each NAME of this process's environment, each --env
+  K=V and NAME=3, and nothing else: no other variable of this process's environment, and nothing
+  Python adds to its own (PEP 538's LC_CTYPE). A caller that must keep a setting out of every
+  process's arguments (a database URL's password) exports it to this process and names it here.
+  A NAME this process's environment lacks is refused before CMD runs.
 
   CMD must adopt the socket NAME names (ENVOY_LISTEN_FD, DISPATCH_LISTEN_FD, LEGION_LISTEN_FD):
   a server that binds the port itself fails with "address already in use".
@@ -151,7 +157,13 @@ def run_exec(args, command):
     def substitute(text):
         return text.replace("{port}", str(port))
 
-    env = dict(os.environ)
+    if args.passed:
+        missing = [name for name in args.passed if name not in os.environ]
+        if missing:
+            raise Refusal(f"--pass names variables this process's environment lacks: {', '.join(missing)}")
+        env = {name: os.environ[name] for name in args.passed}
+    else:
+        env = dict(os.environ)
     for pair in args.env:
         key, _, value = pair.partition("=")
         env[key] = substitute(value)
@@ -212,6 +224,7 @@ def parser(name):
         source.add_argument("--from", dest="source")
         commands.add_argument("--fd-env", required=True)
         commands.add_argument("--env", action="append", default=[], type=environment_pair)
+        commands.add_argument("--pass", dest="passed", action="append", default=[])
     else:
         commands.add_argument("--host", default="127.0.0.1")
         commands.add_argument("--socket", required=True)

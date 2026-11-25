@@ -20,10 +20,11 @@ import (
 const heldParentChild = "LEGION-209"
 
 // heldParentReason is the reason of the retro-held notice LEGION-208 gets while heldParentChild is
-// in the workflow beneath it.
+// in the workflow beneath it: it ends with the daemon's sentence on a status not taken yet and its
+// rules for ending a child, as the pr-merged notice does.
 const heldParentReason = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-	"A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, " +
-	"or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."
+	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+	record.StatusNotTakenYet + " " + record.EndChildRule
 
 // approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
 // reviewer's phases row as the round left it, with the handoff the retro's task names written to
@@ -95,8 +96,9 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 }
 
 // A parent whose plan has no acceptance step passes its last step while an issue beneath it is in
-// the workflow. Its head proves its children's merged work, so Legion holds it before
-// its retro: issues.phase held, from retro for its children, at the retro's place, with no slot
+// the workflow. A parent is accepted only once no issue beneath it is still in the workflow, so
+// Legion holds it before its retro: issues.phase held, from retro for its children, at the
+// retro's place, with no slot
 // and no retro started, its owner told once in a retro-held notice naming the child. The child's
 // leave is the last one, so the hold ends, the parent stands in retro, its Dispatch status is
 // written retro, and the implementer starts the retro once, at a raised entry, with the task the
@@ -181,6 +183,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		}
 		statuses = statusWrites(t, pool, "LEGION-208")
 
+		top := topEntryOf(t, pool, "LEGION-208")
 		childLeavesDone(t, pool, engine)
 
 		assertWalksAt(t, pool, engine, "LEGION-208", phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
@@ -192,8 +195,8 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if len(starts) != 1 {
 			t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
 		}
-		if starts[0].Entry != implementerEntry+1 || starts[0].ResendEntry {
-			t.Fatalf("the retro's start is at entry %d (resend %v), want a raised entry %d", starts[0].Entry, starts[0].ResendEntry, implementerEntry+1)
+		if starts[0].Entry <= top || starts[0].ResendEntry {
+			t.Fatalf("the retro's start is at entry %d (resend %v), want above the previous entry %d", starts[0].Entry, starts[0].ResendEntry, top)
 		}
 		if starts[0].Task != controlStarts[0].Task {
 			t.Fatalf("the retro's task = %q, want the task the approval starts it with: %q", starts[0].Task, controlStarts[0].Task)
@@ -409,10 +412,10 @@ func TestAHeldRetroAfterTheImplementersLastStepGetsItsReport(t *testing.T) {
 		}, "1"},
 		{"implementer:a reviewer implementer:a", []string{"implementer:a", "reviewer", "implementer:a"}, func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 			implementer := agentToken(t, "implementer")
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 			move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
 		}, "2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

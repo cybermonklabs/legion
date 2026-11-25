@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
+  type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
@@ -275,7 +276,11 @@ test("an argument far longer than the bound is cut to it rather than written who
 
 /** What the rig's listener answers one publish: a string makes the publish throw that message,
  * and an `EnvoyApiError` is thrown as the transport throws it. */
-type RigAnswer = Pick<PublishResult, "kept" | "keptUntil"> | string | EnvoyApiError;
+type RigAnswer =
+  | Pick<PublishResult, "kept" | "keptUntil">
+  | KeyTakenResult
+  | string
+  | EnvoyApiError;
 
 interface TellerRig {
   readonly teller: StallWatchdogTeller;
@@ -294,6 +299,11 @@ interface TellerRig {
   transcriptWritable: boolean;
   /** The daemon's answer to the record check; a string makes the read throw. */
   state: LegionState | string;
+  /** The session's claim as the teller reads it at each moment. */
+  claim: ClaimCapability | undefined;
+  /** The publisher's build, which settles before the publisher is handed over; the publisher is at
+   *  hand at once while it is undefined. */
+  buildPublisher: (() => Promise<void>) | undefined;
 }
 
 function tellerRig(
@@ -314,6 +324,8 @@ function tellerRig(
     envoy: true,
     transcriptWritable: true,
     state: daemonState("working"),
+    claim: "claim" in options ? options.claim : claimOf(),
+    buildPublisher: undefined,
   };
   const publish: EnvoyPublish = async (input) => {
     state.published.push(input);
@@ -331,13 +343,16 @@ function tellerRig(
         tree: "INFRA-1000",
         issue: "INFRA-1274",
       },
-    claim: () => ("claim" in options ? options.claim : claimOf()),
+    claim: () => state.claim,
     project: options.project ?? "legion",
     readRecord: async (issue) => {
       if (typeof state.state === "string") throw new Error(state.state);
       return state.state.issues[issue];
     },
-    publisher: () => (state.envoy ? publish : undefined),
+    publisher: async () => {
+      await state.buildPublisher?.();
+      return state.envoy ? publish : undefined;
+    },
     appendEntry: (customType, data) => {
       expect(customType).toBe(STALL_WATCH_ENTRY);
       if (!state.transcriptWritable) throw new Error("the transcript is not writable");
@@ -388,6 +403,50 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
   expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the session meanwhile: its claim can end, or be replaced, inside that wait. The notice was built
+// from the claim the session held before the wait, so it is sent only while the session still
+// holds that claim: one whose claim ended or changed is not sent under the old one.
+test("a notice whose claim ended while the publisher was built is not sent under the ended claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = undefined;
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim ended before its owner was told"
+  );
+});
+
+test("a notice whose claim changed while the publisher was built is not sent under the old claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = claimOf({ issue: "INFRA-1275" });
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim changed before its owner was told"
+  );
 });
 
 test("a phase worker falls back to the tree's architect, as the reminder does", async () => {
@@ -525,6 +584,29 @@ test("a session's own token is the one it registered, whatever role its claim ho
       liveArchitect: true,
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
+});
+
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids alone, which the client reads as key taken: nothing reached the owner, so the
+// notice is a refusal the log names, and the owner is not told. The control is a delivered
+// answer, which tells the owner.
+test("a stall notice whose key another sender's message holds tells no owner", async () => {
+  const taken = tellerRig();
+  taken.publishAnswer = {
+    keyTaken: { eventId: "event-other", topic: "notifications.role.x", issuedAt: 1 },
+    delivered: false,
+  };
+  expect(await taken.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(taken.warnings.map((line) => line.message)).toContain(
+    "legion: the owner was not told about this session's stuck tool call"
+  );
+
+  const told = tellerRig();
+  told.publishAnswer = {};
+  expect(await told.teller.tellOverdue(evidenceOf())).toMatchObject({ ownerTold: true });
 });
 
 test("a refused publish and a session with Envoy off leave a line in the log", async () => {

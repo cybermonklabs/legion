@@ -2,7 +2,8 @@ import type { Comment } from "../api/types";
 
 /**
  * The fields the server writes on every comment that a fixture has no value of its own for: the
- * empty mention and delivery arrays it serializes on each one, and the three a comment carries
+ * empty mention and delivery arrays it serializes on each one, the two marks a comment carries
+ * once its author corrected it (`deleted_at`, `deleted_by`), and the three a comment carries
  * only when it is something more than a comment on an issue - the comment a reply answers
  * (`answers`), the block of it (`reply_block`), and the project document a comment of a document
  * with no issue belongs to (`artifact_id`, which the comment's own anchor does not fill).
@@ -11,7 +12,21 @@ import type { Comment } from "../api/types";
  */
 export function commentDeliveryFields(): Pick<
   Comment,
-  "answers" | "artifact_id" | "deliveries" | "mentions" | "reply_block"
+  | "answers"
+  | "artifact_id"
+  | "deleted_at"
+  | "deleted_by"
+  | "deliveries"
+  | "mentions"
+  | "reply_block"
 > {
-  return { answers: null, artifact_id: null, deliveries: [], mentions: [], reply_block: null };
+  return {
+    answers: null,
+    artifact_id: null,
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    mentions: [],
+    reply_block: null,
+  };
 }

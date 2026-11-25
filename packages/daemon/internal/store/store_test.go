@@ -33,21 +33,30 @@ import (
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
-// there is nothing to test: the store has no in-memory mode by design.
+// there is nothing to test: the store has no in-memory mode by design. A pool a test opens on it
+// holds testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it
+// keeps (testdb.PoolBounded): each URL this package's tests build from it goes only to a pool,
+// Open's or pgxpool's, and a pool sized by the CPU count would ask a large machine's Postgres for
+// more connections than it allows.
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
 // cycle in this package's test binary. internal/testpg's own skip message holds the pinned
 // Postgres image to start, and testdb.Drop, which waits out an autovacuum worker and a backend
-// that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports nothing
-// of this module, so this package's own tests can take it where they cannot take internal/testpg.
+// that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports no package
+// of this module except internal/testwait, which imports none, so this package's own tests can
+// take it where they cannot take internal/testpg.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}
-	return dsn
+	bounded, err := testdb.PoolBounded(dsn, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a
@@ -756,7 +765,7 @@ func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION")
 		return err
 	}); err != nil {
@@ -777,7 +786,7 @@ func TestTxRollsBackWhatTheFunctionWroteBeforeFailing(t *testing.T) {
 	store := migratedStore(t)
 	failure := errors.New("the phase gave up")
 
-	err := store.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION"); err != nil {
 			return err
 		}
@@ -822,7 +831,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 	t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(ctx, tx, issue)
 		return err
@@ -1087,22 +1096,30 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
 // named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
-// 20261114031356, the role-holders publication's 20261116165926 and dispatch://INFRA-4374's
-// 20261119003157 (conflict_confirm and merge_forward) do: the case of a database main
-// migrated applies a version left out of the list before the list's own rewrites of that check,
-// which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
-// that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200) and 20261123060645 writes pull_requests.merge_forward
+// 20261114031356, the role-holders publication's 20261116165926, the step record's
+// 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
+// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
+// database main migrated applies a version left out of the list before the list's own rewrites of
+// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
+// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// claims.abandoned_session (20261029121200), dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000) and 20261125114800 writes pull_requests.merge_forward
 // (20261119003157): applied before that version, it fails on the missing column. So does a
-// migration that builds on a table only a version of the list creates, as
-// 20261117201743's foreign key on issue_plans does: the case of a database main migrated would
-// apply it before 20261117034837 creates that table. So does a migration that changes a table a
-// version of the list creates, as 20261117213545 adds a column to 20261117034837's plan_steps and
-// 20261122062637 writes the key of phases over the two columns 20261117034837 adds: left out, it
-// is applied as main's, before that table or those columns exist; and one that replaces an index a
-// version of the list creates, as 20261121183336 replaces 20261105183200's
-// pod_resumes_one_open_per_role. Any other version left out makes the cases below weaker, never
-// red, which is why the comment says where the list comes from.
+// migration that builds on a table only a version of the list creates, as 20261125114700's
+// foreign key on issue_plans does: the case of a database main migrated would apply it before
+// 20261117034837 creates that table. So does a migration that changes a table a version of the
+// list creates, as 20261124213820 adds a column to 20261117034837's plan_steps and 20261125044726
+// writes the key of phases over the two columns 20261117034837 adds: left out, it is applied as
+// main's, before that table or those columns exist; one that replaces an index a version of the
+// list creates, as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role; and one
+// that reads a table a version of the list creates, as 20261125053850 reads the keys of
+// plan_steps' rows (20261117034837, 20261124213820) to record on each claim the key its name
+// belongs to. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
+// main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
+// 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
+// column a version of the list adds either, so neither is in the list. Any other version left out
+// makes the cases below weaker, never red, which is why the comment says where the list comes
+// from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1111,9 +1128,9 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117034837: true, 20261117064152: true, 20261117201743: true, 20261117213545: true,
-	20261119003157: true, 20261121183336: true, 20261122062637: true, 20261123060645: true,
-	20261123092755: true,
+	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125044726: true,
+	20261125053850: true, 20261125114700: true, 20261125114800: true, 20261125114900: true,
 }
 
 const idleRelease = 20261101222956
@@ -1133,7 +1150,13 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // check, and a database that ran 0031 through 0038 before 0029 and 0030 applies those two last, so
 // a queued close suspension must survive them and both kinds must stand at the end in either
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
-// ascending order, so none can run before it: 0043 sets the list after every kind it names.
+// ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
+// fresh database the rewrite with the highest version is the last word, so a kind that only a
+// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
+// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
+// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
+// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
+// and the merge forward's 20261119003157, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	all, err := migrations.All()
 	if err != nil {
@@ -1142,7 +1165,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
 	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
-	// earlier release.
+	// earlier release. Every lane is read, the claim lane's claim_release, the documents lane's
+	// design_changes and the record lane's step_record and plan_record among them.
 	var kinds []record.OutboxKind
 	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)

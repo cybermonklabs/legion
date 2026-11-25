@@ -158,7 +158,7 @@ func inATransaction(marked bool, way statementWay) func(context.Context, *Pool, 
 		if marked {
 			ctx = WithTransactionTracking(ctx)
 		}
-		tx, err := pool.Begin(ctx)
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return err
 		}
@@ -189,8 +189,8 @@ var storableEntries = []storableEntry{
 	{"Exec in a transaction under no mark", inATransaction(false, execWay)},
 	{"Query in a transaction under no mark", inATransaction(false, queryWay)},
 	{"QueryRow in a transaction under no mark", inATransaction(false, queryRowWay)},
-	{"pgx.BeginFunc", func(ctx context.Context, pool *Pool, insert string, args ...any) error {
-		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return execWay(ctx, tx, insert, args...) })
+	{"Transact", func(ctx context.Context, pool *Pool, insert string, args ...any) error {
+		return Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return execWay(ctx, tx, insert, args...) })
 	}},
 	{"a savepoint inside a transaction", inATransaction(false, func(ctx context.Context, db statements, insert string, args ...any) error {
 		savepoint, err := db.(pgx.Tx).Begin(ctx)
@@ -241,7 +241,7 @@ func requireStored(t *testing.T, pool *Pool, entry storableEntry, shape storable
 
 // Each NUL, each lone 0xff and, in jsonb, each \u0000 escape and lone surrogate escape is stored
 // as U+FFFD, whatever Go shape carries it and whichever way the statement reaches the pool: the
-// pool itself, a transaction on a context with a hold mark or with none, pgx.BeginFunc, a
+// pool itself, a transaction on a context with a hold mark or with none, Transact, a
 // savepoint, a batch. Without the rule the server refuses each of these writes.
 func TestEveryWayIntoThePoolStoresANULAnInvalidByteAndARefusedJSONEscapeAsAReplacementCharacter(t *testing.T) {
 	pool := storableTable(t).Pool()
@@ -338,7 +338,7 @@ func TestAnExecModeWithoutParameterTypesIsRefusedAndCacheDescribeStoresANUL(t *t
 	}
 	var text string
 	var document map[string]any
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "create temp table storable (t text, j jsonb) on commit drop"); err != nil {
 			return err
 		}

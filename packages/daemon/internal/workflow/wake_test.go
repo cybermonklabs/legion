@@ -99,12 +99,18 @@ func wakeToken(t *testing.T, role claim.Role) claim.Token {
 // the source `released`, its session kept and the generation it was serving recorded.
 func seedReleasedClaim(t *testing.T, pool *pgxpool.Pool, role claim.Role, session string) {
 	t.Helper()
-	token := wakeToken(t, role)
+	seedReleasedToken(t, pool, wakeToken(t, role), role, session, wakeIssueGeneration)
+}
+
+// seedReleasedToken is seedReleasedClaim's write for the claim token, working role, which can be
+// the claim of a key rather than of role's own token, serving generation serving.
+func seedReleasedToken(t *testing.T, pool *pgxpool.Pool, token claim.Token, role claim.Role, session string, serving uint64) {
+	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
 		session, session_file, state, suspended_by, serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
 		values ($1, $5, 'LEGION-208', 'LEGION-208', $2, 1, $3, '', 'suspended', 'released', $4, 0, 0, 0, 0)`,
-		string(token), string(role), session, int64(wakeIssueGeneration), wakeProjectToken(t)); err != nil {
-		t.Fatalf("seed the released %s claim: %v", role, err)
+		string(token), string(role), session, int64(serving), wakeProjectToken(t)); err != nil {
+		t.Fatalf("seed the released claim %s as the %s: %v", token, role, err)
 	}
 }
 
@@ -233,6 +239,84 @@ func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1")
 	if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
 		t.Fatalf("pod resumes after a second settlement of the same head = %v, want the one", resumes)
+	}
+}
+
+// R2 and the late-apply rule of dispatch://INFRA-1575: a settlement wakes a released worker only
+// when it is one the record applies for the pull request's head now. A settlement of a head the
+// pull request has left, or one of the head that is older than the settlement the record holds
+// (classify.SettlementStale), wakes nobody, however late it arrives: a webhook delivered late, or a
+// message the intake gave up on and replayed. The woken worker's task would name a verdict that is
+// no longer the head's. In every case after the first the newer settlement woke the pod, the worker
+// came back and its pod was released again, so the late settlement finds the role released with no
+// open resume, which is the one state a wake can be taken in. The pull request closed and reopened
+// at the head between the two empties its check fence; the late settlement is then weighed against
+// the fence the record remembers for the head (classify.SettlementFor), so one that names fewer
+// checks than the newer one, or an older commit status, is stale as it is with the fence standing.
+func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
+	ofRun := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
+		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, Generation: generation,
+			Snapshot: fmt.Sprintf("%s-%d", head, generation), CheckRuns: []record.AttemptRun{{Name: "build", ID: id}}, Failing: failing}
+	}
+	// wokeBy applies newer, which wakes the implementer with a task naming each of names, and has
+	// the worker take the resume up, after which a later idle release leaves its claim released
+	// again; reopened then closes and reopens the pull request at head1.
+	wokeBy := func(newer intake.PullRequestChecks, reopened bool, names ...string) func(t *testing.T, rig wakeRig) {
+		return func(t *testing.T, rig wakeRig) {
+			rig.apply("settled", newer)
+			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, names...)
+			if _, err := rig.pool.Exec(context.Background(), `update pod_resumes set first_turn_at = $1 where issue = 'LEGION-208'`, wakeAt); err != nil {
+				t.Fatalf("take the resume up: %v", err)
+			}
+			if !reopened {
+				return
+			}
+			rig.apply("closed", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head1", UpdatedAt: wakeAt.Add(time.Minute)})
+			rig.apply("reopened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1",
+				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: wakeAt.Add(2 * time.Minute), Reopened: true})
+			if pr := latePullRequest(t, rig.pool); pr.State != record.PullRequestOpen || pr.HeadSHA != "head1" || pr.CheckedHead != "" {
+				t.Fatalf("after the reopen the pull request is %s at %s, its fence at %q; want it open at head1 with its fence emptied", pr.State, pr.HeadSHA, pr.CheckedHead)
+			}
+		}
+	}
+	withLint := ofRun("head1", 5, 2, "lint")
+	withLint.CheckRuns = append(withLint.CheckRuns, record.AttemptRun{Name: "lint", ID: 7})
+	withStatus := func(generation int64, state record.CommitStatusState, at time.Time) intake.PullRequestChecks {
+		settlement := ofRun("head1", 5, generation)
+		settlement.Statuses = []record.CommitStatus{{Context: "deploy", State: state, CreatedAt: at}}
+		return settlement
+	}
+	for _, tc := range []struct {
+		name string
+		// newer is what the record applied before the late settlement.
+		newer func(t *testing.T, rig wakeRig)
+		// wakes is how many wakes the outbox holds at the end: the newer settlement's own, if any.
+		wakes int
+		late  intake.PullRequestChecks
+	}{
+		{name: "a settlement of the head before a push", newer: func(t *testing.T, rig wakeRig) {
+			rig.apply("pushed", latePush("head1", "head2", "legion-implementer[bot]"))
+			rig.apply("moved", lateSync("head2", wakeAt))
+			if pr := latePullRequest(t, rig.pool); pr.HeadSHA != "head2" {
+				t.Fatalf("after the push the pull request is at %s, want head2", pr.HeadSHA)
+			}
+		}, late: ofRun("head1", 1, 1, "build")},
+		{name: "a settlement of the head older than the one that woke the pod",
+			newer: wokeBy(ofRun("head1", 5, 2), false, "head1", "passed every check"), wakes: 1, late: ofRun("head1", 4, 1, "build")},
+		{name: "a settlement of the head naming fewer checks than the one that woke the pod, after a reopen",
+			newer: wokeBy(withLint, true, "head1", "lint"), wakes: 1, late: ofRun("head1", 5, 1)},
+		{name: "a settlement of the head with an older commit status than the one that woke the pod, after a reopen",
+			newer: wokeBy(withStatus(2, record.CommitStatusSuccess, wakeAt.Add(-time.Minute)), true, "head1", "passed every check"),
+			wakes: 1, late: withStatus(1, record.CommitStatusFailure, wakeAt.Add(-2*time.Minute))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			tc.newer(t, rig)
+			rig.apply("late-settled", tc.late)
+			if starts := wakeStarts(t, rig.pool); len(starts) != tc.wakes {
+				t.Fatalf("supervise start rows after the late settlement = %+v, want %d: the late settlement wakes nobody", starts, tc.wakes)
+			}
+		})
 	}
 }
 
@@ -504,14 +588,16 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenRoleOf is the one statement of "the worker of the open
-// phase" — whose claim a release and a pause's stop arm a backstop for (OpenWorker) and which role
-// a CI settlement wakes — and it answers none for a phase the architect works and none for a phase
-// no role works. Admitted and accepting are the two the architect works (phase.RoleFor).
+// R5: an architect gets no backstop. OpenRoleAt is OpenRoleOf of an issue at a phase whose running
+// step's role is given. It is the role whose live worker claim has a phase reminder and whose
+// claim a release or pause's stop arms a backstop for (OpenWorker). It answers none for a phase
+// the architect works and none for a phase no role works, and at step the running step's role.
+// Admitted and accepting are the two the architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		p    phase.Phase
+		step claim.Role
 		want claim.Role
 	}{
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
@@ -520,10 +606,11 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},
+		{name: "step is its running step's role", p: phase.Step, step: "checker", want: "checker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenRoleOf(record.Issue{Phase: tc.p}); got != tc.want {
-				t.Fatalf("OpenRoleOf(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRoleAt(tc.p, tc.step); got != tc.want {
+				t.Fatalf("OpenRoleAt(%s, %q) = %q, want %q", tc.p, tc.step, got, tc.want)
 			}
 		})
 	}

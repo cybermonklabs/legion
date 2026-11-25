@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // Retry is the wait between attempts whose failure is transient: after the i-th such failure the
@@ -88,7 +90,34 @@ type Outcome struct {
 // the attempt budget nor the backoff: transient failures before and after it are counted together
 // as if it had not happened. A ctx that ends — during an attempt, whatever the attempt then
 // returned, or during a wait — ends Run with an error wrapping ctx's, and starts no other attempt.
+// It reads and waits on the wall clock; RunOn takes another.
 func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
+	return RunOn(ctx, WallClock{}, name, retry, log, attempt)
+}
+
+// Clock is the time RunOn reads a rate-limited attempt's wait from, and waits each wait out on.
+type Clock interface {
+	Now() time.Time
+	// Sleep waits d, or returns ctx's error once ctx ends first.
+	Sleep(ctx context.Context, d time.Duration) error
+}
+
+// WallClock is the clock Run waits on: the time of day, and a timer.
+type WallClock struct{}
+
+// Now is the time of day.
+func (WallClock) Now() time.Time { return time.Now() }
+
+// Sleep waits d on a timer, or returns ctx's error once ctx ends first (backoff.Sleep).
+func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
+	return backoff.Sleep(ctx, d)
+}
+
+// RunOn is Run on clock: a rate-limited attempt's wait is its Until less clock's Now, and every
+// wait between two attempts is clock's Sleep. A caller whose Until comes from the same clock
+// (internal/daemon's startWaits) waits on one time throughout, so a test's clock that moves on by
+// each wait at once makes a wait for GitHub's reset cost it nothing.
+func RunOn(ctx context.Context, clock Clock, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
 	transients := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -101,7 +130,7 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 		var delay time.Duration
 		switch {
 		case outcome.RateLimit != "":
-			delay = time.Until(outcome.Until)
+			delay = outcome.Until.Sub(clock.Now())
 			log.Warn("boot probe waits out GitHub's rate limit; it runs again at the time GitHub names",
 				"probe", name, "until", outcome.Until.UTC().Format(time.RFC3339), "wait", ShownWait(delay),
 				"waited", ShownWait(outcome.Waited), "limit", outcome.RateLimit, "detail", outcome.Detail)
@@ -133,12 +162,8 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			log.Warn("boot probe failed transiently; waiting to run it again",
 				"probe", name, "attempt", label, "retryIn", delay.String(), "detail", outcome.Detail)
 		}
-		wait := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			wait.Stop()
-			return abandoned(name, ctx.Err())
-		case <-wait.C:
+		if err := clock.Sleep(ctx, delay); err != nil {
+			return abandoned(name, err)
 		}
 	}
 }
@@ -387,19 +412,19 @@ func RoleOverlaysRefused(output string) (role, why string, ok bool) {
 }
 
 // NoVerdictExit is the status `legion probe-image` exits with when a check has no verdict and
-// nothing failed: a TLS run of a client that the probe's own limits stopped short of an answer, or
-// a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a later try can
-// clear, and the probe writes a line that starts with NoVerdictPrefix to stderr before it, naming
-// each such run and check. The daemon's probe Sandbox reads both (internal/runtime/sandbox's
-// judge); a daemon of an earlier release reads the exit as a refusal, as it reads exit 1.
+// nothing failed: a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a
+// later try can clear, and the probe writes a line that starts with NoVerdictPrefix to stderr
+// before it, naming each such check. The daemon's probe Sandbox reads both
+// (internal/runtime/sandbox's judge); a daemon of an earlier release reads the exit as a
+// refusal, as it reads exit 1.
 const NoVerdictExit = 75
 
 // NoVerdictPrefix begins the line `legion probe-image` prints before it exits NoVerdictExit; the
-// rest of the line names each TLS run and check with no verdict, joined by "; ".
+// rest of the line names each check with no verdict, joined by "; ".
 const NoVerdictPrefix = "legion probe-image: worker probe has no verdict: "
 
-// NoVerdictLine is that line naming entries, each TLS run and check with no verdict, joined by "; "
-// with every run of white space in them turned to one space, so the line carries the whole of each.
+// NoVerdictLine is that line naming entries, each check with no verdict, joined by "; " with every
+// run of white space in them turned to one space, so the line carries the whole of each.
 func NoVerdictLine(entries []string) string {
 	return NoVerdictPrefix + strings.Join(strings.Fields(strings.Join(entries, "; ")), " ")
 }

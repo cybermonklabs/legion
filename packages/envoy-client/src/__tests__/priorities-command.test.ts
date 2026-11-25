@@ -6,7 +6,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // The priority surface of the `dispatch` command: the relation an issue states (`--advance`,
 // repeated, and `--clear-advances`, both derived from the one `advances` field of the tool
@@ -216,7 +215,6 @@ beforeEach(() => {
   ownAdvances = ["ship-the-daemon"];
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {

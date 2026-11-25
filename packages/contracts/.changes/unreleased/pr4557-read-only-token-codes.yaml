@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `DISPATCH_AS_OF_TOKEN_NOT_SERVED` (`AS_OF_TOKEN_NOT_SERVED`) is the code of the `403` that
+  Dispatch gives a read-only token with a cut, on every read except `GET /api/v1/whoami`.
+  `bun run gen:go` writes it into the Go package as `contracts.DispatchAsOfTokenNotServed`.
+
+  `DISPATCH_TOKEN_SCOPES` lists the words that a token's scopes can hold: `person`, `approve` and
+  `read`. `DISPATCH_SCOPES` keeps `person` and `approve` alone.
+
+  `WhoamiAgent` has `cut`, the past time that a read-only token reads at, or null.
+
+  `DISPATCH_READ_ONLY_TOKEN` now applies to every read-only token, a broker's or a personal one, on
+  every route outside Dispatch's read class. This replaces the words "to a route Dispatch's read
+  list does not name" in #4113's entry for that code: the read list is gone.
+time: 2026-11-20T02:56:21Z
+custom:
+  Issue: pr4557

@@ -217,8 +217,16 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 	case errors.Is(err, machine.ErrKeyHoldsLiveCredential):
 		writeError(w, http.StatusConflict, "KEY_HOLDS_LIVE_CREDENTIAL", err.Error())
 		return
+	case errors.Is(err, machine.ErrKeyBindsReadToken):
+		writeError(w, http.StatusConflict, "KEY_BINDS_READ_TOKEN", err.Error())
+		return
 	case errors.Is(err, machine.ErrServiceLogsInWithToken):
 		writeError(w, http.StatusBadRequest, "SERVICE_LOGS_IN_WITH_TOKEN", err.Error())
+		return
+	case writeMemberKindUncheckable(w, "the machine login's denial", err):
+		// A deny of a service's login, which no person Dispatch calls a restricted member makes,
+		// and the broker could not learn what kind of member the denying person is: nothing was
+		// decided, and the same deny runs once Dispatch answers.
 		return
 	case err != nil:
 		writeInternal(w, "decide machine login", err)
@@ -234,8 +242,9 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 // dismissBody is dismiss's request body, {"approver"}: the dismissing person's login, which
 // Dispatch's server sets from its own session.
 type dismissBody struct {
-	// The login of the person dismissing the record: its approver, or anyone signed in for a
-	// record whose approver is anyone, which is whose list holds it.
+	// The login of the person dismissing the record: its approver, a member of the group that is
+	// its approver, or anyone signed in for a record whose approver is anyone, which is whose list
+	// holds it. A person Dispatch calls a restricted member dismisses only their own machine logins.
 	Approver string `json:"approver"`
 }
 
@@ -250,10 +259,15 @@ type dismissResponse = wire.DismissResponse
 // bucket and checked the caller's token and its power before it runs; unlike the decide routes
 // it does not refuse a secret request: a dismissal decides nothing and releases nothing, so a
 // secret request's is relayed from Dispatch as a revoke is, with the person taken on the caller's
-// word. That person must be one whose list holds the record, its approver or, for a record whose
-// approver is anyone, anybody signed in. A second dismissal answers the first one's values and
-// writes nothing, so a person who clicks twice, or two people who dismiss one shared request,
-// read one answer. It is logged with the caller that relayed it and the approver it named, as a
+// word. That person must be one whose list holds the record: its approver, a member the group
+// reader admits to the group that is its approver, or, for a record whose approver is anyone,
+// anybody signed in; and, for a record whose list holds them only as one of its approvers, a
+// secret request or a service's machine login, even one an older broker opened naming them, no
+// person Dispatch calls a restricted member, who is no approver of either: 403 NOT_APPROVER saying
+// so, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say. A second dismissal answers the
+// first one's values and writes nothing, so a
+// person who clicks twice, or two people who dismiss one shared request, read one answer. It is
+// logged with the caller that relayed it and the approver it named, as a
 // machine login's decision is.
 func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerName string) {
 	recordID, ok := pathRecordID(w, r, "record", "RECORD_ID_INPUT")
@@ -282,14 +296,22 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 		// dismissed; the same dismissal succeeds once Dispatch answers.
 		writeProjectAccessUnavailable(w, "dismiss credential request", err)
 		return
+	case errors.Is(err, requests.ErrRestrictedDismissal):
+		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
+		return
 	case errors.Is(err, record.ErrNotApprover):
-		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
+		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, a member of the group that is its approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
 		return
 	case errors.Is(err, requests.ErrNotExpired):
 		writeError(w, http.StatusConflict, "RECORD_PENDING", err.Error())
 		return
 	case errors.Is(err, requests.ErrTerminal):
 		writeError(w, http.StatusConflict, "RECORD_TERMINAL", "the credential request was decided, or cancelled before its deadline, so it did not expire and there is nothing to dismiss")
+		return
+	case writeMemberKindUncheckable(w, "the dismissal", err):
+		// The record's list holds the person only as one of its approvers, and the broker could
+		// not learn whether Dispatch calls them a restricted member: nothing was dismissed, and the
+		// same dismissal runs once Dispatch answers.
 		return
 	case err != nil:
 		writeInternal(w, "dismiss credential request", err)
