@@ -29,11 +29,12 @@ body: |-
   them, are told once, from the read of their records that tells most: one that found work over one
   that failed, one that failed over one that found nothing, and of reads of one kind the newest
   record's. A round's call that finds its pod already taken by such a delete ends the round with
-  no notice of its own and keeps its record, so the delete's one notice weighs the round's read
-  too. A launch's replacement that takes a round's record, as after a round's call that ran out of
-  time on the pod's launch turn, ends that round with no notice of its own, and nothing is written
-  on the issue that the pod went before its round was over. Two finishes of one issue's records at
-  once no longer abort each other. A round stays open while the store refuses its notice, and a
+  no notice of its own and leaves no record of its own: its read moves onto the delete's record
+  where it weighs more, so the delete's one notice weighs the round's read too, and a delete that
+  is not made tells nobody. A launch's replacement that takes a round's record, as after a round's
+  call that ran out of time on the pod's launch turn, ends that round with no notice of its own,
+  reading the issue's claims from their machines, and nothing is written on the issue that the pod
+  went before its round was over. A round stays open while the store refuses its notice, and a
   sweep reads a recorded act only under the pod's launch turn, from the API server. The
   update-stalled notice of a replacement that failed says "The pod replacement failed" and that the
   pod may be gone, with the runtime's error quoted. The round's ask says a round can end with no
