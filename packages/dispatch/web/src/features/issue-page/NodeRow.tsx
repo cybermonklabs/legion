@@ -1320,7 +1320,9 @@ export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boo
  * coverage read's own lines a requirement draws in their place while a document of the issue is
  * still being indexed (`TreeNode.coverageNotes`, in the server's words, which name the document),
  * the two counts the coverage read carries for a requirement, and Keep and Change on a decision
- * that waits (`DecisionActions.tsx`). A node with none of these draws nothing here.
+ * that waits (`DecisionActions.tsx`). A node with none of these draws nothing here. It carries
+ * the page's one mark of what a row draws under its words, `data-node-body`, which the views'
+ * own rows (the Verification view's facts, the Decisions view's body) carry too.
  */
 function NodeFace({
   author,
@@ -1347,7 +1349,7 @@ function NodeFace({
     reviewed;
   if (!holds) return null;
   return (
-    <div className="mt-1 flex min-w-0 flex-col gap-1 text-sm" data-node-face="">
+    <div className="mt-1 flex min-w-0 flex-col gap-1 text-sm" data-node-body="">
       {authored ? <BodyAuthor author={author} /> : null}
       <NodeFacts facts={node.facts} tabStops={tabStops} />
       {node.gaps.map((gap) => (

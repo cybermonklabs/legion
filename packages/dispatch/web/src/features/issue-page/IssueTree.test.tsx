@@ -753,7 +753,7 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     await waitFor(() => expect(kept).toHaveBeenCalled());
     await waitFor(() => expect(keep).toHaveProperty("disabled", true));
     expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
-    expect(row.querySelector("[data-node-face]"), "the decision's face closed").not.toBeNull();
+    expect(row.querySelector("[data-node-body]"), "the decision's face closed").not.toBeNull();
 
     // Kept, and the tree the Keep read again answers the decision kept (`DecisionActions.tsx`).
     await act(async () => {
@@ -802,7 +802,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
       document.activeElement,
       "the focus stayed on Send change, which its write disables"
     ).toBe(row);
-    expect(row.querySelector("[data-node-face]"), "the decision's face closed").not.toBeNull();
+    expect(row.querySelector("[data-node-body]"), "the decision's face closed").not.toBeNull();
 
     await act(async () => answer.resolve({ id: "comment-1" } as never));
     await waitFor(() => expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull());

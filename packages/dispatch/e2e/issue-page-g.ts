@@ -169,13 +169,11 @@ export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"):
 }
 
 /** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits until the row
- *  holds it and draws its body, which every row draws while it has the focus: a row draws its
- *  card whether or not it has the focus, so the card says nothing of it. */
+ *  holds it. A row draws its body whatever the focus, so the focus opens nothing to wait for. */
 export async function focusRow(page: Page, id: string): Promise<Locator> {
   const row = nodeRow(page, id).first();
   await row.focus();
   await expect(row).toBeFocused();
-  await expect(rowBody(row)).toHaveCount(1);
   return row;
 }
 

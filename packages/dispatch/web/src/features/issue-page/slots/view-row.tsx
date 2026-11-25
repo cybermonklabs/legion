@@ -7,19 +7,19 @@ import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { contentsEntries } from "../contents-entries";
-import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, isFilter, presetView } from "../presets";
+import { filterSignals, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the five view controls and Keys
- * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
- * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
+ * The view row (R2, R11): the view controls and Keys (`IssuePresets.tsx`), each control's signal
+ * read off the issue's one tree, and below 1024 px, in Conversation, each filter and Graph (R13),
+ * the Outline control beside the one control (`contents-frame.tsx`'s `drawsContents`). It binds
  * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
  * is built from holds its answer (`useOutlineReads`'s `readsHeld`) and the reader's login has
  * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
@@ -74,7 +74,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        outline={
+          paned || !drawsContents(address.preset) ? undefined : <OutlineSheet slot={props} />
+        }
         signals={signals}
       />
     </div>
