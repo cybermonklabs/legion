@@ -1555,10 +1555,11 @@ type daemonRefs struct {
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
-// internal/dispatch's HTTPClient, its twelve writes and every read, Whoami among them, on the
+// internal/dispatch's HTTPClient, its thirteen writes and every read, Whoami among them, on the
 // daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
 // the first write of its run, so it names the run's whole identity; PutStepRating rates that same
-// record, a retro's, and PutPlan writes a fresh default plan of the run.
+// record, a retro's, PutStepExperiment writes on it the experiment and the variant of its issue,
+// and PutPlan writes a fresh default plan of the run.
 func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
@@ -1609,6 +1610,10 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("PutStepRating", false, func() error {
 		return client.PutStepRating(ctx, issueKey, stepID, step,
 			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
+	})
+	call("PutStepExperiment", false, func() error {
+		return client.PutStepExperiment(ctx, issueKey, stepID, step,
+			dispatch.StepExperiment{Experiment: "planning", Variant: "b"})
 	})
 	call("PutPlan", false, func() error {
 		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",
