@@ -55,6 +55,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -380,16 +381,46 @@ func (s *readCostServer) send(method, path, login string, body any) (readCostAns
 	return readCostAnswer{status: response.StatusCode, body: read, took: took}, nil
 }
 
-// write is send that answers an error unless the server answered status.
+// write is send that answers an error unless the server answered status. The error quotes the
+// tail of the server's own output once it has logged the request (tailOnceLogged), so a failure
+// names what the server logged of the answer it did not want, a 500's cause among it.
 func (s *readCostServer) write(method, path, login string, body any, status int) (readCostAnswer, error) {
 	answer, err := s.send(method, path, login, body)
 	if err != nil {
 		return answer, err
 	}
 	if answer.status != status {
-		return answer, fmt.Errorf("%s %s on %s answered %s, want %d", method, path, s.name, answer, status)
+		return answer, fmt.Errorf("%s %s on %s answered %s, want %d; the tail of its output:\n%s",
+			method, path, s.name, answer, status, s.tailOnceLogged(method, path, answer.status))
 	}
 	return answer, nil
+}
+
+// readCostAnswerLogged bounds how long tailOnceLogged waits for the server to log a request: a
+// handler that fails logs its error after it writes the answer (writeHandlerError), and the access
+// line follows the handler, so the output read the moment the answer arrives can lack both.
+const readCostAnswerLogged = 5 * time.Second
+
+// tailOnceLogged is the tail of the server's output (readCostTail) once that tail holds the access
+// line (accesslog.Message) of method path answered status, or once readCostAnswerLogged has passed
+// without it.
+func (s *readCostServer) tailOnceLogged(method, path string, status int) string {
+	escaped := path
+	if parsed, err := url.Parse(path); err == nil {
+		escaped = parsed.EscapedPath()
+	}
+	fields := []string{`msg="` + accesslog.Message + `" `, " method=" + method + " ", " path=" + escaped + " ", " status=" + strconv.Itoa(status) + " "}
+	tail := ""
+	testwait.Holds(readCostAnswerLogged, 50*time.Millisecond, func() bool {
+		tail = readCostTail(s.process.Output.String())
+		for _, line := range strings.Split(tail, "\n") {
+			if !slices.ContainsFunc(fields, func(field string) bool { return !strings.Contains(line, field) }) {
+				return true
+			}
+		}
+		return false
+	})
+	return tail
 }
 
 // expect is write on the test's goroutine: an answer other than status fails the test, naming what.
