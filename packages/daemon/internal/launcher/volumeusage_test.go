@@ -34,6 +34,7 @@ const (
 // statfs of this pod's volume, so what the case shows is the wrong formula giving a different
 // answer rather than one number asserted against itself.
 func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
+	t.Parallel()
 	used := uint64(measuredBlocks-measuredFree) * measuredBlockSize
 	available := uint64(measuredAvailable) * measuredBlockSize
 	total := uint64(measuredBlocks) * measuredBlockSize

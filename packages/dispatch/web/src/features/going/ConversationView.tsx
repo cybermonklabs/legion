@@ -471,6 +471,7 @@ function RunTurn({
             markdown={cut ? `${answer.trimEnd()}…` : answer}
             referenceText=""
             softBreaks="line"
+            surface="agent-turn-text"
           />
         </div>
       )}

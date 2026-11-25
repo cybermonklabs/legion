@@ -27,20 +27,12 @@ const (
 		"Draw each page and read the locator that says it is drawn.\n:::\n"
 )
 
-// A search hit's snippet tree says where the headline's window cut the text it was read out of,
-// as the search statement measured it: the doc node carries pmdoc.SnippetCutStartAttr where the
-// window begins after a word of the text and pmdoc.SnippetCutEndAttr where it stops before one,
-// each only where it is true. The plan.md the bar's query found in the visual review is cut at
-// both ends, though its window holds ten runs between whitespace, since ts_headline counts the
-// parser's tokens and a directive's attributes are many of them. A body the headline holds whole
-// is cut at neither, though ts_headline dropped its full stop, and so is one whose window holds a
-// run the parser reads as an HTML tag, which ts_headline writes as a space, so the headline stands
-// nowhere in the text as it is. A deep match is cut at both ends, and so is one whose window
-// reaches both ends of the excerpt it was read from, because that excerpt is itself 4,000
-// characters cut out of a longer text.
-//
-// The snippet every caller gets, the command bar's agent among them, is the same bytes it was
-// before the tree said any of this: each want below was measured on the build before it.
+// A search hit's tree records where its snippet leaves out text, including when the whole
+// excerpt it came from was itself cut out of a longer text. The plan window holds only ten
+// whitespace-separated runs but is cut at both ends because ts_headline counts parser tokens.
+// A short comment is widened back to its whole source, including its punctuation. A headline
+// changed by the parser's tag handling is instead measured in the parser's own excerpt.
+// Requesting a tree adds the flags without changing the HTML snippet.
 func TestASearchHitsSnippetTreeSaysWhereTheWindowCutItsText(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -77,7 +69,7 @@ func TestASearchHitsSnippetTreeSaysWhereTheWindowCutItsText(t *testing.T) {
 		},
 		{
 			name: "a body the headline holds whole", query: "astrolabe", kind: "comment", id: short,
-			snippet: "<mark>Astrolabe</mark> measures altitude",
+			snippet: "<mark>Astrolabe</mark> measures altitude.",
 		},
 		{
 			name: "a whole body holding a tag", query: "gyroscope", kind: "comment", id: tagged,
@@ -105,7 +97,7 @@ func TestASearchHitsSnippetTreeSaysWhereTheWindowCutItsText(t *testing.T) {
 					t.Fatalf("trees=%v: results = %#v, want %s %s", trees, body.Results, test.kind, test.id)
 				}
 				if result.Snippet != test.snippet {
-					t.Errorf("trees=%v: snippet = %q, want the bytes it was before the tree said where it was cut, %q", trees, result.Snippet, test.snippet)
+					t.Errorf("trees=%v: snippet = %q, want %q", trees, result.Snippet, test.snippet)
 				}
 				if !trees {
 					continue

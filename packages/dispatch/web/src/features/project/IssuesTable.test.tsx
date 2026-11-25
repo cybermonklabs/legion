@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -11,6 +11,7 @@ import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -22,6 +23,12 @@ import type { IssueListing } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {

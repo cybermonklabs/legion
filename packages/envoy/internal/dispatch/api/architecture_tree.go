@@ -24,19 +24,29 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Each component's prose is registered with the request's reader as the component is shaped
-	// into the answer: the trees are the table's rows where it holds them, and the read stores
-	// what it did not.
+	// Each component's prose and each Not architectural row's reason are registered with the
+	// request's reader as the answer is shaped: the trees are the table's rows where it holds
+	// them, and the read stores what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer := architectureTreeRead{ArchitectureTree: tree, Components: make([]architectureComponentRead, len(tree.Components))}
+	components := make([]architectureComponentRead, len(tree.Components))
 	for index, component := range tree.Components {
-		answer.Components[index].ArchitectureTreeComponent = component
-		reader.text(&answer.Components[index].ProseTree, component.Prose)
+		components[index].ArchitectureTreeComponent = component
+		reader.text(&components[index].ProseTree, component.Prose)
+	}
+	notArchitectural := make([]architectureTreeNoneRead, len(tree.NotArchitectural))
+	for index, row := range tree.NotArchitectural {
+		notArchitectural[index].ArchitectureTreeNone = row
+		reader.text(&notArchitectural[index].ReasonTree, row.Reason)
 	}
 	// The trees are filled before the answer is written, and the store of what the table did
 	// not hold runs on a goroutine of its own, beside the rest of the request.
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, answer)
+	WriteJSON(w, http.StatusOK, architectureTreeRead{
+		ArchitectureTree: tree,
+		NotArchitectural: notArchitectural,
+		RetiredLinks:     tree.RetiredLinks,
+		Components:       components,
+	})
 }
 
 // architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404
@@ -120,6 +130,15 @@ func (s *server) architectureTree(ctx context.Context, project string) (model.Ar
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
 	return tree, nil
+}
+
+// architectureTreeNoneRead is one issue of the Not architectural list with the tree of the reason
+// it gives for touching no component: the reason is markdown its writer typed in a box that
+// carries the reference picker (`architecture-reason`), so the dashboard draws it through the
+// renderer, from this tree.
+type architectureTreeNoneRead struct {
+	model.ArchitectureTreeNone
+	ReasonTree model.DisplayTree `json:"reason_tree,omitempty"`
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id

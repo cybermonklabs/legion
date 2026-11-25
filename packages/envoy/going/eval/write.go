@@ -470,7 +470,7 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 		return fmt.Errorf("its version: %w", err)
 	}
 	located := text.ExtractAt(rendered, "")
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, w.tx, id, 1, at, rendered, blocks, located, nil)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, w.tx, id, 1, at, rendered, blocks, located, nil, "")
 	if err != nil {
 		return fmt.Errorf("index its blocks: %w", err)
 	}
@@ -489,7 +489,7 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 	}
 	if err := store.RunWrite(ctx, w.tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, id, 1, refs.MentionExcerpts(rendered, blocks, located))
+		refs.QueueRecordExcerpts(b, id, 1, refs.MentionExcerpts(rendered, blocks, located, ""))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index its references: %w", err)
@@ -856,7 +856,7 @@ func (w *seedWriter) orderEvents(ctx context.Context) error {
 // windows, and writes the item's mentions, as cmd/dispatch-seed's writers do.
 func (w *seedWriter) indexItem(ctx context.Context, kind refs.ItemKind, id, body string, at time.Time) error {
 	located := text.ExtractAt(body, "")
-	if _, err := refs.IndexItem(ctx, w.tx, kind, id, body, at, located, nil); err != nil {
+	if _, err := refs.IndexItem(ctx, w.tx, kind, id, body, "", at, located, nil); err != nil {
 		return fmt.Errorf("index its blocks: %w", err)
 	}
 	if _, err := refs.WriteItemWindows(ctx, w.tx, kind, id); err != nil {

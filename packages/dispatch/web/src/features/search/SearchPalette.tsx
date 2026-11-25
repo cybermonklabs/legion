@@ -13,13 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
-import type {
-  GoingContextInput,
-  GoingLine,
-  Project,
-  SearchResult,
-  SearchResultKind,
-} from "../../api/types";
+import type { GoingContextInput, GoingLine, Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
@@ -68,10 +62,12 @@ import {
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
+import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
 import { issueSummaryQuery } from "../refs/reference-target";
 import {
   buildProjectPath,
@@ -79,6 +75,7 @@ import {
   nodeRouteFromHref,
   parseIssuePath,
 } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
@@ -213,65 +210,6 @@ function enterWord(row: PaletteRow | undefined): string | undefined {
   }
 }
 
-function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
-  const common = {
-    "aria-hidden": true,
-    className: "size-4 shrink-0",
-    fill: "none",
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 1.75,
-    viewBox: "0 0 24 24",
-  };
-
-  if (kind === "issue") {
-    // An issue's own glyph, a card with its lines, not a clock: the row's status pill is the one
-    // place it says how the issue stands.
-    return (
-      <svg {...common}>
-        <title>Issue result</title>
-        <rect height="14" rx="2.5" width="16" x="4" y="5" />
-        <path d="M8 10h8M8 14h5" />
-      </svg>
-    );
-  }
-  if (kind === "document") {
-    return (
-      <svg {...common}>
-        <title>Document result</title>
-        <path d="M7 3h7l3 3v15H7z" />
-        <path d="M14 3v4h4M10 12h4M10 16h4" />
-      </svg>
-    );
-  }
-  if (kind === "comment") {
-    return (
-      <svg {...common}>
-        <title>Comment result</title>
-        <path d="M5 6.5h14v10H9l-4 3z" />
-        <path d="M9 10h6M9 13h4" />
-      </svg>
-    );
-  }
-  if (kind === "ask") {
-    return (
-      <svg {...common}>
-        <title>Ask result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M9.8 9.5a2.3 2.3 0 1 1 3.3 2.1c-.9.5-1.1.9-1.1 1.9M12 16h.01" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <title>Message result</title>
-      <path d="M5 6.5h14v10H9l-4 3z" />
-      <path d="M9 10h6M9 13h6" />
-    </svg>
-  );
-}
-
 /** A key as the bar's hints draw it. */
 function Key({ children }: { children: string }): ReactNode {
   return <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>{children}</kbd>;
@@ -300,34 +238,38 @@ function PaletteOption({
   reference?: DispatchReferenceRoute;
   status?: string;
 }): ReactNode {
+  // A row is one button in all but its tag: a click or Enter anywhere in it opens what it
+  // found, so nothing drawn inside it is a link of its own.
   return (
-    <div
-      aria-selected={active}
-      className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
-        active ? selectedCardBorder : ""
-      }`}
-      data-line={line}
-      data-status={status}
-      id={id}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      role="option"
-      tabIndex={-1}
-      {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
-    >
-      {active ? (
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
-        />
-      ) : null}
-      {children}
-    </div>
+    <ReferenceHostIs host="control">
+      <div
+        aria-selected={active}
+        className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
+          active ? selectedCardBorder : ""
+        }`}
+        data-line={line}
+        data-status={status}
+        id={id}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+        role="option"
+        tabIndex={-1}
+        {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
+      >
+        {active ? (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
+          />
+        ) : null}
+        {children}
+      </div>
+    </ReferenceHostIs>
   );
 }
 
@@ -411,7 +353,7 @@ function ResultOption({
   // sentinels the server leaves in `snippet` itself come out for the literal text a title falls
   // back to where no tree reached it, and mark the matched words of a whole title its headline
   // cut (`issueHitTitle`).
-  const segments = snippetSegments(result.snippet);
+  const segments = useMemo(() => snippetSegments(result.snippet), [result.snippet]);
   const source = segments.map((segment) => segment.text).join("");
   // The route table carries the kind as a plain string; a kind this build has no icon for draws
   // none, rather than borrowing another kind's.
@@ -423,7 +365,25 @@ function ResultOption({
   // owner itself.
   const document = result.owner.kind === "issue" ? result.artifact?.name : undefined;
   const itself = hitIsItsIssue(result);
-  const title = itself ? issueHitTitle(result, segments) : undefined;
+  const titleTree = useMemo(() => {
+    const title = itself ? issueHitTitle(result, segments) : undefined;
+    if (title === undefined) return result.snippet_tree;
+    return {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: title
+            .filter((run) => run.text !== "")
+            .map(({ mark, text }) => ({
+              type: "text",
+              text,
+              ...(mark ? { marks: [{ type: "searchHighlight" }] } : {}),
+            })),
+        },
+      ],
+    };
+  }, [itself, result, segments]);
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
   const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
   // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
@@ -433,6 +393,15 @@ function ResultOption({
     const drawn = snippetWithoutDirectives(result.snippet_tree);
     return { cut, tree: cut.start ? snippetFromSentence(drawn) : drawn };
   }, [result.snippet_tree]);
+  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`), the
+  // kind it was indexed under, which is what a `#id` in it resolves against, and the issue it is
+  // on, its owner. A kind that names no reference source - a project, an agent - answers none
+  // (`textSourceKind`).
+  const record = textSourceOf(
+    textSourceKind(result.kind),
+    result.id,
+    result.owner.kind === "issue" ? result.owner.key : undefined
+  );
   // A delete takes the post's windows with its body, so a deleted post is no hit once the
   // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
   // empty: the deleted line stands where the snippet would, as it does in the referenced-by
@@ -445,32 +414,18 @@ function ResultOption({
         {document === undefined ? owner.name : `${owner.name} · ${document}`}
       </span>
     );
-  } else if (title === undefined) {
+  } else {
     named = (
       <MarkdownPreview
         className={`min-w-0 flex-1 text-sm ${words}`}
         highlightClassName={highlight}
         lines={1}
+        linkLook="text"
         markdown={source}
-        tree={result.snippet_tree}
+        source={record}
+        surface="search-result"
+        tree={titleTree}
       />
-    );
-  } else {
-    // The whole title, its matched words marked as the snippet's tree marks them: a `mark` the
-    // highlight's own attribute names (`HIGHLIGHT_SELECTOR`, MarkdownPreview).
-    named = (
-      <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>
-        {title.map((run, index) =>
-          run.mark ? (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a run is its place in the title, which never reorders.
-            <mark className={highlight} data-search-highlight="" key={index}>
-              {run.text}
-            </mark>
-          ) : (
-            run.text
-          )
-        )}
-      </span>
     );
   }
 
@@ -485,16 +440,13 @@ function ResultOption({
       <ItemRow
         // A comment or a message its author edited says so, as its byline does.
         after={<EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />}
-        icon={kind === undefined ? null : <SearchResultIcon kind={kind} />}
+        icon={kind === undefined ? null : <RefKindIcon kind={kind} />}
         itemKey={owner.key}
         muted={muted}
         name={named}
         status={status}
         under={
           itself ? null : (
-            // Under the key, past the icon's 16 px and the 8 px gap after it. The preview takes
-            // its size and its colour from the line it stands in (`.dispatch-markdown` inherits
-            // both), so the line sets them.
             <div
               className={`mt-0.5 flex min-w-0 pl-6 text-xs ${textMutedOnSurface}`}
               data-testid="search-hit-snippet"
@@ -505,8 +457,10 @@ function ResultOption({
                   highlightClassName={highlight}
                   lead={snippet.cut.start ? "…" : undefined}
                   lines={1}
-                  links="text"
+                  linkLook="text"
                   markdown={withoutDirectiveSyntax(source)}
+                  source={record}
+                  surface="search-result"
                   trail={snippet.cut.end ? "…" : undefined}
                   tree={snippet.tree}
                 />
@@ -517,7 +471,9 @@ function ResultOption({
           )
         }
       />
-      {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
+      {result.ask === undefined ? null : (
+        <AskHitStatus ask={result.ask} muted={muted} source={record} />
+      )}
     </PaletteOption>
   );
 }
@@ -596,7 +552,7 @@ function RecentItemRow({ item }: { item: RecentItem }): ReactNode {
       : item.label;
   return (
     <ItemRow
-      icon={<SearchResultIcon kind={issue === undefined ? "document" : "issue"} />}
+      icon={<RefKindIcon kind={issue === undefined ? "document" : "issue"} />}
       itemKey={issue ?? documentRouteOf(item.path, "")?.project ?? ""}
       muted={summary?.status === "done"}
       name={

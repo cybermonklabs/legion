@@ -150,10 +150,12 @@ function endedReason(error: Error, count: string): string {
  * long ago to be sent on its own (`SendInterruptedError`) says so in the error's own words and
  * offers Discard beside them. One whose key Dispatch no longer holds (`SendExpiredError`) reads
  * `Sending to N agents ended:` with the error's own words, which say a Retry of it is a new
- * write, and offers Discard too. A retried send keeps its row's place. The strip sits above the
- * composer, outside it, because the composer goes whenever the selection empties - at every press
- * - and a send outlives it. Restore draft refuses, and says why under its row, while the host says
- * putting a draft back would replace one (`restoreRefusal`).
+ * write, and offers Discard too. A retried send keeps its row's place. Each row shows its text on
+ * one line: a sent one the body Dispatch stored, drawn from the tree its answer carries, and any
+ * other the draft it holds, since the page holds no answer of a send Dispatch has not made. The
+ * strip sits above the composer, outside it, because the composer goes whenever the selection
+ * empties - at every press - and a send outlives it. Restore draft refuses, and says why under its
+ * row, while the host says putting a draft back would replace one (`restoreRefusal`).
  */
 export function BroadcastSends({
   className = "",
@@ -203,12 +205,31 @@ export function BroadcastSends({
                   <SentBroadcast created={row.created} />
                 )}
               </span>
-              <MarkdownPreview
-                className={`min-w-0 flex-1 ${textMutedOnSurface}`}
-                lines={1}
-                markdown={row.send.input.body}
-                fullTitle
-              />
+              {/* No `source` on either mount: why a broadcast send is no record is the reading
+                  list's `broadcast-send-row` (`DISPATCH_READING_SURFACES`). */}
+              {row.status === "sent" ? (
+                // A made broadcast is drawn from Dispatch's answer: the body it stored and the
+                // reading the server made of it (`body_tree`), so the page parses nothing of it.
+                <MarkdownPreview
+                  className={`min-w-0 flex-1 ${textMutedOnSurface}`}
+                  lines={1}
+                  markdown={row.created.body}
+                  surface="broadcast-send-row"
+                  tree={row.created.body_tree}
+                  fullTitle
+                />
+              ) : (
+                // A send not made yet - queued, on the wire, late or failed - has no stored text,
+                // so the row draws the draft it holds, which the page parses, as it parses every
+                // write the server has not stored.
+                <MarkdownPreview
+                  className={`min-w-0 flex-1 ${textMutedOnSurface}`}
+                  lines={1}
+                  markdown={row.send.input.body}
+                  surface="broadcast-send-row"
+                  fullTitle
+                />
+              )}
               {row.status === "late" && !row.signingOutElsewhere ? (
                 <StopTrying onStop={() => onStop(row)} stopping={row.stopping} />
               ) : null}

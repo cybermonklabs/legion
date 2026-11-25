@@ -3,7 +3,10 @@ package pmdoc
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // notSpaceOrParen is the browser's `[^()\s]`, the characters a link destination the cut left
@@ -21,11 +24,12 @@ var (
 )
 
 // A fragment cut out of a Markdown body: one the server cut before anybody read it, which today
-// is a search hit's ts_headline snippet (the 24 tokens around the match). A cut can land inside a
-// mark, and the half it leaves renders as its characters. The balancer below drops exactly the
-// delimiters that CommonMark would have paired had the cut not happened and nothing else: a run
-// the parser would read as literal text anyway (`Use ** for bold`, `2 * 3`, `snake_case`) is the
-// author's and stays, and nothing inside a code span is ever a delimiter.
+// is a search hit's ts_headline snippet (the 24 tokens around the match), widened back to the
+// source's own constructs (SearchSnippet). A cut can still land inside a mark, and the half it
+// leaves renders as its characters. The balancer below drops exactly the delimiters that
+// CommonMark would have paired had the cut not happened and nothing else: a run the parser would
+// read as literal text anyway (`Use ** for bold`, `2 * 3`, `snake_case`) is the author's and
+// stays, and nothing inside a code span is ever a delimiter.
 //
 // This began as the port of the browser's own balancer, which the palette ran on a snippet
 // before the server read one. That reading is gone from the browser with the rest of its
@@ -33,17 +37,232 @@ var (
 // and the shapes it must hold are the ones fragment_test.go pins. The browser's markdownHead
 // was never ported, since nothing on the server cuts a body's head.
 
-// SearchSnippetMarkdown is a search hit's headline as Markdown to read: the headline as it is
-// where its window held every word of the text it was read out of, and balanced where the window
-// cut that text at either end, as the search statement measured the cut. Only that statement can
-// say: ts_headline's window is 24 of the text-search parser's tokens, and a URL or a directive's
-// attributes are many of them, so a window cut at both ends can hold ten runs between whitespace
-// and no count of the headline's own words tells it from a whole text.
+// SearchSnippetWords is the width of ts_headline's window (headlineOptions in
+// internal/dispatch/api/search.go: MaxWords=24), which it counts in the text-search parser's
+// tokens. A source of no more whitespace-separated words than that is short enough to show
+// whole, so its snippet is the whole source, whatever the window left out of it.
+const SearchSnippetWords = 24
+
+// searchSnippetLink is an inline link `[text](dest)` written on one line, its text holding no
+// bracket: the link BalanceCutMarkdown's three patterns mend when a cut lands inside one, so a
+// snippet widened past every such link leaves the balancer no link of that shape to mend.
+var searchSnippetLink = regexp.MustCompile(`\[[^\[\]\n]*\]\(` + notSpaceOrParen + `*\)`)
+
+// SearchSnippet is the Markdown to read for a search hit, and where it is cut: headline, the text
+// ts_headline answered with the start and stop sentinels around what the query matched, set back
+// into source, the text ts_headline read, and widened to the constructs of source it cut into.
+// The sentinels stay in the answer for the display read and the HTML snippet to mark.
+//
+// The source is read because the headline alone does not say what its words are. ts_headline
+// chooses a window of words and drops the punctuation it does not count as words, so the cut
+// lands inside a construct, and the cut text reads as something the stored text never wrote
+// (measured on PostgreSQL 18 with headlineOptions). "Run `CORE-1` locally", searched
+// for CORE-1, comes back as "CORE-1` locally": the opening backtick is lost, so code reads as
+// prose and the key as a reference. "See [the gyroscope](dispatch://CORE-1) now", searched for
+// CORE-1 too, comes back as "gyroscope](dispatch://CORE-1", a link's broken tail. "Ask
+// dispatch://person/alice first", searched for first, comes back as "person/alice first", an
+// address without its scheme. And "The release is blocked on CORE-99 until it lands" comes back
+// without its first word, so a headline is rarely the whole body even when the body is short.
+//
+// So the headline is found in the source, and the range [from, to) it stands at is widened until
+// nothing moves: to whitespace-delimited token edges, and over every code span and every inline
+// link it starts or ends strictly inside. A source of no more than SearchSnippetWords words is the
+// whole source, since ts_headline's window held it all and what it left out is the edge words it
+// trims. A headline that starts inside a fenced or indented code block is widened to whole lines,
+// with the fence's opening line in front of it when the cut left that line out, so it reads as
+// the code it is; the balancer never runs there, since it would take characters out of code.
+// Anywhere else the result is balanced where it is cut (SearchSnippetMarkdown), and answered as
+// it is where it is the whole text.
+//
+// measured is what the search statement measured of the cut, which the source cannot show
+// (searchPageAndTailSQL in internal/dispatch/api/search.go): for a headline source holds as it
+// is, whether source itself, 4,000 characters of the text, was cut out of a longer text at each
+// end; for one it does not, where the headline's window cut that text. The answer's cut is
+// measured, and for a headline set back into source also each end past which a word of source
+// stands outside the snippet (holdsWord). Only the statement can say where a headline not in its
+// source was cut: ts_headline's window is 24 of the text-search parser's tokens, and a URL or a
+// directive's attributes are many of them, so a window cut at both ends can hold ten runs
+// between whitespace and no count of the headline's own words tells it from a whole text.
+func SearchSnippet(headline, source, start, stop string, measured SnippetCut) (string, SnippetCut) {
+	plain := strings.NewReplacer(start, "", stop, "").Replace(headline)
+	at := -1
+	if plain != "" {
+		at = strings.Index(source, plain)
+	}
+	if at < 0 {
+		// A fallback for a source ts_headline did not read verbatim: with nothing to set the
+		// headline back into, it is read alone, cut where the statement measured its window cut
+		// the text.
+		return SearchSnippetMarkdown(headline, measured), measured
+	}
+	end := at + len(plain)
+	if countWords(source) <= SearchSnippetWords {
+		return SearchSnippetMarkdown(source[:at]+headline+source[end:], measured), measured
+	}
+	code := text.CodeRanges(source)
+	if block, ok := codeBlockHolding(code, at); ok {
+		from, to := strings.LastIndexByte(source[:at], '\n')+1, snippetLineEnd(source, end)
+		fence, before := "", holdsWord(source[:from])
+		if opener := source[block.Start:snippetLineEnd(source, block.Start)]; from > block.Start && opensFence(opener) {
+			fence = opener + "\n"
+			// The fence's line is shown, so the words left out before the snippet are the ones
+			// before that line and the ones between it and the snippet's first line.
+			before = holdsWord(source[:block.Start]) || holdsWord(source[block.Start+len(opener):from])
+		}
+		cut := SnippetCut{Start: measured.Start || before, End: measured.End || holdsWord(source[to:])}
+		return fence + source[from:at] + headline + source[end:to], cut
+	}
+	from, to := widenSnippet(source, at, end, code)
+	cut := SnippetCut{Start: measured.Start || holdsWord(source[:from]), End: measured.End || holdsWord(source[to:])}
+	return SearchSnippetMarkdown(source[from:at]+headline+source[end:to], cut), cut
+}
+
+// holdsWord reports whether text, a part of a search hit's source the snippet leaves out, holds a
+// word: a letter or a digit, as the search statement's `[[:alnum:]]` reads one. A word, and not
+// any character, because ts_headline drops more than whitespace at the edges of its window - the
+// punctuation and the markup - so a snippet that leaves out only those is cut at neither end.
+func holdsWord(text string) bool {
+	return strings.IndexFunc(text, func(char rune) bool { return unicode.IsLetter(char) || unicode.IsDigit(char) }) >= 0
+}
+
+// SearchSnippetMarkdown is a search hit's snippet as Markdown to read: the snippet as it is where
+// it is the whole text it was read out of, and balanced where it is cut at either end, as
+// SearchSnippet measured the cut.
 func SearchSnippetMarkdown(snippet string, cut SnippetCut) string {
 	if !cut.Start && !cut.End {
 		return snippet
 	}
 	return BalanceCutMarkdown(snippet)
+}
+
+// widenSnippet widens [from, to) within source until nothing moves: to the edges of the
+// whitespace-delimited tokens it cuts, and over every code span (a range of code that is no
+// block) and every inline link (searchSnippetLink) that holds from or to strictly inside it. A
+// span or a link may hold whitespace of its own, and the token past its edge may start another,
+// so the steps repeat until one pass moves neither edge.
+func widenSnippet(source string, from, to int, code []text.CodeRange) (int, int) {
+	links := searchSnippetLink.FindAllStringIndex(source, -1)
+	for {
+		moved := false
+		for from > 0 && !snippetSpace(source[from-1]) {
+			from--
+			moved = true
+		}
+		for to < len(source) && !snippetSpace(source[to]) {
+			to++
+			moved = true
+		}
+		widen := func(start, end int) {
+			if start < from && from < end {
+				from, moved = start, true
+			}
+			if start < to && to < end {
+				to, moved = end, true
+			}
+		}
+		for _, span := range code {
+			if !span.Block {
+				widen(span.Start, span.End)
+			}
+		}
+		for _, link := range links {
+			widen(link[0], link[1])
+		}
+		if !moved {
+			return from, to
+		}
+	}
+}
+
+// snippetSpace reports whether a byte of the source separates two tokens. Every byte of a
+// multi-byte character is above ASCII, so the token edges widenSnippet moves to never split one.
+func snippetSpace(char byte) bool {
+	switch char {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	}
+	return false
+}
+
+// codeBlockHolding is the fenced or indented code block of code that holds the byte at offset.
+func codeBlockHolding(code []text.CodeRange, offset int) (text.CodeRange, bool) {
+	for _, candidate := range code {
+		if candidate.Start > offset {
+			break
+		}
+		if candidate.Block && offset < candidate.End {
+			return candidate, true
+		}
+	}
+	return text.CodeRange{}, false
+}
+
+// snippetLineEnd is where the line holding offset ends, before its line feed, or the end of
+// source.
+func snippetLineEnd(source string, offset int) int {
+	if next := strings.IndexByte(source[offset:], '\n'); next >= 0 {
+		return offset + next
+	}
+	return len(source)
+}
+
+// opensFence reports whether line, a code block's first line, opens a fenced block: past its
+// indentation and its containers' markers - a block quote's `>`, a list item's bullet or number -
+// it starts with three or more backticks or tildes. An indented block's first line is code
+// itself and starts with neither.
+func opensFence(line string) bool {
+	for {
+		line = strings.TrimLeft(line, " \t")
+		marker := containerMarkerWidth(line)
+		if marker == 0 {
+			break
+		}
+		line = line[marker:]
+	}
+	return strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
+}
+
+// containerMarkerWidth is the width of the container marker line starts with - a block quote's
+// `>`, or a list item's `-`, `+`, `*`, or one to nine digits and a `.` or `)`, followed by a
+// space or a tab - or 0 when it starts with none.
+func containerMarkerWidth(line string) int {
+	if strings.HasPrefix(line, ">") {
+		return 1
+	}
+	width := 0
+	switch {
+	case line != "" && strings.IndexByte("-+*", line[0]) >= 0:
+		width = 1
+	default:
+		for width < len(line) && width < 9 && line[width] >= '0' && line[width] <= '9' {
+			width++
+		}
+		if width == 0 || width == len(line) || (line[width] != '.' && line[width] != ')') {
+			return 0
+		}
+		width++
+	}
+	if width < len(line) && (line[width] == ' ' || line[width] == '\t') {
+		return width
+	}
+	return 0
+}
+
+// countWords is how many whitespace-separated words text holds, which is what the browser's
+// `snippet.split(/\s+/u).filter(word => word !== "")` counts.
+func countWords(text string) int {
+	words, inWord := 0, false
+	for _, char := range text {
+		if literalEnd(char) {
+			inWord = false
+			continue
+		}
+		if !inWord {
+			words++
+			inWord = true
+		}
+	}
+	return words
 }
 
 // BalanceCutMarkdown is fragment with every delimiter the cut left unmatched removed. Runs are

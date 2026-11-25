@@ -34,14 +34,13 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusMenu } from "./StatusMenu";
-import { treeContext } from "./tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
@@ -114,7 +113,7 @@ export function IssuePropertiesRow({
         : [{ artifactId: decisionsDocument, blocks: decisionsBlocks }],
     [decisionsDocument, decisionsBlocks]
   );
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
     [coverage.data, nodeIdOf]

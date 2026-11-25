@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -278,6 +279,114 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 	if len(value.ReferencedBy) != 1 || value.ReferencedBy[0].Kind != "comment" || value.ReferencedBy[0].ID != comment.ID || value.ReferencedBy[0].IssueKey == nil || *value.ReferencedBy[0].IssueKey != issue.Key {
 		t.Fatalf("referenced by = %#v; want issue comment %q", value.ReferencedBy, comment.ID)
 	}
+}
+
+// A document's Referenced by cuts each citer's excerpt as the graph read cuts the head of a text
+// beside an edge: around this deployment's dashboard URLs as references (refs.itemExcerpt). A
+// comment whose dashboard URL crosses the 240-rune bound is listed with its words before the URL,
+// read through GET /api/v1/artifacts/{id}/references as through GET /api/v1/references, and not
+// with the URL cut in half, as a read that knew no deployment would cut it.
+func TestArtifactReferencesCutAnExcerptAroundADashboardURL(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n")
+	// 229 runes and a space, so the dashboard URL after them starts before the cut at 240 and
+	// ends after it.
+	words := strings.Repeat("x", 229)
+	citer := createReferenceAPIComment(t, handler, issue.Key,
+		words+" "+testServerURL+"/issues/"+issue.Key+" follows dispatch://CORE/artifact/design-notes")
+	quoter := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+issue.Key+"/comment/"+citer.ID)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+design.ID+"/references", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("get artifact references: status=%d body=%s", response.Code, response.Body.String())
+	}
+	referencedBy := decodeBody[model.ArtifactReferences](t, response).ReferencedBy
+	if len(referencedBy) != 1 || referencedBy[0].ID != citer.ID {
+		t.Fatalf("referenced by = %#v; want the citing comment alone", referencedBy)
+	}
+	if got := referencedBy[0].Excerpt; got != words {
+		t.Errorf("the citing comment's excerpt through the document's references = %q; want %q, the dashboard URL the cut falls inside left out whole", got, words)
+	}
+	outgoing := graphEdges(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/comment/" + quoter.ID}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.ID != citer.ID || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the citing comment with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != words {
+		t.Errorf("the citing comment's excerpt through the graph read = %q; want %q", got, words)
+	}
+}
+
+// A references answer to a caller that sends no Dispatch-Trees header is the bytes the route
+// wrote before an edge's excerpt carried a tree: each edge written as model.GraphEdge writes it,
+// `excerpt` between `block` and `created_at`. The read shape declares the edge's fields itself
+// (graphEdgeRead), so it is also held to declare model.GraphEdge's own fields, in the edge's
+// order, which is what a field added to the edge and not to the shape would break.
+func TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": "Ship the **reference** graph?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	for _, query := range []url.Values{{"to": {askRef}}, {"from": {messageRef}}} {
+		response := treesRequest(t, handler, "/api/v1/references?"+query.Encode(), false)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/references?%s: status=%d body=%s", query.Encode(), response.Code, response.Body.String())
+		}
+		// The answer as the route wrote it before: the node as it stands, and each edge as
+		// model.GraphEdge, encoded as WriteJSON encodes.
+		var before struct {
+			Node         json.RawMessage   `json:"node"`
+			Edges        []model.GraphEdge `json:"edges"`
+			UnknownKinds []string          `json:"unknown_kinds,omitempty"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &before); err != nil {
+			t.Fatalf("decode GET /api/v1/references?%s: %v", query.Encode(), err)
+		}
+		if len(before.Edges) != 1 || before.Edges[0].Excerpt == nil {
+			t.Fatalf("GET /api/v1/references?%s edges = %#v; want the one mention with its excerpt", query.Encode(), before.Edges)
+		}
+		var want bytes.Buffer
+		if err := json.NewEncoder(&want).Encode(before); err != nil {
+			t.Fatalf("encode the answer as it was written before: %v", err)
+		}
+		if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+			t.Errorf("GET /api/v1/references?%s without the trees header =\n\t%s\nwant the bytes model.GraphEdge writes\n\t%s",
+				query.Encode(), response.Body.String(), want.String())
+		}
+	}
+
+	if got, want := jsonFieldNames(reflect.TypeOf(graphEdgeRead{})), jsonFieldNames(reflect.TypeOf(model.GraphEdge{})); !slices.Equal(got, want) {
+		t.Errorf("graphEdgeRead declares %v, want model.GraphEdge's own fields in its order, %v", got, want)
+	}
+}
+
+// jsonFieldNames is the JSON name of each field shape declares, in its order.
+func jsonFieldNames(shape reflect.Type) []string {
+	var fields []string
+	for index := range shape.NumField() {
+		name, _, _ := strings.Cut(shape.Field(index).Tag.Get("json"), ",")
+		fields = append(fields, name)
+	}
+	return fields
 }
 
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
@@ -991,6 +1100,171 @@ func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
 	}
 }
 
+// issueReferencesNameRows is the one row of each list an issue's references read gives for
+// issueReferencesNameFixture.
+type issueReferencesNameRows struct {
+	link, linkedFrom model.ReferenceLink
+}
+
+// issueReferencesNameFixture makes an issue whose references read lists one row in each list, a
+// comment whose body holds a bare issue address: in links, a comment of another issue that the
+// issue's own comment links to, and in linked_from, a comment of that other issue that links to
+// the issue. It answers the handler, the issue's key and the two rows as the read lists them,
+// each named by its comment's whole body, which the read's cut keeps whole at this length.
+// Each issue is in a project of its own: the issues route refuses a second issue of one title in
+// one project as a possible duplicate.
+func issueReferencesNameFixture(t *testing.T) (http.Handler, string, issueReferencesNameRows) {
+	t.Helper()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	createReferenceAPIProject(t, handler, "SRE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	named := createReferenceAPIIssue(t, handler, "OPS")
+	other := createReferenceAPIIssue(t, handler, "SRE")
+	linkedBody := "Decided in dispatch://" + named.Key + " on **Friday**."
+	linked := createReferenceAPIComment(t, handler, other.Key, linkedBody)
+	own := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+other.Key+"/comment/"+linked.ID+" here.")
+	citingBody := "dispatch://" + named.Key + " waits on dispatch://" + issue.Key + "."
+	citing := createReferenceAPIComment(t, handler, other.Key, citingBody)
+	return handler, issue.Key, issueReferencesNameRows{
+		link: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: linked.ID}, Name: linkedBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "comment", ID: own.ID},
+		},
+		linkedFrom: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: citing.ID}, Name: citingBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "issue", ID: issue.Key},
+		},
+	}
+}
+
+// Under `Dispatch-Trees: 1` each row of an issue's references read carries name_tree, the tree
+// pmdoc.DisplayJSON makes of exactly that row's name, in links and in linked_from alike, and the
+// document the route table emits declares that tree where the answer carries it. Each name here
+// is a comment's body holding a bare issue address, which the tree reads as a reference: the
+// Artifacts tab draws the row's name from it, the address read as its target's name.
+func TestIssueReferencesRowsCarryTheTreeOfTheirNamesUnderTheHeader(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, want := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, true)
+	var answer struct {
+		Links      []referenceLinkRead `json:"links"`
+		LinkedFrom []referenceLinkRead `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode GET %s with the header: %v", target, err)
+	}
+	for _, list := range []struct {
+		name string
+		rows []referenceLinkRead
+		want model.ReferenceLink
+	}{{"links", answer.Links, want.link}, {"linked_from", answer.LinkedFrom, want.linkedFrom}} {
+		if len(list.rows) != 1 {
+			t.Fatalf("%s holds %d rows, want the one comment of the fixture: %s", list.name, len(list.rows), response.Body.String())
+		}
+		row := list.rows[0]
+		if row.Node.Kind != list.want.Node.Kind || row.Node.ID != list.want.Node.ID || row.Name != list.want.Name ||
+			!slices.Equal(row.Kinds, list.want.Kinds) || row.Via != list.want.Via {
+			t.Fatalf("%s holds %s %s named %q [%s] via %s %s, want %s %s named %q [%s] via %s %s", list.name,
+				row.Node.Kind, row.Node.ID, row.Name, strings.Join(row.Kinds, ","), row.Via.Kind, row.Via.ID,
+				list.want.Node.Kind, list.want.Node.ID, list.want.Name, strings.Join(list.want.Kinds, ","), list.want.Via.Kind, list.want.Via.ID)
+		}
+		if row.NameTree == nil {
+			t.Fatalf("under the header, the %s row named %q carries no name_tree: %s", list.name, row.Name, response.Body.String())
+		}
+		got := sameShape(t, json.RawMessage(row.NameTree))
+		wantTree := sameShape(t, pmdoc.DisplayJSON(row.Name, pmdoc.DisplayLatest))
+		if !bytes.Equal(got, wantTree) {
+			t.Errorf("the %s row's name_tree is\n\t%s\nwant the tree of its name %q\n\t%s", list.name, got, row.Name, wantTree)
+		}
+	}
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	for _, treePath := range []string{"links.0.name_tree", "linked_from.0.name_tree"} {
+		requireTreeInAnswerSchema(t, document, "/api/v1/issues/{key}/references", treePath)
+	}
+}
+
+// An issue's references answer to a caller that sends no Dispatch-Trees header is the bytes the
+// route wrote before a row carried its name's tree: no row carries name_tree, and the body is
+// what model.IssueReferences writes of itself. The read shapes declare the model's fields
+// themselves (issueReferencesRead, referenceLinkRead), so they are also held to declare the
+// model's own fields in its order, a row's tree after them, which is what a field added to the
+// model and not to a shape would break.
+func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, false)
+	var rows struct {
+		Links      []map[string]json.RawMessage `json:"links"`
+		LinkedFrom []map[string]json.RawMessage `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode GET %s without the header: %v", target, err)
+	}
+	if len(rows.Links) != 1 || len(rows.LinkedFrom) != 1 {
+		t.Fatalf("GET %s without the header holds %d links and %d linked_from, want one of each: %s",
+			target, len(rows.Links), len(rows.LinkedFrom), response.Body.String())
+	}
+	for _, row := range slices.Concat(rows.Links, rows.LinkedFrom) {
+		if tree, carried := row["name_tree"]; carried {
+			t.Errorf("without the header, the row named %s carries name_tree %s", row["name"], tree)
+		}
+	}
+	var want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(decodeBody[model.IssueReferences](t, response)); err != nil {
+		t.Fatalf("encode the answer as model.IssueReferences writes it: %v", err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+		t.Errorf("GET %s without the trees header =\n\t%s\nwant the bytes model.IssueReferences writes\n\t%s", target, response.Body.String(), want.String())
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(issueReferencesRead{})), jsonFieldNames(reflect.TypeOf(model.IssueReferences{})); !slices.Equal(got, want) {
+		t.Errorf("issueReferencesRead declares %v, want model.IssueReferences' own fields in its order, %v", got, want)
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(referenceLinkRead{})), append(jsonFieldNames(reflect.TypeOf(model.ReferenceLink{})), "name_tree"); !slices.Equal(got, want) {
+		t.Errorf("referenceLinkRead declares %v, want model.ReferenceLink's own fields in its order, then name_tree: %v", got, want)
+	}
+}
+
+// A caller that asks for the rows' name trees and one that sends no header never share a
+// validator of an issue's references: the reading is hashed into the ETag (referencesETag), so
+// neither can be answered 304 against the other's.
+func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	with := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target+" with trees")
+	without := listETagOf(t, listRead(t, handler, target, listReadOptions{}), "GET "+target+" without trees")
+	if with == without {
+		t.Fatalf("GET %s answers one ETag %s for both readings", target, with)
+	}
+	crossed := listRead(t, handler, target, listReadOptions{etag: with})
+	if crossed.Code != http.StatusOK {
+		t.Errorf("GET %s without trees, holding the trees reading's ETag: status=%d, want 200", target, crossed.Code)
+	}
+}
+
+// A deploy that reads markdown differently moves an issue's references validator, however the
+// answer itself comes out: the display parser version is hashed into it, so no ETag the build
+// before it gave is matched by this one.
+func TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag(t *testing.T) {
+	// Not parallel: it moves the process's display parser version (pmdoc.SetDisplayTreeVersionForTest).
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	before := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target)
+
+	restore := pmdoc.SetDisplayTreeVersionForTest(pmdoc.DisplayTreeVersion + 1)
+	defer restore()
+	answered := listRead(t, handler, target, listReadOptions{trees: true, etag: before})
+	what := fmt.Sprintf("GET %s at display parser version %d", target, pmdoc.DisplayTreeVersionNow())
+	if got := listETagOf(t, answered, what); got == before {
+		t.Errorf("%s answers the ETag %s the version before it gave", what, before)
+	}
+}
+
 func graphRequest(t *testing.T, handler http.Handler, query url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodGet, "/api/v1/references?"+query.Encode(), nil, "alice")
@@ -1135,6 +1409,96 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		if response.Code != tc.status || !strings.Contains(response.Body.String(), `"code":"`+tc.code+`"`) {
 			t.Errorf("%s: status=%d body=%s; want %d %s", name, response.Code, response.Body.String(), tc.status, tc.code)
 		}
+	}
+}
+
+// The heads an edge shows are cut where no reference crosses the cut: the 240-rune head of the
+// ask an outgoing edge reaches (refs.itemExcerpt), and the 480-rune excerpt of the message block
+// and of the document block an incoming edge comes from (refs.BlockExcerpt). A key either bound
+// falls inside is left out whole, rather than shown as `CORE-12`, a working link to another issue.
+func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	// 232 runes, so a key after them starts before the cut at 240 and ends after it.
+	question := strings.Repeat("x", 231)
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": question + " CORE-1234 or not?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	// 472 runes with the space after them, so a key after them crosses the cut at 480.
+	cites := "Decided in " + askRef + " "
+	block := cites + strings.Repeat("y", 471-len(cites))
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": block + " CORE-1234 follows.", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != question {
+		t.Fatalf("the ask's excerpt = %q; want %q, the key the cut falls inside left out whole", got, question)
+	}
+
+	incoming := graphEdges(t, handler, url.Values{"to": {askRef}})
+	if len(incoming.Edges) != 1 || incoming.Edges[0].Excerpt == nil {
+		t.Fatalf("incoming edges = %#v; want the message's block with an excerpt", incoming.Edges)
+	}
+	if got := incoming.Edges[0].Excerpt.Text; got != block {
+		t.Fatalf("the message block's excerpt = %q; want %q, the key the cut falls inside left out whole", got, block)
+	}
+
+	design := createProjectDocument(t, handler, "ACME", "Design notes", "# Design\n\n"+block+" CORE-1234 follows.\n")
+	mention := documentMention(t, handler, askRef, design.ID, design.RefKey)
+	if mention.Excerpt == nil || mention.Excerpt.Text != block {
+		t.Fatalf("the document block's excerpt = %#v; want %q, the key the cut falls inside left out whole", mention.Excerpt, block)
+	}
+}
+
+// A text that opens with a URL longer than the 240-rune bound keeps its rune cut beside an edge:
+// a URL of anywhere else names nothing Dispatch holds, so the cut does not move back over it, and
+// a cut never empties the head, so the backlink is never drawn with an empty paragraph.
+func TestReferencesKeepTheExcerptOfATextOpeningWithALongURL(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	question := "https://example.com/" + strings.Repeat("x", 300) + " - yes or no?"
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": question,
+		"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask", outgoing.Edges)
+	}
+	if excerpt := outgoing.Edges[0].Excerpt; excerpt == nil || excerpt.Text != question[:240] {
+		t.Fatalf("the ask's excerpt = %#v; want its first 240 runes, %q", excerpt, question[:240])
 	}
 }
 
@@ -1386,6 +1750,78 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 	specBacklinks := graphEdges(t, handler, url.Values{"to": {"dispatch://" + parent.Key + "/spec"}})
 	if specBacklinks.Node.ID != parent.PrimaryArtifactID || len(specBacklinks.Edges) != 0 {
 		t.Fatalf("spec backlinks = %#v; want the spec node with no edges", specBacklinks)
+	}
+}
+
+// Under `Dispatch-Trees: 1` every excerpt an edge shows carries the display tree of its text, the
+// tree pmdoc.DisplayJSON makes of exactly that text, and without the header none does. That
+// holds for the block holding a document's mention, which the dashboard draws through the
+// renderer, and for the child's title (child_of) and the document's name (attached_to) too,
+// which it draws as the characters they are and whose tree it never reads: one rule for every
+// excerpt keeps the answer's promise that a text with a `_tree` beside it has one.
+func TestReferencesExcerptsCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	parent := createReferenceAPIIssue(t, handler, "CORE")
+	child := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "CORE", "title": "Child **work**", "parent": parent.Key,
+	}, "alice")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("create child issue: status=%d body=%s", child.Code, child.Body.String())
+	}
+	createProjectDocument(t, handler, "OPS", "Design notes", "# Design\n\nThe *plan* lives in dispatch://"+parent.Key+" and nowhere else.\n")
+
+	target := "/api/v1/references?" + url.Values{"to": {"dispatch://" + parent.Key}}.Encode()
+	excerpts := func(trees bool) map[string]graphExcerptRead {
+		t.Helper()
+		var answer struct {
+			Edges []struct {
+				Kind    string            `json:"kind"`
+				Excerpt *graphExcerptRead `json:"excerpt"`
+			} `json:"edges"`
+		}
+		if err := json.Unmarshal(treesRequest(t, handler, target, trees).Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode GET %s (trees=%v): %v", target, trees, err)
+		}
+		byKind := make(map[string]graphExcerptRead, len(answer.Edges))
+		for _, edge := range answer.Edges {
+			if edge.Excerpt == nil {
+				t.Fatalf("GET %s (trees=%v): the %s edge carries no excerpt", target, trees, edge.Kind)
+			}
+			byKind[edge.Kind] = *edge.Excerpt
+		}
+		if len(byKind) != 3 {
+			t.Fatalf("GET %s (trees=%v) excerpts = %+v, want a mention, a child_of and an attached_to", target, trees, byKind)
+		}
+		return byKind
+	}
+
+	for kind, excerpt := range excerpts(false) {
+		if excerpt.TextTree != nil {
+			t.Errorf("without the header, the %s excerpt %q carries a tree %s", kind, excerpt.Text, excerpt.TextTree)
+		}
+	}
+	with := excerpts(true)
+	for _, row := range []struct{ name, kind, text string }{
+		{"a body's head", "mentions", "The *plan* lives in dispatch://" + parent.Key + " and nowhere else."},
+		{"a title", "child_of", "Child **work**"},
+		{"a name", "attached_to", "spec.md"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			excerpt := with[row.kind]
+			if excerpt.Text != row.text {
+				t.Fatalf("the %s excerpt = %q, want %q", row.kind, excerpt.Text, row.text)
+			}
+			want := sameShape(t, pmdoc.DisplayJSON(excerpt.Text, pmdoc.DisplayLatest))
+			if excerpt.TextTree == nil {
+				t.Fatalf("under the header, the %s excerpt %q carries no tree", row.kind, excerpt.Text)
+			}
+			if got := sameShape(t, json.RawMessage(excerpt.TextTree)); !bytes.Equal(got, want) {
+				t.Errorf("the %s excerpt's tree is\n\t%s\nwant the tree of %q\n\t%s", row.kind, got, excerpt.Text, want)
+			}
+		})
 	}
 }
 

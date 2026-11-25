@@ -1,8 +1,6 @@
 kind: Fixed
 body: |-
-  A search hit's snippet on the dashboard begins and ends with "…" where the headline window cut
-  its text. The search statement measures each end against the text it read, and the snippet's
-  display tree carries the two facts (`attrs.cutStart`, `attrs.cutEnd`) to a caller that sends
-  `Dispatch-Trees: 1`. The dashboard read a window as cut only when it held 24 words, which a
-  window holding a URL or a directive's attributes never does, since the headline counts the
-  text-search parser's tokens. The `snippet` field every caller reads is unchanged.
+  A search hit's snippet on the dashboard begins and ends with "…" where the displayed snippet
+  leaves out text. Search measures each end against the source rather than counting words in
+  the snippet: a URL or a directive's attributes can consume many of the headline parser's
+  tokens. Only the display tree carries the two flags (`attrs.cutStart`, `attrs.cutEnd`).

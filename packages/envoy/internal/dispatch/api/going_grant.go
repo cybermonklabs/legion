@@ -295,7 +295,7 @@ func goingBarCaller(actor model.Actor, human bool, run string) resolvedCaller {
 func goingBarAct(credential *model.Credential, run string) *model.ActorAct {
 	act := &model.ActorAct{Agent: model.ActAgentCommandBar, Run: run}
 	if credential != nil {
-		act.TokenID, act.TokenName, act.Scopes = credential.TokenID, credential.TokenName, credential.Scopes
+		act.TokenID, act.TokenName, act.Scopes = credential.TokenID, credential.TokenName, actScopes(credential)
 	}
 	return act
 }

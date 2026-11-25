@@ -4,7 +4,8 @@ import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
-import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
+import { buildDispatchReference, pictureReference, referenceHref } from "./routes";
+import { SEARCH_HIGHLIGHT_ATTRIBUTE } from "./search-highlight";
 import { timeTitle } from "./Timestamp";
 import { instantOf, isTimeAddress, TIME_LINK_ATTRIBUTE } from "./time-link";
 
@@ -49,7 +50,11 @@ function pictureSerializer(schema: Schema): DOMSerializer {
           return image(node);
         }
         const { named, route } = picture;
-        if (named === undefined) {
+        // The gate every sink of a typed reference goes through (`appHref`): a picture whose
+        // reference names no artifact, and one whose route opens no page of this dashboard,
+        // keeps the address its author wrote rather than a path that opens nothing.
+        const href = named === undefined ? undefined : referenceHref(route);
+        if (href === undefined) {
           return ["a", { href: picture.source }];
         }
         return [
@@ -57,7 +62,7 @@ function pictureSerializer(schema: Schema): DOMSerializer {
           {
             "data-dispatch-picture": buildDispatchReference(route),
             "data-picture-caption": picture.caption,
-            href: buildReferencePath(route),
+            href,
           },
         ];
       },
@@ -118,7 +123,7 @@ const DISPLAY_HIGHLIGHT_MARK = "searchHighlight";
 function displaySchemaOf(schema: Schema): Schema {
   return new Schema({
     marks: schema.spec.marks.addToEnd(DISPLAY_HIGHLIGHT_MARK, {
-      toDOM: () => ["mark", { "data-search-highlight": "" }],
+      toDOM: () => ["mark", { [SEARCH_HIGHLIGHT_ATTRIBUTE]: "" }],
     }),
     nodes: schema.spec.nodes,
     topNode: schema.spec.topNode,

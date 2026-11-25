@@ -1,13 +1,16 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import { keyMayNameIssue, useProjectKeys } from "./project-keys";
 import type { ReferenceLinking } from "./RefLink";
 import {
   issueSummaryQuery,
   questionReferences,
   questionsQuery,
+  REFERENCE_READ,
   referencesQuery,
   resolvedPrefixItems,
+  useReferenceQuery,
 } from "./reference-target";
 import {
   readTextCandidates,
@@ -28,13 +31,17 @@ function readText(text: string | readonly string[], facts: TextReferenceFacts): 
 /** The empty question map, shared so a body that needs none keeps one identity across renders
  *  and the link pass it is a dependency of never re-runs for a fresh empty object. */
 const NO_MAP: Readonly<Record<string, string>> = {};
+const NO_ISSUES: readonly string[] = [];
 
-/** Everything a rendered body needs to link what it cites, and the reading it was found in:
- *  the one reader's pass over the body once every fact it waits on is in (`TextReading`), so a
- *  caller that needs the references themselves - the cards under a body, the editor's
- *  decorations - reads them rather than parsing the same text again. */
+/** Everything a rendered body needs to link what it cites, and the two readings it was found
+ *  in: the one reader's pass over the body once every fact it waits on is in (`reading`), and
+ *  its first pass, over the text alone (`written`). A caller that needs the references
+ *  themselves - the cards under a body, the editor's decorations - reads them rather than
+ *  parsing the same text again, and one that needs only the shape a text is written in reads
+ *  `written`, which is the same pass whatever the queries answer. */
 export interface TextReferences extends ReferenceLinking {
   readonly reading: TextReading;
+  readonly written: TextReading;
 }
 
 /**
@@ -45,8 +52,10 @@ export interface TextReferences extends ReferenceLinking {
  *
  * A bare issue key links only while its issue exists, which is its summary read answering: the
  * same read the link's own title comes from, so a key costs one request and a 404 for it is
- * final (`api/event-refresh.ts` re-asks it on `issue.created` alone). A `#id` resolves against
- * the question map of the document the text's own source belongs to, which the server says and
+ * final (`api/event-refresh.ts` re-asks it on `issue.created` alone): no body that mounts later
+ * naming the same key asks it again, and neither does a later body asking a question map or a
+ * prefix Dispatch answered does not exist (`REFERENCE_READ`). A `#id` resolves against the
+ * question map of the document the text's own source belongs to, which the server says and
  * `questionsQuery` reads; a text naming no source, or one whose text belongs to no document,
  * links no `#id`. An id written as a prefix is resolved by the graph read of the reference as
  * written (`referencesQuery`), and the item is then read under the whole id the answer carries,
@@ -60,35 +69,48 @@ export interface TextReferences extends ReferenceLinking {
  */
 export function useTextReferences(
   text: string | readonly string[],
-  source?: TextSource
+  source?: TextSource,
+  knownIssues: readonly string[] = NO_ISSUES
 ): TextReferences {
   const origin = window.location.origin;
   // The first reading: it resolves every `dispatch://` reference and dashboard address on its
   // own, and says which keys, question and prefixes the rest waits on.
   const written = useMemo(() => readText(text, { origin }), [origin, text]);
-  const { keys, prefixes, questions } = written.needs;
+  const { keys: writtenKeys, prefixes, questions } = written.needs;
+
+  // A word shaped like an issue key whose prefix is no project the page holds is asked nothing
+  // (`project-keys.ts`).
+  const projects = useProjectKeys();
+  const keys = useMemo(
+    () => writtenKeys.filter((key) => !knownIssues.includes(key) && keyMayNameIssue(key, projects)),
+    [knownIssues, projects, writtenKeys]
+  );
 
   // `combine` is held to its last answer by structural sharing, so these keep one identity
   // while the set of issues that exist is unchanged, however often the queries report.
   const issues = useQueries({
-    queries: keys.map((key) => ({ ...issueSummaryQuery(key), retry: false })),
+    queries: keys.map((key) => ({ ...issueSummaryQuery(key), ...REFERENCE_READ, retry: false })),
     combine: (summaries): readonly string[] =>
       keys.filter((_, index) => summaries[index]?.isSuccess === true),
   });
 
   // Only a text that writes a `#id` asks for the map (`needs.questions`), and only one that
-  // names the record its text is can: the route answers for a source, not for a page.
-  const questionRead = useQuery({
-    ...questionsQuery(source),
-    enabled: questions && source !== undefined,
-  });
+  // names the record its text is can: the route answers for a source, not for a page. A `#id`
+  // typed after the text mounted is such a read made late (`useReferenceQuery`).
+  const questionRead = useReferenceQuery(
+    questions && source !== undefined ? questionsQuery(source) : undefined
+  );
   const askedQuestions = useMemo(
-    () => questionReferences(questionRead.data) ?? NO_MAP,
-    [questionRead.data]
+    () => questionReferences(questionRead?.data) ?? NO_MAP,
+    [questionRead?.data]
   );
 
   const items = useQueries({
-    queries: prefixes.map((reference) => ({ ...referencesQuery(reference), retry: false })),
+    queries: prefixes.map((reference) => ({
+      ...referencesQuery(reference),
+      ...REFERENCE_READ,
+      retry: false,
+    })),
     combine: (resolutions): Readonly<Record<string, string>> => {
       const resolved: Record<string, string> = {};
       for (const answer of resolutions) {
@@ -99,13 +121,15 @@ export function useTextReferences(
   });
 
   const facts = useMemo(
-    () => ({ issues, items, origin, questions: askedQuestions }),
-    [askedQuestions, issues, items, origin]
+    () => ({ issues: [...knownIssues, ...issues], items, origin, questions: askedQuestions }),
+    [askedQuestions, issues, items, knownIssues, origin]
   );
   const reading: TextReading = useMemo(
     () =>
-      keys.length === 0 && prefixes.length === 0 && !questions ? written : readText(text, facts),
-    [facts, keys.length, prefixes.length, questions, text, written]
+      keys.length === 0 && knownIssues.length === 0 && prefixes.length === 0 && !questions
+        ? written
+        : readText(text, facts),
+    [facts, keys.length, knownIssues.length, prefixes.length, questions, text, written]
   );
   return useMemo(() => {
     const cited = new Set<string>();
@@ -114,6 +138,6 @@ export function useTextReferences(
         cited.add(reference.reference);
       }
     }
-    return { cited, facts, reading };
-  }, [facts, reading]);
+    return { cited, facts, reading, written };
+  }, [facts, reading, written]);
 }

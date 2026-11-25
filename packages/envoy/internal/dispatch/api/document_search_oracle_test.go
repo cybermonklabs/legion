@@ -123,7 +123,7 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // own lateral over artifact_versions reads the page's documents' markdown for the snippet, and
 // tests no tsquery.
 //
-// One output column is not main's. Where the package's page names the block a meaning hit
+// Two output columns are not main's. Where the package's page names the block a meaning hit
 // matched (hit.block_id, INFRA-370), this writes a literal null. The package computes that column
 // in a lateral over r.covers, and no row either body here hands this page carries any: a keyword
 // leg writes null for covers, and so do main's meaning arms, which know no windows. unnest of no
@@ -131,7 +131,10 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // The null written here is therefore that column's own value rather than a stand-in, and the
 // lateral's twenty-five lines are not copied into a place where they could only ever answer
 // null. The two statements whose rows can carry covers are this release's own meaning ones, and
-// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm).
+// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm). The
+// other is the text the headline is cut from, which the package selects beside the headline for
+// the snippet's reading (pmdoc.SearchSnippet); it is copied here as the package
+// writes it, a lateral the headline reads too, since its value is a row's own.
 //
 // The last two output columns are not main's either: where the headline's window cut the text it
 // was read out of (cut_start, cut_end), which the package's page measures beside the headline.
@@ -150,9 +153,11 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, null::text, r.score::float8,
-       hl.headline,
-       (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true as cut_start,
-       (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true as cut_end
+       hl.headline, excerpt.text,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start > 1
+            else (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true end as cut_start,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start + 4000 <= length(txt.text)
+            else (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true end as cut_end
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -183,14 +188,11 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
     offset 0
   ) located on true
   left join lateral (
-    select left(excerpt.text, located.at - 1) as before, substr(excerpt.text, located.at + length(located.words)) as after
-     where located.at > 0
-    union all
-    select left(printed.text, printed.at - 1), substr(printed.text, printed.at + length(located.words))
+    select left(printed.text, printed.at - 1) as before, substr(printed.text, printed.at + length(located.words)) as after
       from (select whole.text, strpos(whole.text, located.words) as at
               from (select ts_headline('english', excerpt.text, $$' '$$::tsquery, 'MaxWords=1000000, MinWords=999999, MaxFragments=1') as text
                     offset 0) whole) printed
-     where located.at = 0 and printed.at > 0
+     where length(located.words) > 0 and located.at = 0 and printed.at > 0
   ) edge on true
  order by r.score desc, r.updated_at desc, r.id
 `, legsSource)

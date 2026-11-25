@@ -742,6 +742,7 @@ function Quote({
       className={`border-l-2 pl-2 text-sm whitespace-pre-wrap break-words ${struck ? borderStrong : quoteAccentBorder} ${quoteBodyText}`}
       data-testid="going-plan-quote"
     >
+      {/* going-write-quote: these are the exact characters the tool would write. */}
       {struck ? <del>{text}</del> : text}
     </blockquote>
   );
@@ -947,7 +948,7 @@ function SentOnIssue({
  * it (`deletedSince`) shows no word of it, nor the words an edit would put in its place, which can
  * repeat it: "This comment was deleted." A delete that ran says so in its outcome.
  */
-function PostBody({
+function PlannedPostBody({
   changes,
   field,
   row,
@@ -1200,7 +1201,7 @@ export function PlanRowView({
     body = <MessageBody row={row} waiting={waiting} />;
   } else if (kind === "post") {
     body = (
-      <PostBody
+      <PlannedPostBody
         changes={changes}
         field={(change) => field(change, "diff")}
         row={row}

@@ -4,7 +4,7 @@ import {
   GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
 } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -152,9 +152,13 @@ function AnswerBody({
   // beneath it, but for an item of an issue the text draws as its chip, such as that issue's spec:
   // the server names such an item by its issue's title, so it would draw that title a second
   // time, as a link of its own, where the chip already opens the issue.
-  const inText = answer.items
-    .filter((item) => item.kind === "issue" && writesKey(answer.text, item.id))
-    .map((item) => item.id);
+  const inText = useMemo(
+    () =>
+      answer.items
+        .filter((item) => item.kind === "issue" && writesKey(answer.text, item.id))
+        .map((item) => item.id),
+    [answer.items, answer.text]
+  );
   const beneath = answer.items.filter(
     (item) => !inText.includes(item.kind === "issue" ? item.id : (issueOf(item.href) ?? ""))
   );
@@ -198,9 +202,11 @@ function AnswerBody({
             >
               <MarkdownBody
                 chips
+                knownIssueKeys={inText}
                 markdown={answer.text}
                 referenceText={inText.join(" ")}
                 softBreaks="line"
+                surface="agent-turn-text"
               />
             </div>
           </div>

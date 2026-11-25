@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -40,6 +40,12 @@ import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const results: SearchResult[] = [
   {
@@ -1987,7 +1993,7 @@ test("the empty box lists Continue on the last hour's conversation, then at most
       expect(recent.map((row) => row.textContent)).toEqual(
         items.slice(0, 5).map((item) => {
           const key = item.label.split(" ")[0] ?? "";
-          return `Issue result${key}Instrument ${key}Todo`;
+          return `Issue${key}Instrument ${key}Todo`;
         })
       )
     );

@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -19,9 +19,16 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
 // admission's own `/text` read, a socket the server refuses as outside the Proof schema, the repair
