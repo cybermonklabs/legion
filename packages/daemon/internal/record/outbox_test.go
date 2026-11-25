@@ -166,8 +166,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 // (Issue.NextChange) starts its branch at the base its last pull request merged into and names the
 // head that merged, from the merge snapshot. Any other generation carries no start: the first run
 // of the issue, a generation after a next change ended, and a next change of an issue with no
-// snapshot. A start that names neither the base nor the head is refused, as is a working copy's
-// start on anything but a supervise start.
+// snapshot. A working copy's start on anything but a supervise start is refused.
 func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
 	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "release/v7", Repo: "acme/widgets"}
 	for _, tc := range []struct {
@@ -185,9 +184,6 @@ func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
 		if got := IssueBranchOf(tc.issue); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: IssueBranchOf = %+v, want %+v", tc.name, got, tc.want)
 		}
-	}
-	if _, err := NewOutboxRow("ACME-1", IssueBranch{Generation: 4, From: &BranchFrom{}}, time.Now()); err == nil {
-		t.Error("a branch row whose start names neither the base nor the head was taken, want it refused")
 	}
 	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "suspend", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
 		StartAt: &StartAt{Bookmark: "legion/ACME-1", Base: "main"}}, time.Now()); err == nil {

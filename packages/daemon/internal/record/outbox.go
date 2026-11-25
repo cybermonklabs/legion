@@ -1681,14 +1681,16 @@ type IssueBranch struct {
 	// From is where a next change's branch starts: the base the issue's last pull request merged
 	// into and the head that was merged, from the issue's merge snapshot. It is nil for every
 	// generation that is no next change, whose branch is made at the default branch as before. A
-	// release before the field refuses a row that carries it (DisallowUnknownFields), so the way
+	// next change whose snapshot knows neither carries a From that names neither, which starts at
+	// the recorded default branch and moves no branch GitHub has (the daemon's startBranchAtBase).
+	// A release before the field refuses a row that carries it (DisallowUnknownFields), so the way
 	// back of the done-by-checks migration deletes such rows.
 	From *BranchFrom `json:"from,omitempty"`
 }
 
 // BranchFrom is where a next change's branch starts (IssueBranch.From): Base, the branch the issue's
 // last pull request merged into, and MergedHead, the final head that was merged. A field the merge
-// snapshot does not know is empty.
+// snapshot does not know is empty, and stays so: no reader invents it.
 type BranchFrom struct {
 	Base       string `json:"base,omitempty"`
 	MergedHead string `json:"mergedHead,omitempty"`
@@ -2458,11 +2460,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-	case GateSeed, LingerClose, CheckBound, ClaimRelease, DesignNewsReconcile:
-	case IssueBranch:
-		if from := value.From; from != nil && from.Base == "" && from.MergedHead == "" {
-			return fmt.Errorf("a branch row's start names the base or the merged head, or the row names no start")
-		}
+	case GateSeed, LingerClose, CheckBound, ClaimRelease, DesignNewsReconcile, IssueBranch:
 	case CloseRead:
 		if value.Generation == 0 {
 			return fmt.Errorf("a read of the checks names the generation it was queued for")
