@@ -546,9 +546,16 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 func stateHistoryOf(t *testing.T, database *store.Store, address string) []graphstore.Tuple {
 	t.Helper()
 	node := storedNodeOf(t, database, address)
-	history, err := graphstore.History(context.Background(), database.Pool, node.Kind, node.ID, graphstore.AttributeState)
+	return stateHistoryOfNode(t, database, node.Kind, node.ID)
+}
+
+// stateHistoryOfNode is every state tuple the store holds of the node it keys by kind and id,
+// oldest first.
+func stateHistoryOfNode(t *testing.T, database *store.Store, kind, id string) []graphstore.Tuple {
+	t.Helper()
+	history, err := graphstore.History(context.Background(), database.Pool, kind, id, graphstore.AttributeState)
 	if err != nil {
-		t.Fatalf("read the state history of %s: %v", address, err)
+		t.Fatalf("read the state history of %s %s: %v", kind, id, err)
 	}
 	return history
 }
