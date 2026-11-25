@@ -307,12 +307,12 @@ func withoutImpersonation(credential []byte) ([]byte, error) {
 
 // credentialFields is an external_account credentials file in the types cloud.google.com/go/auth
 // decodes it into (internal/credsfile's ExternalAccountFile and the types it holds): every field,
-// with the library's JSON name, and a struct, a pointer, a map or a scalar where the library has
-// one, so that this client reads the bytes it checks as the library reads them, a null and a
+// with the library's JSON name, and a struct, a pointer, a map or a leaf of the kind the library
+// has there, so that this client reads the bytes it checks as the library reads them, a null and a
 // repeated key included (repeatsKey reads which objects are structs and which are maps from these
-// types). TestTheMirroredTypesAreGooglesLibrarys holds them to the library's own source. This
-// client reads the token service and the files its credential_source names; the other fields are
-// here for repeatsKey.
+// types). TestTheMirroredTypesAreGooglesLibrarys holds each field's name, shape and leaf kind to
+// the library's own source. This client reads the token service and the files its
+// credential_source names; the other fields are here for repeatsKey.
 type credentialFields struct {
 	Type                     string                 `json:"type"`
 	ClientID                 string                 `json:"client_id"`
@@ -543,7 +543,8 @@ func certificateFailure(source certificateSource) string {
 // it into (internal/transport/cert's certificateConfig and the types it holds), a pointer where the
 // library's is one, so that a null reads as the library reads it, and the schema repeatsKey reads
 // the configuration with. The library reads a nil Workload as an enterprise certificate proxy's
-// configuration. TestTheMirroredTypesAreGooglesLibrarys holds it to the library's own source.
+// configuration. TestTheMirroredTypesAreGooglesLibrarys holds each field's name, shape and leaf
+// kind to the library's own source.
 type certificateConfig struct {
 	CertConfigs struct {
 		Workload *struct {
@@ -625,9 +626,11 @@ func opens(path string) error {
 // into a map (the last of the keys, a merge of them, or each spelling), so where this client checks
 // a file that Google's library then reads, it can make the two read different files: such a file is
 // refused before either reads it. Numbers are read as text (UseNumber), as the decoder skips one
-// whatever its size. The error is the decoder's where data is not one JSON value: truncated, with
-// trailing data, with a delimiter, a colon or a comma out of place, or nested deeper than the
-// decoder reads.
+// whatever its size. Where data is not one JSON value it answers an error: the decoder's for data
+// that is truncated, has a delimiter, a colon or a comma out of place, or nests deeper than the
+// decoder reads, and its own ("more than one JSON value") for data after the value. The walk stops
+// at the first repeat, so data that repeats a key before such a defect answers true and no error,
+// and its callers refuse it as a file that repeats a key.
 func repeatsKey(data []byte, schema reflect.Type) (bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()

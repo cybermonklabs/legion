@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -246,7 +247,9 @@ func TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace(t *testing.T) {
 		{"control: headers whose names differ in case", file, `{"credential_source":{"headers":{"X-Example":"e","x-example":"e"}}}`, false},
 		{"control: a key that names no field, in another case", file, `{"extension":1,"EXTENSION":2}`, false},
 		{"control: keys repeated under a key that names no field", file, `{"extension":{"type":1,"type":2}}`, false},
-		{"control: keys repeated in the configuration's libs, which no typed decode reads", config, `{"libs":{"ecp":"a","ecp":"b"}}`, false},
+		// enterprise-certificate-proxy's util.LoadSignerBinaryPath decodes libs.ecp, but only for a
+		// configuration with no workload, which certificateFailure refuses before the library reads it.
+		{"control: keys repeated under libs, of which this client reads nothing", config, `{"libs":{"ecp":"a","ecp":"b"}}`, false},
 		{"control: one field at two depths", file, `{"type":"a","credential_source":{"format":{"type":"b"}}}`, false},
 		{"control: an object where the library decodes a string, which it refuses", file, `{"type":{"a":1,"a":2}}`, false},
 		{"control: a number outside float64's range", file, `{"type":"external_account","unknown_extension":1e400}`, false},
@@ -263,6 +266,14 @@ func TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace(t *testing.T) {
 		if _, err := repeatsKey([]byte(data), file); err == nil {
 			t.Errorf("repeatsKey(%q) answered no error; want one, as for data that is not one JSON value", data)
 		}
+	}
+	// Data after the value is repeatsKey's own error, and a repeat found before a defect answers
+	// true with no error.
+	if _, err := repeatsKey([]byte(`{} {}`), file); err == nil || err.Error() != "more than one JSON value" {
+		t.Errorf("repeatsKey of two values: %v; want the error more than one JSON value", err)
+	}
+	if repeats, err := repeatsKey([]byte(`{"type":"a","type":"b"`), file); !repeats || err != nil {
+		t.Errorf("repeatsKey of a truncated object that repeats a key = %t, %v; want true and no error", repeats, err)
 	}
 }
 
@@ -377,9 +388,11 @@ func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
 // repeatsKey reads which objects are structs and which are maps, have the shape of the types
 // Google's library decodes a credentials file and a certificate configuration into, read from the
 // library's own source in the module this package builds with: each field's JSON name, and a
-// struct, a pointer, a map or a scalar where the library has one. Controls: the library's types
-// with credential_source a struct and not a pointer, or headers a string and not a map, differ
-// from the mirror, so this check sees each.
+// struct, a pointer, a map or a leaf of one kind (string, bool, int, interface and the rest) where
+// the library has one. A type of the library's that the check cannot name fails it. Controls: the
+// library's types with credential_source a struct and not a pointer, headers a string and not a
+// map, type an any and not a string, headers a map of any and not of string, or type a named type
+// the check does not know, each fail it.
 func TestTheMirroredTypesAreGooglesLibrarys(t *testing.T) {
 	list := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "cloud.google.com/go/auth")
 	out, err := list.Output()
@@ -395,26 +408,60 @@ func TestTheMirroredTypesAreGooglesLibrarys(t *testing.T) {
 		{"internal/transport/cert/workload_cert.go", "certificateConfig", certificateConfigType},
 	} {
 		types := structTypes(t, filepath.Join(dir, row.file))
-		library, mirror := astShape(types[row.root], types), reflectShape(row.mirror)
-		if library != mirror {
-			t.Errorf("%s in %s has the shape\n  %s\nand the mirror\n  %s", row.root, row.file, library, mirror)
+		if reason := mirrorFailure(astShape(types[row.root], types), reflectShape(row.mirror)); reason != "" {
+			t.Errorf("%s in %s %s", row.root, row.file, reason)
 		}
 	}
 
-	types := structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
-	for name, edit := range map[string]func(){
-		"credential_source a struct": func() {
+	const differs = "has the shape"
+	for _, control := range []struct {
+		name string
+		edit func(types map[string]ast.Expr)
+		want string
+	}{
+		{"credential_source a struct", func(types map[string]ast.Expr) {
 			field := fieldTagged(t, types["ExternalAccountFile"], "credential_source")
 			field.Type = field.Type.(*ast.StarExpr).X
-		},
-		"headers a string": func() { fieldTagged(t, types["CredentialSource"], "headers").Type = ast.NewIdent("string") },
+		}, differs},
+		{"headers a string", func(types map[string]ast.Expr) {
+			fieldTagged(t, types["CredentialSource"], "headers").Type = ast.NewIdent("string")
+		}, differs},
+		{"type an any", func(types map[string]ast.Expr) {
+			fieldTagged(t, types["ExternalAccountFile"], "type").Type = ast.NewIdent("any")
+		}, differs},
+		{"headers a map of any", func(types map[string]ast.Expr) {
+			fieldTagged(t, types["CredentialSource"], "headers").Type = &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}
+		}, differs},
+		{"type a named type", func(types map[string]ast.Expr) {
+			fieldTagged(t, types["ExternalAccountFile"], "type").Type = ast.NewIdent("credentialKind")
+		}, "names a type this check does not know: credentialKind"},
 	} {
-		types = structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
-		edit()
-		if astShape(types["ExternalAccountFile"], types) == reflectShape(credentialFieldsType) {
-			t.Errorf("control: the library's types with %s have the mirror's shape, so this check cannot see that difference", name)
+		types := structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
+		control.edit(types)
+		if got := mirrorFailure(astShape(types["ExternalAccountFile"], types), reflectShape(credentialFieldsType)); !strings.Contains(got, control.want) {
+			t.Errorf("control: with %s, the check says %q; want it to say %q", control.name, got, control.want)
 		}
 	}
+}
+
+// unknownType is how astShape writes a type it cannot name.
+var unknownType = regexp.MustCompile(`unknown\(([^)]*)\)`)
+
+// mirrorFailure is why library, the shape of a type of Google's library, is not mirror, the shape
+// of its mirror, and "" where the two are one: a type of the library's that astShape cannot name,
+// or another shape.
+func mirrorFailure(library, mirror string) string {
+	if unknown := unknownType.FindAllStringSubmatch(library, -1); unknown != nil {
+		var names []string
+		for _, match := range unknown {
+			names = append(names, match[1])
+		}
+		return "names a type this check does not know: " + strings.Join(names, ", ")
+	}
+	if library != mirror {
+		return "has the shape\n  " + library + "\nand the mirror\n  " + mirror
+	}
+	return ""
 }
 
 // structTypes is every struct type the Go file at path declares, by name.
@@ -461,16 +508,34 @@ func jsonName(field *ast.Field) string {
 	return field.Names[0].Name
 }
 
-// astShape is the shape of a type expression of a file whose struct types are types: "scalar", "*"
-// and the shape pointed at, "map[" key "]" value, "[]" element, or "{" each field's JSON name and
-// shape "}", in name order.
+// leafKinds names, as reflect.Kind names it, the kind of each of Go's predeclared types a field can
+// have: byte and rune are uint8 and int32, and any an interface.
+var leafKinds = map[string]string{
+	"bool": "bool", "string": "string", "int": "int", "int8": "int8", "int16": "int16", "int32": "int32",
+	"int64": "int64", "uint": "uint", "uint8": "uint8", "uint16": "uint16", "uint32": "uint32",
+	"uint64": "uint64", "uintptr": "uintptr", "float32": "float32", "float64": "float64",
+	"complex64": "complex64", "complex128": "complex128", "byte": "uint8", "rune": "int32", "any": "interface",
+}
+
+// astShape is the shape of a type expression of a file whose struct types are types: a leaf's
+// kind (leafKinds, and "interface" for an interface with no methods), "*" and the shape pointed
+// at, "map[" key "]" value, "[]" element, or "{" each field's JSON name and shape "}", in name
+// order. Any other type, such as a named type that is no struct of the file or a type of another
+// package, is "unknown(" its name or Go type ")".
 func astShape(expr ast.Expr, types map[string]ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		if named, ok := types[e.Name]; ok {
 			return astShape(named, types)
 		}
-		return "scalar"
+		if kind, ok := leafKinds[e.Name]; ok {
+			return kind
+		}
+		return "unknown(" + e.Name + ")"
+	case *ast.InterfaceType:
+		if len(e.Methods.List) == 0 {
+			return "interface"
+		}
 	case *ast.StarExpr:
 		return "*" + astShape(e.X, types)
 	case *ast.MapType:
@@ -485,10 +550,10 @@ func astShape(expr ast.Expr, types map[string]ast.Expr) string {
 		slices.Sort(fields)
 		return "{" + strings.Join(fields, ",") + "}"
 	}
-	return fmt.Sprintf("other %T", expr)
+	return fmt.Sprintf("unknown(%T)", expr)
 }
 
-// reflectShape is the shape of a type, as astShape writes it.
+// reflectShape is the shape of a type, as astShape writes it, a leaf as its kind.
 func reflectShape(t reflect.Type) string {
 	switch t.Kind() {
 	case reflect.Pointer:
@@ -510,7 +575,7 @@ func reflectShape(t reflect.Type) string {
 		slices.Sort(fields)
 		return "{" + strings.Join(fields, ",") + "}"
 	}
-	return "scalar"
+	return t.Kind().String()
 }
 
 // routedClient is a client that sends a request for each host routes names to the stand-in at its
