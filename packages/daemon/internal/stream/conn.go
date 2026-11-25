@@ -255,15 +255,15 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 }
 
 // AdoptWorkingCopy asks the shim to set the author of its workspace's working copy, naming the
-// fix's commit and the task's move where the adoption names them (shimwire.AdoptWorkingCopy). The
-// shim runs the command within timeout; the answer is awaited for that plus the RPC timeout, the
-// round trip (worker-rpc.ts:492-505). An ok answer is handed on as it came, with whatever echo it
-// carries: a shim built before the two members answers neither, and the caller decides what a
-// missing echo means.
+// fix's commit, the fix's own branch and the task's move where the adoption names them
+// (shimwire.AdoptWorkingCopy). The shim runs the command within timeout; the answer is awaited for
+// that plus the RPC timeout, the round trip (worker-rpc.ts:492-505). An ok answer is handed on as
+// it came, with whatever echo it carries: a shim built before the members answers neither, and the
+// caller decides what a missing echo means.
 func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, adoption runtime.Adoption, timeout time.Duration) (runtime.Adopted, error) {
 	id := rand.Text()
 	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds()),
-		FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo}
+		FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo, FixBranch: adoption.FixBranch}
 	if err := frame.Validate(); err != nil {
 		return runtime.Adopted{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}

@@ -902,13 +902,15 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	}
 }
 
-// An adoption names a fix's commit and the task's move beside the identity, each a member of the
-// frame, and the shim's echo of each is the answer: the fix's working copy it made and the commit it
-// moved the task's working copy to. A shim built before the members answers ok with neither, and
-// the connection hands that answer on as it came. A member that is no full commit id is refused
-// before any frame leaves, as every malformed frame is.
+// An adoption names a fix's commit, the fix's own branch and the task's move beside the identity,
+// each a member of the frame, and the shim's echo of each is the answer: the fix's working copy it
+// made and the commit it moved the task's working copy to. A shim built before the members answers
+// ok with neither, and the connection hands that answer on as it came. A member that is no full
+// commit id, or a fix's branch that is no branch beside a fix, is refused before any frame leaves,
+// as every malformed frame is.
 func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
 	const fixFrom, moveTo = "c0de000000000000000000000000000000000001", "c0de000000000000000000000000000000000002"
+	const fixBranch = "legion-beside/LEGION-208/1/default/fix-1/implementer"
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
 	conn := h.conn()
@@ -936,10 +938,10 @@ func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
 		}
 	}
 
-	answered := ask(runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo})
+	answered := ask(runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo, FixBranch: fixBranch})
 	request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
-	if request.FixFrom != fixFrom || request.MoveTo != moveTo || request.JJUser != identity.Name {
-		t.Fatalf("adopt-working-copy frame = %#v, want fixFrom %s and moveTo %s under %s", request, fixFrom, moveTo, identity.Name)
+	if request.FixFrom != fixFrom || request.MoveTo != moveTo || request.FixBranch != fixBranch || request.JJUser != identity.Name {
+		t.Fatalf("adopt-working-copy frame = %#v, want fixFrom %s, moveTo %s and fixBranch %s under %s", request, fixFrom, moveTo, fixBranch, identity.Name)
 	}
 	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true, FixDir: "/w/widgets-42-fix", MovedTo: moveTo})
 	if got := await(answered); got.err != nil || got.adopted != (runtime.Adopted{FixDir: "/w/widgets-42-fix", MovedTo: moveTo}) {
@@ -954,7 +956,7 @@ func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
 	}
 
 	answered = ask(runtime.Adoption{})
-	if request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy); request.FixFrom != "" || request.MoveTo != "" {
+	if request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy); request.FixFrom != "" || request.MoveTo != "" || request.FixBranch != "" {
 		t.Fatalf("an adoption naming neither sent %#v, want a frame with neither member", request)
 	}
 	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true})
@@ -964,6 +966,9 @@ func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
 
 	if _, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{FixFrom: "abc"}, time.Second); !errors.Is(err, shimwire.ErrMalformedFrame) {
 		t.Fatalf("an adoption naming fixFrom abc = %v, want the malformed frame refused before it leaves", err)
+	}
+	if _, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{FixFrom: fixFrom, FixBranch: "legion/LEGION-208"}, time.Second); !errors.Is(err, shimwire.ErrMalformedFrame) {
+		t.Fatalf("an adoption naming the issue's branch as the fix's = %v, want the malformed frame refused before it leaves", err)
 	}
 }
 
