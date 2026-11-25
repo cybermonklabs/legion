@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
@@ -678,7 +679,7 @@ describe("safe_url", () => {
   // reads only those; a NATS server is named by the host and port nats_endpoint read, so no
   // spelling of a NATS URL's scheme decides whether its user info is printed.
   test("safe_url prints no part of a URL that is not a Postgres one", () => {
-    const token = "tokA1b2C3d4E5f6";
+    const token = fixtureSecret("tok");
     const withToken = new URL("nats://127.0.0.1:4222");
     withToken.username = token;
     const { code, stdout, stderr } = bash(
@@ -764,7 +765,7 @@ describe.skipIf(withoutPython)("nats_endpoint", () => {
   // host from past the authority: a `@` in the path, the query or the fragment. A URL with no port
   // names nats.go's 4222.
   test("nats_endpoint reads the host and port alone, from the URL's authority", () => {
-    const token = "tokA1b2C3d4E5f6";
+    const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4223");
     url.username = token;
     const withToken = url.href;
@@ -805,6 +806,8 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     url.password = "s3cret";
     return url.href;
   };
+  /** The batch's credential files in its services directory, each written owner-only. */
+  const credentialFiles = ["env", "postgres-url", "envoy-token", "dispatch-token"];
   /** services_up given URL and the NATS nats, in a services directory of its own, with a psql
    * first on PATH that appends to psql.log each time it runs, and a go that answers
    * connections_needed's count. until_true runs its command once, so a URL that passed every
@@ -887,25 +890,30 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
 
   // Catches: a given NATS off this machine's loopback refused late, after the batch reached the
   // Postgres and the NATS and built the listener, or by fixturebuckets alone: services_up refuses
-  // it with the Postgres URL's checks, before psql runs or a URL is written, naming the host it
-  // read and no user info (an IPv6 address, and a name that only begins with localhost, too).
+  // it with the Postgres URL's checks, before psql runs or a URL is written (an IPv6 address, a
+  // name that only begins with localhost, a host that is credential text, and no host at all).
+  // The refusal is fixed text: it prints no part of the URL it refused, not even the host read
+  // from it, since a rejected URL can hold credential text where the parser reads a host.
   test("refuses a NATS off this machine's loopback before psql runs or the URL is written", () => {
-    for (const [hostPort, host] of [
-      ["db.example:4222", "the host db.example"],
-      ["[2001:db8::1]:4222", "the host 2001:db8::1"],
-      ["localhost.example:4222", "the host localhost.example"],
-      [":4222", "no host the batch can read"],
+    for (const hostPort of [
+      "db.example:4222",
+      "[2001:db8::1]:4222",
+      "localhost.example:4222",
+      "s3cret:4222",
+      ":4222",
     ]) {
       // A URL with no host is built by hand: new URL() refuses it, and the batch must refuse it
       // too rather than read a host out of the user info.
-      const nats =
+      const nats = `${
         hostPort === ":4222"
           ? withPassword("x:4222").replace("x:4222", ":4222")
-          : withPassword(hostPort);
+          : withPassword(hostPort)
+      }/a/path?q=1#frag`;
       expect({ nats, ...up("postgres://u:p@127.0.0.1:5432/postgres", nats) }).toEqual({
         nats,
         code: 1,
-        stderr: `skill-scenarios: SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${host}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback\n`,
+        stderr:
+          "skill-scenarios: SKILL_SCENARIOS_NATS_URL must name one server on this machine's loopback (127.0.0.1, localhost or ::1), and it names none the batch can read as one: the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback\n",
         psqlRan: false,
         written: [],
       });
@@ -940,12 +948,17 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
    * fixturebuckets it builds, and a python3 first on PATH that runs the real one, append each
    * argument they were given to argv.log, one a line. Answers services_up's status, its output,
    * fixturebuckets.log, argv.log, ready.log and the services directory. */
-  function provision(natsUrl: string, provisions = false) {
+  function provision(natsUrl: string, provisions = false, stale = false) {
     const dir = freshDir("services-provision");
     const bin = path.join(dir, "bin");
     const services = path.join(dir, "services");
     mkdirSync(bin);
     mkdirSync(path.join(services, "logs"), { recursive: true });
+    // With stale, an earlier batch's credential files are there at 0644, as a write that kept a
+    // file's mode would leave them.
+    for (const name of stale ? credentialFiles : []) {
+      writeFileSync(path.join(services, name), "an earlier batch's\n", { mode: 0o644 });
+    }
     mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
     const argv = path.join(dir, "argv.log");
     const ready = path.join(dir, "ready.log");
@@ -1064,9 +1077,11 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   // failure and the services note name the server by the host and port nats_endpoint read, so
   // an upper-case or absent scheme, which the loopback check reads as nats://, leaks no token. The
   // services file is the one file that holds the URL, since it hands it to the batch's runs as
-  // ENVOY_NATS_URL, as the Postgres URL's file hands that URL on; both are its owner's alone.
+  // ENVOY_NATS_URL. It and the batch's other credential files, the given Postgres URL's and the
+  // two tokens, are their owner's alone, over an earlier batch's files left at 0644: a write onto
+  // a file that is there keeps its mode, whatever the umask.
   test("no message, note or file but the services file names a given NATS's user info", () => {
-    const token = "tokA1b2C3d4E5f6";
+    const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4222");
     url.username = token;
     const seen: Record<string, string[]> = {};
@@ -1075,17 +1090,19 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       ["no scheme", url.href.slice("nats://".length)],
     ]) {
       for (const provisions of [false, true]) {
-        const run = provision(nats, provisions);
+        const run = provision(nats, provisions, true);
         const where = `${shape}, ${provisions ? "provisioned" : "a failed provisioning"}`;
+        // The files the run writes: the Postgres URL's before it provisions, the rest after.
+        const written = provisions ? credentialFiles : ["postgres-url"];
         seen[where] = [
           ...(run.stdout.includes(token) ? ["stdout"] : []),
           ...(run.stderr.includes(token) ? ["stderr"] : []),
           ...Object.entries(run.files)
             .filter(([name, file]) => file.text.includes(token) && name !== "env")
             .map(([name]) => name),
-          ...(run.files.env && (run.files.env.mode & 0o077) !== 0
-            ? ["env readable by others"]
-            : []),
+          ...written
+            .filter((name) => ((run.files[name]?.mode ?? 0o777) & 0o077) !== 0)
+            .map((name) => `${name} readable by others`),
           ...(run.code === (provisions ? 0 : 1) ? [] : [`exit ${run.code}`]),
         ];
       }
@@ -1950,13 +1967,15 @@ sleep() { command sleep 0.05; }`;
   // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
   // a tester's pane carries the batch's NATS URL, credential included, and the launch once handed
   // the pane to `env -i` as arguments. Every `env` the launch runs records its arguments here, and
-  // omp's stand-in records its environment, which must be the pane's lines and nothing else.
-  test("the pane's variables reach omp in its environment alone, never in an argument", () => {
+  // the stand-in for mise, the launcher launch.sh execs, records the environment it is handed,
+  // which must be the pane's lines and nothing else. This is the boundary the row observes: what
+  // launch.sh hands mise, not the environment of the omp process the real mise starts.
+  test("the pane's variables reach the launcher, mise, in its environment alone, never in an argument", () => {
     const run = freshDir("launch-env-run");
     const bin = freshDir("launch-env-bin");
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
     const realEnv = Bun.which("env", { PATH: childEnv.PATH });
-    const token = "tokA1b2C3d4E5f6";
+    const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4222");
     url.username = token;
     const pane = [`PATH=${bin}:${childEnv.PATH}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
@@ -1971,7 +1990,7 @@ sleep() { command sleep 0.05; }`;
     );
     writeFileSync(
       path.join(bin, "mise"),
-      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "omp-env"))}\n`,
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
       { mode: 0o755 }
     );
     const standIns = `
@@ -1987,8 +2006,8 @@ sleep() { command sleep 0.05; }`;
       : "";
     // The stand-in mise is a /bin/sh script, and that shell exports PWD itself on start; the real
     // mise is no shell, so PWD is left out of the comparison.
-    const ompEnv = existsSync(path.join(run, "omp-env"))
-      ? readFileSync(path.join(run, "omp-env"), "utf8")
+    const launcherEnv = existsSync(path.join(run, "launcher-env"))
+      ? readFileSync(path.join(run, "launcher-env"), "utf8")
           .trim()
           .split("\n")
           .filter((line) => !line.startsWith("PWD="))
@@ -2001,8 +2020,8 @@ sleep() { command sleep 0.05; }`;
         .split("\n")
         .filter((line) => line.includes(token))
         .map((line) => line.replaceAll(token, "<token>")),
-      ompEnv,
-    }).toEqual({ code: 0, envRan: true, leaked: [], ompEnv: [...pane].sort() });
+      launcherEnv,
+    }).toEqual({ code: 0, envRan: true, leaked: [], launcherEnv: [...pane].sort() });
   });
 });
 

@@ -677,11 +677,11 @@ EOF
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
 # timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line. The pane's variables reach omp through the launch file's
-# environment, never through a process's arguments, which every user of this machine reads: a
-# tester's pane carries the batch's NATS URL, which can carry a credential. The launch file starts
-# itself again with an empty environment, exports each KEY=value line of the pane file with the
-# shell's own `export`, and execs omp, whose environment is then the pane's lines and nothing else.
+# wait reads only its own exit line. The pane's variables reach mise, which starts omp, through the
+# launch file's environment, never through a process's arguments, which every user of this machine
+# reads: a tester's pane carries the batch's NATS URL, which can carry a credential. The launch file
+# starts itself again with an empty environment, exports each KEY=value line of the pane file with
+# the shell's own `export`, and execs mise with the pane's lines as its whole environment.
 launch() {
   local system='' extra='' omp
   omp=$(pinned_omp "$pin") || exit 1
@@ -869,9 +869,10 @@ given_services() {
 }
 
 # owner_only FILE writes its standard input to FILE, readable and writable by its owner alone. It
-# removes FILE first, since a write onto a file that is there keeps that file's mode. The services
-# file and a tester's pane file go through it: each holds the batch's NATS URL, whose credential no
-# other user of this machine may read.
+# removes FILE first, since a write onto a file that is there keeps that file's mode, whatever the
+# umask. Every credential file of the batch's services goes through it: the services file and a
+# tester's pane file, which hold the batch's NATS URL; the given Postgres URL's file; and the
+# listener's and Dispatch's tokens. No other user of this machine may read any of them.
 owner_only() {
   (umask 077 && rm -f -- "$1" && cat >"$1")
 }
@@ -1069,17 +1070,17 @@ services_up() {
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     [[ $SKILL_SCENARIOS_NATS_URL != *,* ]] ||
       fail "SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone"
-    endpoint=$(nats_endpoint "$SKILL_SCENARIOS_NATS_URL") || {
-      nats_host=${endpoint% *}
-      fail "SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${nats_host:+the host }${nats_host:-no host the batch can read}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
-    }
+    # The refusal is fixed text: a rejected URL can hold credential text where the parser reads a
+    # host, so it prints no part of the URL, not even the host nats_endpoint read from it.
+    endpoint=$(nats_endpoint "$SKILL_SCENARIOS_NATS_URL") ||
+      fail "SKILL_SCENARIOS_NATS_URL must name one server on this machine's loopback (127.0.0.1, localhost or ::1), and it names none the batch can read as one: the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
     nats_host=${endpoint% *} nats_port=${endpoint##* }
     nats_at=$nats_host:$nats_port
     [[ $nats_host != *:* ]] || nats_at="[$nats_host]:$nats_port"
     connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
-    (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
+    printf '%s\n' "$pg_url" | owner_only "$services_postgres"
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
     until_true 60 "NATS at $nats_at to send its INFO line" nats_ready "$nats_host" "$nats_port"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
@@ -1118,7 +1119,8 @@ services_up() {
   # by its host and port, and fixturebuckets names it in its log without the URL's user info.
   FIXTUREBUCKETS_URL=$nats_url "$S/fixturebuckets" >"$S/logs/fixturebuckets.log" 2>&1 ||
     fail "fixturebuckets could not provision the NATS at $nats_at with the buckets a listener copies; see $S/logs/fixturebuckets.log"
-  (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
+  openssl rand -hex 24 | owner_only "$S/envoy-token"
+  printf 'e2e-token\n' | owner_only "$S/dispatch-token"
   start_listener
   # The services file hands the runs the NATS URL, credential included, as ENVOY_NATS_URL, so it is
   # its owner's alone, as the given Postgres URL's file is.
