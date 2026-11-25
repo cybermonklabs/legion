@@ -107,13 +107,13 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 }
 
 // A result counts only at the commit that it read, and a run of a CI job only at the commit that
-// the job tested. So a run of a check of the code counts at its own commit alone, also at a later
-// commit where no file that the check's tie covers changed; a run of the check's job that ended
-// there with no result of the check is no fault of CI at the later commit; and a program, a query
-// and an agent of the code each read their runs so. Each row is TestCheckState's base, a pass of
-// C's job at c1 and a failing example planted on c1, with the row's change at the subject c2, whose
-// tree is c1's with docs/x.md changed, a file that no tie covers. Each control holds a record of
-// c2 itself, which counts there.
+// the job tested. So a run of a check of the code counts at its own commit alone, and not at a
+// later commit, even where no file that the check's tie covers changed; a run of the check's job
+// that ended there with no result of the check is no fault of CI at the later commit; and a
+// program, a query and an agent of the code each read their runs so. Each row is TestCheckState's
+// base, a pass of C's job at c1 and a failing example planted on c1, with the row's change at the
+// subject c2, whose tree is c1's with docs/x.md changed, a file that no tie covers. Each control
+// holds a record of c2 itself, which counts there.
 func TestARunCountsOnlyAtTheCommitItRead(t *testing.T) {
 	t.Parallel()
 	atC2 := func(change func(c *checkCase)) func(c *checkCase) {
