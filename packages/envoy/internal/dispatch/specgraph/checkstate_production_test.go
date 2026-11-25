@@ -38,18 +38,9 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
-			s.add(row.check)
-			s.tieLikeC(row.check.ID)
-			s.commit("c2", "c1", row.changed)
-			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-			run := Result{Check: row.check.ID, Kind: ResultRun, Outcome: OutcomePass, Job: row.check.Test.Job, TestCommit: row.runCommit, At: checkStateRun.Add(time.Hour)}
-			if row.check.Subject == SubjectGraph {
-				run.GraphTx = "tx1"
-			} else {
-				run.Deploy = "d2"
-			}
-			s.Results = append(s.Results, run, Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
-				At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			s.programBase(row.check, row.changed)
+			s.Results = append(s.Results, programResult(row.check, ResultRun, OutcomePass, row.runCommit, time.Hour),
+				programResult(row.check, ResultFailingExample, OutcomeFail, "c2", 65*time.Minute))
 			want := row.want
 			want.ID = row.check.ID
 			deriveAlone(t, s, want, row.statements)
@@ -149,22 +140,23 @@ func (s *checkCase) productionProgram(changed, testCommit string) {
 	s.Results = append(s.Results, run, fault)
 }
 
-// programBase is the base of programPass and passReadAnotherSubject: the program check q of
-// production or of the graph, with C's tie, and subject c2 under deploy d2 at tx1, where c2 differs
-// from c1 outside the tie.
-func (s *checkCase) programBase(q Check) {
+// programBase is the base of programPass, passReadAnotherSubject and
+// TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt: the program check q of production or of
+// the graph, with C's tie, and subject c2 under deploy d2 at tx1, where c2 changes changed from c1.
+func (s *checkCase) programBase(q Check, changed string) {
 	s.t.Helper()
 	s.add(q)
 	s.tieLikeC(q.ID)
-	s.commit("c2", "c1", "docs/x.md")
+	s.commit("c2", "c1", changed)
 	s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
 }
 
-// programPass is programBase with a pass of q's test at runCommit, under deploy d2 or at the
-// transaction tx1, and a failing example that its test at faultCommit caught.
+// programPass is programBase, where c2 differs from c1 outside the tie, with a pass of q's test at
+// runCommit, under deploy d2 or at the transaction tx1, and a failing example that its test at
+// faultCommit caught.
 func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
 	s.t.Helper()
-	s.programBase(q)
+	s.programBase(q, "docs/x.md")
 	s.Results = append(s.Results, programResult(q, ResultRun, OutcomePass, runCommit, time.Hour),
 		programResult(q, ResultFailingExample, OutcomeFail, faultCommit, 65*time.Minute))
 }
@@ -200,7 +192,7 @@ func readAt(q Check, r Result, deploy, graphTx string) Result {
 // refused, CI's refusal of q at c1.
 func passReadAnotherSubject(q Check, refused bool) func(c *checkCase) {
 	return func(c *checkCase) {
-		c.programBase(q)
+		c.programBase(q, "docs/x.md")
 		c.Results = append(c.Results, readAt(q, programResult(q, ResultRun, OutcomePass, "c1", time.Hour), "d1", "tx2"))
 		c.JobRuns = []JobRun{{Job: q.Test.Job, Commit: "c2", Ended: true}}
 		if refused {

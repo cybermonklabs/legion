@@ -486,13 +486,9 @@ func TestCheckState(t *testing.T) {
 		// The rule that replaces The Spec's R8 makes one exception to "A result counts only at the
 		// commit that it read": "A failing example that a check's test caught". So a failing example
 		// that missed its fault counts only at the commit that it counts from, and a missed record
-		// planted on c3 says nothing at c1, with CI's refusal at c3 or without it, whatever changed
-		// between them.
-		{name: "R48 and the rule that replaces The Spec's R8, a refusal at planted_on and a later missed record planted on c3, where no file of the tie changed: the missed record counts nowhere at c1, true from c1", change: func(c *checkCase) {
-			c.commit("c3", "c1", "docs/x.md")
-			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
-			c.Uncited = map[string]map[string]string{"c3": {c.check: "test-not-in-code"}}
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		// planted on c3 says nothing at c1, whatever changed between them. A refusal could reach such
+		// a record only at the subject's own commit, where step 2 reads uncited first, so no row here
+		// adds one.
 		{name: "the rule that replaces The Spec's R8, a later missed failing example planted on c3, where no file of the tie changed, counts nowhere at c1: true from c1", change: func(c *checkCase) {
 			c.commit("c3", "c1", "docs/x.md")
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
@@ -612,13 +608,12 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, programResult(checkStateGraphProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "could_not_run"}},
-		// A failing example of the test of c1 that missed its fault counts only at c1 (the rule that
-		// replaces The Spec's R8 carries a caught one alone), so at c2 it says nothing, with CI's
-		// refusal at c1 as without it, and the failing example that the test of c2 caught decides.
-		{name: "R48 and the rule that replaces The Spec's R8, a refusal of a program check of production at the commit of the test of a newer failing example that missed its fault: that example counts nowhere at c2, true from d2", change: func(c *checkCase) {
+		// Not a row of a refusal: a failing example of the test of c1 that missed its fault counts
+		// only at c1 (the rule that replaces The Spec's R8 carries a caught one alone), so at c2 it
+		// says nothing, and the failing example that the test of c2 caught decides.
+		{name: "the rule that replaces The Spec's R8, a newer failing example of a program check of production whose test of c1 missed its fault counts nowhere at c2: true from d2", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c2", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
-			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
 		{name: "control: a refusal of a program check of production at the commit of the test of a newer pass takes out that pass, and the older failure decides", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c1", "c2")

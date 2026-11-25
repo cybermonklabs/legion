@@ -82,14 +82,7 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want:  "specgraph: result 4: it sets no test_commit, the commit of the test that ran"},
 		{name: "TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt: production, the pass names no commit of its test",
 			setup: func(s *checkCase) {
-				q := checkStateProductionProgram
-				s.add(q)
-				s.tieLikeC(q.ID)
-				s.commit("c2", "c1", "docs/x.md")
-				s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-				s.Results = append(s.Results, Result{Check: q.ID, Kind: ResultRun, Outcome: OutcomePass, Deploy: "d2", Job: q.Test.Job, At: checkStateRun.Add(time.Hour)},
-					Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
-						At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+				s.programPass(checkStateProductionProgram, "", "c2")
 				s.remove(checkStateCheck.ID)
 			}, want: "specgraph: result 3: it sets no test_commit, the commit of the test that ran"},
 		{name: "TestAGraphCheckReadsTheTransactionOfTheSubject: a pass that names no transaction, at a deploy that names none",
