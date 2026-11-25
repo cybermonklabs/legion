@@ -55,7 +55,22 @@ notifications.github.<owner>.<repo>.job.<run_id>.completed    a finished Actions
 ```
 
 A dot in an owner, repository, or ref name is written `_` in the subject, so `acme/site.io` is
-`notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once.
+`notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once: an event
+is keyed by its `X-GitHub-Delivery` GUID, which GitHub gives one event in every webhook that
+receives it, so the copies two Apps installed on one repository deliver are stored once too.
+
+The listener logs one `github published` line for each topic of each delivery it publishes, with
+the delivery's GUID, its event and action, the topic, the key, the hook target's id
+(`X-GitHub-Hook-Installation-Target-ID`, an App's id for an App's webhook), `result=stored` or
+`result=duplicate`, the stream's answer, and `resent=true` where that answer came to the bus's
+resend after the connection closed under its first send, which counts as `stored` since the first
+send may have stored that copy. A comment or a review also logs a `github sender` line, which
+names the sender and the hook target's type and id. The body's signature covers neither
+`X-GitHub-Delivery` nor the two hook-target headers, so the lines write what they hold of them
+quoted: the `github sender` line `target_type`, `target_id` and `delivery`
+(`target_type="integration" target_id="5341240"`), the `github published` line `target_id`,
+`delivery` and `key`, the key being built from the delivery, and the `github mention detected`
+line `delivery`.
 
 When a repository has been renamed, the listener publishes each of its events a second time under
 the former name, for every pair `ENVOY_GITHUB_REPOSITORY_RENAMES` configures as
@@ -206,10 +221,13 @@ again. If no session takes a message by then, the listener drops it and sends th
 session a dead letter, when the publish named that session, unless it drops the message more than
 an hour late. The dead letter is an Envoy message on the session's agent subject that names the
 role, the message's event id, its first line, why Envoy dropped it, and when Envoy kept it and
-dropped it. The listener also sends one when it drops a kept message inside its hour because the
-live holder does not take the message's delivery mode, and `envoy_role_dead_letters_total` counts
-both. A publish that repeats a dedupe key while its first copy is still kept stores nothing new,
-and is answered with that first copy.
+dropped it. A dead letter quotes nothing of a message from Dispatch. A comment or a message is
+named by its id and its `dispatch://` reference, where its event carries them, because its author
+can edit or delete it; any other message from Dispatch, such as an ask's, an issue's or a delivery
+receipt, is named by its event id alone. The listener also sends one when it drops a kept message
+inside its hour because the live holder does not take the message's delivery mode, and
+`envoy_role_dead_letters_total` counts both. A publish that repeats a dedupe key while its first
+copy is still kept stores nothing new, and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
@@ -556,6 +574,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
+| `ENVOY_VERDICT_APP_ID` | Optional with `github`: the id of the GitHub App that writes `legion-verdict`. The listener leaves that App's own check suites out of the CI record, in every action, and logs `ci: left out the verdict App's own check suite` for each, so a head settles beside the suite GitHub makes the App on each push. Unset or blank leaves no suite out; a value that is not a whole number above 0 with no leading zero refuses startup. Give Dispatch the same value as `DISPATCH_VERDICT_APP_ID`, or its CI reconcile pass writes the App's completed suite back and the head is published a second time. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 | `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |

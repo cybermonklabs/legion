@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -86,9 +87,10 @@ func TestAnIssueNameInNeitherFormIsPoison(t *testing.T) {
 // Through the Dispatch durable: an issue event named in the new form is applied; one named in the
 // old form is applied too, and logged at INFO with its subject and the running count of old-form
 // names the consumer has read, the first at once and then at most one line a minute, since every
-// daemon hears every project's events; and one whose name is in neither form is logged at ERROR
-// with its subject, its stream sequence and the running count of such names, and terminated. It
-// leaves the stream as poison does, never acknowledged in silence.
+// daemon hears every project's events; and one whose name is in neither form is given up as a
+// message that does not decode: its give-up line at ERROR names its subject, its stream sequence
+// and the running count of such names, one given-up record holds it, and it is terminated. It
+// leaves the stream as a give-up does, never acknowledged in silence.
 //
 // Negative control, run when this was written: make decodeDispatchFact answer a name in neither
 // form with no fact and no error, as the merge base did for a key it could not read; the wait for
@@ -135,10 +137,16 @@ func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) 
 	requireLogLine(t, logs, oldFormLine, "subject=notifications.dispatch.issue.LEGION-8.issue.updated", "legacy_count=3")
 
 	neither := publish(t, js, "notifications.dispatch.issue.CAPTURE.issue.updated", capturedIssueUpdatedEnvelope(t))
-	testwait.Eventually(t, "the name in neither form logged at ERROR", func() bool {
-		return logLine(logs.String(), "level=ERROR", "poison JetStream message", "subject=notifications.dispatch.issue.CAPTURE.issue.updated") != ""
+	testwait.Eventually(t, "the name in neither form given up at ERROR", func() bool {
+		return logLine(logs.String(), "level=ERROR", "intake: a message was given up", "subject=notifications.dispatch.issue.CAPTURE.issue.updated") != ""
 	})
-	requireLogLine(t, logs, "poison JetStream message", "neither_form_count=1", "stream_seq="+strconv.FormatUint(neither.Sequence, 10))
+	requireLogLine(t, logs, "intake: a message was given up", "reason=undecodable", "neither_form_count=1", "stream_seq="+strconv.FormatUint(neither.Sequence, 10))
+	if given := waitGivenUp(t, pool, dispatch, neither.Sequence); given.GiveUpReason != record.GiveUpUndecodable {
+		t.Fatalf("the record of the name in neither form = %+v, want it given up as undecodable", given)
+	}
+	if records := intakeRecords(t, pool); len(records) != 1 {
+		t.Fatalf("intake_failures holds %d rows, want the one give-up of the name in neither form", len(records))
+	}
 	assertNoAckPending(t, stream, dispatch)
 	if got := writeCount(t, pool); got != 2 {
 		t.Fatalf("%d facts applied in all, want 2: a name in neither form applies nothing", got)

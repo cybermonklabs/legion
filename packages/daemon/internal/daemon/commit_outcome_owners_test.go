@@ -63,6 +63,7 @@ func ownerFamilies() []ownerFamily {
 		{name: "idle release", match: "insert into issue_releases", retried: true, open: idleReleaseOwner},
 		{name: "unowned release", match: "insert into issue_releases", retried: true, open: unownedReleaseOwner, unknown: unownedReleaseUnknown},
 		{name: "release cancel", match: "delete from issue_releases", open: releaseCancelOwner, unknown: releaseCancelUnknown},
+		{name: "left pod close", match: "insert into outbox", open: leftPodCloseOwner, unknown: leftPodCloseUnknown},
 		{name: "news settle", match: newsSettleMatch, retried: true, open: newsSettleOwner, unknown: newsSettleUnknown},
 	}
 }
@@ -209,9 +210,9 @@ func backfillOwner(kind string) func(t *testing.T) *ownerRig {
 			run: func(*testing.T) error {
 				var err error
 				if kind == "fill" {
-					_, err = fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, log)
+					_, err = fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, productionRepositoryReads(), log)
 				} else {
-					_, err = nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, log)
+					_, err = nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, productionRepositoryReads(), log)
 				}
 				return err
 			},
@@ -320,8 +321,10 @@ func unownedReleaseOwner(t *testing.T) *ownerRig {
 	}
 }
 
-// cancelRig is the rig of a marked release whose save fails, so the save row cancels it
-// (outbox.cancelRelease), with the outbox's store and pool swapped together to faulted.
+// cancelRig is an idle rig whose outbox has its store and pool swapped together to faulted, and its
+// log read by the test (faultedRig). newCancelRig builds it over a marked release whose pod is given
+// work after its mark, so the release's workspace check cancels it (outbox.cancelRelease,
+// workflow.IdleHoldOvertaken); newLeftCloseRig builds it over a left pod's close.
 type cancelRig struct {
 	*idleRig
 	fault *testdb.CommitFault
@@ -331,11 +334,23 @@ type cancelRig struct {
 
 func newCancelRig(t *testing.T) *cancelRig {
 	rig := newIdleRig(t)
-	rig.rt.bundleErr = errors.New("the launcher is gone")
 	rig.w.releaseIdlePod(context.Background(), rig.issue.Key)
 	if !rig.marked(t) {
 		t.Fatal("the idle pass marked no release")
 	}
+	// A turn of the implementer after the mark: the check finds the pod given work since, and
+	// cancels the release before it reads anything (store.IssueReleaseCheck, releaseOvertaken).
+	if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = now() where issue = $1`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("record a turn after the mark: %v", err)
+	}
+	return faultedRig(t, rig)
+}
+
+// faultedRig swaps the outbox's store and pool of rig together to faulted (faultedStoreOf), and
+// its log to one the test reads.
+func faultedRig(t *testing.T, rig *idleRig) *cancelRig {
+	t.Helper()
 	faulted, fault := faultedStoreOf(t, rig.st)
 	rig.runner.trees, rig.runner.pool, rig.runner.supervisor.store = faulted, faulted.Pool(), faulted
 	logs, log := watchedLog()
@@ -344,18 +359,18 @@ func newCancelRig(t *testing.T) *cancelRig {
 }
 
 // later moves the runner's clock past every backoff and lease the runs before it left, so the
-// next drain runs the save row again.
+// next drain runs the check row again.
 func (r *cancelRig) later() {
 	r.runs++
 	offset := time.Duration(r.runs) * 5 * time.Minute
 	r.runner.now = func() time.Time { return time.Now().Add(offset) }
 }
 
-// holdRows is how many hold records of the failed save the pod has.
+// holdRows is how many hold records of the cancelled release the pod has.
 func (r *cancelRig) holdRows(t *testing.T) int {
 	var holds int
 	if err := r.pool.QueryRow(context.Background(), `select count(*) from pod_holds where issue = $1 and reason = $2`,
-		r.issue.Key, workflow.IdleHoldBundleSave.String()).Scan(&holds); err != nil {
+		r.issue.Key, workflow.IdleHoldOvertaken.String()).Scan(&holds); err != nil {
 		t.Fatalf("count the hold records: %v", err)
 	}
 	return holds
@@ -363,17 +378,17 @@ func (r *cancelRig) holdRows(t *testing.T) int {
 
 const cancelLine = "outbox: the idle release of an issue's pod did not finish"
 
-// releaseCancelOwner is the cancel of a release whose save failed, called as the save row calls
-// it. The row's drain is not the runner here: once the save row has failed, the drain runs the
-// release's stop and teardown rows before the save row comes due again, and the teardown clears
-// the mark, so a retry by drain would find the release over and cancel nothing.
+// releaseCancelOwner is the cancel of a release whose pod was given work after its mark, called as
+// the check row calls it. The row's drain is not the runner here: once the check row has failed,
+// the drain runs the release's stop and teardown rows before the check row comes due again, so a
+// retry by drain could find the release over and cancel nothing.
 func releaseCancelOwner(t *testing.T) *ownerRig {
 	rig := newCancelRig(t)
 	return &ownerRig{
 		fault: rig.fault,
 		run: func(*testing.T) error {
 			return rig.runner.cancelRelease(context.Background(), rig.issue.Key, rig.issue.Tree,
-				workflow.IdleHoldBundleSave, "the launcher is gone")
+				workflow.IdleHoldOvertaken, "the pod was given work after its release was marked")
 		},
 		changed: func(t *testing.T) bool { return !rig.marked(t) },
 		work: func(t *testing.T) map[string]int {
@@ -418,7 +433,7 @@ func unownedReleaseUnknown(t *testing.T) {
 	}
 }
 
-// A cancel whose outcome the store cannot say leaves its save row for the lane, with the hold it
+// A cancel whose outcome the store cannot say leaves its check row for the lane, with the hold it
 // recorded already committed beside the cancel. Once the store answers, the cancel's line follows,
 // and the row's run finds the release over and records no second hold.
 func releaseCancelUnknown(t *testing.T) {
@@ -443,14 +458,97 @@ func releaseCancelUnknown(t *testing.T) {
 	rig.fault.Refuse(false)
 	rig.later()
 	rig.drain(t)
-	if got := count(rig.logs, "outbox release save finished without acting"); got != 1 {
-		t.Errorf("save rows that found the release over = %d, want 1", got)
+	if got := count(rig.logs, "outbox release workspace check finished without acting"); got != 1 {
+		t.Errorf("check rows that found the release over = %d, want 1", got)
 	}
 	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
 		"the cancel's line once the store says it committed", func() bool { return count(rig.logs, cancelLine) == 1 })
 	if got := rig.holdRows(t); got != 1 {
 		t.Errorf("hold records after the store answered = %d, want 1", got)
 	}
+}
+
+// leftCloseLine is the line of a left pod's close whose workspace check read nothing that origin
+// does not hold, and so queued the close's stops.
+const leftCloseLine = "the close of the pod of an issue that left the workflow read its workspace and found nothing"
+
+// leftCloseRig is the rig of a left pod's close (workflow.LeftPodClose) whose workspace check is
+// queued and reads nothing that origin does not hold, so its run queues the close's stops and the
+// issue's Sandbox suspension (outbox.checkLeftPodWorkspace), with the outbox's store and pool
+// swapped together to faulted. row and payload are the check's row as the outbox lists it.
+type leftCloseRig struct {
+	*cancelRig
+	row     record.OutboxRow
+	payload record.IssueWorkspaceCheck
+}
+
+func newLeftCloseRig(t *testing.T) *leftCloseRig {
+	t.Helper()
+	rig := newLeftPodRig(t, false)
+	row, check := queuedLeftPodCheck(t, rig)
+	return &leftCloseRig{cancelRig: faultedRig(t, rig), row: row, payload: check}
+}
+
+// leftPodCloseOwner is the clean close's check, run as the lane runs its row. A close that
+// committed finished its check row with it, so no row is left to run again.
+func leftPodCloseOwner(t *testing.T) *ownerRig {
+	rig := newLeftCloseRig(t)
+	return &ownerRig{
+		fault: rig.fault,
+		run: func(*testing.T) error {
+			return rig.runner.checkIssueWorkspace(context.Background(), rig.row, rig.payload)
+		},
+		changed: func(t *testing.T) bool { return slices.Contains(rig.rows(t), "issue_suspend") },
+		work: func(t *testing.T) map[string]int {
+			return map[string]int{"close journal lines": count(rig.logs, leftCloseLine)}
+		},
+	}
+}
+
+// A clean close whose outcome the store cannot say has queued the close's stops and the issue's
+// Sandbox suspension in a transaction that committed. Once the store answers, the lane runs those
+// rows, and nothing reads the workspace again: a check row left for its retry would read it after
+// the stop took the role's shim away, and decline a close already done, with a workspace_unread
+// decline and a hold streak that no pass ends, since no pass visits a pod with no Sandbox.
+func leftPodCloseUnknown(t *testing.T) {
+	rig := newLeftCloseRig(t)
+	fired := rig.fault.Cut("insert into outbox", testdb.CutAfterCommitRefusing)
+	rig.later()
+	// One pass, not the drain: the drain's next list is refused while the store is, and the
+	// drain fails the test on a refused list.
+	if err := rig.runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	testdb.Met(t, fired)
+	if !strings.Contains(rig.logs.String(), store.ErrCommitOutcomeUnknown.Error()) {
+		t.Errorf("the row's failure names no unknown outcome: %q", rig.logs.String())
+	}
+	// The close's stop ends the planner's process, and its shim with it: a read made after that
+	// fails, as a read through a gone shim does.
+	rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("the planner's shim is gone"))
+	rig.fault.Refuse(false)
+	rig.later()
+	rig.drain(t)
+	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+		t.Errorf("the workspace was read through %v, want the close's one read through the planner", read)
+	}
+	if rig.declined(t) {
+		t.Error("the close that committed was declined after its stop ran")
+	}
+	if held := holdsOf(t, rig.idleRig, workflow.IdleHoldWorkspaceUnread); len(held) != 0 {
+		t.Errorf("holds = %+v, want no %s", held, workflow.IdleHoldWorkspaceUnread)
+	}
+	for _, left := range rig.rows(t) {
+		if left == "issue_bundle" || left == "supervise:suspend" || left == "issue_suspend" {
+			t.Errorf("rows after the drain = %v, want the check finished with the close and its stops run", rig.rows(t))
+			break
+		}
+	}
+	if got := rig.storedClaim(t, rig.token); got.State != supervise.StateSuspended {
+		t.Errorf("the stored planner = %s, want it suspended by the close's stop", got.State)
+	}
+	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+		"the close's line once the store says it committed", func() bool { return count(rig.logs, leftCloseLine) == 1 })
 }
 
 // podHoldRow is one pod_holds row as the late-hook test reads it.
@@ -500,8 +598,8 @@ func TestALateCancelHookLeavesANewerHoldStreak(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("%s: hold records = %+v, want two: the cancel's, ended, and the newer pass's", when, got)
 		}
-		if first := got[0]; first.reason != workflow.IdleHoldBundleSave.String() || !first.ended || first.passes != 1 {
-			t.Errorf("%s: the first record = %+v, want %s, ended, with one pass", when, first, workflow.IdleHoldBundleSave)
+		if first := got[0]; first.reason != workflow.IdleHoldOvertaken.String() || !first.ended || first.passes != 1 {
+			t.Errorf("%s: the first record = %+v, want %s, ended, with one pass", when, first, workflow.IdleHoldOvertaken)
 		}
 		second := got[1]
 		if second.reason != workflow.IdleHoldDelivery.String() || second.ended || second.passes != 1 {
@@ -514,7 +612,7 @@ func TestALateCancelHookLeavesANewerHoldStreak(t *testing.T) {
 	want("once the late hook ran")
 	rig.later()
 	rig.drain(t)
-	want("after the save row ran again")
+	want("after the check row ran again")
 }
 
 // A wake whose take's outcome the store cannot say fails, and its row's retry resumes the claim:

@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The `dispatch` this package ships prints a file''s or picture''s version token in `dispatch doc-read`''s header, and refuses an upload under a held name with only what Dispatch takes, as `@legion/envoy-client`''s entry of this release says: a file is replaced with `--force` and the token the read printed, or `--force` alone where the version states none.'
+time: 2026-11-24T10:00:01.498810372Z
+custom:
+    Issue: pr5013

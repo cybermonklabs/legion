@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -608,19 +607,18 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		f.setSettings(trimSettings())
 		trims := useLauncherTrimmer(t, f)
 
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = listener.Close() })
+		token := ownToken("launcher-token")
+		listener := listenForLauncher(t, token)
 		ctx, cancel := context.WithCancel(context.Background())
 		result := make(chan error, 1)
 		stderr := &lockedBuffer{}
 		go func() {
-			result <- Run(ctx, Config{
-				Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+			err := Run(ctx, Config{
+				Connect: "tcp://" + listener.Addr().String(), Token: token, Sandbox: "legion-legion-legion-208",
 				Role: podRoles[0], PodUID: "pod-1", PrivateDir: t.TempDir(), Stderr: stderr, StopGrace: 2 * time.Second,
 			})
+			listener.codeReturned(err)
+			result <- err
 		}()
 		t.Cleanup(func() {
 			cancel()
@@ -757,7 +755,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 // the outage, holds the report it cannot write, and sends it on the connection that comes back,
 // where the daemon reads it as a launcher_volume_report frame. A daemon restart is not an
 // operator turning the trimmer off, and a report the daemon never got is a volume nobody was
-// told about (bundleRestore keeps its own confirmation the same way).
+// told about.
 func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.T) {
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the sweep ends below the high mark and above the low one
 	f.useVolume(f.modelled(90))

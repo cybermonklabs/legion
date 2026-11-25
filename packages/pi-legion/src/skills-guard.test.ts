@@ -343,9 +343,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(silent).toEqual([]);
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
-      "skills/dispatch-writing-specs/SKILL.md",
       "skills/legion-architect/SKILL.md",
-      "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
@@ -353,7 +351,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
-      "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
@@ -390,17 +387,6 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   }));
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
-
-// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
-// merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search.
-test("a forward merge searches the new head for each earlier finding's class", () => {
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
-  );
-});
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
 // (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
@@ -727,14 +713,14 @@ test("the architect skill names the versions that keep the design gate open", ()
   ).toEqual([]);
 });
 
-// With no tester step only the implementer runs the checks, except the owner's subagent in the
+// With no tester step only the implementer runs the checks, except the owner or its subagent in the
 // last round of a parent whose pull request already merged (`references/acceptance.md`, "The last
 // round"). Each sentence a reader of the acceptance showed false is gone. This shows the text
 // ships, never that a role follows it.
 test("the architect's references say who runs the checks again", () => {
   expect([
     ...lacks("legion-architect/references/plan.md", [
-      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*you, or a subagent you dispatch, then run and record them/,
       /^(?![\s\S]*nobody runs them again)/,
     ]),
   ]).toEqual([]);
@@ -868,9 +854,11 @@ test("the controller reads every held reason, and a stopped task's phase in its 
 test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
   const missing = [
     ...lacks("legion-retro/SKILL.md", [
-      /Read the evidence[^.;]*the implementer's handoff/,
+      /Read the evidence[^.;]*the pull request, and the thread of each plan task in `plan\.md`/,
+      /^(?![\s\S]*the implementer's handoff)/,
       /tester's handoff[^.;]*has a tester step/,
-      /--phase review[^.;]*has a reviewer step/,
+      /GitHub review of the last worker step's head where it has a reviewer step/,
+      /^(?![\s\S]*--phase review)/,
       /no reviewer step[^.;]*unresolved bot threads/,
       /no reviewer step[^.;]*review-thread replies and resolutions/,
       /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*tester's handoff/,
@@ -1000,16 +988,13 @@ test("each duty a role skill routes to a reference stands in that reference", ()
     ...lacks("legion-worker/references/results.md", [
       /The implementer re-runs once a red check whose failure is not in this pull request's code/,
     ]),
-    ...lacks("legion-worker/references/pr-body.md", [
-      /only the deploy can show it[^.]*plan names its observation/,
-    ]),
   ]).toEqual([]);
 });
 
 // Each sentence that held only in the default steps holds for every order the plan validator
 // allows: a task may leave out the reviewer and the owner's acceptance, a parent whose last step
-// is not the acceptance is held before its retro, retro's `Handoff:` line names the report of the
-// task's last step, and the daemon accepts the head an ancestor's last step passed, which is the
+// is not the acceptance is held before its retro, retro reads the GitHub review of the last
+// worker step's head, and the daemon accepts the head an ancestor's last step passed, which is the
 // reviewed head only where its task has a reviewer step. Each old sentence is gone. This shows the
 // text ships, never that a role follows it.
 test("the skills' sentences that held only in the default steps hold for every order", () => {
@@ -1035,7 +1020,7 @@ test("the skills' sentences that held only in the default steps hold for every o
       /^(?![\s\S]*reviewed head is accepted)/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
-      /Read the review \(`--phase review`\) where it has a reviewer step, at the version your `Handoff:` line names when that line names one/,
+      /Read the GitHub review of the last worker step's head where it has a reviewer step/,
       /^(?![\s\S]*the review at the version your task's `Handoff:` line names)/,
       // A task may have no acceptance step, so retro reads no change as accepted.
       /the merger's: the change passed every step of its task, and the merger decides at the merge/,
@@ -1106,11 +1091,12 @@ test("no skill holds a code precedence sentence; the role prompts and agent defi
   expect(holding).toEqual([]);
 });
 
-// A decision in a document beside the issue, the task and the handoffs reaches no worker, because
-// no start task names that document. This shows the text ships, never that a role follows it.
-test("a worker's first step reads the issue, its task and the handoffs, and no other document for decisions", () => {
+// An architect's decision reaches a worker in its task, or as a reply in the thread of the plan
+// task it concerns, which the architect's message links, because a role acts on no decision that
+// has no Dispatch record. This shows the text ships, never that a role follows it.
+test("a worker's first step reads the issue, its task and the handoffs, and takes decisions from its task and the plan task's thread", () => {
   countedOncePerFile(
-    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
+    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.",
     ["skills/legion-worker/SKILL.md"]
   );
 });

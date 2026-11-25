@@ -6,11 +6,16 @@
 // its own, since what it asserts is the raw shape of a request rather than the behaviour around
 // it.
 
-/** One trade as the stub saw it. */
+import { HEADER_DPOP_HOLDER } from "../wire";
+
+/** One trade as the stub saw it: its form, its DPoP proof, and its holder proof (`DPoP-Holder`),
+ *  whose parts are empty where the trade sent none. */
 export interface StubTrade {
   readonly form: URLSearchParams;
   readonly proofHeader: Record<string, unknown>;
   readonly proofClaims: Record<string, unknown>;
+  readonly holderHeader: Record<string, unknown>;
+  readonly holderClaims: Record<string, unknown>;
 }
 
 /** What the stub answers one trade with. */
@@ -32,18 +37,23 @@ export function stubBroker(answer: (trade: StubTrade, count: number) => StubAnsw
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
-      const parts = (request.headers.get("DPoP") ?? "").split(".");
-      const read = (at: number): Record<string, unknown> =>
-        parts.length < 3
+      const read = (proof: string, at: number): Record<string, unknown> => {
+        const parts = proof.split(".");
+        return parts.length < 3
           ? {}
           : (JSON.parse(Buffer.from(parts[at] as string, "base64url").toString("utf8")) as Record<
               string,
               unknown
             >);
+      };
+      const proof = request.headers.get("DPoP") ?? "";
+      const holder = request.headers.get(HEADER_DPOP_HOLDER) ?? "";
       const trade: StubTrade = {
         form: new URLSearchParams(await request.text()),
-        proofHeader: read(0),
-        proofClaims: read(1),
+        proofHeader: read(proof, 0),
+        proofClaims: read(proof, 1),
+        holderHeader: read(holder, 0),
+        holderClaims: read(holder, 1),
       };
       trades.push(trade);
       const given = answer(trade, trades.length);
