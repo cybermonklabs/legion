@@ -31,8 +31,10 @@ body: |-
   that wakes the claim and delivers the message once the woken session holds its role, held
   during a pause and delivered after the resume: a person's decision on its ask, a message that
   asks nothing, a reply of kind `none`, and every reply the controller would hear of, for which
-  the loop posts nothing, appends nothing and tells the controller nothing. A decision that also
-  asks is answered, appended and posted first, and its row then says where the answer is.
+  the loop posts nothing, appends nothing and tells the controller nothing. Where the question's
+  calls already ran a `gh` or `dispatch` write, the row names each after the message, so the
+  agent does not repeat one. A decision that also asks is answered, appended and posted first,
+  and its row then says where the answer is.
 
   The daemon reads the messages the listener hands it through the durable consumer
   `legion-go-<project>-answers`, and a message whose handling keeps failing is retried, given up

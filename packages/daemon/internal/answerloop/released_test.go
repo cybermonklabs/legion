@@ -1,6 +1,8 @@
 package answerloop
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -159,6 +161,155 @@ func assertWoken(t *testing.T, r *rig, path, before, asked string) {
 	case len(r.rec.wakes) != 1 || r.rec.wakes[0].Key != q.ID || !strings.Contains(r.rec.wakes[0].Text, asked):
 		t.Fatalf("wakes = %+v; want one, keyed by the question, carrying %q", r.rec.wakes, asked)
 	}
+}
+
+// leaked is a word that every write recorded by recordWrites carries in its arguments or its
+// result: a wake names a write by its command, never by what it carried.
+const leaked = "sk-leak-7731"
+
+// recordedCalls is how many calls recordWrites records.
+const recordedCalls = 6
+
+// recordWrites records, as an answer's tools do before it ends, the calls it made for question: a
+// gh merge that exited 0, a gh read, a gh review whose outcome is unknown (no exit status), a
+// dispatch comment that exited 0, a dispatch read and a dispatch message whose outcome is unknown.
+// The four writes are the calls a wake names, and the two reads none.
+func recordWrites(r *rig, question string) error {
+	zero := 0
+	for _, call := range []store.AnswerToolCall{
+		{Seq: 1, Tool: store.ToolGH, Args: []string{"pr", "merge", "7", "-R", "acme/widgets", "--squash", "--body", leaked}, Owner: "acme", Exit: &zero},
+		{Seq: 2, Tool: store.ToolGH, Args: []string{"pr", "view", "7", "-R", "acme/widgets"}, Owner: "acme", Exit: &zero},
+		{Seq: 3, Tool: store.ToolGH, Args: []string{"pr", "review", "7", "-R", "acme/widgets", "--approve"}, Owner: "acme"},
+		{Seq: 4, Tool: store.ToolDispatch, Args: []string{"comment", "--issue", "LEGION-12", "--body", leaked}, Exit: &zero},
+		{Seq: 5, Tool: store.ToolDispatch, Args: []string{"read", "LEGION-12"}, Exit: &zero},
+		{Seq: 6, Tool: store.ToolDispatch, Args: []string{"message", "--issue", "LEGION-12", "--body", leaked}},
+	} {
+		call.Question, call.StartedAt = question, testNow
+		if call.Tool == store.ToolGH {
+			call.App = "implement"
+		}
+		if err := r.st.StartAnswerToolCall(r.ctx, call); err != nil {
+			return err
+		}
+		result := leaked + " output"
+		if call.Exit == nil {
+			result = "outcome unknown, " + leaked
+		}
+		if err := r.st.FinishAnswerToolCall(r.ctx, question, call.Seq, result, call.Exit, testNow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// failCallsAfterAppended is the loop's store with one failure in it: the first read of a
+// question's recorded calls after the question is marked appended fails, as a connection reset or
+// a statement timeout fails it. Everything else is the real store.
+type failCallsAfterAppended struct {
+	Store
+	appended, failed bool
+}
+
+func (f *failCallsAfterAppended) UpdateQuestion(ctx context.Context, q store.AnswerQuestion, from ...store.QuestionState) error {
+	err := f.Store.UpdateQuestion(ctx, q, from...)
+	if err == nil && q.State == store.QuestionAppended {
+		f.appended = true
+	}
+	return err
+}
+
+func (f *failCallsAfterAppended) AnswerToolCalls(ctx context.Context, question string) ([]store.AnswerToolCall, error) {
+	if f.appended && !f.failed {
+		f.failed = true
+		return nil, errors.New("the store is unreachable")
+	}
+	return f.Store.AnswerToolCalls(ctx, question)
+}
+
+// assertWakeNamesWrites holds r's one question to its one wake, want, and to nothing run again: the
+// model was called once, and the question's calls are the recordedCalls recordWrites recorded.
+func assertWakeNamesWrites(t *testing.T, r *rig, want string) {
+	t.Helper()
+	calls, err := r.st.AnswerToolCalls(r.ctx, r.only().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.rec.wakes) != 1 || r.rec.wakes[0].Text != want {
+		t.Errorf("wakes = %+v; want one telling the agent %q", r.rec.wakes, want)
+	}
+	if r.answerCount() != 1 || len(calls) != recordedCalls {
+		t.Errorf("the model was called %d times and the question holds %d calls; want once and the %d recorded: nothing ran again", r.answerCount(), len(calls), recordedCalls)
+	}
+}
+
+// A released agent whose question the loop gives it unanswered, after the question's calls ran
+// writes, is told those writes in the one wake: its message word for word, and after it, apart,
+// each gh write by its command, its repository and gh's exit, and each Dispatch write by its
+// command and dispatch's exit, `no exit status` where the program answered none, and nothing of a
+// call's arguments or output; a read is none. The wake does not say that the controller was told.
+// Nothing runs again (the model is called once and the question holds the six calls it had), and
+// the question is woken with nothing posted, appended or passed on (assertWoken). A fault reaches
+// the wake two ways, a run that returned no turns (decideFault) and one that returned turns, and a
+// call list the store cannot read when the wake is made ends the pass with the question still
+// appended and the agent given nothing: the next pass gives the same wake, so a failed read is
+// never taken for no writes. The control is TestIdleReleasedAgentsRepliesTheLoopDoesNotPostWakeIt,
+// whose questions ran no write and whose wake is the message alone.
+func TestIdleReleasedAgentsWakeNamesTheWritesAFaultedAnswerRan(t *testing.T) {
+	const asked = "Merge PR 7 and say so on LEGION-12?"
+	const want = "user:person@example.com sent you, in a Dispatch message on LEGION-9 (dispatch://LEGION-9/message/m-1), while you were stopped:\n" + asked +
+		"\n\nThe Legion daemon's answer loop had already run these writes in your name for this message." +
+		" gh writes: `gh pr merge` on acme/widgets (exit 0); `gh pr review` on acme/widgets (no exit status)." +
+		" Dispatch writes: `dispatch comment` (exit 0); `dispatch message` (no exit status)." +
+		" Do not repeat them: for one with no exit status, read what it did first."
+	withNoTurns := func(answer.Request) answer.Reply {
+		return answer.Reply{Kind: answer.NotAnswered, Fault: answer.ModelCalls, CostUSD: 0.25}
+	}
+	withTurns := func(req answer.Request) answer.Reply {
+		reply := answered(req, "Half an answer.")
+		reply.Kind, reply.Fault = answer.NotAnswered, answer.ModelCalls
+		return reply
+	}
+	faulting := func(r *rig, reply func(answer.Request) answer.Reply) {
+		r.answer = func(req answer.Request) (answer.Reply, error) {
+			if err := recordWrites(r, req.Question.ID); err != nil {
+				return answer.Reply{}, err
+			}
+			return reply(req), nil
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		reply func(answer.Request) answer.Reply
+	}{
+		{"a fault with no turns", withNoTurns},
+		{"a fault with its turns", withTurns},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, path := releasedRig(t)
+			before := fileContent(t, path)
+			faulting(r, tc.reply)
+			r.receive(messageHandoff("ses_tester", "m-1", 1, asked))
+			r.drain()
+			assertWoken(t, r, path, before, asked)
+			assertWakeNamesWrites(t, r, want)
+		})
+	}
+	t.Run("a call list the store cannot read at the wake", func(t *testing.T) {
+		r, path := releasedRig(t)
+		before := fileContent(t, path)
+		r.cfg.Store = &failCallsAfterAppended{Store: r.cfg.Store}
+		r.restart()
+		faulting(r, withNoTurns)
+		r.receive(messageHandoff("ses_tester", "m-1", 1, asked))
+		r.loop.schedule(r.ctx)
+		r.loop.workers.Wait()
+		if q := r.only(); q.State != store.QuestionAppended || len(r.rec.wakes) != 0 {
+			t.Fatalf("question = %s, wakes %+v after the failed read; want it appended and the agent given nothing", q.State, r.rec.wakes)
+		}
+		r.drain()
+		assertWoken(t, r, path, before, asked)
+		assertWakeNamesWrites(t, r, want)
+	})
 }
 
 // A released agent is given what reaches it and asks it nothing, once each by its own identity:

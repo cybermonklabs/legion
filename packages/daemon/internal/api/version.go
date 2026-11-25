@@ -3257,7 +3257,7 @@ package api
 // #4030), 205 (#4573) and 206 (#4540), so 207 was the lowest number above main's 202 that no open
 // pull request declared at that reading. It took 217 at the merge of main at 787c324fd0 (main at
 // 205; a read of 414 open heads found 206 to 216 declared, 207 by seven other pull requests), and
-// kept it at the merge of main at 64887452 (main at 213, #4553's, the entry right above). That
+// kept it at the merge of main at 51d1a21ff7a6 (main at 213, #4553's, the entry right above). That
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
 //

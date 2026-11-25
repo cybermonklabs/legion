@@ -55,9 +55,9 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 //
 // For an agent whose claim the daemon released (wakes) a reply the loop does not post as the
 // agent's answer — one not answered, a request for work, a fault, and one that asks nothing — is
-// recorded and neither appended nor posted: the agent is given the message itself through Wakes
-// (post, woken) and answers it once woken. A reply that answers is appended and posted as for
-// any stopped agent.
+// recorded and neither appended nor posted: the agent is given the message itself through Wakes,
+// with a note of the gh and dispatch writes the question's calls already ran (post, woken), and
+// answers it once woken. A reply that answers is appended and posted as for any stopped agent.
 //
 // A model call the provider fails while the project is paused keeps q for the resume
 // (keepForResume), whatever the agent: no reply is recorded, and nothing is appended, posted or
@@ -354,15 +354,26 @@ func unposted(q store.AnswerQuestion) bool {
 	return q.PassReason != "" || q.ReplyKind == string(answer.None)
 }
 
-// faultText is the daemon's reply for question, which got no answer for reason: faultReply over
-// the gh writes its recorded calls ran (ghtool.Writes) and the dispatch writes (dispatchtool.Writes),
-// this run's and an earlier one's.
-func (l *Loop) faultText(ctx context.Context, question string, reason Reason) (string, error) {
+// recordedWrites are the gh writes (ghtool.Writes) and the dispatch writes (dispatchtool.Writes)
+// the recorded calls of question ran, this run's and an earlier one's: the one read of a
+// question's call list, which the daemon's reply for a fault (faultText) and the note a released
+// agent is woken with (woken) both name their writes from.
+func (l *Loop) recordedWrites(ctx context.Context, question string) ([]record.AgentQuestionWrite, []dispatchtool.Write, error) {
 	calls, err := l.cfg.Store.AnswerToolCalls(ctx, question)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ghtool.Writes(calls), dispatchtool.Writes(calls), nil
+}
+
+// faultText is the daemon's reply for question, which got no answer for reason: faultReply over
+// the gh writes its recorded calls ran and the dispatch writes (recordedWrites).
+func (l *Loop) faultText(ctx context.Context, question string, reason Reason) (string, error) {
+	writes, dispatchWrites, err := l.recordedWrites(ctx, question)
 	if err != nil {
 		return "", err
 	}
-	return l.faultReply(reason, ghtool.Writes(calls), dispatchtool.Writes(calls)), nil
+	return l.faultReply(reason, writes, dispatchWrites), nil
 }
 
 // faultReply is the daemon's reply, as the agent, for reason, naming each of writes (ranWrites)
@@ -404,13 +415,11 @@ func (l *Loop) faultSentence(reason Reason) string {
 	return "I could not answer (" + string(reason) + ")."
 }
 
-// ranWrites is the sentence of the daemon's reply naming each of writes by its command, its
-// repository and gh's exit, "" for none. It is the one rendering of a list of gh writes as text:
-// the controller's notice and `legion state` carry the same writes as data.
-func ranWrites(writes []record.AgentQuestionWrite) string {
-	if len(writes) == 0 {
-		return ""
-	}
+// ghWriteList names each of writes by its command, its repository and gh's exit, joined by "; ". It
+// is the one rendering of a list of gh writes as text, which the daemon's reply (ranWrites) and
+// the note a released agent is woken with (writesNote) share: the controller's notice and `legion
+// state` carry the same writes as data.
+func ghWriteList(writes []record.AgentQuestionWrite) string {
 	named := make([]string, len(writes))
 	for i, w := range writes {
 		if w.Repository == "" {
@@ -419,20 +428,54 @@ func ranWrites(writes []record.AgentQuestionWrite) string {
 			named[i] = fmt.Sprintf("`gh %s` on %s (%s)", w.Command, w.Repository, exitText(w.Exit))
 		}
 	}
-	return " I had already run these gh writes: " + strings.Join(named, "; ") + "."
+	return strings.Join(named, "; ")
 }
 
-// ranDispatchWrites is the sentence of the daemon's reply naming each of writes, the dispatch
-// writes the question's calls ran, by its command and dispatch's exit, "" for none.
-func ranDispatchWrites(writes []dispatchtool.Write) string {
+// ranWrites is the sentence of the daemon's reply naming each of writes (ghWriteList), "" for none.
+func ranWrites(writes []record.AgentQuestionWrite) string {
 	if len(writes) == 0 {
 		return ""
 	}
+	return " I had already run these gh writes: " + ghWriteList(writes) + "."
+}
+
+// dispatchWriteList names each of writes, the dispatch writes the question's calls ran, by its
+// command and dispatch's exit, joined by "; ".
+func dispatchWriteList(writes []dispatchtool.Write) string {
 	named := make([]string, len(writes))
 	for i, w := range writes {
 		named[i] = fmt.Sprintf("`dispatch %s` (%s)", w.Command, exitText(w.Exit))
 	}
-	return " I had already run these Dispatch writes: " + strings.Join(named, "; ") + "."
+	return strings.Join(named, "; ")
+}
+
+// ranDispatchWrites is the sentence of the daemon's reply naming each of writes (dispatchWriteList),
+// "" for none.
+func ranDispatchWrites(writes []dispatchtool.Write) string {
+	if len(writes) == 0 {
+		return ""
+	}
+	return " I had already run these Dispatch writes: " + dispatchWriteList(writes) + "."
+}
+
+// writesNote is what a released agent is told after the message of a question the loop gave it
+// unanswered, when the question's calls already ran gh or dispatch writes: each, by the summary
+// the daemon's reply names it by (ghWriteList, dispatchWriteList), so the agent does not repeat a
+// write. It carries no call's arguments or output, and does not say the controller was told. It is
+// "" for no write, so such a message is told as wakeMessage tells it.
+func writesNote(writes []record.AgentQuestionWrite, dispatchWrites []dispatchtool.Write) string {
+	var lists string
+	if len(writes) > 0 {
+		lists += " gh writes: " + ghWriteList(writes) + "."
+	}
+	if len(dispatchWrites) > 0 {
+		lists += " Dispatch writes: " + dispatchWriteList(dispatchWrites) + "."
+	}
+	if lists == "" {
+		return ""
+	}
+	return "\n\nThe Legion daemon's answer loop had already run these writes in your name for this message." + lists +
+		" Do not repeat them: for one with no exit status, read what it did first."
 }
 
 // exitText is a write's exit as the daemon's reply names it: `exit <n>`, or `no exit status` where
@@ -460,10 +503,11 @@ func noAnswerNote(reason Reason, reply string) string {
 //
 // For an agent whose claim the daemon released, a reply the loop does not post as its answer (one
 // it would pass on, or one that asks nothing: store.AnswerQuestion.Wake) and a post refused for
-// good are neither posted nor passed on: the agent is given the message itself (woken). A
-// question that also carries the agent's decision, held for it since Receive, is posted, and
-// then the agent is given the message with the sentence that says where its answer was posted
-// (answeredNote), after the answer is in its conversation.
+// good are neither posted nor passed on: the agent is given the message itself, and a note of the
+// gh and dispatch writes the question's calls already ran (woken). A question that also carries
+// the agent's decision, held for it since Receive, is posted, and then the agent is given the
+// message with the sentence that says where its answer was posted (answeredNote), after the
+// answer is in its conversation.
 //
 // The row holds the reason a question is passed on for before PassOn marks it passed: `legion
 // state` lists a passed question with its row's pass_reason (questionsForController), so a read
@@ -526,9 +570,17 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 
 // woken gives q's message to its agent, whose claim the daemon released, through Wakes in place
 // of the reply the loop does not post, and ends q woken: nothing is posted, the controller is
-// told nothing, and the woken agent answers the message itself.
+// told nothing, and the woken agent answers the message itself. The message is told word for
+// word, and after it, apart, the gh and dispatch writes q's recorded calls ran (writesNote), so
+// the agent does not repeat one. A call list that cannot be read is an error before anything is
+// given or moved, so q stays appended and the next pass reads it again: the wake is keyed by q's
+// id, so the pass that follows a stop after it was asked for asks for none again.
 func (l *Loop) woken(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
-	if err := l.wakeFor(ctx, q, wakeMessage(origin)); err != nil {
+	writes, dispatchWrites, err := l.recordedWrites(ctx, q.ID)
+	if err != nil {
+		return fmt.Errorf("read the writes of the question %s, to name them to the released %s: %w", q.ID, q.Session, err)
+	}
+	if err := l.wakeFor(ctx, q, wakeMessage(origin)+writesNote(writes, dispatchWrites)); err != nil {
 		return err
 	}
 	return l.move(ctx, &q, store.QuestionWoken, store.QuestionAppended)

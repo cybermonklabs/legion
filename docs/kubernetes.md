@@ -1868,6 +1868,9 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   and the loop's own answer to the agent as an asker, in place of writing it into the conversation.
   The daemon's own notices and posts, the Envoy broker's own messages and anything carrying the loop's own marker are none of the agent's, and wake nothing.
   The row's message is the original message as the agent would have read it: who sent it, where and under which reference, then its words.
+  A question whose calls already ran a `gh` or `dispatch` write is given with one note after the message, apart from its words, naming each write as the reply of a fault does ("No answer", below).
+  The note names a `gh` write's command, repository and exit and a `dispatch` write's command and exit, `no exit status` where the program answered none, and never a call's arguments or output; it tells the agent not to repeat a write and does not say the controller was told.
+  A question whose calls ran no write is given as its message alone.
   The row wakes the claim first, as the daemon's own notices do, and waits on its backoff, or for the turn of a launch the wake pacing holds, until the woken session holds its role; then it publishes the message to the role's topic once, and ends.
   It ends undelivered once the role's claim has failed or retired, or once the issue has left the workflow or its tree lingers, since no wake brings the claim back then.
   While the project is paused the outbox holds the row, and it delivers the message after the resume.
