@@ -185,10 +185,7 @@ func (answered answeredState) with(kept keptState) State {
 }
 
 // readBounded reads at most ResponseLimit bytes of response's body, through redact.ReadAnswer,
-// and refuses one carrying more. It reads one byte past the cap to tell a body exactly at it from
-// one over it, so the refusal is never a parse of a truncated document; the count it returns for
-// such a body is where the read stopped, the cap and one byte, since nothing counts past a body
-// it refused.
+// and refuses one carrying more.
 func readBounded(response *http.Response) (redact.Answer, int, error) {
 	answer, err := redact.ReadAnswer(response, ResponseLimit)
 	if errors.Is(err, redact.ErrAnswerTooLarge) {
