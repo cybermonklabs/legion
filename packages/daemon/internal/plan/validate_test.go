@@ -172,7 +172,7 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 		"implementer reviewer acceptance:owner tester", "implementer planner", "planner implementer reviewer", "implementer reviewer planner tester",
 		"planner implementer tester reviewer acceptance:owner"} {
 		p := oneTask("a", steps)
-		if r := append(Supported(p), Validate(p, Deployment{Roles: BuiltinRoles()})...); len(r) != 0 {
+		if r := Refusals(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("%s refused: %+v", steps, r)
 		}
 	}
@@ -239,18 +239,19 @@ func naming(task string, items ...string) []shown {
 // counting is the reason that counts count more causes of a kind.
 func counting(count int) []shown { return []shown{{count: count}} }
 
-// One refusal of a plan names the first MostReasons causes of each kind in the order the checks
-// find them, and right after the last of them one more reason, of the whole plan, counts the rest
-// of that kind, so the number of its reasons does not grow with the plan and no kind pushes another out. Each check
-// that finds a cause for each item of the plan is held to it: a `needs` word that names no task, a
-// role nobody defines, a step's key, and a step that reads a pull request with no implementer
-// before it. A kind with MostReasons causes or fewer is named whole. Each kind has its own bound,
-// so a cycle is named whatever else the plan has, and the reasons named keep the order the checks
-// find them in, the dropped ones left out. Each case holds the task and the word or step each
-// reason names, and each count, in order; none holds a sentence. The fault is a refusal that names
-// every cause, or one bound for the whole refusal, under which the plan of a ring of 22 tasks
-// names 19 of its needs and counts its cycle. The control is reasons.add with its bound taken out,
-// under which each case past the bound names every cause.
+// One refusal of a plan (Refusals: Supported's reasons, then Validate's, as every caller reads
+// them) names the first MostReasons causes of each kind in the order the checks find them, and
+// right after the last of them one more reason, of the whole plan, counts the rest of that kind,
+// so the number of its reasons does not grow with the plan and no kind pushes another out. Each
+// check that finds a cause for each item of the plan is held to it: a `needs` word that names no
+// task, a role nobody defines, a step's key, and a step that reads a pull request with no
+// implementer before it. A kind with MostReasons causes or fewer is named whole. Each kind has its
+// own bound, so a cycle is named whatever else the plan has, and the reasons named keep the order
+// the checks find them in, the dropped ones left out. Each case holds the task and the word or
+// step each reason names, and each count, in order; none holds a sentence. The fault is a refusal
+// that names every cause, or one bound for the whole refusal, under which the plan of a ring of 22
+// tasks names 19 of its needs and counts its cycle. The control is reasons.add with its bound
+// taken out, under which each case past the bound names every cause.
 func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	steps := func(words ...[]string) Plan { return oneTask("a", strings.Join(slices.Concat(words...), " ")) }
@@ -347,7 +348,7 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 				naming("a", "r00001", "r00002"), naming("b", "r00003"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := append(Supported(tc.plan), Validate(tc.plan, d)...)
+			got := Refusals(tc.plan, d)
 			if len(got) != len(tc.want) {
 				t.Fatalf("the refusal holds %d reasons, want %d: %.3000v", len(got), len(tc.want), got)
 			}
