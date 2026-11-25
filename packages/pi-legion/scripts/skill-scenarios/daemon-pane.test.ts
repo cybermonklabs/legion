@@ -102,10 +102,12 @@ const claim = {
 // can take minutes on a cold build cache.
 test.skipIf(skip)(
   "strips an inherited Anthropic key and GitHub token, and gives the pane the claim's gh files and no grant file",
-  () => {
-    const workerEnv = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
-      daemonModule: DAEMON_MODULE,
-    }).env;
+  async () => {
+    const workerEnv = (
+      await workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+        daemonModule: DAEMON_MODULE,
+      })
+    ).env;
 
     expect(workerEnv).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT");
@@ -155,7 +157,7 @@ test.skipIf(skip)(
 // listener and NATS servers written there.
 test.skipIf(skip)(
   "names the listener and NATS servers the profile's envoy.json writes",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-envoy-profile", "agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
@@ -168,11 +170,10 @@ test.skipIf(skip)(
         },
       })
     );
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-envoy-profile" },
-      inherited,
-      claim,
-      { daemonModule: DAEMON_MODULE }
+    const workerEnv = (
+      await workerPane({ rig, port: 13399, profile: "rig-envoy-profile" }, inherited, claim, {
+        daemonModule: DAEMON_MODULE,
+      })
     ).env;
 
     expect(workerEnv).toMatchObject({
@@ -190,7 +191,7 @@ test.skipIf(skip)(
 // an Envoy that is off with an error, rather than ask the daemon for a pane with no NATS server.
 test.skipIf(skip)(
   "refuses a profile envoy.json whose NATS seed Envoy refuses",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-seed-profile", "agent");
     mkdirSync(agent, { recursive: true });
     const file = path.join(agent, "envoy.json");
@@ -205,14 +206,14 @@ test.skipIf(skip)(
       })
     );
 
-    expect(() =>
+    await expect(
       workerPane(
         { rig, port: 13399, profile: "rig-seed-profile" },
         { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
         claim,
         { daemonModule: DAEMON_MODULE }
       )
-    ).toThrow(
+    ).rejects.toThrow(
       `envoy: ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
     );
   },
@@ -223,7 +224,7 @@ test.skipIf(skip)(
 // claim refuses then (pi-envoy's `requireInbound`), so the rig refuses it the same way.
 test.skipIf(skip)(
   "refuses a profile envoy.json whose Envoy has no NATS server",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-no-nats-profile", "agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
@@ -231,11 +232,11 @@ test.skipIf(skip)(
       JSON.stringify({ envoy: { url: "http://rig-listener.internal.example:9020" } })
     );
 
-    expect(() =>
+    await expect(
       workerPane({ rig, port: 13399, profile: "rig-no-nats-profile" }, inherited, claim, {
         daemonModule: DAEMON_MODULE,
       })
-    ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
+    ).rejects.toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
   },
   600_000
 );
@@ -246,16 +247,20 @@ test.skipIf(skip)(
 // panes its recording stand-in.
 test.skipIf(skip)(
   "refuses a script as the first gh on PATH and takes the gh the rig names",
-  () => {
+  async () => {
     const launch = { rig, port: 13399, profile: "rig-profile" };
     const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
-    expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
+    await expect(
+      workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })
+    ).rejects.toThrow(
       `the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`
     );
-    const named = workerPane(launch, shimmed, claim, {
-      daemonModule: DAEMON_MODULE,
-      ghPath: path.join(scriptBin, "gh"),
-    }).env;
+    const named = (
+      await workerPane(launch, shimmed, claim, {
+        daemonModule: DAEMON_MODULE,
+        ghPath: path.join(scriptBin, "gh"),
+      })
+    ).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
   },
   600_000
@@ -270,8 +275,8 @@ test.skipIf(skip)(
 // as the one its App reaches, so no part of the pane names a second one.
 test.skipIf(skip)(
   "the addressing names the world's own repository and default branch",
-  () => {
-    const pane = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+  async () => {
+    const pane = await workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
       daemonModule: DAEMON_MODULE,
       systemPrompt: true,
     });
@@ -299,8 +304,8 @@ test.skipIf(skip)(
 // empty name, so this is the branch's own refusal beside it.
 test.skipIf(skip)(
   "a world that names no default branch is refused",
-  () => {
-    expect(() =>
+  async () => {
+    await expect(
       workerPane(
         { rig, port: 13399, profile: "rig-profile" },
         inherited,
@@ -313,7 +318,7 @@ test.skipIf(skip)(
           systemPrompt: true,
         }
       )
-    ).toThrow("the rig's world names no default branch, which the pane's addressing names");
+    ).rejects.toThrow("the rig's world names no default branch, which the pane's addressing names");
   },
   600_000
 );
@@ -2473,15 +2478,15 @@ describe("the shapes of a label's daemon source", () => {
 // composes that architect's prompt for a reader of it.
 test.skipIf(skip)(
   "refuses the pane prompt of a tree architect",
-  () => {
-    expect(() =>
+  async () => {
+    await expect(
       workerPane(
         { rig, port: 13399, profile: "rig-profile" },
         inherited,
         { ...claim, role: "architect" },
         { daemonModule: DAEMON_MODULE, systemPrompt: true }
       )
-    ).toThrow(
+    ).rejects.toThrow(
       "a tree architect is also told its design gate policy, which the rig does not stand in for"
     );
   },

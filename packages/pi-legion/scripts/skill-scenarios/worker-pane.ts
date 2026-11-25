@@ -49,7 +49,7 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
   base[line.slice(0, equals)] = line.slice(equals + 1);
 }
 const world = worldOf(runDir, "worker-pane.ts");
-const pane = workerPane(
+const pane = await workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
   { project, issue, role, repository: world.repo, defaultBranch: world.base },

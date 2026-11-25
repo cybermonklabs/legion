@@ -2,18 +2,15 @@ import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   accessSync,
-  chmodSync,
   constants,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   type Stats,
   statfsSync,
 } from "node:fs";
+import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,7 +127,10 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
+ * refusals together at the end. It removes them asynchronously, so a removal waiting on a loaded
+ * disk holds the hook alone, never the process's event loop. Like every hook, it states no bound of
+ * its own (`docs/testing.md`): its bound is the command's `--timeout`, or the default a file whose
+ * package sets no measured one takes from `@legion/test-fixtures/hang-guard` above its first row.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -138,9 +138,9 @@ export function temporaryDirectories(
 ): TemporaryDirectoryMaker {
   const root = options.root ?? tmpdir();
   const made: string[] = [];
-  afterEach(() => {
-    removeEvery(made.splice(0));
-  }, HOOK_BOUND_MS);
+  afterEach(async () => {
+    await removeEvery(made.splice(0));
+  });
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -185,36 +185,13 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  }, HOOK_BOUND_MS);
-  afterAll(() => {
-    removeTree(directory);
-  }, HOOK_BOUND_MS);
+  });
+  afterAll(async () => {
+    await removeTree(directory);
+  });
   return directory;
 }
 
-/** The bound every hook of this file takes, in place of Bun's 5 s default. Removing a tree is
- * work that grows with what a suite made and with what else the host is doing: measured on
- * 2026-11-11, `packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose directory holds
- * about ninety run directories each with a bare clone, had its removal killed at 5 s whenever
- * four copies of that suite ran at once, and the failure reads `(fail) (unnamed)` with
- * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
- * directory. A removal is not a test, so a bound that fails it says nothing about the code under
- * test; this one is long enough that only a removal that will never finish reaches it.
- *
- * It reaches every caller of this file, which on 2026-11-11 is 107 test files and harnesses
- * across broker-client, claude-envoy, envoy-client, pi-envoy, pi-legion and dispatch's e2e
- * harness, so the cost is worth naming once: a hook
- * of one of those that genuinely hangs now fails after two minutes rather than five seconds, and
- * Bun's message still names neither the hook nor its work. Raise this number only for a removal
- * larger than the one it was measured against; a hook that reaches it is a hook to read rather
- * than a bound to raise.
- *
- * What holds it: "the fixture's own bound is what lets a hook finish a removal of more than five
- * seconds" (`temporary-directories.test.ts`), which runs a `bun test` of its own over a tree
- * whose removal outlasts five seconds and reads that run's own measurement of it. The row is in
- * a run of its own because a hook Bun kills fails with no assertion and no name, so this number
- * dropped back to the default can be read in no other way. */
-const HOOK_BOUND_MS = 120_000;
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;
 
@@ -242,11 +219,11 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
  * later directory behind and name only the one it stopped on (the behaviour
  * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
  */
-function removeEvery(directories: readonly string[]): void {
+async function removeEvery(directories: readonly string[]): Promise<void> {
   const failures: string[] = [];
   for (const directory of [...directories].reverse()) {
     try {
-      removeTree(directory);
+      await removeTree(directory);
     } catch (error) {
       failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -258,27 +235,27 @@ function removeEvery(directories: readonly string[]): void {
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rmSync` alone fails on a tree a test made read-only on purpose, and a test can make one
- * without meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that
- * runs `go` under its temporary directory leaves a tree nothing can unlink.
+ * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
+ * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
+ * under its temporary directory leaves a tree nothing can unlink.
  */
-function removeTree(directory: string): void {
-  makeWritable(directory);
-  rmSync(directory, { recursive: true, force: true });
+async function removeTree(directory: string): Promise<void> {
+  await makeWritable(directory);
+  await rm(directory, { recursive: true, force: true });
 }
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
  * nothing to do. */
-function makeWritable(path: string): void {
-  const entry = makeSelfWritable(path);
+async function makeWritable(path: string): Promise<void> {
+  const entry = await makeSelfWritable(path);
   if (entry === undefined || !entry.isDirectory()) return;
   let entries: string[];
   try {
-    entries = readdirSync(path);
+    entries = await readdir(path);
   } catch {
     return;
   }
-  for (const name of entries) makeWritable(join(path, name));
+  for (const name of entries) await makeWritable(join(path, name));
 }
 
 /**
@@ -289,10 +266,10 @@ function makeWritable(path: string): void {
  * holding it, never on the file, and a file in a temporary tree can be a hard link to one
  * outside it, whose mode is the same inode's.
  */
-function makeSelfWritable(path: string): Stats | undefined {
+async function makeSelfWritable(path: string): Promise<Stats | undefined> {
   let entry: Stats;
   try {
-    entry = lstatSync(path);
+    entry = await lstat(path);
   } catch {
     return undefined;
   }
@@ -302,9 +279,9 @@ function makeSelfWritable(path: string): Stats | undefined {
   const wanted = mode | 0o700;
   if (wanted !== mode) {
     try {
-      chmodSync(path, wanted);
+      await chmod(path, wanted);
     } catch {
-      // A mode this user cannot set is left to rmSync to report.
+      // A mode this user cannot set is left to rm to report.
     }
   }
   return entry;

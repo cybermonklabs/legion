@@ -26,6 +26,7 @@ import (
 // the reading side: a counter a restart reset, read through this sample, is caught where the pod's
 // restart count stayed the same (legacy-subjects-gate.test.sh).
 func TestTheStartTimeGaugeIsTheProcessStart(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 
@@ -55,6 +56,7 @@ func TestTheStartTimeGaugeIsTheProcessStart(t *testing.T) {
 // sample is the one /metrics serves, and its counter is declared with its TYPE line, which the
 // gate requires of a build that counts old-form names at all.
 func TestTheListenerLogsItsOldFormCounterAndStart(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	before := time.Now().Unix()
