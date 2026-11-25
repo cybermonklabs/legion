@@ -37,6 +37,7 @@ function createQueryClient(): QueryClient {
 const signedIn: AuthenticatedUser = { event_head: "7", kind: "user", login: "alice" };
 
 function renderVersionView({
+  bindRefusal,
   changeBaseline,
   highlight,
   markdown,
@@ -44,6 +45,9 @@ function renderVersionView({
   whenBound,
   whoAmI = signedIn,
 }: {
+  /** What the version editor's bind is refused with, for a row whose build fails after the
+   *  editor stands. */
+  bindRefusal?: Error;
   changeBaseline?: ChangeBaseline;
   highlight: { by: string; id: string; quote: string } | undefined;
   markdown: string;
@@ -63,6 +67,16 @@ function renderVersionView({
     runtime.runtime = {
       ...runtime.runtime,
       constructEditor: changingEachHandle(runtime.runtime.constructEditor, whenBound),
+    };
+  }
+  if (bindRefusal !== undefined) {
+    const inner = runtime.runtime.constructEditor;
+    runtime.runtime = {
+      ...runtime.runtime,
+      constructEditor: async (root, options) => ({
+        ...(await inner(root, options)),
+        bind: () => Promise.reject(bindRefusal),
+      }),
     };
   }
   const queryClient = createQueryClient();
@@ -261,6 +275,30 @@ test("VersionView shows what refused the version instead of an empty document", 
     );
     expect(editors[0]?.destroyed).toBe(true);
     expect(within(view.container).getByRole("heading").textContent).toMatch(/^Version 1 · /);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The build can fail once the editor stands: its bind is refused. The view says why, as for a
+// version it cannot draw, and the editor it built is torn down with it, not left standing in the
+// page's tree.
+test("VersionView tears down an editor whose bind is refused, and says why", async () => {
+  const { constructions, editors, view } = renderVersionView({
+    bindRefusal: new Error("the editor could not be built"),
+    highlight: undefined,
+    markdown: "Some version text.",
+  });
+
+  try {
+    await waitFor(() =>
+      expect(within(view.container).getByRole("alert").textContent).toBe(
+        "This version could not be rendered: the editor could not be built"
+      )
+    );
+    expect(editors).toHaveLength(0);
+    expect(constructions).toHaveLength(1);
+    expect(constructions[0]?.destroyed).toBe(true);
   } finally {
     view.unmount();
   }

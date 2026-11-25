@@ -4,13 +4,19 @@ import { within } from "@testing-library/react";
 import { loadDocumentTransport } from "../features/doc/connection";
 import { type ConstructEditor, constructEditor, type EditorHandle } from "../features/doc/editor";
 import type { DocumentRuntimeValue } from "../features/doc/runtime";
+import { changingEachHandle } from "./document-runtime";
 
-/** The documents' own editor, each handle it built, and the lookup of one by its name. */
+/** The documents' own editor, each handle it bound, and the lookup of one by its name. */
 export interface RecordedEditors {
-  /** Every handle the editor built, in the order it built them. */
+  /** Every handle the editor bound, in the order it bound them. */
   readonly handles: EditorHandle[];
+  /** Whether an editor it built is still binding: built or being built, and neither bound,
+   *  refused nor torn down yet. The bind ends tasks after a page drew the editor
+   *  (`@legion/proof-editor`'s `bind`), so a row that ends then would have the page take the
+   *  handle outside `act`: a fixture's teardown turns the event loop until this is false. */
+  binding(): boolean;
   /** The editor named `name` once it holds its text, among the elements of `scope` (the whole
-   *  document where none is given), with the handle that built it. */
+   *  document where none is given), with its handle. */
   named(name: string, scope?: HTMLElement): Promise<{ box: HTMLElement; handle: EditorHandle }>;
   /** The runtime a test provides (`DocumentRuntime`) in place of the page's own. */
   readonly runtime: DocumentRuntimeValue;
@@ -23,18 +29,30 @@ export interface RecordedEditors {
  */
 export function recordedEditors(): RecordedEditors {
   const handles: EditorHandle[] = [];
-  const recording: ConstructEditor = async (root, options) => {
-    const construction = await constructEditor(root, options);
+  let binding = 0;
+  const counting: ConstructEditor = async (root, options) => {
+    binding += 1;
+    let open = true;
+    const close = () => {
+      if (open) binding -= 1;
+      open = false;
+    };
+    const construction = await constructEditor(root, options).catch((error: unknown) => {
+      close();
+      throw error;
+    });
     return {
       ...construction,
-      bind: async () => {
-        const handle = await construction.bind();
-        handles.push(handle);
-        return handle;
+      bind: () => construction.bind().finally(close),
+      destroy: () => {
+        close();
+        return construction.destroy();
       },
     };
   };
+  const recording = changingEachHandle(counting, (handle) => handles.push(handle));
   return {
+    binding: () => binding > 0,
     handles,
     async named(name, scope = document.body) {
       const box = await within(scope).findByRole("textbox", { name });

@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, test as bunTest, expect, jest, spyOn } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
@@ -9,7 +9,12 @@ import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-e
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
-import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
+import {
+  type RecordedEditors,
+  recordedEditors,
+  selectText,
+  writeAtEnd,
+} from "../../__tests__/recorded-editors";
 import {
   answerPriorityPatches,
   PRIORITY_DESCRIPTION_CHANGED,
@@ -142,6 +147,44 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** The description editors of every page the row in progress drew. */
+const drawnEditors: RecordedEditors[] = [];
+
+/**
+ * `body`, as a row of this file runs it: it ends once each description editor the row drew has
+ * bound, been refused or gone. That editor binds tasks after the page drew it
+ * (`@legion/proof-editor`'s `bind`), and the page takes its handle then, so a row that ended
+ * first would leave that update to land outside `act`, after the row and before any teardown of
+ * this file can wrap it. The wait is one `act`, whose timers the bind runs on.
+ */
+function endingBound<A extends unknown[]>(body: (...args: A) => Promise<void>) {
+  return async (...args: A): Promise<void> => {
+    try {
+      await body(...args);
+    } finally {
+      await act(async () => {
+        for (let turn = 0; turn < 1_000 && drawnEditors.some((one) => one.binding()); turn += 1) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 0);
+          await promise;
+        }
+      });
+      drawnEditors.length = 0;
+    }
+  };
+}
+
+const test = Object.assign(
+  (name: string, body: () => Promise<void>) => bunTest(name, endingBound(body)),
+  {
+    each:
+      <T extends Readonly<[unknown, ...unknown[]]>>(table: readonly T[]) =>
+      (name: string, body: (...row: [...T]) => Promise<void>) =>
+        // Bun's `each` types a row's callback with a `done` it may take; these rows take none.
+        bunTest.each(table)(name, endingBound(body) as never),
+  }
+);
+
 function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(BODY);
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
@@ -178,6 +221,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   };
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
+  drawnEditors.push(editors);
   // What runs in the commit the next read the page takes draws, before the page's effects: after
   // the page's render of it, before the page's effects take it in (`beforeEffects`).
   const { beforeEffects, step } = stepBeforeEffects();
@@ -499,16 +543,13 @@ test("one link out leaves the scope, naming the issues and why", async () => {
 });
 
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
-  const { editors, listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
+  const { listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
   expect(
     await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
-  // The description's editor is bound a task after it is built (`features/doc/editor.ts`'s
-  // `constructEditor`), so the row waits for it to stand rather than end while it binds.
-  await editors.named("Description");
 });
 
 // The work table opens with what a reader of one priority's work reads first, so Title, which

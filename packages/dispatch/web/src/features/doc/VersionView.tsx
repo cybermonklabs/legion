@@ -16,7 +16,7 @@ import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
-import { createDoc, type EditorHandle } from "./editor";
+import { createDoc, type EditorConstruction, type EditorHandle } from "./editor";
 import type { Highlight } from "./highlight";
 import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
@@ -129,7 +129,9 @@ export function VersionView({
     }
 
     let ydoc: Doc | undefined;
-    let handle: EditorHandle | undefined;
+    // The editor from the moment it is built, so a bind that throws, or an unmount while it
+    // binds, still tears down what the construction made (its `destroy` is the handle's).
+    let construction: EditorConstruction | undefined;
     let mounted = true;
     let disposeRefocus = () => {};
     setRenderError(undefined);
@@ -143,7 +145,7 @@ export function VersionView({
       // A version's document is in hand before the editor exists - it is drawn with
       // `setMarkdown` below, over a standalone Yjs document - so there is nothing to wait for
       // between the two phases (`features/doc/editor.ts`).
-      const construction = await constructEditor(parent, {
+      construction = await constructEditor(parent, {
         access: "read",
         awareness: null,
         blockSchema: compiledBlockSchema,
@@ -154,7 +156,6 @@ export function VersionView({
         ydoc: doc,
       });
       const editor = await construction.bind();
-      handle = editor;
       if (!mounted) {
         editor.destroy();
         return;
@@ -206,8 +207,8 @@ export function VersionView({
     mount().catch((error: unknown) => {
       // A version the editor cannot build the server's tree into must say so; an empty
       // read-only editor looks like an empty document.
-      handle?.destroy();
-      handle = undefined;
+      construction?.destroy();
+      construction = undefined;
       setEditorHandle(undefined);
       if (mounted) {
         setRenderError(error instanceof Error ? error.message : String(error));
@@ -217,7 +218,7 @@ export function VersionView({
     return () => {
       mounted = false;
       disposeRefocus();
-      handle?.destroy();
+      construction?.destroy();
       ydoc?.destroy();
       setEditorHandle(undefined);
     };

@@ -1,15 +1,6 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type KeyboardEvent, type ReactNode, useId, useLayoutEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -44,7 +35,6 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
-  inputClasses,
   linkHoverText,
   linkText,
   secondaryButtonBorder,
@@ -54,7 +44,6 @@ import {
   statusPill,
   statusPillDot,
   surfaceMutedStrongBg,
-  textMutedHoverToSecondary,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryHoverToPrimary,
@@ -79,6 +68,7 @@ import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
+import { IssueParentForm, IssueRouteForm, routeHint } from "./IssueHeaderForms";
 import { IssueLabels } from "./IssueLabels";
 import {
   issueClosedCalloutClassName,
@@ -108,9 +98,6 @@ import { theChromeIsHere } from "./reaching-the-chrome";
 import { SubscribedAgents } from "./SubscribedAgents";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
-
-const routeHint =
-  "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
@@ -149,22 +136,7 @@ export function IssueHeader({
   useLayoutEffect(() => theChromeIsHere("header"), []);
   const [editingTitle, setEditingTitle] = useState(false);
   const [routeEditing, setRouteEditing] = useState(false);
-  const routeInputRef = useRef<HTMLInputElement>(null);
-  // Focus the route input once when editing opens: the trigger button unmounts, so without this
-  // focus would drop to the body and a keyboard user would have to find the form again.
-  useEffect(() => {
-    if (routeEditing) {
-      routeInputRef.current?.focus();
-    }
-  }, [routeEditing]);
   const [parentEditing, setParentEditing] = useState(false);
-  const parentInputRef = useRef<HTMLInputElement>(null);
-  // Same focus handoff as the route editor: the trigger button unmounts when the form opens.
-  useEffect(() => {
-    if (parentEditing) {
-      parentInputRef.current?.focus();
-    }
-  }, [parentEditing]);
   // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
   const railFade = useScrollFadeTrailing();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
@@ -393,18 +365,6 @@ export function IssueHeader({
     // The Enter that confirms an input method's word is the input method's, not the save.
     if (event.key === "Enter" && !inputMethodKey(event)) {
       event.currentTarget.blur();
-    }
-  };
-  const saveRoute = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (drafts.requestRouteSubmit()) {
-      setRouteEditing(false);
-    }
-  };
-  const saveParent = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (drafts.requestParentSubmit()) {
-      setParentEditing(false);
     }
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
@@ -809,105 +769,21 @@ export function IssueHeader({
         {routeHint}
       </span>
       {routeEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
-          <label
-            aria-describedby="issue-route-hint"
-            className={`text-sm font-medium ${textSecondaryOnSurface}`}
-            htmlFor="issue-route"
-            title={routeHint}
-          >
-            Message route:
-          </label>
-          <input
-            aria-label="Message route"
-            aria-describedby="issue-route-hint issue-route-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-route"
-            onChange={(event) => drafts.writeRoute(event.target.value)}
-            onKeyDown={(event) => {
-              // The Escape that ends an input method's composition is the input method's.
-              if (event.key === "Escape" && !inputMethodKey(event)) {
-                drafts.discardRoute();
-                setRouteEditing(false);
-              }
-            }}
-            placeholder="role:legion-controller-core"
-            ref={routeInputRef}
-            value={drafts.route}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
-            type="submit"
-          >
-            Save route
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardRoute();
-              setRouteEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span
-            className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
-            id="issue-route-help"
-          >
-            A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
-          </span>
-        </form>
+        <IssueRouteForm
+          drafts={drafts}
+          isClosed={isClosed}
+          onClose={() => setRouteEditing(false)}
+          saving={updateIssue.isPending}
+        />
       ) : null}
       {parentEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
-          <label className="sr-only" htmlFor="issue-parent">
-            Parent
-          </label>
-          <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-            Parent:
-          </span>
-          <input
-            aria-describedby="issue-parent-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-parent"
-            onChange={(event) => drafts.writeParent(event.target.value)}
-            onKeyDown={(event) => {
-              // The Escape that ends an input method's composition is the input method's.
-              if (event.key === "Escape" && !inputMethodKey(event)) {
-                drafts.discardParent();
-                setParentEditing(false);
-              }
-            }}
-            placeholder={`${issue.project}-12`}
-            ref={parentInputRef}
-            value={drafts.parent}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
-            type="submit"
-          >
-            Save parent
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardParent();
-              setParentEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span className="sr-only" id="issue-parent-help">
-            Parent issue key, in {issue.project} or another project; leave empty to clear the
-            parent.
-          </span>
-        </form>
+        <IssueParentForm
+          drafts={drafts}
+          isClosed={isClosed}
+          onClose={() => setParentEditing(false)}
+          project={issue.project}
+          saving={updateIssue.isPending}
+        />
       ) : null}
       {drafts.titleError === null ? null : (
         <p className={`mt-1 text-sm ${dangerText}`} id="issue-title-help">

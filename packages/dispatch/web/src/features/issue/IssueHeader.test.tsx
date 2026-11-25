@@ -253,43 +253,18 @@ test("a read of the state asked while the header's pin is out waits for its answ
   }
 });
 
-// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
-// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
-// Safari sends it (WebKit bug 165004). In the title's box it ends nothing; a plain Enter after it
-// ends the edit, which leaves the box.
-test("the Enter that confirms an input method's word in the title's box keeps the edit, and a plain Enter ends it", async () => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    await view.user.click(view.q.getByRole("heading", { level: 1 }));
-    const box = view.q.getByRole("textbox", { name: "Issue title" });
-    expect(box).toHaveFocus();
-    pressAsInputMethod(box, "Enter", {
-      beforePlain: () => {
-        expect(view.q.getByRole("textbox", { name: "Issue title" })).toBe(box);
-        expect(box).toHaveFocus();
-      },
-    });
-    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
 // A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
 // input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
-// end, as Safari sends it (WebKit bug 165004). In the title's, the route's and the parent's boxes
-// it drops nothing and closes nothing; a plain Escape after it drops the draft and closes the box.
-test("an input method's Escape in the title's, the route's or the parent's box keeps the edit, and a plain Escape ends it", async () => {
+// end, as Safari sends it (WebKit bug 165004). In the route's and the parent's boxes it drops
+// nothing and closes nothing; a plain Escape after it drops the draft and closes the box. The
+// title's box takes the same keys in the rows below.
+test("an input method's Escape in the route's or the parent's box keeps the edit, and a plain Escape ends it", async () => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const view = renderHeader(client, <Header state={unpinnedState} />);
   try {
     for (const [opener, name] of [
-      [() => view.q.getByRole("heading", { level: 1 }), "Issue title"],
       [
         () => view.q.getAllByRole("button", { name: "Messages default to no route" })[0],
         "Message route",

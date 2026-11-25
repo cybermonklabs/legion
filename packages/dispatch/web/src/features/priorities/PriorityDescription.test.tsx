@@ -6,10 +6,11 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { BeforeEffects, stepBeforeEffects } from "../../__tests__/before-effects";
 import { displayTree } from "../../__tests__/display-trees";
+import { changingEachHandle } from "../../__tests__/document-runtime";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import type { DisplayTree } from "../../api/types";
-import type { ConstructEditor } from "../doc/editor";
+import type { ConstructEditor, EditorConstruction } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -39,33 +40,34 @@ afterEach(() => {
  * (`onSave`'s `on`). `imports` is the length of each text the editor took in as markdown
  * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
  * (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the editor cannot take in:
- * `setMarkdown` throws for it, as for a text holding what it may not create yet. `beforeEffects`
- * runs a step in the next commit `rerender` makes, before the editor's effects take in what it
- * drew. Queries are scoped to this render's container, since bun runs every test file in one
- * document.
+ * `setMarkdown` throws for it, as for a text holding what it may not create yet. `builds` holds
+ * every editor the description built, bound or not, and an error a row puts in `refusal.bind`
+ * is what the next bind is refused with. `beforeEffects` runs a step in the next commit
+ * `rerender` makes, before the editor's effects take in what it drew. Queries are scoped to this
+ * render's container, since bun runs every test file in one document.
  */
 function described(description: string, canWrite = true, tree?: DisplayTree, exact?: boolean) {
   const editors = recordedEditors();
   const imports: number[] = [];
   const undrawable = new Set<string>();
-  const constructEditor: ConstructEditor = async (root, options) => {
+  const builds: EditorConstruction[] = [];
+  const refusal: { bind?: Error } = {};
+  const building: ConstructEditor = async (root, options) => {
     const construction = await editors.runtime.constructEditor(root, options);
+    builds.push(construction);
     return {
       ...construction,
-      bind: async () => {
-        const handle = await construction.bind();
-        const setMarkdown = handle.setMarkdown;
-        handle.setMarkdown = (markdown) => {
-          if (undrawable.has(markdown)) {
-            throw new Error('this editor cannot create node "undrawn" yet');
-          }
-          imports.push(markdown.length);
-          setMarkdown.call(handle, markdown);
-        };
-        return handle;
-      },
+      bind: () => (refusal.bind === undefined ? construction.bind() : Promise.reject(refusal.bind)),
     };
   };
+  const constructEditor = changingEachHandle(building, (handle) => {
+    const setMarkdown = handle.setMarkdown;
+    handle.setMarkdown = (markdown) => {
+      if (undrawable.has(markdown)) throw new Error('this editor cannot create node "undrawn" yet');
+      imports.push(markdown.length);
+      setMarkdown.call(handle, markdown);
+    };
+  });
   const runtime = { ...editors.runtime, constructEditor };
   // Every write is out until a test answers it: the default answer never comes.
   const onSave = mock(
@@ -124,11 +126,13 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
         });
     },
     beforeEffects,
+    builds,
     /** The editor once it holds the description, and its handle. */
     editor: () => editors.named("Description of P1", view.container),
     imports,
     madeOn,
     onSave,
+    refusal,
     rerender: (text: string, writer = canWrite, reading?: DisplayTree, readingExact?: boolean) =>
       view.rerender(page(text, writer, reading, readingExact)),
     scope: within(view.container),
@@ -153,6 +157,21 @@ test("the description is the documents' editor, named for it, drawn as the markd
   ).toEqual(["Every machine runs the daemon", "Nothing waits on the old build"]);
   const link = within(box).getByRole("link", { name: "the runbook" });
   expect(link.getAttribute("href")).toBe("https://example.com/rb");
+});
+
+// The build can fail once the editor stands: its bind is refused. The description says why, as
+// for a text the editor cannot take in, and the editor it built is torn down with it, not left
+// standing in the page's tree.
+test("an editor whose bind is refused is torn down, and the description says why", async () => {
+  const { builds, refusal, scope } = described("Speedruns run again.");
+  refusal.bind = new Error("the editor could not be built");
+  await waitFor(() =>
+    expect(scope.queryByRole("alert")?.textContent).toBe(
+      "This description could not be drawn: the editor could not be built"
+    )
+  );
+  expect(builds).toHaveLength(1);
+  expect(builds[0]?.view.isDestroyed).toBe(true);
 });
 
 test("a selection in it offers no comment, suggestion or ask, and writes no mark", async () => {

@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import { colorForLogin } from "../doc/connection";
 import { DocumentReferences, useReferenceClick } from "../doc/document-references";
-import { createDoc, type EditorHandle } from "../doc/editor";
+import { createDoc, type EditorConstruction, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
 import { watchPicturePath } from "../refs/reference-target";
@@ -365,7 +365,9 @@ export function PriorityDescription({
     if (!drawn || parent === null || login === undefined) return;
     let mounted = true;
     let ydoc: Doc | undefined;
-    let handle: EditorHandle | undefined;
+    // The editor from the moment it is built, so a bind that throws, or an unmount while it
+    // binds, still tears down what the construction made (its `destroy` is the handle's).
+    let construction: EditorConstruction | undefined;
     // Every edit reaches the editor's Yjs document, the reader's and a draw of the server's text
     // alike; `save` writes only what differs from that text, and the editor then moves to the
     // form the text is drawn in where that waited on the typing (`rest`).
@@ -388,7 +390,7 @@ export function PriorityDescription({
       // The description is in hand before the editor exists - it is drawn with `take` below,
       // over a standalone Yjs document - so there is nothing to wait for between the two
       // phases (`features/doc/editor.ts`).
-      const construction = await constructEditor(parent, {
+      construction = await constructEditor(parent, {
         access: latest.current.writes ? "edit" : "read",
         awareness: null,
         blockSchema: compiledBlockSchema,
@@ -401,7 +403,6 @@ export function PriorityDescription({
         ydoc: doc,
       });
       const created = await construction.bind();
-      handle = created;
       if (!mounted) {
         void created.destroy();
         return;
@@ -426,8 +427,8 @@ export function PriorityDescription({
       setEditor(created);
     };
     mount().catch((error: unknown) => {
-      void handle?.destroy();
-      handle = undefined;
+      void construction?.destroy();
+      construction = undefined;
       if (mounted) {
         setFailure({
           reason: error instanceof Error ? error.message : String(error),
@@ -444,7 +445,7 @@ export function PriorityDescription({
       held.current = undefined;
       if (current !== undefined) save(current, latest.current.send);
       ydoc?.off("update", onUpdate);
-      void handle?.destroy();
+      void construction?.destroy();
       ydoc?.destroy();
       setEditor(undefined);
     };

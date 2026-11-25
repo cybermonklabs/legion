@@ -393,10 +393,8 @@ export function InPlaceField({
       timer.current = window.setTimeout(save, SAVE_AFTER_MS);
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      // The Enter that ends an input method's composition takes the word composed, and is no
-      // Enter of the reader's: it neither writes nor leaves the field. Safari sends it after its
-      // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
-      if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) return;
+      // The Enter that ends an input method's composition is no Enter of the reader's.
+      if (event.key !== "Enter" || inputMethodKey(event)) return;
       event.preventDefault();
       save();
       event.currentTarget.blur();
