@@ -6030,6 +6030,10 @@ Each item below names a path with its method and identity, then its purpose.
       So write such a colour in words.
       A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
       So it names nothing, and R49 leaves such a text to the reviewer of R25.
+      A format character (Unicode class `Cf`), such as a soft hyphen, a zero-width space or a word joiner, hides no form, as the page shows none.
+      The rules read the words twice where they hold one: with each format character taken out, which joins the characters on its two sides, and with each read as a space, which parts them.
+      Each name that either reading finds is a finding, and the finding quotes the name with its format characters.
+      So `Ada Lovelace` with a soft hyphen inside `Lovelace`, `Ada` and `Lovelace` joined by a word joiner, and `ACME-12` after a letter and a zero-width space each give a finding.
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
