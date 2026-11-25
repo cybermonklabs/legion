@@ -975,6 +975,58 @@ describe("health: rule 13, off-world network, an eval cell's tool calls (door 1)
       "in f.py, which a eval call"
     );
   });
+
+  // Catches (INFRA-764 round 35's world-health run 95e4a2932000, threads-closed accept head, at
+  // ae0ddd7f): a health that reads a URL in a string the cell gives only to a text tool, through a
+  // variable, as a reach. The implementer built its accepting message in `const msg`, quoting the
+  // pull request comment it had posted, and sent it with `tool.envoy_publish({ topic, message: msg })`
+  // in a loop over the reviewer's and the architect's topics; nothing fetched, so production
+  // reaches no host, and `programHosts` over the rest of the cell read the URL as a reach. And one
+  // that, to pass it, stops reading a URL that such a variable also hands to a fetch or a shell.
+  test("a message built in a variable and sent by a text tool is no reach, and the same variable given to a fetch or a shell is", () => {
+    const comment = `${WORLD_PR}#issuecomment-8001`;
+    const loop = [
+      `const msg = "WID-1 implementer last-chance review of reviewer text commit 25b2263: accepted. PR comment: ${comment}";`,
+      `for (const role of ["reviewer","architect"]) {`,
+      "  const topic = `notifications.role.legion-fernbrookwidgets-wid-1-${role}`;",
+      "  const r = await tool.envoy_publish({ topic, message: msg });",
+      "  log(`${role}: ${JSON.stringify(r)}`);",
+      "}",
+    ].join("\n");
+    expect(reach(cell("js", loop))).toBeUndefined();
+    expect(
+      reach(
+        cell(
+          "py",
+          `msg = "accepted; PR comment: ${comment}"\nawait tool.envoy_publish(topic="t", message=msg)`
+        )
+      )
+    ).toBeUndefined();
+    expect(
+      reach(
+        cell(
+          "js",
+          `const u = "${API}";\nawait tool.envoy_publish({ message: u });\nawait fetch(u);`
+        )
+      )
+    ).toContain("reaches api.github.com");
+    expect(
+      reach(
+        cell(
+          "js",
+          `const u = "${API}";\nawait tool.envoy_publish({ message: u });\nawait Bun.$\`curl -s \${u}\`;`
+        )
+      )
+    ).toContain("reaches api.github.com");
+    expect(
+      reach(
+        cell(
+          "py",
+          `u = "${API}"\nawait tool.envoy_publish(topic="t", message=u)\nimport subprocess\nsubprocess.run(["curl", "-s", u])`
+        )
+      )
+    ).toContain("reaches api.github.com");
+  });
 });
 
 // Round 32's c8ef305c3eab (reviewer-text-findings, text-only, base), as the tester's evidence
