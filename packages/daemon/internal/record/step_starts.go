@@ -44,7 +44,9 @@ const (
 // is unknown: an end of such a step whose role's entry recorded none. StartCommit and FixCheck are
 // the commit the latest start named and, for a fix's start, the check the fix is of, and
 // EndCommit the commit the end of that start's run named: "" for none, and EndCommit "" until the
-// run ends.
+// run ends. BesideFix is the open fix of the task the latest start named (MarkStepBesideFix), 0
+// for none, and PushBranch the branch beside a fix that start's step pushes to (SetStepPushBranch),
+// "" for none: each start writes both again, so neither outlives the start that took it.
 type StepStart struct {
 	Starts      int64
 	Agent       string
@@ -53,7 +55,14 @@ type StepStart struct {
 	StartCommit string
 	EndCommit   string
 	FixCheck    string
+	BesideFix   int
+	PushBranch  string
 }
+
+// ErrStepStartMismatch is the answer of a write to one start of a place (MarkStepBesideFix,
+// SetStepPushBranch) where that start is not the place's open run: a later start counted since,
+// or the run ended.
+var ErrStepStartMismatch = errors.New("the start is not the open run of its place")
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
 // before it stood at, and answers that start's write: run, given the count with that start in it,
@@ -202,14 +211,58 @@ func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue strin
 	return true, nil
 }
 
+// MarkStepBesideFix writes that start number starts of place on issue named fix, an open fix of
+// its task (StepStart.BesideFix), in the transaction that counted that start (RaiseStepStarts),
+// which writes 0 for every start. A start that is not the place's open run is refused with
+// ErrStepStartMismatch, and nothing is written.
+func (s *Postgres) MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error {
+	describe := fmt.Sprintf("mark start %d of %s %s/%s/%d beside fix %d", starts, issue, place.Task, place.Kind, place.Place, fix)
+	if fix < 0 {
+		return fmt.Errorf("%s: a fix counts from 1", describe)
+	}
+	tag, err := tx.Exec(ctx, `update step_starts set beside_fix = $6
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and starts = $5 and run = 'open'`,
+		issue, place.Task, place.Kind, place.Place, starts, fix)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: %w", describe, ErrStepStartMismatch)
+	}
+	return nil
+}
+
+// SetStepPushBranch binds branch, a branch beside a fix, to start number starts of place on issue:
+// the branch that step pushes to until its run ends (StepStart.PushBranch). A start that holds a
+// binding keeps it, so a step keeps its branch when a later fix of its task starts, and a start
+// that is not the place's open run is refused with ErrStepStartMismatch, writing nothing.
+func (s *Postgres) SetStepPushBranch(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, branch string) error {
+	describe := fmt.Sprintf("bind branch %q to start %d of %s %s/%s/%d", branch, starts, issue, place.Task, place.Kind, place.Place)
+	if branch == "" {
+		return fmt.Errorf("%s: a binding names a branch", describe)
+	}
+	var open bool
+	err := tx.QueryRow(ctx, `select true from step_starts
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and starts = $5 and run = 'open'`,
+		issue, place.Task, place.Kind, place.Place, starts).Scan(&open)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%s: %w", describe, ErrStepStartMismatch)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	return nil
+}
+
 // stepStartColumns is the columns of a step_starts row in the order scanStepStart reads them.
-const stepStartColumns = `starts, agent, started_at, run, start_commit, end_commit, fix_check`
+const stepStartColumns = `starts, agent, started_at, run, start_commit, end_commit, fix_check, beside_fix, push_branch`
 
 // scanStepStart reads one step_starts row of stepStartColumns.
 func scanStepStart(row pgx.Row) (StepStart, error) {
 	var start StepStart
 	var at *time.Time
-	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run, &start.StartCommit, &start.EndCommit, &start.FixCheck); err != nil {
+	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run, &start.StartCommit, &start.EndCommit, &start.FixCheck,
+		&start.BesideFix, &start.PushBranch); err != nil {
 		return StepStart{}, err
 	}
 	if at != nil {

@@ -2,8 +2,10 @@ package record
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -61,7 +63,11 @@ type TaskFix struct {
 	// Way is 0 until the fix's end has decided what runs after it; then which of the three ways
 	// it took, 1, 2 or 3; and 4 for a fix a stop, a leave or a new generation ended, which takes
 	// no way.
-	Way                int
+	Way int
+	// Pushed is, for each role, the head of that role's branch beside the fix that a push of it
+	// showed (RecordBesidePush), nil for none: what the texts of a step beside the fix name of its
+	// own branch. PutFix and UpdateFix write none of it.
+	Pushed             map[string]string
 	StartedAt, EndedAt *time.Time
 }
 
@@ -100,9 +106,14 @@ type CIFailure struct {
 // runs one fix at a time (the index task_fixes_one_open holds the same rule).
 var ErrFixOpen = errors.New("a fix of the task is still reading its job or running")
 
-// fixColumns is the columns of a task_fixes row in the order scanFix reads them.
-const fixColumns = `issue, generation, task, fix, state, check_id, head, place, entry, got_report, return_to, failed,
+// fixInsertColumns is the columns PutFix writes of a task_fixes row, in the order fixValues gives
+// them, and fixColumns the columns a read scans (scanFix): those and pushed, which only
+// RecordBesidePush writes.
+const (
+	fixInsertColumns = `issue, generation, task, fix, state, check_id, head, place, entry, got_report, return_to, failed,
 	end_head, result, job_name, job_url, read_failed, claim_failed, way, started_at, ended_at`
+	fixColumns = fixInsertColumns + `, pushed`
+)
 
 // fixKey is the key of a task_fixes or ci_failures row of a task, as $1 to $3.
 const fixKey = `issue = $1 and generation = $2 and task = $3`
@@ -130,7 +141,7 @@ func (s *Postgres) PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 	if f.Fix != latest+1 {
 		return fmt.Errorf("%s: the task's next fix is fix %d", describe, latest+1)
 	}
-	if _, err := tx.Exec(ctx, `insert into task_fixes (`+fixColumns+`)
+	if _, err := tx.Exec(ctx, `insert into task_fixes (`+fixInsertColumns+`)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`, fixValues(f)...); err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
@@ -140,10 +151,17 @@ func (s *Postgres) PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 // UpdateFix writes f over the stored fix of the same issue, generation, task and number, every
 // other field as f carries it. A fix the store does not hold is refused.
 func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
+	pushed, err := json.Marshal(f.Pushed)
+	if err != nil {
+		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
+	}
+	if f.Pushed == nil {
+		pushed = []byte(`{}`)
+	}
 	tag, err := tx.Exec(ctx, `update task_fixes set state = $5, check_id = $6, head = $7, place = $8, entry = $9, got_report = $10,
 			return_to = $11, failed = $12, end_head = $13, result = $14, job_name = $15, job_url = $16, read_failed = $17,
-			claim_failed = $18, way = $19, started_at = $20, ended_at = $21
-		where `+fixKey+` and fix = $4`, fixValues(f)...)
+			claim_failed = $18, way = $19, started_at = $20, ended_at = $21, pushed = $22
+		where `+fixKey+` and fix = $4`, append(fixValues(f), pushed)...)
 	if err != nil {
 		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
 	}
@@ -153,10 +171,49 @@ func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 	return nil
 }
 
-// fixValues is f's columns as fixColumns lists them.
+// fixValues is f's columns as fixInsertColumns lists them.
 func fixValues(f TaskFix) []any {
 	return []any{f.Issue, int64(f.Generation), f.Task, f.Fix, f.State, f.Check, f.Head, f.Place, f.Entry, f.GotReport, f.ReturnTo, f.Failed,
 		f.EndHead, f.Result, f.JobName, f.JobURL, f.ReadFailed, f.ClaimFailed, f.Way, f.StartedAt, f.EndedAt}
+}
+
+// RecordBesidePush writes that a push showed head at the branch beside fix of task that role
+// pushes to, and a head of "" that the branch was deleted: it changes that role's key of the
+// fix's Pushed and no other. A push of a branch beside a fix the store does not hold, and an
+// unset role, write nothing.
+func (s *Postgres) RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error {
+	if role == "" {
+		return nil
+	}
+	stored, err := s.FixAt(ctx, tx, issue, generation, task, fix)
+	if err != nil || stored == nil {
+		return err
+	}
+	pushed := maps.Clone(stored.Pushed)
+	if pushed == nil {
+		pushed = map[string]string{}
+	}
+	if head == "" {
+		delete(pushed, role)
+	} else {
+		pushed[role] = head
+	}
+	stored.Pushed = pushed
+	return s.UpdateFix(ctx, tx, *stored)
+}
+
+// FixAt is fix number fix of task, in any state, nil where the store holds none: the fix a step's
+// bound branch beside a fix names (StepStart.PushBranch), whichever fix of the task is the latest.
+func (s *Postgres) FixAt(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int) (*TaskFix, error) {
+	stored, err := scanFix(tx.QueryRow(ctx, `select `+fixColumns+` from task_fixes
+		where `+fixKey+` and fix = $4`, issue, int64(generation), task, fix))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read fix %d of task %s of %s at generation %d: %w", fix, task, issue, generation, err)
+	}
+	return stored, nil
 }
 
 // RunningFix is the fix of task that reads its job or runs, nil where none does: at most one,
@@ -190,10 +247,17 @@ func (s *Postgres) LatestFix(ctx context.Context, tx pgx.Tx, issue string, gener
 func scanFix(row pgx.Row) (*TaskFix, error) {
 	var f TaskFix
 	var generation int64
+	var pushed []byte
 	if err := row.Scan(&f.Issue, &generation, &f.Task, &f.Fix, &f.State, &f.Check, &f.Head, &f.Place, &f.Entry, &f.GotReport,
 		&f.ReturnTo, &f.Failed, &f.EndHead, &f.Result, &f.JobName, &f.JobURL, &f.ReadFailed, &f.ClaimFailed, &f.Way,
-		&f.StartedAt, &f.EndedAt); err != nil {
+		&f.StartedAt, &f.EndedAt, &pushed); err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal(pushed, &f.Pushed); err != nil {
+		return nil, fmt.Errorf("read the pushes of fix %d of task %s of %s: %w", f.Fix, f.Task, f.Issue, err)
+	}
+	if len(f.Pushed) == 0 {
+		f.Pushed = nil
 	}
 	f.Generation = uint64(generation)
 	f.StartedAt, f.EndedAt = inUTC(f.StartedAt), inUTC(f.EndedAt)
