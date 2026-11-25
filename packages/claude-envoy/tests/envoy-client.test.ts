@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { SignInEndedError } from "@legion/cipher-client/token-errors"
+import { MESSAGE_NOT_SENT_PREFIX } from "@legion/contracts"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { EnvoySendUnconfirmedError, type KeyTakenResult } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
@@ -647,6 +648,29 @@ test("a keyed resend the listener refuses is not confirmed, never failed", async
   expect(resend.stderr).not.toContain("Claude Envoy send failed")
   expect(printedResend(resend.stderr)).toContain("--idempotency-key k-resend-1 ses_receiver hello")
   expect(requests.map((one) => one.body["idempotency_key"])).toEqual(["k-resend-1"])
+}, 30_000)
+
+// The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
+// refused it before anything went out, as during a hub move. Nothing was stored on either attempt,
+// so `envoy-send` prints the listener's sentence as the refusal it is and exits 1, with no resend
+// under a key: a run of the same command later sends the message once. Before, every 5xx was a
+// send that may have arrived, exit 75.
+test("an envoy-send the listener did not send is refused with its sentence, exit 1", async () => {
+  requests.length = 0
+  const sentence =
+    `${MESSAGE_NOT_SENT_PREFIX}: nothing was sent: the deployed stream does not capture a topic ` +
+    "this build stores (stream ENVOY_NOTIFICATIONS, topic notifications.agent.ses_receiver)"
+  for (let n = 0; n < 2; n++) {
+    answers.push(() =>
+      Response.json({ error: sentence }, { status: 503, headers: { "Retry-After": "1" } }),
+    )
+  }
+  const refused = await runEnvoySend(["ses_receiver", "not", "yet"])
+  expect(refused.code).toBe(1)
+  expect(refused.stderr).toBe(`Claude Envoy send failed: ${sentence}\n`)
+  expect(printedResend(refused.stderr)).toBeUndefined()
+  expect(requests).toHaveLength(2)
+  expect(new Set(requests.map((one) => one.body["idempotency_key"])).size).toBe(1)
 }, 30_000)
 
 // F6 (the review of 215510405b): where the message holds a secret this process withholds, the

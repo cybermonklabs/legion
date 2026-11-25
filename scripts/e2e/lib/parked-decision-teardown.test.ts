@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 import {
@@ -19,6 +20,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
+import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -50,9 +52,10 @@ const jq = hostGate({ programs: ["jq"] });
 // stop_agent_daemons (parked-decision-devbox.sh) reads a stat and an environment for every process
 // of `${proc_root:-/proc}`, and each row hands it a proc root of its own processes
 // (lib/proc-root.ts), so its walk reads those alone, not the host's process count. 30 s is the
-// file's default, set above every hook, for the rows and hooks that name no bound of their own
-// (Bun 1.4.4 gives a hook the default in force where it is registered); the tmux row and the
-// teardown hook take HANG_GUARD_MS below.
+// default of the hooks registered above rowWaits below, the scratch directories' among them, which
+// name no bound of their own (Bun 1.4.4 gives a hook the default in force where it is
+// registered); the rows take the directory's row bound from rowWaits, and the teardown hook
+// HANG_GUARD_MS.
 setDefaultTimeout(30_000);
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
@@ -64,12 +67,9 @@ const started: number[] = [];
 // afterEach hooks in the order they were registered, a timed-out row's too, and all of them before
 // an afterAll, so the server is stopped through its socket before that directory or `dir` goes.
 const teardowns: (() => void | Promise<void>)[] = [];
-// The bound of the teardown hook and of the tmux row: a hang guard, not a verdict. The row's work
-// is process starts (a tmux server and pane, the stand-in broker, the shells running the code under
-// test) and waits on its processes' events, and how long those take under load is the machine's.
-// #4318 adds this constant to @legion/test-fixtures as hang-guard.ts; once it merges, this local
-// copy gives way to that import.
-const HANG_GUARD_MS = 120_000;
+// The bound of the teardown hook is HANG_GUARD_MS: a hang guard, not a verdict. Its work, a tmux
+// server's kill and a broker's end (endBroker), is process ends and waits on them, and how long
+// those take under load is the machine's.
 // The row's proc root once it has made one, which the teardown reads too.
 let procRoot: string | undefined;
 afterEach(async () => {
@@ -232,20 +232,13 @@ const killSession = (sid: number) => {
     } catch {}
   }
 };
-// until polls real processes, which no fake clock moves, for the condition it names: 100 polls a
-// tenth of a second apart, or, given a DEADLINE (a Date.now() value), until that deadline, so a row
-// decides on the condition itself and the time it allows is the row's, not a count's.
-async function until(what: string, ok: () => boolean, deadline?: number) {
-  for (let i = 0; deadline === undefined ? i < 100 : Date.now() < deadline; i++) {
-    if (ok()) return;
-    await Bun.sleep(100);
-  }
-  if (ok()) return;
-  throw new Error(
-    deadline === undefined
-      ? `timed out waiting for ${what}`
-      : `timed out waiting for ${what}: the row's time ran out`
-  );
+// until polls real processes, which no fake clock moves, for the condition it names, until the end
+// of the row's waits, 20 s before the row's bound (lib/row-waits.ts), or until END where a row
+// gives one: how soon a process starts, writes or ends is the kernel's, and a loaded host's, so a
+// row decides on the condition itself and the time it allows is the row's, not a count's.
+const waits = rowWaits(libRowBoundMs);
+async function until(what: string, ok: () => boolean, end = waits.end()) {
+  await untilTrue(what, end, () => ok() || "it does not hold yet");
 }
 
 // detached starts ARGV in a session of its own as a child of a shell that exits at once, and returns
@@ -284,16 +277,18 @@ function pathWithout(name: string): string {
 // marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
 // once the shell runs, so the harness's own process carries no mark and run_processes does not name
 // it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts).
-// DEADLINE, when given (a Date.now() value), bounds the run by the row's remaining time: a run still
-// going then is ended and the row fails naming BODY, inside its own time, since Bun cannot time out
-// a row while a synchronous spawn holds it, and a row it times out after runs on to an unhandled
-// error. PATH, when given, is the run's PATH in place of this process's.
+// DEADLINE, when given (a performance.now() value, as waits.end() is), bounds the run by the row's
+// remaining time: a run still going then is ended and the row fails naming BODY, inside its own
+// time, since Bun cannot time out a row while a synchronous spawn holds it, and a row it times out
+// after runs on to an unhandled error. PATH, when given, is the run's PATH in place of this
+// process's.
 function harness(
   work: string,
   body: string,
   { procRoot, deadline, path }: { procRoot?: string; deadline?: number; path?: string } = {}
 ) {
-  const remaining = deadline === undefined ? undefined : deadline - Date.now();
+  // Whole milliseconds: Bun.spawnSync's timeout takes an integer, and performance.now() has fractions.
+  const remaining = deadline === undefined ? undefined : Math.ceil(deadline - performance.now());
   if (remaining !== undefined && remaining <= 0) {
     throw new Error(`the row's time ran out before ${body}`);
   }
@@ -331,16 +326,17 @@ ${body}`,
 host.test(
   "stops a detached broker's session that outlives tmux kill-server, and nothing it cannot tie to one",
   async () => {
-    // The row decides on the broker session's stop, bounded only by the hang guard: its stop and
-    // check read the row's own proc root, and what is left (a tmux server, the broker, the shells,
-    // their events) takes the machine's time (a run at load ~1,000 passed main's 30 s, another at
-    // ~1,400 did not). Its waits end 15 s before the guard, each harness run is ended at that deadline
-    // (harness's DEADLINE), and the tmux step checks the time first, so a row out of time fails by
-    // the name of what it was doing, inside its own time, and Bun's own timeout, which would end the
-    // row's children and leave the body running on to an unhandled expect, does not come first.
-    const deadline = Date.now() + HANG_GUARD_MS - 15_000;
+    // The row decides on the broker session's stop, bounded only by the row's own bound: its stop
+    // and check read the row's own proc root, and what is left (a tmux server, the broker, the
+    // shells, their events) takes the machine's time (a run at load ~1,000 passed main's 30 s,
+    // another at ~1,400 did not). Its waits end at the end of the row's waits (waits.end(), 20 s
+    // before the file's row bound), each harness run is ended at that deadline (harness's
+    // DEADLINE), and the tmux step checks the time first, so a row out of time fails by the name of
+    // what it was doing, inside its own time, and Bun's own timeout, which would end the row's
+    // children and leave the body running on to an unhandled expect, does not come first.
+    const deadline = waits.end();
     const inTime = (step: string) => {
-      if (Date.now() >= deadline) throw new Error(`the row's time ran out before ${step}`);
+      if (performance.now() >= deadline) throw new Error(`the row's time ran out before ${step}`);
     };
     const work = join(dir, "work");
     const ws = join(work, "ws");
@@ -471,8 +467,7 @@ host.test(
       .filter(Boolean)
       .map(Number);
     expect(after).toEqual([bystander]);
-  },
-  HANG_GUARD_MS
+  }
 );
 
 // A broker that has not yet written broker.pid when its row ends is found by broker.started, the
@@ -512,43 +507,39 @@ test("a teardown ends a broker that has not written broker.pid, by the pid it wr
 // and a name that holds a newline cut a first-line read short of the session field, so a broker so
 // named was tied to no broker.pid and outlived the run. The walk reads a proc root of the broker
 // alone (lib/proc-root.ts), so the row's time is its own and not the host's process count.
-jq.test(
-  "stops a broker's session whose leader's name holds a newline and a `) `",
-  async () => {
-    requireHostTools("python3");
-    const work = join(dir, "newline-broker");
-    const runtime = join(work, "state", "omp-daemon");
-    mkdirSync(runtime, { recursive: true });
-    const pidFile = join(runtime, "broker.pid");
-    // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
-    // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
-    const broker = Bun.spawn(
-      [
-        "python3",
-        "-I",
-        "-c",
-        'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
-        pidFile,
-      ],
-      {
-        env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
-        stdout: "ignore",
-        stderr: "ignore",
-      }
-    );
-    teardowns.push(() => {
-      if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
-    });
-    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
-    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
-    const stopped = harness(work, "stop_agent_daemons", {
-      procRoot: procRootOf(dir, [broker.pid]),
-    });
-    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-    await until("the broker to end", () => !alive(broker.pid));
-  },
-  30_000
-);
+jq.test("stops a broker's session whose leader's name holds a newline and a `) `", async () => {
+  requireHostTools("python3");
+  const work = join(dir, "newline-broker");
+  const runtime = join(work, "state", "omp-daemon");
+  mkdirSync(runtime, { recursive: true });
+  const pidFile = join(runtime, "broker.pid");
+  // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
+  // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
+  const broker = Bun.spawn(
+    [
+      "python3",
+      "-I",
+      "-c",
+      'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
+      pidFile,
+    ],
+    {
+      env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
+      stdout: "ignore",
+      stderr: "ignore",
+    }
+  );
+  teardowns.push(() => {
+    if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+  });
+  await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+  expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
+  const stopped = harness(work, "stop_agent_daemons", {
+    procRoot: procRootOf(dir, [broker.pid]),
+  });
+  expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+  await until("the broker to end", () => !alive(broker.pid));
+});
 
 // stop_agent_daemons reads each broker.pid with jq. Without jq it read no file, stopped nothing and
 // exited 0, which its caller takes for a run that left no broker session; it fails with 2 instead,

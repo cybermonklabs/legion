@@ -6,9 +6,9 @@ import (
 )
 
 // giveUpMargin is how long before the test binary's deadline a wait bounded by Remaining gives
-// up: the time the failing test's cleanups and its failure have to run in before Go's alarm
-// panics the binary.
-const giveUpMargin = 30 * time.Second
+// up: margin, the time the failing test's cleanups and its failure have to run in before Go's
+// alarm panics the binary, the one Eventually and Until leave too.
+const giveUpMargin = margin
 
 // unboundedRemaining is Remaining's answer when the test binary has no deadline (-timeout 0):
 // 1 << 60 ns, about 36 years, a span no wait reaches. Callers multiply it by small factors (a
@@ -17,6 +17,12 @@ const giveUpMargin = 30 * time.Second
 // 1 << 62 times 4 wraps to 0, which made such a limit fall to its floor. Now plus seven times it
 // is still a time after now, as a read deadline or a timer built from it needs.
 const unboundedRemaining = time.Duration(1 << 60)
+
+// deadlineOf is where Remaining and Receive read the test binary's deadline: t.Deadline. Only the
+// children of TestRemainingWithinTheMarginFailsTheTestByName and TestReceiveFailsNamingWhenItGaveUp
+// replace it, with a deadline of their own, so each child shows its wait's end while its own alarm
+// is what is left of its parent's deadline: no starved child reaches that alarm first.
+var deadlineOf = (*testing.T).Deadline
 
 // Remaining is how long a wait that begins now in t may last: the test binary's deadline, the one
 // go test's -timeout sets, less giveUpMargin, less now; and unboundedRemaining under -timeout 0.
@@ -28,7 +34,7 @@ const unboundedRemaining = time.Duration(1 << 60)
 // goroutine running the test.
 func Remaining(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, ok := t.Deadline()
+	deadline, ok := deadlineOf(t)
 	if !ok {
 		return unboundedRemaining
 	}

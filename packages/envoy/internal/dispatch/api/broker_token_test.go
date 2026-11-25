@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,11 +242,11 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-			Origin:    testServerURL,
+			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
 			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
-			// read-only token on the routes its read list names (cmd/dispatch,
+			// read-only token on the reads of its read class (cmd/dispatch,
 			// brokerTokenVerifier).
 			Address:        auth.ForwardedAddress,
 			ServesReadOnly: true,
@@ -1341,5 +1343,88 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project="+brokerTestProject, nil)
 	if strings.Contains(issues.Body.String(), "Filed with no proof") {
 		t.Fatalf("the unproved write created an issue: %s", issues.Body.String())
+	}
+}
+
+// TestANarrowedTokenActsAsItsIdentityAndOnlyReads: a token narrowed to reading acts as the
+// identity the same trade without read would have, and holds less. For each answer of the golden
+// file the broker's own test holds its narrowed answers to, the actor is the session it names,
+// with the person or the service it names; a token narrowed from a named one names its one
+// project; a read-person token that names its person holds the person scope alone; every other
+// holds no scope. Each is marked read-only with the cut its answer names, and none holds approve
+// or carries the word read among its scopes. The control is the machine login's answer with the
+// project scope person and no read: the same identity, holding both scopes and not read-only, so
+// approve is withheld by the narrowing.
+func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	ada, fleet, reader, account, acme := "ada@example.com", brokerTestService, brokerTestReader, brokerTestAccount, "ACME"
+	cut, err := time.Parse(time.RFC3339Nano, answers["machine-login-with-a-cut"].AsOf)
+	if err != nil {
+		t.Fatalf("the golden machine login's cut: %v", err)
+	}
+	type identity struct {
+		owner, service, project *string
+		scopes                  []string
+		readOnly                bool
+		cut                     time.Time
+	}
+	personOnly := []string{model.ScopePerson}
+	want := map[string]identity{
+		"pod-entry":                     {owner: &ada, project: &acme, readOnly: true},
+		"pod-entry-no-person":           {service: &account, readOnly: true},
+		"read-entry":                    {service: &reader, readOnly: true},
+		"workflow-entry":                {owner: &ada, project: &acme, readOnly: true},
+		"google-identity-no-person":     {service: &fleet, readOnly: true},
+		"google-identity-with-a-person": {owner: &ada, project: &acme, readOnly: true},
+		"person-sign-in":                {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login":                 {owner: &ada, scopes: personOnly, readOnly: true},
+		"machine-login-with-a-cut":      {owner: &ada, scopes: personOnly, readOnly: true, cut: cut},
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(want))) {
+		t.Fatalf("the golden file answers for %v, and this test names the actor of %v", kinds, slices.Sorted(maps.Keys(want)))
+	}
+	writer := answers["machine-login"]
+	writer.ProjectScope, writer.Scope = ciphertoken.ProjectScopePerson, ""
+	rows := map[string]ciphertoken.Introspection{"the machine login's token with no read": writer}
+	// The same token without read writes: it holds the person scope alone, as every broker token
+	// that acts for its person does (brokerPersonScopes), and it is not read-only.
+	want["the machine login's token with no read"] = identity{owner: &ada, scopes: personOnly}
+	maps.Copy(rows, answers)
+
+	same := func(got, want *string) bool { return (got == nil) == (want == nil) && (got == nil || *got == *want) }
+	for _, name := range slices.Sorted(maps.Keys(rows)) {
+		t.Run(name, func(t *testing.T) {
+			token := "a-token-of-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, rows[name])
+			actor, human, err := rig.served.brokerTokenActor(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+			if err != nil || human {
+				t.Fatalf("brokerTokenActor = %+v, human %v, %v; want the session's actor", actor, human, err)
+			}
+			expected := want[name]
+			if actor.Kind != "session" || actor.ID != session || !actor.Proven {
+				t.Fatalf("actor = %s:%s (proven %v), want the proven session %s", actor.Kind, actor.ID, actor.Proven, session)
+			}
+			if !same(actor.Owner, expected.owner) || !same(actor.Service, expected.service) || !same(actor.Project, expected.project) {
+				t.Fatalf("actor owner, service, project = %v, %v, %v; want %v, %v, %v",
+					actor.Owner, actor.Service, actor.Project, expected.owner, expected.service, expected.project)
+			}
+			credential := actor.Credential
+			if credential == nil || credential.Session != session {
+				t.Fatalf("credential = %+v, want one naming the session %s", credential, session)
+			}
+			if !slices.Equal(credential.Scopes, expected.scopes) {
+				t.Fatalf("credential scopes = %v, want %v", credential.Scopes, expected.scopes)
+			}
+			if credential.ReadOnly != expected.readOnly {
+				t.Fatalf("credential read-only = %v, want %v", credential.ReadOnly, expected.readOnly)
+			}
+			if !credential.Cut.Equal(expected.cut) || credential.Cut.Location() != time.UTC {
+				t.Fatalf("credential cut = %v, want %v in UTC", credential.Cut, expected.cut)
+			}
+		})
 	}
 }

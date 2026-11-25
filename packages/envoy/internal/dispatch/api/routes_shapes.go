@@ -198,6 +198,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`
@@ -713,17 +719,34 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues": {
 		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
-		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
+		// A 409 is a possible duplicate, or, with DISPATCH_PARENT_STATUS_RULE on, a create under a
+		// done parent (parent_status_rule.go).
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: issueDuplicateError{}},
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
 	},
 	"GET /api/v1/issues/resolve":       {Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 	"GET /api/v1/issues/{key}":         {Status: http.StatusOK, Response: issueDetail{}},
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
-		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
-		// over an open child of another project (refuseOpenForeignChildren).
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+		Refusals: []routeAnswer{
+			// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+			// over an open child of another project (refuseOpenForeignChildren).
+			{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+			// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
+	},
+	"POST /api/v1/issues/{key}/status-change": {
+		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: statusChangeConflict{}},
+			{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+			{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+		},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -795,6 +818,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepExperimentInput{},
 	},
 	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
 	"PUT /api/v1/issues/{key}/plans/{id}": {

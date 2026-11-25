@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,8 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorDispatch } from "./operator-dispatch";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const dir = temporaryDirectory("operator-dispatch-test");
 // The PATH every child of this file gets: the caller's, behind this Bun's own directory.
@@ -58,47 +64,51 @@ const brokerEnv = {
 };
 
 describe("operatorDispatch", () => {
-  test("the neutral file's own server, with its own bearer", () => {
-    expect(operatorDispatch({ HOME: home }, cwd)).toEqual({
+  test("the neutral file's own server, with its own bearer", async () => {
+    expect(await operatorDispatch({ HOME: home }, cwd)).toEqual({
       file: join(home, ".config", "legion", "envoy.json"),
       url: "https://dispatch.internal.example",
       token: "neutral-1",
     });
   });
 
-  test("a named omp profile's file comes before the neutral one, as for every command", () => {
+  test("a named omp profile's file comes before the neutral one, as for every command", async () => {
     const env = { HOME: home, OMP_PROFILE: "work", PI_CODING_AGENT_DIR: profile };
-    expect(operatorDispatch(env, cwd)).toMatchObject({
+    expect(await operatorDispatch(env, cwd)).toMatchObject({
       file: join(profile, "envoy.json"),
       token: "profile-2",
     });
   });
 
-  test("a file's bearer never goes to the server DISPATCH_URL names instead", () => {
+  test("a file's bearer never goes to the server DISPATCH_URL names instead", async () => {
     const env = { HOME: home, DISPATCH_URL: "https://other.internal.example" };
-    expect(() => operatorDispatch(env, cwd)).toThrow(
+    await expect(operatorDispatch(env, cwd)).rejects.toThrow(
       "DISPATCH_URL names https://other.internal.example, but"
     );
-    expect(() => operatorDispatch(env, cwd)).not.toThrow(/neutral-1/);
+    await expect(operatorDispatch(env, cwd)).rejects.not.toThrow(/neutral-1/);
   });
 
-  test("nothing configured is off, saying why", () => {
-    expect(operatorDispatch({ HOME: join(dir, "empty-home") }, cwd)).toEqual({
+  test("nothing configured is off, saying why", async () => {
+    expect(await operatorDispatch({ HOME: join(dir, "empty-home") }, cwd)).toEqual({
       file: join(dir, "empty-home", ".config", "legion", "envoy.json"),
       notice: `no envoy.json at ${join(dir, "empty-home", ".config", "legion", "envoy.json")}: Dispatch is off`,
     });
   });
 
-  test("the secrets broker's credential is refused by name, the file's bearer being passed over", () => {
-    expect(() => operatorDispatch(brokerEnv, cwd)).toThrow(
+  test("the secrets broker's credential is refused by name, the file's bearer being passed over", async () => {
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.toThrow(
       "this machine's Dispatch credential is the access token it trades its own identity for at the secrets broker"
     );
-    expect(() => operatorDispatch(brokerEnv, cwd)).toThrow(
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.toThrow(
       `set DISPATCH_TOKEN, or write dispatch.token in ${join(home, ".config", "legion", "envoy.json")}, with DISPATCH_TOKEN_BROKER unset`
     );
-    expect(() => operatorDispatch(brokerEnv, cwd)).not.toThrow(/neutral-1/);
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.not.toThrow(/neutral-1/);
   });
 });
+
+/** The budget of a case, or a hook, that starts `bun` `starts` times, rather than Bun's 5 s per
+ *  case (`BUN_START_MS`). */
+const startsBudget = (starts: number): number => starts * BUN_START_MS;
 
 // The bearer never reaches stdout, where an agent running the command would put it in its
 // transcript: it goes to a 0600 file whose path the caller passes, and lib/operator-dispatch.sh
@@ -110,55 +120,71 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       env: { PATH: childPath, ...env },
     });
 
-  test("writes the bearer to the file, owner-only, and prints the file and the URL alone", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const bearer = join(held, "bearer");
-    const run = cli([bearer], { HOME: home });
-    expect(run.exitCode).toBe(0);
-    expect(JSON.parse(run.stdout.toString())).toEqual({
-      file: join(home, ".config", "legion", "envoy.json"),
-      url: "https://dispatch.internal.example",
-    });
-    expect(run.stdout.toString()).not.toContain("neutral-1");
-    expect(readFileSync(bearer, "utf-8")).toBe("neutral-1");
-    expect(statSync(bearer).mode & 0o777).toBe(0o600);
-  });
+  test(
+    "writes the bearer to the file, owner-only, and prints the file and the URL alone",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const bearer = join(held, "bearer");
+      const run = cli([bearer], { HOME: home });
+      expect(run.exitCode).toBe(0);
+      expect(JSON.parse(run.stdout.toString())).toEqual({
+        file: join(home, ".config", "legion", "envoy.json"),
+        url: "https://dispatch.internal.example",
+      });
+      expect(run.stdout.toString()).not.toContain("neutral-1");
+      expect(readFileSync(bearer, "utf-8")).toBe("neutral-1");
+      expect(statSync(bearer).mode & 0o777).toBe(0o600);
+    },
+    startsBudget(1)
+  );
 
-  test("writes no file when Dispatch is off or refused, and never over one that is there", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const off = cli([join(held, "off")], { HOME: join(dir, "empty-home") });
-    expect(off.exitCode).toBe(0);
-    expect(JSON.parse(off.stdout.toString())).toMatchObject({ notice: expect.any(String) });
-    const refused = cli([join(held, "refused")], {
-      HOME: home,
-      DISPATCH_URL: "https://other.internal.example",
-    });
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stdout.toString()).not.toContain("neutral-1");
-    expect(readdirSync(held)).toEqual([]);
+  test(
+    "writes no file when Dispatch is off or refused, and never over one that is there",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const off = cli([join(held, "off")], { HOME: join(dir, "empty-home") });
+      expect(off.exitCode).toBe(0);
+      expect(JSON.parse(off.stdout.toString())).toMatchObject({ notice: expect.any(String) });
+      const refused = cli([join(held, "refused")], {
+        HOME: home,
+        DISPATCH_URL: "https://other.internal.example",
+      });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stdout.toString()).not.toContain("neutral-1");
+      expect(readdirSync(held)).toEqual([]);
 
-    const planted = join(held, "planted");
-    writeFileSync(planted, "", { mode: 0o644 });
-    const over = cli([planted], { HOME: home });
-    expect(over.exitCode).toBe(1);
-    expect(JSON.parse(over.stdout.toString()).error).toContain(planted);
-    expect(readFileSync(planted, "utf-8")).toBe("");
-  });
+      const planted = join(held, "planted");
+      writeFileSync(planted, "", { mode: 0o644 });
+      const over = cli([planted], { HOME: home });
+      expect(over.exitCode).toBe(1);
+      expect(JSON.parse(over.stdout.toString()).error).toContain(planted);
+      expect(readFileSync(planted, "utf-8")).toBe("");
+    },
+    startsBudget(3)
+  );
 
-  test("writes no file for the secrets broker's credential, naming it in the error", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const run = cli([join(held, "bearer")], brokerEnv);
-    expect(run.exitCode).toBe(1);
-    expect(JSON.parse(run.stdout.toString()).error).toContain("the secrets broker");
-    expect(readdirSync(held)).toEqual([]);
-  });
+  test(
+    "writes no file for the secrets broker's credential, naming it in the error",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const run = cli([join(held, "bearer")], brokerEnv);
+      expect(run.exitCode).toBe(1);
+      expect(JSON.parse(run.stdout.toString()).error).toContain("the secrets broker");
+      expect(readdirSync(held)).toEqual([]);
+    },
+    startsBudget(1)
+  );
 
-  test("refuses to run without the file's path", () => {
-    const run = cli([], { HOME: home });
-    expect(run.exitCode).toBe(2);
-    expect(run.stdout.toString()).toBe("");
-    expect(run.stderr.toString()).toContain("usage: bun scripts/e2e/lib/operator-dispatch.ts");
-  });
+  test(
+    "refuses to run without the file's path",
+    () => {
+      const run = cli([], { HOME: home });
+      expect(run.exitCode).toBe(2);
+      expect(run.stdout.toString()).toBe("");
+      expect(run.stderr.toString()).toContain("usage: bun scripts/e2e/lib/operator-dispatch.ts");
+    },
+    startsBudget(1)
+  );
 });
 
 describe("operator_dispatch", () => {
@@ -166,16 +192,21 @@ describe("operator_dispatch", () => {
 . "$1"
 operator_dispatch
 printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$operator_dispatch_token" "$operator_dispatch_notice"`;
-  const run = (directory: string, extra: Record<string, string> = {}) =>
+  const run = (
+    directory: string,
+    extra: Record<string, string> = {}
+  ): Bun.SyncSubprocess<"pipe", "pipe"> =>
     Bun.spawnSync(["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh")], {
       cwd: directory,
       env: { HOME: home, PATH: childPath, ...extra },
+      stdout: "pipe",
+      stderr: "pipe",
     });
   // The three runs and the old checkout they read are made in a hook, not in this body: the
   // directories they run in are made by the file's own `beforeAll`, which Bun runs first.
-  let on: Bun.SyncSubprocess | undefined;
-  let refused: Bun.SyncSubprocess | undefined;
-  let inOldCheckout: Bun.SyncSubprocess | undefined;
+  let on: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
+  let refused: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
+  let inOldCheckout: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
   const oldCheckout = join(dir, "old-checkout");
   const old = join(oldCheckout, ".opencode", "envoy.json");
   beforeAll(() => {
@@ -194,7 +225,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
       })
     );
     inOldCheckout = run(oldCheckout);
-  });
+  }, startsBudget(3));
 
   test("sets the file, URL and bearer the client resolves", () => {
     expect(on?.exitCode).toBe(0);
@@ -213,35 +244,37 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
   });
 
   test("a checkout's .opencode/envoy.json is named on stderr with its rename, and the user file's server is used", () => {
-    expect(inOldCheckout.exitCode).toBe(0);
-    expect(inOldCheckout.stderr.toString()).toBe(
+    expect(inOldCheckout?.exitCode).toBe(0);
+    expect(inOldCheckout?.stderr.toString()).toBe(
       `dispatch: ${old} is not read: mkdir -p ${join(oldCheckout, ".envoy")} && mv ${old} ${join(oldCheckout, ".envoy", "envoy.json")}\n`
     );
-    expect(inOldCheckout.stdout.toString()).toBe(
+    expect(inOldCheckout?.stdout.toString()).toBe(
       `${join(home, ".config", "legion", "envoy.json")}|https://dispatch.internal.example|neutral-1|\n`
     );
   });
 });
 
 describe("operator_dispatch_hold_token and production_baseline", () => {
-  test("the held bearer leaves the environment, and the baseline is the newest event id read with it", async () => {
-    const requests: { path: string; auth: string | null }[] = [];
-    const events: Record<string, number> = { "OPS-1": 7, "OPS-2": 12 };
-    const server = Bun.serve({
-      port: 0,
-      fetch(request) {
-        const url = new URL(request.url);
-        requests.push({ path: url.pathname, auth: request.headers.get("authorization") });
-        if (url.pathname === "/api/v1/issues")
-          return Response.json([{ key: "OPS-1" }, { key: "OPS-2" }]);
-        const key = /^\/api\/v1\/issues\/([^/]+)\/events$/.exec(url.pathname)?.[1];
-        return key === undefined
-          ? new Response("", { status: 404 })
-          : Response.json([{ id: events[key] }]);
-      },
-    });
-    const work = mkdtempSync(join(dir, "work."));
-    const script = `fail() { printf 'FAIL %s\\n' "$*"; exit 1; }
+  test(
+    "the held bearer leaves the environment, and the baseline is the newest event id read with it",
+    async () => {
+      const requests: { path: string; auth: string | null }[] = [];
+      const events: Record<string, number> = { "OPS-1": 7, "OPS-2": 12 };
+      const server = Bun.serve({
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          requests.push({ path: url.pathname, auth: request.headers.get("authorization") });
+          if (url.pathname === "/api/v1/issues")
+            return Response.json([{ key: "OPS-1" }, { key: "OPS-2" }]);
+          const key = /^\/api\/v1\/issues\/([^/]+)\/events$/.exec(url.pathname)?.[1];
+          return key === undefined
+            ? new Response("", { status: 404 })
+            : Response.json([{ id: events[key] }]);
+        },
+      });
+      const work = mkdtempSync(join(dir, "work."));
+      const script = `fail() { printf 'FAIL %s\\n' "$*"; exit 1; }
 note() { printf 'NOTE %s\\n' "$*"; }
 work=$2
 . "$1"
@@ -249,34 +282,36 @@ operator_dispatch_hold_token
 printf 'held:%s\\n' "\${DISPATCH_TOKEN-unset}"
 production_baseline
 printf '%s|%s|%s\\n' "$prod_dispatch_url" "$prod_baseline" "$(ls -A "$work")"`;
-    try {
-      const shell = Bun.spawn(
-        ["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh"), work],
-        {
-          cwd,
-          env: {
-            HOME: join(dir, "empty-home"),
-            PATH: childPath,
-            DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-            DISPATCH_TOKEN: "operator-bearer",
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const stdout = await new Response(shell.stdout).text();
-      expect(await shell.exited).toBe(0);
-      expect(stdout).toBe(`held:unset\nhttp://127.0.0.1:${server.port}|12|\n`);
-      expect(requests.map((request) => request.path)).toEqual([
-        "/api/v1/issues",
-        "/api/v1/issues/OPS-1/events",
-        "/api/v1/issues/OPS-2/events",
-      ]);
-      expect(new Set(requests.map((request) => request.auth))).toEqual(
-        new Set(["Bearer operator-bearer"])
-      );
-    } finally {
-      server.stop(true);
-    }
-  });
+      try {
+        const shell = Bun.spawn(
+          ["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh"), work],
+          {
+            cwd,
+            env: {
+              HOME: join(dir, "empty-home"),
+              PATH: childPath,
+              DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+              DISPATCH_TOKEN: "operator-bearer",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+          }
+        );
+        const stdout = await new Response(shell.stdout).text();
+        expect(await shell.exited).toBe(0);
+        expect(stdout).toBe(`held:unset\nhttp://127.0.0.1:${server.port}|12|\n`);
+        expect(requests.map((request) => request.path)).toEqual([
+          "/api/v1/issues",
+          "/api/v1/issues/OPS-1/events",
+          "/api/v1/issues/OPS-2/events",
+        ]);
+        expect(new Set(requests.map((request) => request.auth))).toEqual(
+          new Set(["Bearer operator-bearer"])
+        );
+      } finally {
+        server.stop(true);
+      }
+    },
+    startsBudget(1)
+  );
 });

@@ -50,6 +50,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Priority is the issue's own Dispatch priority as the observation showed it: an event's
+	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
+	// null). The record takes it wherever it takes the observation's rank.
+	Priority record.Priority
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -153,7 +157,7 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
@@ -162,8 +166,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -189,8 +193,16 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+}
+
+// dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
+// listing and the detail answer no event's fields the decoder could report, and Dispatch writes
+// no level outside 0 to 3, so a level it could not read is none here (record.DispatchPriority).
+func dispatchPriority(level *int) record.Priority {
+	priority, _ := record.DispatchPriority(level)
+	return priority
 }
 
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
@@ -1606,15 +1618,24 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 // look the check stood at when the wake was named, so a row of a look the check has since left
 // starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
 // merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// zero OpenedAt names none. WakeAt is the wake the row was queued for, so a row whose wake the
+// check no longer records — a failure between looks named the next look later — starts nothing;
+// a zero WakeAt, a row a release before the field queued, is not fenced.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
+	WakeAt   time.Time
 	Reason   string
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
+
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, WakeAt: wake.WakeAt, Reason: wake.Reason}
+}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
