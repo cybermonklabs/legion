@@ -184,17 +184,23 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	// The longest wait of this package, measured at 20.03 s and 19.98 s over two whole-package runs
-	// under load: the view keeps answering until its watcher has noticed the bucket is gone, which
-	// is a sequence of the watcher's own bounds (internal/kvwatch: a stream probe every
-	// streamProbeInterval, the confirm it waits for at streamConfirmMaxAge, the reread after it at
-	// rereadDelay, and the scan's ScanIdleTimeout, about 21 s together). Three of those four are
-	// unexported, so this row cannot state the sum; and since what it waits out is a third of the
-	// package's minute cap rather than the few seconds every other wait takes, it waits to the test
-	// binary's deadline instead of taking that cap (testwait.Until).
-	testwait.Until(t, "the role claim view to stop answering", func() (error, bool) {
+	// The longest wait of this package, and the one wait that does not take listenerWaitBound. The
+	// view keeps answering until its watcher has noticed the bucket is gone, which is a sequence of
+	// the watcher's own bounds (internal/kvwatch: a stream probe every streamProbeInterval, the
+	// confirm it waits for at streamConfirmMaxAge, the reread after it at rereadDelay, and the
+	// scan's ScanIdleTimeout, about 21 s together), measured at 20.03 s and 19.98 s over two
+	// whole-package runs under load. Three of those four constants are unexported, so this row
+	// cannot state the sum and derive a bound from it.
+	//
+	// claimsViewNoticesBucketGone is ten times that need, which is the headroom the package's cap
+	// gives every other wait: the minute cap would be barely three times it, near enough that a
+	// loaded runner could decide the row, and the binary's deadline would let a watcher that stops
+	// noticing at all hold the whole package for half an hour, which is what listenerWaitBound
+	// exists to stop.
+	const claimsViewNoticesBucketGone = 4 * time.Minute
+	testwait.WithinPolling(t, claimsViewNoticesBucketGone, testwait.Poll, "the role claim view to stop answering", func() bool {
 		_, err := registry.RolesHeldBy(sender)
-		return err, err != nil
+		return err != nil
 	})
 
 	for _, route := range []struct {
