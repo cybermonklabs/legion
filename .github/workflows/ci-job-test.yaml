@@ -731,10 +731,10 @@ jobs:
         run: bunx tsc --noEmit -p scripts/approval-eval
 
       # scripts/e2e/lib is no workspace either. Its tsconfig.json holds the tests of the two read
-      # tools, the plan ratings read's and the step records read's, each answer typed to the
-      # contract, and the step models comparator with its own test. The root package pins their
-      # TypeScript and Bun types. The tests themselves run in the test job's bun test of
-      # scripts/e2e/lib.
+      # tools, the plan ratings read's and the step records read's. Each answer is typed to the
+      # contract. It also holds the step models comparator with its own test. The root package
+      # pins their TypeScript and Bun types. The tests themselves run in the test job's bun test
+      # of scripts/e2e/lib.
       - name: Typecheck the e2e read tools and their tests
         run: bunx tsc --noEmit -p scripts/e2e/lib
 

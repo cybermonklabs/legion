@@ -1,27 +1,28 @@
 //go:build e2e
 
-// The whole chain of a step record's models, driven through the real shim and the real daemon on
-// both harnesses, and the reads of a stand-in's own stream that the chain counts by.
+// This file drives the whole chain of a step record's models through the real shim and the real
+// daemon on both harnesses. It also holds the reads of a stand-in's own stream that the chain
+// counts by.
 //
 // What a reader of a stand-in's stream must hold: one response is one id. A step's record counts
-// one call for each response its agent made, so two responses that carry one id count as one
-// call, whatever the harness did. TestTheStandInGivesEachResponseItsOwnID holds the stand-in
-// helpers of live_agent_proof_test.go to that, over the recorder alone: no pane, no daemon and no
-// harness, so a reader of this file sees what the counting rests on before it reads the chain.
+// one call for each response its agent made. So two responses that carry one id count as one call,
+// whatever the harness did. TestTheStandInGivesEachResponseItsOwnID holds the stand-in helpers of
+// live_agent_proof_test.go to that, over the recorder alone: no pane, no daemon and no harness. So
+// a reader of this file sees what the counting rests on before it reads the chain.
 //
 // TestStepModelsLive is the chain. Everything is real but the model endpoints: the whole daemon,
-// the Dispatch this checkout builds, read with the real `dispatch` CLI, and each pane the real
+// and the Dispatch this checkout builds, read with the real `dispatch` CLI. Each pane is the real
 // `legion worker-shim` around a real harness. Each implementer is the pinned Oh My Pi with this
-// checkout's two plugins, and each tester the pinned Claude Code behind `legion claude-bridge`
-// with this checkout's claude-envoy build. Each architect is the test's own session on the worker
-// stream: its grant gives each issue its plan and stops task a, and no check reads its record.
-// Each pane talks to a stand-in of the test's own, which waits three seconds before every answer
-// and keeps a list of each response it served, the oracle the record's counts are held to. The
+// checkout's two plugins. Each tester is the pinned Claude Code behind `legion claude-bridge` with
+// this checkout's claude-envoy build. Each architect is the test's own session on the worker
+// stream. Its grant gives each issue its plan and stops task a, and no check reads its record. Each
+// pane talks to a stand-in of the test's own, which waits three seconds before every answer. The
+// stand-in keeps a list of each response it served, the oracle the record's counts are held to. The
 // comparator then judges the records against the transcripts. The run also captures what a real
 // Claude Code session writes when the model that answers is not the one it asked for.
 package daemon
 
-// What the chain reads outside its own package, which no import of this file carries: each is a
+// What the chain reads outside its own package, which no import of this file carries. Each is a
 // program it spawns or a file that program reads. The packs of the two Oh My Pi plugins are
 // declared in live_agent_proof_test.go, whose installProofPlugins this test runs.
 //ci:reads packages/claude-envoy/** TestStepModelsLive builds the claude-envoy plugin each Claude Code pane loads, with bun packages/claude-envoy/scripts/build.ts
@@ -80,45 +81,46 @@ import (
 
 // stepModelsAnswerDelay is what every stand-in of the chain waits before each answer, the same for
 // every request, as a model's own latency. A step's start read is made before its prompt reaches
-// the pane, so this puts the read more than the comparator's two seconds from the first response
-// of the turn that prompt starts.
+// the pane. So this puts the read more than the comparator's two seconds from the first response of
+// the turn that prompt starts.
 const stepModelsAnswerDelay = 3 * time.Second
 
 // stepModelsWaiting is the text a stand-in answers a turn it makes no call in, the tool's result
-// among them: the WAITING line the phase-stall reminder takes as a worker that said it is waiting,
-// so the reminder adds no turn of its own (packages/pi-shared/src/phase-stall.ts, WAITING_REPLY).
+// among them. It is the WAITING line the phase-stall reminder takes as a worker that said it is
+// waiting. So the reminder adds no turn of its own (packages/pi-shared/src/phase-stall.ts,
+// WAITING_REPLY).
 const stepModelsWaiting = "WAITING on the daemon's next task: the legion tool has answered."
 
-// stepModelsSubagentMarker is in the prompt of each Claude Code subagent this chain starts, which
-// is how a Claude pane's stand-in tells a subagent's request from a turn of the role's. Oh My Pi's
-// subagent is told by deepWorkerSystemLine instead, which Oh My Pi puts in the system prompt of a
-// `task` subagent of the deep-worker agent and nowhere else (busy_relaunch_live_test.go).
+// stepModelsSubagentMarker is in the prompt of each Claude Code subagent this chain starts. It is
+// how a Claude pane's stand-in tells a subagent's request from a turn of the role's. Oh My Pi's
+// subagent is told by deepWorkerSystemLine instead. Oh My Pi puts that line in the system prompt of
+// a `task` subagent of the deep-worker agent and nowhere else (busy_relaunch_live_test.go).
 const stepModelsSubagentMarker = "STEP-MODELS-SUBAGENT"
 
-// stepModelsCaptureMarker is the one prompt of a capture run (captureClaude), which starts its
-// one turn as a task of the daemon's starts a step of a pane.
+// stepModelsCaptureMarker is the one prompt of a capture run (captureClaude). That prompt starts
+// the run's one turn as a task of the daemon's starts a step of a pane.
 const stepModelsCaptureMarker = "STEP-MODELS-CAPTURE"
 
-// servedResponse is one response a stand-in served, as the run writes it to standin-served.json:
-// the claim whose pane asked, the response's own id, whether it was a subagent's rather than the
-// agent's own conversation, whether it was a side request that is neither, the model the request
-// asked for and the model the answer named, when the answer ended, and what asked for it with the
-// place of its step it answered. A record's counts are held to this list rather than to the
-// transcript, since the transcript is the harness's own account of the same calls, which the
-// comparator reads apart.
+// servedResponse is one response a stand-in served, as the run writes it to standin-served.json. It
+// names the claim whose pane asked and the response's own id. It says whether the response was a
+// subagent's rather than the agent's own conversation, and whether it was a side request that is
+// neither. It names the model the request asked for and the model the answer named, and when the
+// answer ended. It also names what asked for it with the place of its step it answered. A record's
+// counts are held to this list rather than to the transcript. This is because the transcript is the
+// harness's own account of the same calls. The comparator reads that account apart.
 type servedResponse struct {
 	Claim    string `json:"claim"`
 	ID       string `json:"id"`
 	Subagent bool   `json:"subagent"`
-	// Side is a request that is no turn of a conversation: the plugin's own side question, a
-	// harness's own upkeep call, which offers no tool, or a call of another model than the one the
-	// pane asks for.
+	// Side is a request that is no turn of a conversation. It is the plugin's own side question, a
+	// harness's own upkeep call, or a call of another model than the one the pane asks for. An
+	// upkeep call offers no tool.
 	Side    bool      `json:"side,omitempty"`
 	Asked   string    `json:"asked"`
 	Model   string    `json:"model"`
 	EndedAt time.Time `json:"endedAt"`
-	// Turn says what asked for this answer (stepModelsTurn.shape), and Step and Place which step
-	// of the script and which of its answers it was: 0 for an answer of no step's turn.
+	// Turn says what asked for this answer (stepModelsTurn.shape). Step and Place say which step of
+	// the script and which of its answers it was, 0 for an answer of no step's turn.
 	Turn  string `json:"turn"`
 	Step  int    `json:"step,omitempty"`
 	Place int    `json:"place,omitempty"`
@@ -129,28 +131,28 @@ func (s servedResponse) main() bool {
 	return !s.Subagent && !s.Side
 }
 
-// stepModelsStep is what a stand-in answers for one step of its claim: four responses where the
-// agent ends the step itself, three where another fact ends it.
+// stepModelsStep is what a stand-in answers for one step of its claim. That is four responses where
+// the agent ends the step itself, three where another fact ends it.
 //
-//   - ended: a text block and a shell call under one id, then a subagent call, then the call of
-//     the `legion` tool that completes the handoff, then the WAITING text that ends the turn after
-//     the tool's result. The end read comes as the third response's call is applied, and the
-//     fourth waits three seconds, so it ends after that read: the record answers the three calls
-//     of the set model and none of the subagent's.
+//   - ended: a text block and a shell call under one id, then a subagent call. Then the call of the
+//     `legion` tool that completes the handoff. Then the WAITING text that ends the turn after the
+//     tool's result. The end read comes as the third response's call is applied. The fourth waits
+//     three seconds, so it ends after that read. The record answers the three calls of the set
+//     model and none of the subagent's.
 //   - stopped: the first two as above, then the WAITING text, which ends the turn. The architect
 //     ends the step over the daemon's route while the claim sits idle.
 type stepModelsStep struct {
 	ended bool
-	// verdict rides the handoff completion of an ended step: a tester's `fail` sends the issue
-	// back for a second step of the same implementer, which is how one issue gives each harness
-	// two steps its agent ended.
+	// verdict rides the handoff completion of an ended step. A tester's `fail` sends the issue back
+	// for a second step of the same implementer. That is how one issue gives each harness two steps
+	// its agent ended.
 	verdict string
 }
 
-// stepModelsEvent is what a stand-in tells the run's driver (driveTurns): a step its agent ends
-// is about to call the `legion` tool, so the driver writes the step's handoff record as the
-// claim's session and closes written; or, with written nil, the turn of a step another fact ends
-// has ended, so the driver stops its task.
+// stepModelsEvent is what a stand-in tells the run's driver (driveTurns). An event says a step its
+// agent ends is about to call the `legion` tool. So the driver writes the step's handoff record as
+// the claim's session and closes written. With written nil, the event says instead that the turn of
+// a step another fact ends has ended. So the driver stops its task.
 type stepModelsEvent struct {
 	token   claim.Token
 	step    int
@@ -158,35 +160,36 @@ type stepModelsEvent struct {
 }
 
 // stepModelsStandin is the model endpoint of one driven pane. Its harness decides the names of the
-// three tools a turn calls and how a subagent's request is told from the role's; its steps are the
-// script, one entry per step the claim works in turn; and its list is what it answered.
+// three tools a turn calls and how a subagent's request is told from the role's. Its steps are the
+// script, one entry per step the claim works in turn. Its list is what it answered.
 type stepModelsStandin struct {
 	*modelStandin
 
 	token   claim.Token
 	harness string
 	// served is the model id every answer of this stand-in names, and asked the one a turn of its
-	// pane asks for. They are one model everywhere in the chain; only the capture that measures
+	// pane asks for. They are one model everywhere in the chain. Only the capture that measures
 	// what a transcript holds of a model that never answered serves another.
 	served, asked string
 	// marker is what the prompt that starts a step carries: the pane's own phase in a task of the
 	// daemon's, or the capture's one prompt.
 	marker string
 	steps  []stepModelsStep
-	// events reaches the run's driver, nil for a capture, which no driver drives; stopped closes
+	// events reaches the run's driver, nil for a capture, which no driver drives. stopped closes
 	// when the run ends, which lets a held answer go.
 	events  chan<- stepModelsEvent
 	stopped <-chan struct{}
 
 	mu sync.Mutex
-	// next is the step the next prompt carrying marker starts, step the one being answered,
-	// inStep how many responses of the agent's own conversation it has served within it, and
-	// inTurn whether its turn is still open: a step ends with the text that ends its turn.
+	// next is the step the next prompt carrying marker starts, and step the one being answered.
+	// inStep is how many responses of the agent's own conversation it has served within it. inTurn
+	// is whether its turn is still open: a step ends with the text that ends its turn.
 	next, step, inStep int
 	inTurn             bool
 	list               []servedResponse
 	// asking is how many Messages requests this stand-in holds unanswered, and answered when it
-	// last ended an answer of any kind: what tells the driver the pane has gone quiet (quietFor).
+	// last ended an answer of any kind. They are what tells the driver the pane has gone quiet
+	// (quietFor).
 	asking   int
 	answered time.Time
 }
@@ -205,17 +208,17 @@ func newStepModelsStandin(t *testing.T, name, harness, served, asked, marker str
 	return s
 }
 
-// The names each harness offers its three tools under, a shell command, a subagent and the
-// `legion` tool, each first as this chain's stand-ins call it and then as another build of the
-// harness may offer it: Claude Code prefixes its one MCP server's name, and Oh My Pi offers a tool
-// under a spelling of its own (late_completion_live_test.go, callFor).
+// The names each harness offers its three tools under: a shell command, a subagent and the `legion`
+// tool. Each comes first as this chain's stand-ins call it, then as another build of the harness
+// may offer it. Claude Code prefixes its one MCP server's name. Oh My Pi offers a tool under a
+// spelling of its own (late_completion_live_test.go, callFor).
 var (
 	claudeTools = [3][]string{{"Bash"}, {"Task", "Agent"}, {"mcp__legion__legion"}}
 	ompTools    = [3][]string{{"bash"}, {"task"}, {"legion"}}
 )
 
-// toolName is the name the request offers the tool of place under, the stand-in's own first name
-// for it where the request offers none of its names.
+// toolName is the name the request offers the tool of place under. Where the request offers none of
+// its names, it is the stand-in's own first name for it.
 func (s *stepModelsStandin) toolName(offered []string, place int) string {
 	names := ompTools[place]
 	if s.harness == "claude" {
@@ -257,8 +260,8 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		served.Subagent = strings.Contains(turn.firstUser, stepModelsSubagentMarker)
 	}
 	// Every turn of a session offers the session's tools. A request that offers none is the
-	// harness's own upkeep, no turn of the session: Oh My Pi asks its "routing hint" calls while a
-	// step's turn runs, and one read as a prompt would end that turn in the script.
+	// harness's own upkeep, no turn of the session. Oh My Pi asks its "routing hint" calls while a
+	// step's turn runs. One read as a prompt would end that turn in the script.
 	served.Side = !served.Subagent && (turn.side || len(turn.tools) == 0 || (turn.model != "" && turn.model != s.asked))
 
 	var answer stepModelsAnswer
@@ -267,12 +270,13 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	switch {
 	case served.Subagent:
 		// A subagent's request is answered with one text that ends it, whatever the role's step is
-		// doing: a subagent is no turn of the agent's own conversation, and no count of a record
+		// doing. A subagent is no turn of the agent's own conversation, and no count of a record
 		// names it.
 		answer = s.text("The subagent ran the scratch check and reports that it printed nothing.")
 	case served.Side:
-		// The plugin's own `<btw>` question, an upkeep call, or a call of another model: answered
-		// as the plugins' own pane harness answers a side question, and counted by no record.
+		// The plugin's own `<btw>` question, an upkeep call, or a call of another model. It is
+		// answered as the plugins' own pane harness answers a side question, and counted by no
+		// record.
 		answer = s.text("PROCEEDING")
 	default:
 		var script stepModelsStep
@@ -284,8 +288,8 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		answer, hold, turnEnded = s.answerAt(turn.tools, script, place)
 	}
 
-	// A step its agent ends has its handoff record written before the call that completes it, as
-	// a worker writes its record before it calls the tool.
+	// A step its agent ends has its handoff record written before the call that completes it. A
+	// worker does the same: it writes its record before it calls the tool.
 	if hold && s.events != nil {
 		written := make(chan struct{})
 		if !s.tell(req.Context(), stepModelsEvent{token: s.token, step: step, written: written}) {
@@ -298,7 +302,7 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 			return
 		}
 	}
-	// The same wait before every answer, a model's own latency, so a read made before a prompt is
+	// The same wait before every answer, a model's own latency. So a read made before a prompt is
 	// more than the comparator's two seconds from the response that prompt earns.
 	time.Sleep(stepModelsAnswerDelay)
 	served.ID = answer(w)
@@ -337,9 +341,9 @@ func (s *stepModelsStandin) blocks(stop string, blocks ...anthropicBlock) stepMo
 	return func(w http.ResponseWriter) string { return streamAnthropicBlocks(w, s.served, stop, blocks...) }
 }
 
-// answerAt is the answer of the agent's own conversation at place in a step of script, place 0
-// for a turn that is no step's; whether it waits for the step's handoff record first; and whether
-// it is the text that ends the turn of a step another fact ends.
+// answerAt is the answer of the agent's own conversation at place in a step of script, place 0 for
+// a turn that is no step's. It also says whether it waits for the step's handoff record first. It
+// says, too, whether it is the text that ends the turn of a step another fact ends.
 func (s *stepModelsStandin) answerAt(offered []string, script stepModelsStep, place int) (answer stepModelsAnswer, hold, stoppedTurnEnded bool) {
 	switch {
 	case place == 1:
@@ -362,7 +366,7 @@ func (s *stepModelsStandin) answerAt(offered []string, script stepModelsStep, pl
 	}
 }
 
-// input is a tool call's input as the harness takes it: on Oh My Pi with the one-line intent
+// input is a tool call's input as the harness takes it. On Oh My Pi it carries the one-line intent
 // every tool of it requires (busy_relaunch_live_test.go, callTool).
 func (s *stepModelsStandin) input(input map[string]any) map[string]any {
 	if s.harness == "claude" {
@@ -375,10 +379,10 @@ func (s *stepModelsStandin) input(input map[string]any) map[string]any {
 	return called
 }
 
-// subagentInput is the call that starts one subagent, in the shape each harness takes: Oh My Pi a
-// `task` of the deep-worker agent, whose own request the system prompt names
-// (deepWorkerSystemLine); Claude Code a `Task` of the general-purpose agent, whose prompt carries
-// the marker this stand-in finds in the subagent's own first user message.
+// subagentInput is the call that starts one subagent, in the shape each harness takes. On Oh My Pi
+// it is a `task` of the deep-worker agent, whose own request the system prompt names
+// (deepWorkerSystemLine). On Claude Code it is a `Task` of the general-purpose agent. Its prompt
+// carries the marker this stand-in finds in the subagent's own first user message.
 func (s *stepModelsStandin) subagentInput() map[string]any {
 	if s.harness == "claude" {
 		return map[string]any{
@@ -391,11 +395,11 @@ func (s *stepModelsStandin) subagentInput() map[string]any {
 }
 
 // place is the step this response of the agent's own conversation belongs to, its script and its
-// place in that step, 1 to 4, or step -1 and place 0 for a turn that is no step's. A prompt that
-// carries the stand-in's marker starts the next step of the script; any other prompt, a reminder
-// or a notice among them, is a turn of its own, answered with the WAITING text. A request whose
-// newest message is a tool's result goes on with the turn it belongs to, and a step's turn ends
-// with the text that ends it.
+// place in that step, 1 to 4. It is step -1 and place 0 for a turn that is no step's. A prompt that
+// carries the stand-in's marker starts the next step of the script. Any other prompt, a reminder or
+// a notice among them, is a turn of its own, answered with the WAITING text. A request whose newest
+// message is a tool's result goes on with the turn it belongs to. A step's turn ends with the text
+// that ends it.
 func (s *stepModelsStandin) place(turn stepModelsTurn) (int, stepModelsStep, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -446,7 +450,7 @@ func (s *stepModelsStandin) where() string {
 }
 
 // mainResponsesBetween is how many responses of the agent's own conversation this stand-in served
-// between two times, which is what a step's record must count: a subagent's response is in none of
+// between two times. That is what a step's record must count: a subagent's response is in none of
 // them. The bounds are a step's two read times, and a response counts where it ended after the
 // first and at or before the second.
 func (s *stepModelsStandin) mainResponsesBetween(after, until time.Time) int {
@@ -459,24 +463,24 @@ func (s *stepModelsStandin) mainResponsesBetween(after, until time.Time) int {
 	return count
 }
 
-// stepModelsTurn is one Messages request as a chain's stand-in reads it: the model it asks for,
-// its system prompt, the text of its first user message, the tools it offers, the text of what
-// asks for this answer, whether that carries a tool's result, and whether the request is the
-// plugin's own side question (isSideQuestion).
+// stepModelsTurn is one Messages request as a chain's stand-in reads it. It holds the model the
+// request asks for, its system prompt, the text of its first user message and the tools it offers.
+// It holds the text of what asks for this answer and whether that carries a tool's result. It also
+// says whether the request is the plugin's own side question (isSideQuestion).
 type stepModelsTurn struct {
 	model, system, firstUser, text string
 	tools                          []string
 	continues, side                bool
-	// shape says what asked for this answer: the roles of the messages after the last assistant
-	// message, the type of each of their blocks, and the start of their text.
+	// shape says what asked for this answer. It holds the roles of the messages after the last
+	// assistant message, the type of each of their blocks, and the start of their text.
 	shape string
 }
 
 // readStepModelsTurn reads a Messages request's body. What asks for this answer is every message
-// after the request's last assistant message (turnOf), as completionStandin reads a turn: the
-// host and the plugins may put messages of their own beside a task or a tool's result, a
-// reminder or a background job's notice among them. A turn whose blocks carry a tool's result
-// goes on with the turn it belongs to, whatever text the host put beside the result.
+// after the request's last assistant message (turnOf), as completionStandin reads a turn. The host
+// and the plugins may put messages of their own beside a task or a tool's result. A reminder or a
+// background job's notice is among them. A turn whose blocks carry a tool's result goes on with the
+// turn it belongs to, whatever text the host put beside the result.
 func readStepModelsTurn(body []byte) stepModelsTurn {
 	turn := stepModelsTurn{side: isSideQuestion(string(body))}
 	var asked struct {
@@ -504,9 +508,9 @@ func readStepModelsTurn(body []byte) stepModelsTurn {
 	return turn
 }
 
-// stepModelsShape is what asked for an answer, as a failure names it: the roles of every message
-// after the request's last assistant message, each of their blocks' types, and the first 160
-// characters of their text.
+// stepModelsShape is what asked for an answer, as a failure names it. It holds the roles of every
+// message after the request's last assistant message and each of their blocks' types. It also holds
+// the first 160 characters of their text.
 func stepModelsShape(request messagesRequest, blocks []requestBlock, text string) string {
 	var roles []string
 	for i := len(request.Messages) - 1; i >= 0 && request.Messages[i].Role != "assistant"; i-- {
@@ -522,28 +526,28 @@ func stepModelsShape(request messagesRequest, blocks []requestBlock, text string
 	return fmt.Sprintf("%d messages %v after the last answer, blocks %v, text %q", len(roles), roles, types, text)
 }
 
-// stepModelsToolUse is one tool_use block (anthropicToolUse). Its id carries a number of its own,
-// so each call of a pane's steps has an id no other call has, as a model's ids are.
+// stepModelsToolUse is one tool_use block (anthropicToolUse). Its id carries a number of its own.
+// So each call of a pane's steps has an id no other call has, as a model's ids are.
 func stepModelsToolUse(id, name string, input map[string]any) anthropicBlock {
 	return anthropicToolUse("toolu_"+id+"_"+strconv.FormatUint(stepModelsToolCalls.Add(1), 10), name, input)
 }
 
-// stepModelsToolCalls numbers each tool call a chain's stand-in makes, so each call's id is its
-// own across the steps of one pane, as a model's ids are.
+// stepModelsToolCalls numbers each tool call a chain's stand-in makes. So each call's id is its own
+// across the steps of one pane, as a model's ids are.
 var stepModelsToolCalls atomic.Uint64
 
 // ---- the reads of a stand-in's own stream --------------------------------------------------------
 
-// standinEvent is one event of a stand-in's Messages stream, as a harness reads it off the wire:
-// the `event:` name and the JSON of the `data:` line under it.
+// standinEvent is one event of a stand-in's Messages stream, as a harness reads it off the wire. It
+// is the `event:` name and the JSON of the `data:` line under it.
 type standinEvent struct {
 	name string
 	data map[string]any
 }
 
-// standinResponse is what one response of a stand-in says, read back from its own stream: the id
-// of its `message_start`, the model that message names, and the index of each content block it
-// opened, in the order it opened them.
+// standinResponse is what one response of a stand-in says, read back from its own stream. It holds
+// the id of its `message_start` and the model that message names. It holds the index of each
+// content block it opened, in the order it opened them.
 type standinResponse struct {
 	id     string
 	model  string
@@ -601,9 +605,9 @@ func readStandinResponse(t *testing.T, stream string) standinResponse {
 }
 
 // TestTheStandInGivesEachResponseItsOwnID holds the stand-ins of the live proofs to one id per
-// response. A record counts one call for each response of the agent's own conversation, and a
-// reader tells one response from the next by the id its `message_start` carries, so two responses
-// under one id would be counted as one call and a turn of two answers would be recorded as one.
+// response. A record counts one call for each response of the agent's own conversation. A reader
+// tells one response from the next by the id its `message_start` carries. So two responses under
+// one id would be counted as one call, and a turn of two answers would be recorded as one.
 func TestTheStandInGivesEachResponseItsOwnID(t *testing.T) {
 	t.Parallel()
 
@@ -649,10 +653,10 @@ func TestTheStandInGivesEachResponseItsOwnID(t *testing.T) {
 // which answers every turn with text alone.
 const stepModelsSpareProvider = "stepmodelsspare"
 
-// stepModelsClaudeModel is what each Claude pane is told to ask for (ANTHROPIC_MODEL) and what its
-// record's set model must therefore be, under the provider name a record spells it with.
-// stepModelsCaptureServed is what the capture that measures what a transcript holds of a set
-// model that never answered serves in its place.
+// stepModelsClaudeModel is what each Claude pane is told to ask for (ANTHROPIC_MODEL). It is also
+// what its record's set model must therefore be, under the provider name a record spells it with.
+// stepModelsCaptureServed is what the capture that measures what a transcript holds of a set model
+// that never answered serves in its place.
 const (
 	stepModelsClaudeModel    = "claude-model"
 	stepModelsClaudeSetModel = "anthropic/" + stepModelsClaudeModel
@@ -680,13 +684,13 @@ const (
 const stepModelsTask = "a"
 
 // stepModelsChainBound is how long the chain's turns are given, from the first gate's opening to
-// the second stop: nine steps of about fifteen seconds of answers each, the launches of the four
-// panes, and every tool a turn runs.
+// the second stop. It covers nine steps of about fifteen seconds of answers each, the launches of
+// the four panes, and every tool a turn runs.
 const stepModelsChainBound = 25 * time.Minute
 
 // stepModelsStall is how long the chain's turns may go with no stand-in telling the driver
-// anything: longer than a pane's launch (paneReady) and a step's turn together, so only a chain
-// that stopped moving runs it out.
+// anything. It is longer than a pane's launch (paneReady) and a step's turn together. So only a
+// chain that stopped moving runs it out.
 const stepModelsStall = 8 * time.Minute
 
 // stepModelsWait bounds each other wait of the run on the daemon or on Dispatch.
@@ -699,21 +703,21 @@ var stepModelsTitles = map[string]string{
 	"B": "Second gadget drops stale caches",
 }
 
-// stepModelsRuns is how many records each issue's read holds at the chain's end: on A, three of
-// its implementer and two of its tester; on B, two of each.
+// stepModelsRuns is how many records each issue's read holds at the chain's end. On A, that is
+// three of its implementer and two of its tester. On B, it is two of each.
 var stepModelsRuns = map[string]int{"A": 5, "B": 4}
 
 // stepModelsClaudeQuiet is what every Claude Code process of the run carries so that it reaches
-// nothing outside the run: no update, no telemetry and no error report, as the repository's own
-// run of the real Claude Code turns them off (packages/claude-envoy/tests/
-// legion-phase-hook-claude.test.ts). Its model calls are left as the pinned build makes them, and
-// each reaches the pane's own stand-in.
+// nothing outside the run. That means no update, no telemetry and no error report. The repository's
+// own run of the real Claude Code turns them off the same way
+// (packages/claude-envoy/tests/legion-phase-hook-claude.test.ts). Its model calls are left as the
+// pinned build makes them, and each reaches the pane's own stand-in.
 var stepModelsClaudeQuiet = []string{"DISABLE_AUTOUPDATER=1", "DISABLE_TELEMETRY=1", "DISABLE_ERROR_REPORTING=1"}
 
-// stepModelsIssue is one of the two issues the chain drives: its key as Dispatch made it, its
-// title, its spec document, the rank and sequence the seed copies, the commit every record names,
-// the panes' shared workspace, its pull request, the three claims of its roles, and what
-// `dispatch steps` printed of it at the chain's end.
+// stepModelsIssue is one of the two issues the chain drives. It holds its key as Dispatch made it,
+// its title, its spec document, and the rank and sequence the seed copies. It holds the commit
+// every record names, the panes' shared workspace, its pull request and the three claims of its
+// roles. It also holds what `dispatch steps` printed of it at the chain's end.
 type stepModelsIssue struct {
 	name                           string
 	key, title, spec, rank         string
@@ -721,30 +725,31 @@ type stepModelsIssue struct {
 	head, workspace                string
 	number                         int
 	implementer, tester, architect claim.Token
-	// printed is what `dispatch steps --issue <key>` printed at the chain's end, lines that output
-	// parsed, and readErr why the last read of it held no whole record.
+	// printed is what `dispatch steps --issue <key>` printed at the chain's end, and lines that
+	// output parsed. readErr is why the last read of it held no whole record.
 	printed string
 	lines   []stepLine
 	readErr error
 }
 
-// stepModelsLive is the run: the daemon booted over the local runtime, the real Dispatch this
-// branch builds, two issues whose implementers are real Oh My Pi panes and whose testers are real
-// Claude Code panes, and the evidence the job uploads.
+// stepModelsLive is the run: the daemon booted over the local runtime and the real Dispatch this
+// branch builds. It holds two issues whose implementers are real Oh My Pi panes and whose testers
+// are real Claude Code panes. It also holds the evidence the job uploads.
 type stepModelsLive struct {
 	liveAgentProof
-	// top is the test itself, whose cleanups outlive every check: what the run holds until it ends
+	// top is the test itself, whose cleanups outlive every check. What the run holds until it ends
 	// is made under it, the architects' connections among them.
 	top       *testing.T
 	dispatch  *handoffDispatch
 	tokens    *workflowTokenRecorder
 	githubAPI string
-	// root is the checkout this driver was built from; work the run's own temporary directory;
-	// home and profile the Oh My Pi home and profile every pane runs under; cliHome the home of
-	// the person's `dispatch`.
+	// root is the checkout this driver was built from, and work the run's own temporary directory.
+	// home and profile are the Oh My Pi home and profile every pane runs under. cliHome is the home
+	// of the person's `dispatch`.
 	root, work, home, profile, cliHome string
-	// bun, claude and pluginDir are what a Claude Code pane runs: the bun its MCP server runs on,
-	// the pinned Claude Code, and the claude-envoy plugin this run built from the checkout.
+	// bun, claude and pluginDir are what a Claude Code pane runs. They are the bun its MCP server
+	// runs on, the pinned Claude Code, and the claude-envoy plugin this run built from the
+	// checkout.
 	bun, claude, pluginDir string
 	// evidence is the directory the run writes its records, logs, transcripts and captures to.
 	evidence string
@@ -779,10 +784,10 @@ type stepModelsLive struct {
 	failedAt string
 }
 
-// TestStepModelsLive runs the chain over two issues, judges the records with the comparator,
-// captures what a real Claude Code session writes, and prints each check between its `== name`
-// and `ok name` lines. It writes passed.txt to its evidence only where it neither failed nor
-// skipped, which the CI job requires of it.
+// TestStepModelsLive runs the chain over two issues, judges the records with the comparator, and
+// captures what a real Claude Code session writes. It prints each check between its `== name` and
+// `ok name` lines. It writes passed.txt to its evidence only where it neither failed nor skipped,
+// which the CI job requires of it.
 func TestStepModelsLive(t *testing.T) {
 	t.Parallel()
 	r := newStepModelsLive(t)
@@ -805,10 +810,10 @@ func TestStepModelsLive(t *testing.T) {
 	}
 }
 
-// run runs one check as a subtest of its own, between its `== name` and `ok name (<s>s)` lines,
-// with the run's reads failing that subtest rather than the whole test: every read of
-// liveAgentProof goes through r.t, which is the check's own testing.T while it runs. So a failed
-// check leaves the later checks to run, and every measurement is printed.
+// run runs one check as a subtest of its own, between its `== name` and `ok name (<s>s)` lines. The
+// run's reads fail that subtest rather than the whole test. Every read of liveAgentProof goes
+// through r.t, which is the check's own testing.T while it runs. So a failed check leaves the later
+// checks to run, and every measurement is printed.
 func (r *stepModelsLive) run(name string, body func()) {
 	parent := r.t
 	parent.Run(name, func(t *testing.T) {
@@ -874,8 +879,8 @@ func (r *stepModelsLive) token(key string, role claim.Role) claim.Token {
 	return token
 }
 
-// setModelOf is the model the run's settings give a driven pane's claim, as a record spells it:
-// the one model an implementer's overlay names, and a tester's ANTHROPIC_MODEL under the provider
+// setModelOf is the model the run's settings give a driven pane's claim, as a record spells it. It
+// is the one model an implementer's overlay names, or a tester's ANTHROPIC_MODEL under the provider
 // name Claude Code's models carry.
 func (r *stepModelsLive) setModelOf(pane *stepModelsStandin) string {
 	if pane.harness == "claude" {
@@ -909,16 +914,17 @@ func (r *stepModelsLive) writeEvidenceJSON(name string, value any) {
 	r.writeEvidence(name, append(encoded, '\n'))
 }
 
-// newStepModelsLive readies everything the panes need and boots the daemon: the real Dispatch
-// with the project and the two issues; the `legion` binary and the two Oh My Pi plugins built from
-// this checkout; the claude-envoy plugin built from it too; the stand-ins and an Oh My Pi profile
-// routed to them; the local runtime with its Claude Code launch; each issue's jj workspace at its
-// implementer's pushed head; GitHub's stand-in at those heads; the store seeded with each issue
-// at admitted and its architect mid-launch; the daemon booted with both harnesses resolved; and
-// each architect met as the driver's own session.
+// newStepModelsLive readies everything the panes need and boots the daemon. It readies the real
+// Dispatch with the project and the two issues. It readies the `legion` binary and the two Oh My Pi
+// plugins built from this checkout, and the claude-envoy plugin built from it too. It readies the
+// stand-ins and an Oh My Pi profile routed to them, and the local runtime with its Claude Code
+// launch. It readies each issue's jj workspace at its implementer's pushed head, and GitHub's
+// stand-in at those heads. It seeds the store with each issue at admitted and its architect
+// mid-launch. It boots the daemon with both harnesses resolved, and meets each architect as the
+// driver's own session.
 //
 // It sets no environment variable of its own process and no working directory, and it calls no
-// fixtureenv.Live: it reaches no cluster and no GitHub, and the daemon's boot gets the Claude Code
+// fixtureenv.Live. It reaches no cluster and no GitHub. The daemon's boot gets the Claude Code
 // paths through overrides.environ, which is the daemon's environment alone.
 func newStepModelsLive(t *testing.T) *stepModelsLive {
 	t.Helper()
@@ -933,12 +939,12 @@ func newStepModelsLive(t *testing.T) *stepModelsLive {
 		}
 	}
 	proof := newLiveProofOn(t, workflowNATS(t))
-	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
-	// daemon's project is its Dispatch project, so the run takes a short one of its own.
+	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern). The daemon's
+	// project is its Dispatch project, so the run takes a short one of its own.
 	proof.cfg.Project = "SM" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
 	proof.cfg.AdmissionCap = 4
-	// The testers run on Claude Code and the implementers and architects on Oh My Pi, so one run
+	// The testers run on Claude Code and the implementers and architects on Oh My Pi. So one run
 	// drives both real harnesses behind the real shim.
 	proof.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleTester: runtime.BackendClaude}
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
@@ -1028,8 +1034,8 @@ func (r *stepModelsLive) buildClaudeEnvoy() string {
 	return out
 }
 
-// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository,
-// and creates the two issues, each with a spec, in progress and carrying the legion label, as a
+// setUpDispatch creates the run's project on Dispatch and sets liveRepo as its default repository.
+// It creates the two issues, each with a spec, in progress and carrying the legion label, as a
 // running daemon leaves one. It fills in each issue's key, spec, rank and sequence, its pull
 // request number and its three claim tokens.
 func (r *stepModelsLive) setUpDispatch() {
@@ -1069,8 +1075,8 @@ func (r *stepModelsLive) setUpDispatch() {
 	}
 }
 
-// mintReader has Dispatch mint a personal token for the person who set the run's project up
-// (POST /api/v1/me/agent-tokens), which every read of the CLI then carries.
+// mintReader has Dispatch mint a personal token for the person who set the run's project up (POST
+// /api/v1/me/agent-tokens). Every read of the CLI then carries that token.
 func (r *stepModelsLive) mintReader() {
 	r.t.Helper()
 	var minted struct {
@@ -1083,20 +1089,20 @@ func (r *stepModelsLive) mintReader() {
 	r.reader = minted.Token
 }
 
-// personsShell is the shell of a person running dispatch by hand: a session of their own, the
-// run's Dispatch and the personal token Dispatch minted for them, under the person's own home.
+// personsShell is the shell of a person running dispatch by hand, under the person's own home. It
+// holds a session of their own, the run's Dispatch and the personal token Dispatch minted for them.
 func (r *stepModelsLive) personsShell() cliShell {
 	return cliShell{t: r.t, dir: r.cliHome, session: "ses_step_models_reader", base: r.dispatch.base, token: r.reader}
 }
 
-// serveStandins starts one endpoint per driven claim, each scripted for the steps that claim
-// works in turn, and the spare every other claim talks to.
+// serveStandins starts one endpoint per driven claim, each scripted for the steps that claim works
+// in turn, and the spare every other claim talks to.
 //
-// Issue A: its implementer ends its first and second steps itself and has its third stopped by
-// the architect; its tester ends its first and second. Issue B: its implementer ends its first
-// and second, and its tester ends its first and has its second stopped. Each tester's completion
-// carries the verdict `fail`, which sends the issue back for another step of the same
-// implementer, so one issue gives each harness two steps its agent ended.
+// Issue A: its implementer ends its first and second steps itself and has its third stopped by the
+// architect. Its tester ends its first and second. Issue B: its implementer ends its first and
+// second, and its tester ends its first and has its second stopped. Each tester's completion
+// carries the verdict `fail`, which sends the issue back for another step of the same implementer.
+// So one issue gives each harness two steps its agent ended.
 func (r *stepModelsLive) serveStandins() {
 	t := r.t
 	t.Helper()
@@ -1117,7 +1123,7 @@ func (r *stepModelsLive) serveStandins() {
 			"Phase: "+string(phase.Testing)+".", issue.tester, script[1], r.events, r.done)
 	}
 	r.spare = newPaneStandin(t, stepModelsSpareProvider)
-	// Registered after every stand-in's own close, so it runs first: an answer held for a record
+	// Registered after every stand-in's own close, so it runs first. An answer held for a record
 	// the driver will never write is let go, and no server's close waits on it.
 	t.Cleanup(func() { close(r.done) })
 }
@@ -1132,8 +1138,8 @@ func (r *stepModelsLive) ompStandins() []*modelStandin {
 	return append(standins, r.spare.modelStandin)
 }
 
-// writeOmpProfile writes the profile every Oh My Pi pane shares: one provider per endpoint, one
-// model each, and the settings a pane needs to run unattended.
+// writeOmpProfile writes the profile every Oh My Pi pane shares. It holds one provider per
+// endpoint, one model each, and the settings a pane needs to run unattended.
 func (r *stepModelsLive) writeOmpProfile() {
 	t := r.t
 	t.Helper()
@@ -1157,11 +1163,11 @@ func (r *stepModelsLive) writeOmpProfile() {
 			"startup:\n  setupWizard: false\n")
 }
 
-// writeOverlays writes the Oh My Pi overlays each pane is told through PI_CONFIG_FILES: the
-// operator's own, which every pane names first and which turns `retry.enabled` off so the host
-// walks no fallback chain of its own, then one naming the single model the claim's stand-in
-// serves. Only the Oh My Pi claims take one: a Claude Code role reads no PI_CONFIG_FILES, and its
-// model is its pane's ANTHROPIC_MODEL (claudeStandinEnvironment).
+// writeOverlays writes the Oh My Pi overlays each pane is told through PI_CONFIG_FILES. One is the
+// operator's own, which every pane names first. It turns `retry.enabled` off so the host walks no
+// fallback chain of its own. Then comes one naming the single model the claim's stand-in serves.
+// Only the Oh My Pi claims take one: a Claude Code role reads no PI_CONFIG_FILES, and its model is
+// its pane's ANTHROPIC_MODEL (claudeStandinEnvironment).
 func (r *stepModelsLive) writeOverlays() {
 	t := r.t
 	t.Helper()
@@ -1193,8 +1199,8 @@ const (
 )
 
 // claudeStandinEnvironment is what a Claude Code process of the run carries to reach the stand-in
-// at url: the endpoint, a stand-in key, the one model it asks for, and stepModelsClaudeQuiet. A
-// Claude Code role reads no Oh My Pi overlay, so this is where its set model is decided. Its
+// at url. It is the endpoint, a stand-in key, the one model it asks for, and stepModelsClaudeQuiet.
+// A Claude Code role reads no Oh My Pi overlay, so this is where its set model is decided. Its
 // stand-in serves that same model, as every endpoint of the chain serves the model asked for. Each
 // tester has a stand-in of its own, so each record's counts are held to its own claim's answers.
 func claudeStandinEnvironment(url string) []string {
@@ -1205,10 +1211,10 @@ func claudeStandinEnvironment(url string) []string {
 	}, stepModelsClaudeQuiet...)
 }
 
-// startRuntime builds the local runtime every pane of the run is a child of: the shim and Oh My
-// Pi this run built and was given, the Claude Code launch the daemon's boot resolves too, each Oh
-// My Pi claim's overlays, each Claude claim's own endpoint, and the architects, which the driver
-// stands in for.
+// startRuntime builds the local runtime every pane of the run is a child of. It takes the shim and
+// Oh My Pi this run built and was given, and the Claude Code launch the daemon's boot resolves too.
+// It takes each Oh My Pi claim's overlays, each Claude claim's own endpoint, and the architects,
+// which the driver stands in for.
 func (r *stepModelsLive) startRuntime() {
 	r.rt = newLocalRuntime(r.t, r.cfg.StateDir, r.legion, r.omp, r.home, r.profile)
 	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(r.t), r.cfg.NatsURLs
@@ -1233,11 +1239,12 @@ func (r *stepModelsLive) startRuntime() {
 }
 
 // initWorkspace makes the issue's panes' working directory its jj workspace as its implementer
-// leaves a pushed round, as late_completion_live_test.go's initWorkspace makes it: a colocated
-// repository whose `@-` is the implementer's commit, on `legion/<issue>` of an origin of the run's
-// own, with `legion/<issue>@origin` at that commit. That commit is the pull request's head, which
-// every record names and each implementer's completion is held to. Every command runs under
-// fixturegit.Isolated of the panes' HOME, so the panes' jj reads the same configuration.
+// leaves a pushed round. late_completion_live_test.go's initWorkspace makes it the same way. The
+// workspace is a colocated repository whose `@-` is the implementer's commit, on `legion/<issue>`
+// of an origin of the run's own. `legion/<issue>@origin` is at that commit. That commit is the pull
+// request's head, which every record names and each implementer's completion is held to. Every
+// command runs under fixturegit.Isolated of the panes' HOME, so the panes' jj reads the same
+// configuration.
 func (r *stepModelsLive) initWorkspace(issue *stepModelsIssue) {
 	t := r.t
 	t.Helper()
@@ -1265,19 +1272,19 @@ func (r *stepModelsLive) initWorkspace(issue *stepModelsIssue) {
 }
 
 // workspaceJJ runs jj in issue's workspace under the driver's runner and answers its trimmed
-// stdout; a failure ends the test with its stderr.
+// stdout. A failure ends the test with its stderr.
 func (r *stepModelsLive) workspaceJJ(issue *stepModelsIssue, args ...string) string {
 	r.t.Helper()
 	return strings.TrimSpace(r.gitRunner.Out(issue.workspace, append([]string{"jj"}, args...)...))
 }
 
-// stepModelsGitHub is GitHub's REST API as the run's daemon reads it: every repository with
-// default branch main, and each issue's pull request open on its branch at the head its
-// workspace pushed, clean, with no reviews, listed on the branch as the implementer's completion
-// reads it (api's implementationPullRequest, which counts a listed pull request only where its
-// head.ref is the branch). The GraphQL root knows no pull request, and every other route is a
-// 404, so nothing reaches github.com. It is stepRecordsGitHub with a head of each pull request's
-// own, since each issue's workspace pushed a commit of its own.
+// stepModelsGitHub is GitHub's REST API as the run's daemon reads it. Every repository has default
+// branch main. Each issue's pull request is open on its branch at the head its workspace pushed,
+// clean, with no reviews. It is listed on the branch as the implementer's completion reads it
+// (api's implementationPullRequest). That function counts a listed pull request only where its
+// head.ref is the branch. The GraphQL root knows no pull request, and every other route is a 404,
+// so nothing reaches github.com. It is stepRecordsGitHub with a head of each pull request's own,
+// since each issue's workspace pushed a commit of its own.
 type stepModelsGitHub struct {
 	pulls []stepModelsPull
 }
@@ -1341,12 +1348,12 @@ func (g *stepModelsGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // seed records each issue as the daemon holds a root its architect has just begun, as
-// owner_steps_rig_test.go's seedAdmitted records one: handed to Legion at admitted, its lifecycle
-// under the workflow, no design gate registered, no pull request, and its architect's claim a
-// launch a previous daemon began and never recorded, which the boot relaunches. So each issue's
-// plan is given before its work starts, the one moment a first plan is taken (workflow's
-// beforeItsWork), and the stop of its task finds a task to stop. Every role's prompt is an
-// operator's short prompt file (writePrompt): nothing here reads a prompt.
+// owner_steps_rig_test.go's seedAdmitted records one. The issue is handed to Legion at admitted,
+// with its lifecycle under the workflow, no design gate registered and no pull request. Its
+// architect's claim is a launch a previous daemon began and never recorded, which the boot
+// relaunches. So each issue's plan is given before its work starts, the one moment a first plan is
+// taken (workflow's beforeItsWork). The stop of its task also finds a task to stop. Every role's
+// prompt is an operator's short prompt file (writePrompt): nothing here reads a prompt.
 func (r *stepModelsLive) seed() {
 	t := r.t
 	t.Helper()
@@ -1376,10 +1383,10 @@ func (r *stepModelsLive) seed() {
 	}
 }
 
-// boot starts the whole daemon over the local runtime. Its one log goes twice: as text where the
-// base's live proofs write theirs (liveProof.log, which LEGION_E2E_DAEMON_LOG names), and as JSON
-// into daemon.jsonl of the evidence, the log the comparator reads, as `legion start` writes its
-// log (cmd/legion's start).
+// boot starts the whole daemon over the local runtime. Its one log goes twice. It goes as text
+// where the base's live proofs write theirs (liveProof.log, which LEGION_E2E_DAEMON_LOG names). It
+// also goes as JSON into daemon.jsonl of the evidence, the log the comparator reads, as
+// `legion start` writes its log (cmd/legion's start).
 func (r *stepModelsLive) boot() {
 	t := r.t
 	t.Helper()
@@ -1390,11 +1397,11 @@ func (r *stepModelsLive) boot() {
 		r.dispatch.base, r.cfg.Project, liveRepo, r.issues[0].key, r.issues[1].key, r.cfg.DispatchURL)
 }
 
-// overrides is the daemon this run boots: the local runtime over the real worker stream, the API
-// listener the fixture holds, the workflow's App tokens stood in for, GitHub's stand-in, and an
-// environment that names the pinned Claude Code, the bun its MCP server runs on and the
-// claude-envoy build, which the boot resolves its Claude Code launch from (resolveClaude). That
-// environment is the daemon's alone, not the process's.
+// overrides is the daemon this run boots. It holds the local runtime over the real worker stream
+// and the API listener the fixture holds. It holds the workflow's App tokens stood in for, and
+// GitHub's stand-in. It also holds an environment that names the pinned Claude Code, the bun its
+// MCP server runs on and the claude-envoy build. The boot resolves its Claude Code launch from that
+// environment (resolveClaude). That environment is the daemon's alone, not the process's.
 func (r *stepModelsLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
@@ -1445,15 +1452,15 @@ func (h stepModelsLogs) WithGroup(name string) slog.Handler {
 
 // ---- the architects: the driver's own sessions on the worker stream -------------------------------
 
-// stepModelsArchitect is one issue's architect, the driver's own session on the worker stream:
-// the package's own shim (dialShim) over the boot token the daemon's launch of the claim carries,
-// registered over the daemon's own route as a pane's plugin registers. The driver mints its
-// grants with the registration's secret, which gives the issue its plan and stops task a: the
-// daemon mints that secret at the registration (api's claims.go) and keeps only its hash, so no
-// file a pane holds can mint one. It works each task the daemon sends it in a turn of its own that
-// ends at once, as stepClaimant's workAlone does for the walks' architects: a turn of an
-// architect's task that nothing ended is what the daemon reads as the issue's working copy in
-// use, and the issue's next phase would wait on it. No check reads its record.
+// stepModelsArchitect is one issue's architect, the driver's own session on the worker stream. It
+// is the package's own shim (dialShim) over the boot token the daemon's launch of the claim
+// carries. It is registered over the daemon's own route as a pane's plugin registers. The driver
+// mints its grants with the registration's secret. Its grants give the issue its plan and stop task
+// a. The daemon mints that secret at the registration (api's claims.go) and keeps only its hash. So
+// no file a pane holds can mint one. It works each task the daemon sends it in a turn of its own
+// that ends at once. stepClaimant's workAlone does the same for the walks' architects. The daemon
+// reads a turn of an architect's task that nothing ended as the issue's working copy in use. The
+// issue's next phase would wait on it. No check reads its record.
 type stepModelsArchitect struct {
 	issue           *stepModelsIssue
 	session, secret string
@@ -1461,8 +1468,8 @@ type stepModelsArchitect struct {
 }
 
 // meetArchitect waits for the daemon's launch of issue's architect, which the boot makes for the
-// seeded unfinished launch, and registers it as the driver's own session, ready. Its connection
-// is the test's own, so it lasts until the run ends.
+// seeded unfinished launch. It registers it as the driver's own session, ready. Its connection is
+// the test's own, so it lasts until the run ends.
 func (r *stepModelsLive) meetArchitect(issue *stepModelsIssue) *stepModelsArchitect {
 	t := r.top
 	t.Helper()
@@ -1504,8 +1511,8 @@ func (r *stepModelsLive) meetArchitect(issue *stepModelsIssue) *stepModelsArchit
 	return a
 }
 
-// serve answers every frame the daemon sends the architect's connection until it closes: the
-// protocol's negotiation, the state probe, and each task, worked in a turn that ends at once.
+// serve answers every frame the daemon sends the architect's connection until it closes. Those are
+// the protocol's negotiation, the state probe, and each task, worked in a turn that ends at once.
 func (a *stepModelsArchitect) serve() {
 	reply := func(frame shimwire.Frame) { _ = a.sh.writer.WriteFrame(frame) }
 	for {
@@ -1552,10 +1559,10 @@ func (r *stepModelsLive) architectGrant(issue *stepModelsIssue) string {
 
 // ---- the chain ------------------------------------------------------------------------------------
 
-// driveChain gives each issue its plan of task a, opens each issue's gate, which starts its
-// implementer, and drives the turns until each issue's task is stopped; then it waits for each
-// issue to stand held for that task and for each record to reach Dispatch ended. Whatever it
-// reached, it keeps the run's evidence.
+// driveChain gives each issue its plan of task a, and opens each issue's gate, which starts its
+// implementer. It drives the turns until each issue's task is stopped. Then it waits for each issue
+// to stand held for that task and for each record to reach Dispatch ended. Whatever it reached, it
+// keeps the run's evidence.
 func (r *stepModelsLive) driveChain() {
 	defer r.keepEvidence()
 	for _, issue := range r.issues {
@@ -1579,7 +1586,7 @@ func (r *stepModelsLive) driveChain() {
 }
 
 // givePlan uploads plan.md onto issue as its person, one task a whose steps are the implementer's
-// and the tester's (planOf), and has its architect give version 1 of it (register_plan).
+// and the tester's (planOf). It has its architect give version 1 of it (register_plan).
 func (r *stepModelsLive) givePlan(issue *stepModelsIssue) {
 	r.t.Helper()
 	var created struct {
@@ -1601,7 +1608,7 @@ func (r *stepModelsLive) givePlan(issue *stepModelsIssue) {
 }
 
 // openGate is the person approving issue's spec at version 1 and its architect registering that
-// version (register_gate), which opens the issue's gate; its plan's first step then starts its
+// version (register_gate). That opens the issue's gate. Its plan's first step then starts its
 // implementer.
 func (r *stepModelsLive) openGate(issue *stepModelsIssue) {
 	r.t.Helper()
@@ -1622,11 +1629,11 @@ func (r *stepModelsLive) openGate(issue *stepModelsIssue) {
 	r.note("%s's gate opened: %s stands in %s", issue.key, issue.key, stands)
 }
 
-// driveTurns answers what the stand-ins tell the driver until each issue's task is stopped: a
-// step its agent ends has its handoff record written as its claim's session just before the call
-// that completes it, and the turn of a step another fact ends is followed by the stop of the
-// issue's task. It fails naming where each stand-in stands once the whole chain's bound runs out,
-// or once no stand-in has told it anything for stepModelsStall.
+// driveTurns answers what the stand-ins tell the driver until each issue's task is stopped. A step
+// its agent ends has its handoff record written as its claim's session just before the call that
+// completes it. The turn of a step another fact ends is followed by the stop of the issue's task.
+// It fails naming where each stand-in stands once the whole chain's bound runs out, or once no
+// stand-in has told it anything for stepModelsStall.
 func (r *stepModelsLive) driveTurns() {
 	deadline := time.NewTimer(stepModelsChainBound)
 	defer deadline.Stop()
@@ -1661,10 +1668,10 @@ func (r *stepModelsLive) driveTurns() {
 	}
 }
 
-// writeStepRecord writes the handoff record of the step event names to Dispatch's own route as
-// its claim's session, the session the pane registered, with a body naming the pull request's
-// head, as late_completion_live_test.go writes one. Each step has a record of its own, since a
-// completion that names a record an earlier completion named is refused.
+// writeStepRecord writes the handoff record of the step event names to Dispatch's own route as its
+// claim's session. That is the session the pane registered. The record has a body naming the pull
+// request's head, as late_completion_live_test.go writes one. Each step has a record of its own,
+// since a completion that names a record an earlier completion named is refused.
 func (r *stepModelsLive) writeStepRecord(issue *stepModelsIssue, event stepModelsEvent) {
 	r.t.Helper()
 	held := r.claim(event.token)
@@ -1684,10 +1691,11 @@ func (r *stepModelsLive) writeStepRecord(issue *stepModelsIssue, event stepModel
 }
 
 // stopTask is the architect's stop of issue's task a once the claim whose step another fact ends
-// sits idle and its stand-in has been quiet for three seconds: no request held and no answer
-// ended in that time. So the end read is more than the comparator's two seconds from the claim's
-// last response, a turn its harness starts of its own after the step's turn included: Claude
-// Code starts one when its background subagent finishes, after the claim has gone idle.
+// sits idle. The stop also waits until its stand-in has been quiet for three seconds: no request
+// held and no answer ended in that time. So the end read is more than the comparator's two seconds
+// from the claim's last response. That includes a turn its harness starts of its own after the
+// step's turn. Claude Code starts one when its background subagent finishes, after the claim has
+// gone idle.
 func (r *stepModelsLive) stopTask(issue *stepModelsIssue, event stepModelsEvent) {
 	r.t.Helper()
 	pane := r.panes[event.token]
@@ -1706,8 +1714,8 @@ func (r *stepModelsLive) stopTask(issue *stepModelsIssue, event stepModelsEvent)
 		event.token, event.step+1, stepModelsAnswerDelay, issue.key, stepModelsTask)
 }
 
-// readSteps reads `dispatch steps --issue <key>` as the person until it holds the issue's
-// records, each ended: the outbox writes each record to Dispatch after the fact that ended it.
+// readSteps reads `dispatch steps --issue <key>` as the person until it holds the issue's records,
+// each ended. The outbox writes each record to Dispatch after the fact that ended it.
 func (r *stepModelsLive) readSteps(issue *stepModelsIssue) {
 	r.t.Helper()
 	want := stepModelsRuns[issue.name]
@@ -1743,10 +1751,10 @@ func (r *stepModelsLive) readSteps(issue *stepModelsIssue) {
 	r.note("`dispatch steps --issue %s` as the person:\n%s", issue.key, indentOutput(strings.TrimSpace(issue.printed)))
 }
 
-// keepEvidence writes what the run holds to its evidence, whatever the chain reached: the list of
-// each response the stand-ins served, the last `dispatch steps` output of each issue, each driven
-// claim's transcript, and agents.json, which names each claim's harness, its transcript and the
-// model the run's settings gave it. Nothing here ends the check it runs in.
+// keepEvidence writes what the run holds to its evidence, whatever the chain reached. It writes the
+// list of each response the stand-ins served, the last `dispatch steps` output of each issue, and
+// each driven claim's transcript. It writes agents.json, which names each claim's harness, its
+// transcript and the model the run's settings gave it. Nothing here ends the check it runs in.
 func (r *stepModelsLive) keepEvidence() {
 	var served []servedResponse
 	for _, issue := range r.issues {
@@ -1778,9 +1786,9 @@ func (r *stepModelsLive) keepEvidence() {
 	r.writeEvidenceJSON("agents.json", agents)
 }
 
-// stepModelsAgent is one claim of agents.json as the comparator reads it: its harness, its
-// transcript, which a relative path names from the file's own directory, and the model the run's
-// settings gave its role.
+// stepModelsAgent is one claim of agents.json as the comparator reads it. It holds its harness, its
+// transcript and the model the run's settings gave its role. A relative path names the transcript
+// from the file's own directory.
 type stepModelsAgent struct {
 	Harness    string `json:"harness"`
 	Transcript string `json:"transcript"`
@@ -1801,9 +1809,9 @@ func copyEvidenceFile(from, to string) error {
 
 // ---- checks 1 to 5: the panes and the records ------------------------------------------------------
 
-// claudePaneRegisters is check 1: each tester registered a Claude Code session, a session id of
-// Claude Code's form whose file is a transcript Claude Code writes (claudelaunch.Transcript), from
-// a launch on Claude Code.
+// claudePaneRegisters is check 1: each tester registered a Claude Code session, from a launch on
+// Claude Code. Its session id is of Claude Code's form, and its file is a transcript Claude Code
+// writes (claudelaunch.Transcript).
 func (r *stepModelsLive) claudePaneRegisters() {
 	for _, issue := range r.issues {
 		held, ok := r.seen[issue.tester]
@@ -1826,12 +1834,11 @@ func (r *stepModelsLive) claudePaneRegisters() {
 	}
 }
 
-// recordHolds is checks 2 to 5: the record of role's attempt on issueName has ended, its end line
-// in the daemon's log says endedBy, and it names the set model the run's settings gave the claim
-// and answers that model for every one of n calls, where n is the count of responses of the
-// agent's own conversation its stand-in served between the step's two read times. n is at least
-// 3 and leaves out each subagent's response. The stand-in's own list is the oracle, not the
-// transcript.
+// recordHolds is checks 2 to 5: the record of role's attempt on issueName has ended. Its end line
+// in the daemon's log says endedBy. It names the set model the run's settings gave the claim, and
+// answers that model for every one of n calls. n is the count of responses of the agent's own
+// conversation its stand-in served between the step's two read times. n is at least 3 and leaves
+// out each subagent's response. The stand-in's own list is the oracle, not the transcript.
 func (r *stepModelsLive) recordHolds(issueName string, role claim.Role, attempt int, endedBy string) {
 	issue := r.issueNamed(issueName)
 	token := issue.implementer
@@ -1899,9 +1906,9 @@ type stepModelsRead struct {
 	EndedBy    string    `json:"endedBy"`
 }
 
-// readsOf is the start line and the end line of the daemon's log that line's record used, joined
-// as the comparator joins them: by issue, task, place, kind and start, two starts being one where
-// they differ by less than a microsecond, since `dispatch steps` prints at most six fraction
+// readsOf is the start line and the end line of the daemon's log that line's record used. They are
+// joined as the comparator joins them: by issue, task, place, kind and start. Two starts are one
+// where they differ by less than a microsecond, since `dispatch steps` prints at most six fraction
 // digits.
 func (r *stepModelsLive) readsOf(issue *stepModelsIssue, line stepLine) (start, end stepModelsRead, err error) {
 	started, err := time.Parse(time.RFC3339Nano, line.started)
@@ -2029,10 +2036,10 @@ func (r *stepModelsLive) comparison() stepModelsCompared {
 	return *r.compared
 }
 
-// liveAtBothReadsVerdict is check 6: the comparison beside c-real prints `live-at-both-reads:
-// PASS`, with a PASS line for each step the architect stopped, A's implementer's third and B's
-// tester's second. A PASS line names the comparison, the harness and the step as the comparator
-// writes them (scripts/e2e/lib/step-models-check.ts, stepName).
+// liveAtBothReadsVerdict is check 6: the comparison beside c-real prints
+// `live-at-both-reads: PASS`. It prints a PASS line for each step the architect stopped, A's
+// implementer's third and B's tester's second. A PASS line names the comparison, the harness and
+// the step as the comparator writes them (scripts/e2e/lib/step-models-check.ts, stepName).
 func (r *stepModelsLive) liveAtBothReadsVerdict() {
 	compared := r.comparison()
 	lines := stepModelsOutputLines(compared.out)
@@ -2064,7 +2071,7 @@ func (r *stepModelsLive) liveAtBothReadsVerdict() {
 
 // cRealVerdict is check 7: the same run exits 0 and prints `c-real: PASS`. It prints the GAP lines,
 // the measured gaps of each step its agent ended. Where c-real answers UNKNOWN the check fails and
-// the stop rule applies: nothing in the stand-ins, the comparator or the steps changes to make it
+// the stop rule applies. Nothing in the stand-ins, the comparator or the steps changes to make it
 // pass.
 func (r *stepModelsLive) cRealVerdict() {
 	compared := r.comparison()
@@ -2141,9 +2148,9 @@ func stepModelsLineWith(lines []string, prefix string) string {
 
 // ---- checks 10 and 11: the captures of a real Claude Code session --------------------------------
 
-// stepModelsCapture is one capture attempt that ran: its name, whether its stream wrote its
-// `result` line, its stream and the copy of its projects directory in the evidence, its
-// stand-in's list, and what capture-<name>-exit.txt holds.
+// stepModelsCapture is one capture attempt that ran. It holds its name, whether its stream wrote
+// its `result` line, and its stream and the copy of its projects directory in the evidence. It also
+// holds its stand-in's list and what capture-<name>-exit.txt holds.
 type stepModelsCapture struct {
 	name             string
 	result           bool
@@ -2153,8 +2160,8 @@ type stepModelsCapture struct {
 }
 
 // runCaptures runs the pinned Claude Code alone, outside the chain, to capture the two shapes no
-// file of the repository holds: capture-differ always, whose stand-in serves another model than
-// the one asked for, and capture-same only where capture-differ wrote no `result` line.
+// file of the repository holds. capture-differ always runs, and its stand-in serves another model
+// than the one asked for. capture-same runs only where capture-differ wrote no `result` line.
 func (r *stepModelsLive) runCaptures() {
 	r.captures = map[string]*stepModelsCapture{}
 	differ := r.captureClaude("capture-differ", stepModelsCaptureServed)
@@ -2168,12 +2175,13 @@ func (r *stepModelsLive) runCaptures() {
 }
 
 // captureClaude runs one capture attempt: `claude -p` with the flags of claudelaunch.Argv that
-// shape its output, under a HOME and a CLAUDE_CONFIG_DIR of its own, with claudelaunch.Environment's
-// pairs, PATH, and its own stand-in's endpoint, which serves served for every response. Its stdin
-// is one user line and then the end of the file. The stand-in answers the first two requests as a
-// stopped step's turn does and the third with a text that ends. The attempt keeps its stdout, each
-// transcript under its projects directory, its stand-in's list, and its exit code with the last 50
-// lines of its stderr, each under its own name.
+// shape its output. It runs under a HOME and a CLAUDE_CONFIG_DIR of its own. It has
+// claudelaunch.Environment's pairs, PATH, and its own stand-in's endpoint, which serves served for
+// every response. Its stdin is one user line and then the end of the file. The stand-in answers the
+// first two requests as a stopped step's turn does and the third with a text that ends. The attempt
+// keeps its stdout, each transcript under its projects directory, and its stand-in's list. It also
+// keeps its exit code with the last 50 lines of its stderr. It keeps each of these under its own
+// name.
 func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 	t := r.t
 	t.Helper()
@@ -2238,7 +2246,7 @@ func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 }
 
 // keepProjects copies each `.jsonl` file under from, a Claude Code projects directory, to the same
-// place under to, and answers how many it copied: a directory Claude Code never made copies none.
+// place under to. It answers how many it copied: a directory Claude Code never made copies none.
 func (r *stepModelsLive) keepProjects(from, to string) int {
 	copied := 0
 	err := filepath.WalkDir(from, func(path string, entry fs.DirEntry, err error) error {
@@ -2270,10 +2278,10 @@ func stepModelsLastLines(text string, n int) []string {
 	return lines[max(0, len(lines)-n):]
 }
 
-// claudeCapture is check 10: the capture that supplies the shapes, capture-differ where it wrote
-// its `result` line and else capture-same, holds a `system` `init` line, an assistant line whose
-// `parent_tool_use_id` is a string, which is a subagent's, and one response id on two or more
-// assistant lines. It names which attempt that was.
+// claudeCapture is check 10. The capture that supplies the shapes is capture-differ where it wrote
+// its `result` line, and else capture-same. That capture holds a `system` `init` line, and an
+// assistant line whose `parent_tool_use_id` is a string, which is a subagent's. The capture also
+// holds one response id on two or more assistant lines. The check names which attempt that was.
 func (r *stepModelsLive) claudeCapture() {
 	var capture *stepModelsCapture
 	for _, name := range []string{"capture-differ", "capture-same"} {
@@ -2335,12 +2343,12 @@ func (r *stepModelsLive) claudeCapture() {
 }
 
 // setModelHeld is check 11, from capture-differ alone. Its stand-in's list must show that every
-// response of the conversation served claude-served-model, so the set model never answered. It
-// then prints each JSON path of each of its transcripts whose value is claude-model, or
-// `set-model-held: none`, and the model the stream's init line names. Where capture-differ wrote
-// no result line it prints `set-model-held: unknown` with capture-differ-exit.txt. None and
-// unknown each fail the check: the stop rule applies, and nothing in the stand-ins, the
-// comparator or the steps changes to make it pass.
+// response of the conversation served claude-served-model. So the set model never answered. It then
+// prints each JSON path of each of its transcripts whose value is claude-model, or
+// `set-model-held: none`. It also prints the model the stream's init line names. Where
+// capture-differ wrote no result line it prints `set-model-held: unknown` with
+// capture-differ-exit.txt. None and unknown each fail the check: the stop rule applies. Nothing in
+// the stand-ins, the comparator or the steps changes to make it pass.
 func (r *stepModelsLive) setModelHeld() {
 	differ := r.captures["capture-differ"]
 	if differ == nil {

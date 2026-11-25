@@ -1,27 +1,28 @@
 name: CI job plugin-pack
 
 # The steps of two jobs of ci.yaml, `plugin-pack` and `step-models-chain`, in one file.
-# ci.yaml's job of each id calls this file and passes its own id as `job`, and each caller keeps
-# `needs: changes` and the whole `if:` that decides whether its steps run, so the `if:` each job
+# ci.yaml's job of each id calls this file and passes its own id as `job`. Each caller keeps
+# `needs: changes` and the whole `if:` that decides whether its steps run. So the `if:` each job
 # here carries only picks the job named for the caller
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file). The two share a file because ci.yaml may
-# call no more reusable workflows (.github/scripts/check-workflow-files.sh, rule 5), and they are
+# call no more reusable workflows (.github/scripts/check-workflow-files.sh, rule 5). They are also
 # the nearest pair: both run named tests of packages/daemon's internal/daemon on the real Oh My
 # Pi, off the same go-daemon cache family.
 #
-# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# The split is for the filters. Each job's filter names this file beside ci.yaml. So a change to
 # these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# What the plugin-pack job runs is the three tests of internal/daemon that .github/scripts/ci_job_reads.py's
-# PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin on the real Oh My Pi
-# and staying in daemon-go (TestThePromptReferenceProbeOnTheRealOhMyPi):
-# TestTheRealPluginsOnTheRealOhMyPi, which packs packages/pi-envoy and packages/pi-legion with
-# `bun pm pack` — each pack running that package's prepack, which reads bun.lock and builds the
-# bundle from the installed workspace — installs the two tarballs on the real Oh My Pi and reads
-# back what the daemon's boot gate reads; TestTheAgentModelCheckOnTheRealOhMyPi, which probes the
-# prompts this checkout ships, laid out as the release lays them out (packages/pi-legion/agents
-# copied and each plugin's partition of skills/ staged with scripts/pi-plugin-prepack.sh itself);
-# and TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName, which probes a plugin it writes
+# What the plugin-pack job runs is the three tests of internal/daemon that
+# .github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS names. A fourth test of that package
+# loading a plugin on the real Oh My Pi stays in daemon-go
+# (TestThePromptReferenceProbeOnTheRealOhMyPi). TestTheRealPluginsOnTheRealOhMyPi packs
+# packages/pi-envoy and packages/pi-legion with `bun pm pack`. Each pack runs that package's
+# prepack, which reads bun.lock and builds the bundle from the installed workspace. That test
+# installs the two tarballs on the real Oh My Pi and reads back what the daemon's boot gate reads.
+# TestTheAgentModelCheckOnTheRealOhMyPi probes the prompts this checkout ships, laid out as the
+# release lays them out. That layout is packages/pi-legion/agents copied and each plugin's
+# partition of skills/ staged with scripts/pi-plugin-prepack.sh itself.
+# TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName probes a plugin it writes
 # itself. They were tests of .github/workflows/ci-job-daemon-go.yaml's race step, which skips them
 # by name now: their reads are the whole reason that job's filter named the lockfile and skills/,
 # and a change to either then ran the daemon's entire Go suite, 1,083 s of tests that could not
@@ -33,19 +34,19 @@ name: CI job plugin-pack
 # whole script to the text it builds, so the two cannot come to name different tests.
 #
 # Everything the plugin-pack job holds is what those tests need:
-#   * Bun and a frozen install — `bun pm pack` is the pack test's first act, and each prepack
-#     builds its bundle from the installed workspace and fails rather than skips without it;
+#   * Bun and a frozen install. `bun pm pack` is the pack test's first act. Each prepack builds
+#     its bundle from the installed workspace, and fails rather than skips without it.
 #   * Oh My Pi at the pin .omp-pin names, which the tests install their plugins on
-#     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
-#     by .github/actions/install-omp from the release archive, checked against its pinned sha256;
-#   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
+#     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP). It is installed
+#     by .github/actions/install-omp from the release archive, checked against its pinned sha256.
+#   * setup-go and the go-daemon cache restore. The step compiles internal/daemon's test binary,
 #     the same build the daemon-go race step makes, so it restores the same entry.
 # That job starts no database, no tmux, no uv and no container image.
 #
 # What the step-models-chain job runs is the two e2e-tagged tests of the same package, which
-# STEP_MODELS_CHAIN_TESTS names, and what it holds is below its own `if:`.
+# STEP_MODELS_CHAIN_TESTS names. What it holds is below its own `if:`.
 #
-# Each job's last step reports ci-ok for its caller: on a merge-group run that job's own result
+# Each job's last step reports ci-ok for its caller. On a merge-group run that job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
@@ -53,8 +54,8 @@ on:
     inputs:
       job:
         description: >-
-          The id of ci.yaml's job that calls this file, `plugin-pack` or `step-models-chain`: the
-          job of this file of that id runs, and the other is skipped.
+          The id of ci.yaml's job that calls this file, `plugin-pack` or `step-models-chain`. This
+          file's job of that id runs, and the other is skipped.
         type: string
         required: true
       ci-ok-changes:
@@ -137,22 +138,24 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The chain that drives both real harnesses behind the real shim and the real daemon:
-  # TestStepModelsLive runs the pinned Oh My Pi and the pinned Claude Code over two issues whose
-  # steps the agents end and whose steps an architect stops, and judges each step record's set
-  # model and its answering counts against the agents' own transcripts
-  # (scripts/e2e/step-models-check.sh); TestTheStandInGivesEachResponseItsOwnID holds the model
-  # stand-ins those counts rest on to one id per response. Everything below the model endpoint is
-  # the real thing, and CI holds no model credential, so each harness talks to a stand-in endpoint
-  # of the test's own, as every live proof of this repository does.
+  # The chain that drives both real harnesses behind the real shim and the real daemon.
+  # TestStepModelsLive runs the pinned Oh My Pi and Claude Code over two issues whose steps the
+  # agents end and whose steps an architect stops. It judges each step record's set model and its
+  # answering counts against the agents' own transcripts (scripts/e2e/step-models-check.sh).
+  # TestTheStandInGivesEachResponseItsOwnID holds the model stand-ins those counts rest on to one
+  # id per response. Everything below the model endpoint is the real thing, and CI holds no model
+  # credential. So each harness talks to a stand-in endpoint of the test's own, as every live
+  # proof of this repository does.
   #
-  # What this job holds that the pack job does not: Claude Code at the pin .claude-code-pin names,
-  # which the tester panes run; jj, which the workspace seed runs; the NATS test container image
-  # of the package's own broker; and a Postgres service, the daemon's store, sized for the
-  # Dispatch processes the test starts as every lane that starts one sizes its own.
+  # What this job holds that the pack job does not:
+  #   * Claude Code at the pin .claude-code-pin names, which the tester panes run.
+  #   * jj, which the workspace seed runs.
+  #   * The NATS test container image of the package's own broker.
+  #   * A Postgres service, the daemon's store. It is sized for the Dispatch processes the test
+  #     starts, as every lane that starts one sizes its own.
   #
   # The step runs the daemon's e2e tag, which no other job of ci.yaml runs, and selects with
-  # -run, so internal/daemon's untagged tests run in daemon-go-race's "Test the concurrent
+  # -run. So internal/daemon's untagged tests run in daemon-go-race's "Test the concurrent
   # packages under the race detector" (ci_job_reads.py's TAG_RUNS)
   # (.github/ci-notes/ci.md#why-the-step-models-chain-is-a-job-of-its-own).
   step-models-chain:
@@ -160,10 +163,10 @@ jobs:
     # ubuntu-24.04, not arm64: the pinned Oh My Pi this job installs is built for linux-x64 alone
     # (.github/ci-notes/ci.md#choose-the-runner-ubuntu-2404-arm-unless-the-job-needs-an-x86_64-machine).
     runs-on: ubuntu-24.04
-    # The step's own -timeout is 40 minutes, so a hung chain prints the goroutine dump that names
+    # The step's own -timeout is 40 minutes. So a hung chain prints the goroutine dump that names
     # the pane it waited for before the runner cancels the job. Around it are the Bun install, the
-    # two harness installs, the image pull and the Go build of internal/daemon's test binary,
-    # which the cache restore makes incremental; 60 minutes leaves that setup room on a slow
+    # two harness installs, the image pull and the Go build of internal/daemon's test binary. The
+    # cache restore makes that build incremental. 60 minutes leaves that setup room on a slow
     # runner and still fails inside the hour.
     timeout-minutes: 60
     services:
@@ -184,8 +187,8 @@ jobs:
       # The daemon's store, and the store of the Dispatch the test starts beside it.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
-      # pull a test could fail on.
+      # clean up. Its image (testcontainers/ryuk, on Docker Hub) would be one more registry pull a
+      # test could fail on.
       TESTCONTAINERS_RYUK_DISABLED: "true"
 
     steps:
@@ -193,8 +196,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # The `dispatch` CLI the test reads each issue's records with, the packs of the two Oh My Pi
-      # plugins each implementer pane loads, and the claude-envoy build each tester pane loads.
+      # * The `dispatch` CLI the test reads each issue's records with.
+      # * The packs of the two Oh My Pi plugins each implementer pane loads.
+      # * The claude-envoy build each tester pane loads.
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
@@ -262,7 +266,7 @@ jobs:
       - name: Fail where the step-models chain did not pass
         run: test -s "$RUNNER_TEMP/step-models-evidence/passed.txt"
 
-      # Whatever the result: the records of both issues, the daemon's JSON log, the four claims'
+      # Whatever the result: both issues' records, the daemon's JSON log, the four claims'
       # transcripts, the stand-ins' served lists, the comparator's whole output and the captures.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

@@ -1,9 +1,9 @@
-// Package testbin names the pinned binaries the real-binary tests run (OMP, Claude, UV), readies the
-// fresh HOME a test runs Oh My Pi under (OMPHome) with the profile and environment it runs with
-// (WriteOMPProfile, OMPEnviron), reads back what that run said - the frame shape (OMPFrame), the
-// model one answer names (StateModel) and the session files it left (SessionFiles) - answers a
-// test's own provider as Anthropic does (AnthropicAnswer), and probes the pinned jj for the
-// working-copy filters provisioning is proven against (RequireJJFilters).
+// Package testbin names the pinned binaries the real-binary tests run (OMP, Claude, UV). It
+// readies the fresh HOME a test runs Oh My Pi under (OMPHome) with the profile and environment it
+// runs with (WriteOMPProfile, OMPEnviron). It reads back what that run said: the frame shape
+// (OMPFrame), the model one answer names (StateModel) and the session files it left
+// (SessionFiles). It answers a test's own provider as Anthropic does (AnthropicAnswer). It probes
+// the pinned jj for the working-copy filters provisioning is proven against (RequireJJFilters).
 package testbin
 
 import (

@@ -1102,14 +1102,13 @@ hold_plugin_pack_tests()
 
 
 # ---------------------------------------------------------------- the step-models chain
-# The two tests of internal/daemon that carry the e2e build tag and drive both real harnesses
-# behind the real shim and the real daemon: TestStepModelsLive, which runs the pinned Oh My Pi
-# and the pinned Claude Code over two issues and judges each step record's set model and counts
-# against the agents' own transcripts, and TestTheStandInGivesEachResponseItsOwnID, which holds
-# the stand-ins those counts rest on to one id per response. They are a job of their own because
-# nothing else of ci.yaml runs the daemon's e2e tag: the step joins -tags with -run, so it runs
-# those two alone, and the package's untagged tests stay the daemon-go race step's (TAG_RUNS
-# below).
+# Two tests of internal/daemon carry the e2e build tag. They drive both real harnesses behind the
+# real shim and the real daemon. TestStepModelsLive runs the pinned Oh My Pi and the pinned Claude
+# Code over two issues. It judges each step record's set model and counts against the agents' own
+# transcripts. TestTheStandInGivesEachResponseItsOwnID holds the stand-ins those counts rest on to
+# one id per response. They are a job of their own because nothing else of ci.yaml runs the
+# daemon's e2e tag. The step joins -tags with -run, so it runs those two alone. The package's
+# untagged tests stay the daemon-go race step's (TAG_RUNS below).
 STEP_MODELS_CHAIN_TESTS = ["TestStepModelsLive", "TestTheStandInGivesEachResponseItsOwnID"]
 STEP_MODELS_CHAIN_PACKAGE = "internal/daemon"
 STEP_MODELS_CHAIN_JOB = "step-models-chain"
