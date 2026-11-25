@@ -134,7 +134,10 @@ func start(image string, o startOptions) (*Container, error) {
 			publish = []string{publishAt(host, ports[0], clientPort), publishAt(host, ports[1], monitorPort)}
 		}
 		c, err := startAt(image, o, label, dial, publish)
-		if err == nil || !daemon.local() || !addressInUse(err) {
+		if err == nil {
+			return c, nil
+		}
+		if !daemon.local() || !addressInUse(err) {
 			return c, errors.Join(append(refused, err)...)
 		}
 		refused = append(refused, err)
