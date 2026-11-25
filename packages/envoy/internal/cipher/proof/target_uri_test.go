@@ -3,10 +3,29 @@ package proof
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
+
+// TestAudienceIsTheBrokersOwnURL: a request object's audience is the address's scheme, host, port
+// and path (TargetURI), so an address with user information, a query and a fragment names the URL
+// the broker verifies the object for; an address that is no absolute URL with a host is
+// urljoin.ErrBase, which quotes none of it.
+func TestAudienceIsTheBrokersOwnURL(t *testing.T) {
+	for _, address := range []string{"https://broker.example:8443/broker", "https://" + "ada:pass-7Qz4k@broker.example:8443/broker?sig=k3y-7Qz4k#pane"} {
+		if got, err := Audience(cipheraddr.New(address)); err != nil || got != "https://broker.example:8443/broker" {
+			t.Errorf("Audience(%q) = %q, %v; want the broker's own URL", address, got, err)
+		}
+	}
+	if got, err := Audience(cipheraddr.New("not-a-secret-user:not-a-secret-token@broker.example")); !errors.Is(err, urljoin.ErrBase) || got != "" {
+		t.Errorf("Audience of an address with no host = %q, %v; want urljoin.ErrBase", got, err)
+	}
+}
 
 // TestTargetURIIsTheURLTheBrokerChecks: a proof signed over TargetURI of a request's URL verifies
 // against the broker's public URL followed by the path the request reached it at, which is what

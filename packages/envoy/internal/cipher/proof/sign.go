@@ -12,6 +12,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 const typeHeader = "agent-secrets-proof+jwt"
@@ -94,4 +96,18 @@ func SignLauncher(key *ecdsa.PrivateKey, launcherID, method, url string, now tim
 func TargetURI(u *url.URL) string {
 	target := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}
 	return target.String()
+}
+
+// Audience is the audience a request object signed for the broker at address names (record.Sign's
+// aud): TargetURI of the address as configured, so none of the query, fragment or user information
+// it may carry. The broker verifies an object for its own public URL exactly
+// (record.VerifyRequestObject), which holds none of the three, so an object signed for the address's
+// whole text is refused. An address that is no absolute URL with a host is urljoin.ErrBase, which
+// quotes no part of it.
+func Audience(address cipheraddr.Address) (string, error) {
+	u, err := address.Join("")
+	if err != nil {
+		return "", err
+	}
+	return TargetURI(u), nil
 }

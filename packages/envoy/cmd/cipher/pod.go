@@ -255,9 +255,9 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 	}
 	// The identifier names this pod in the signed request object; the broker names the credential
 	// it issues from the token's own subject, never from this.
-	request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
+	request, err := signRequestFor(launcherKey, base, []record.AuthorizationDetail{
 		{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
-	}, "", "", nil, time.Now())
+	}, "", nil)
 	if err != nil {
 		refuse(fmt.Sprintf("%s --pod: sign the login request: %v", prefix, err))
 		return 1

@@ -394,6 +394,18 @@ func (b *Broker) request(ctx context.Context, method, path string, body io.Reade
 // person typed.
 var errPathUnsendable = errors.New("the request's path is not one a URL can hold: the id it ends in holds a '#', a bad escape or a control byte (the id is not printed)")
 
+// audience is the audience of a request object the helper signs for its broker (proof.Audience):
+// the URL the broker verifies the object's aud against, with none of the query, fragment or user
+// information the address may carry. An address that is no absolute URL with a host is refused by
+// its class, "not a valid URL" (redact.ClassNotAURL), which prints no part of it.
+func (b *Broker) audience() (string, error) {
+	audience, err := proof.Audience(b.URL)
+	if err != nil {
+		return "", redact.Masked(err, redact.ClassNotAURL)
+	}
+	return audience, nil
+}
+
 // httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client, with
 // redirects refused (redirects.Refused): every call the helper makes to the broker carries a
 // proof, a request object, a device code or a refresh token, and a 3xx answered for the broker
@@ -539,8 +551,12 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	audience, err := b.audience()
+	if err != nil {
+		return "", err
+	}
 	details := []record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: hostname}}
-	compact, err := record.Sign(key, b.URL.Raw(), details, "", operator, nil, time.Now())
+	compact, err := record.Sign(key, audience, details, "", operator, nil, time.Now())
 	if err != nil {
 		return "", err
 	}

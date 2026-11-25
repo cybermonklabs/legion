@@ -853,9 +853,10 @@ func (s *Server) sign(peer *Peer, pid int, method, url string) Response {
 // rather than carrying "secrets"/"reason" as plain fields), lifetimeSeconds, the grant's
 // lifetime, when it is not nil, and locations, the target that narrows the one secret, when it is
 // not nil (record.SecretDetails), for a pid resolveDescendant ties to a registered session. The
-// audience is always s.Broker.URL, never a value the peer supplies: a request object's aud claim
-// must be the broker's own public URL for the broker to accept it, and there is no reason to trust
-// an untrusted local peer's opinion of that value over the helper's own configuration.
+// audience is always s.Broker's (Broker.audience), never a value the peer supplies: a request
+// object's aud claim must be the broker's own public URL for the broker to accept it, and there is
+// no reason to trust an untrusted local peer's opinion of that value over the helper's own
+// configuration.
 func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int, locations []string) Response {
 	if len(names) == 0 {
 		peer.Close()
@@ -868,7 +869,11 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	if st := sess.snapshot(); st.EnrollmentID == "" {
 		return s.notEnrolled(st)
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
+	audience, err := s.Broker.audience()
+	if err != nil {
+		return Response{Code: CodeSign, Error: err.Error()}
+	}
+	compact, err := record.Sign(sess.identity().Key, audience, record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
