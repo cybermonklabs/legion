@@ -194,6 +194,7 @@ func (r *listenerRelay) close() {
 // During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
 // leave that bind to finish, keep the role lane forwarding, then make SIGTERM an ordered shutdown.
 func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "reconnect-bind-sigterm"
 		holderID  = "ses_reconnect_bind_sigterm_holder"

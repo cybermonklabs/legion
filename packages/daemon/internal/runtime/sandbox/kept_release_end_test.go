@@ -29,7 +29,7 @@ func TestAReleaseEndsAPodWhoseInitFailedOnItsKeptVolumeAsTheDaemonsOwn(t *testin
 		}}
 	})
 
-	if err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
+	if _, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, nil); err != nil {
 		t.Fatalf("ReleaseIssue: %v", err)
 	}
 
