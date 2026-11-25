@@ -84,6 +84,10 @@ var tourRefusals = map[string][]tourRefusal{
 	"POST /api/v2/priorities": {
 		{Name: "a blank title", Change: refusalBody("title", "  "), Code: apicode.PriorityInput},
 	},
+	"PATCH /api/v2/priorities/{id}": {
+		{Name: "an expected title the priority no longer stores", Change: refusalBody("expected", map[string]any{"title": "A title the tour never wrote"}), Code: apicode.PriorityChanged},
+		{Name: "an expected description beside no description written", Change: refusalBody("expected", map[string]any{"description": "A description the tour never wrote"}), Code: apicode.PriorityInput},
+	},
 	"POST /api/v2/artifacts/{id}/edits": {
 		{Name: "a precondition behind the document", Change: refusalBody("precondition", map[string]any{"document": tourStaleDocumentToken}), Code: apicode.PreconditionFailed},
 		{Name: "a precondition naming neither document nor blocks", Change: refusalBody("precondition", map[string]any{}), Code: apicode.InvalidPrecondition},

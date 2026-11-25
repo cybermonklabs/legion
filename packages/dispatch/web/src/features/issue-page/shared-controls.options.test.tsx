@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
-import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import type { ArtifactRebuildReport } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   act,
@@ -79,7 +79,7 @@ import {
 } from "../issue/RouteReach";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { issue as marginIssue } from "../margin/margin-fixture";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Timestamp } from "../refs/Timestamp";
@@ -1392,10 +1392,11 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
   expect(read.held).toEqual([]);
 });
 
-// Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
-// controls beside it there (the repository's text and the box it opens, `main`'s input, read from
-// a row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
-test("the priority's add control has the height of its siblings in Details", async () => {
+// Inside `NoTooltips` the priorities' picker trigger in a row of Details is, from `md`, as tall as
+// the controls beside it there (the repository's text and the box it opens, `main`'s input, read
+// from a row of Details), and keeps the 44 px below `md`. Outside, it is the 28 px pill of the
+// issue header's details row from `md` (INFRA-2947).
+test("the priorities' trigger has the height of its siblings in Details", async () => {
   const user = userEvent.setup();
   const repository = draw(
     <RepoControl inRow issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />,
@@ -1421,13 +1422,16 @@ test("the priority's add control has the height of its siblings in Details", asy
     const view = draw(addablePriorityLine(surface), surface);
     try {
       await settleReads();
-      const add = addControlOf(view, surface);
+      const trigger = triggerOf(view, surface);
       if (surface === "inside") {
-        expect(classOf(add).filter((token) => token.startsWith("md:min-h-"))).toEqual(siblings);
-        expect(classOf(add)).toEqual(expect.arrayContaining(["min-h-11", "py-2", "md:py-1"]));
+        expect(classOf(trigger).filter((token) => token.startsWith("md:min-h-"))).toEqual(siblings);
+        expect(classOf(trigger)).toEqual(expect.arrayContaining(["min-h-11", "py-2", "md:py-1"]));
       } else {
-        expect(add.getAttribute("class")).toBe(
-          "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100"
+        // Outside, the trigger is a hit area that draws nothing, 44 px tall and 32 px from `md`
+        // as the P0-P3 tag's beside it is, around the bordered square it draws, whose hover and
+        // dimming it keys (`group`); on a phone, after a chip, its square stands 8 px after it.
+        expect(trigger.getAttribute("class")).toBe(
+          "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
     } finally {
@@ -2054,28 +2058,29 @@ test("the default shapes keep main's class strings", async () => {
     // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
     "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
-    "IssuePriorityLine line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "IssuePriorityLine entry": "flex shrink-0 items-center gap-1",
+    // features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line in the issue
+    // header's state row, each priority's link and the chip it holds (`PriorityChip.tsx`), an
+    // inherited one's, the picker's trigger, a hit area that draws nothing, and the "+" it draws,
+    // a square as tall as the chips, bordered as the labels' trigger is and lit and dimmed by the
+    // trigger's state (`group`); then the refusal of the priorities' read and that of a save,
+    // which wrap within the line, as the row wraps. On a phone the line is the details row's
+    // first item, where the link is the chip's width with its 44 px target drawn round it and the
+    // trigger's square stands 8 px after the chip.
+    "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3",
     "IssuePriorityLine link":
-      "dispatch-inline-link shrink-0 whitespace-nowrap underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "IssuePriorityLine inherited": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
-    "IssuePriorityLine remove":
-      "shrink-0 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100",
-    "IssuePriorityLine add":
-      "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100",
-    "IssuePriorityLine form": "flex shrink-0 items-center gap-2",
-    "IssuePriorityLine picker":
-      "min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
-    "IssuePriorityLine Add":
-      "min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 refused:text-slate-400 dark:refused:text-slate-600",
-    "IssuePriorityLine Cancel":
-      "min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
-    // `main`'s features/priorities/IssuePriorityLine.tsx: the line at the cap, the refusal of the
-    // priorities' read and that of a save.
-    "IssuePriorityLine at the cap": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
-    "IssuePriorityLine priorities unread": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
-    "IssuePriorityLine not saved": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+      "group inline-flex shrink-0 items-center max-md:relative max-md:min-w-0! max-md:after:absolute max-md:after:inset-y-0 max-md:after:left-1/2 max-md:after:w-11 max-md:after:-translate-x-1/2",
+    "IssuePriorityLine chip":
+      "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-transparent bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+    "IssuePriorityLine inherited chip":
+      "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
+    "IssuePriorityLine trigger":
+      "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "IssuePriorityLine trigger square":
+      "inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400 group-refused:text-slate-400 dark:group-refused:text-slate-600",
+    "IssuePriorityLine priorities unread":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
+    "IssuePriorityLine not saved":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
 
     "AgentName link":
       "rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
@@ -2568,18 +2573,15 @@ test("the default shapes keep main's class strings", async () => {
     const advances = within(caseOf(view, "priorities"));
     const priorityLink = advances.getByRole("link", { name: /Rocq and Lean/ });
     classAt("IssuePriorityLine line", advances.getByTestId("issue-advances"));
-    classAt("IssuePriorityLine entry", priorityLink.parentElement);
     classAt("IssuePriorityLine link", priorityLink);
-    classAt("IssuePriorityLine inherited", advances.getByText("inherited"));
-    classAt("IssuePriorityLine remove", advances.getByRole("button", { name: /^Remove / }));
-    const add = advances.getByRole("button", { name: "Add a priority to CORE-1" });
-    classAt("IssuePriorityLine add", add);
-    await user.click(add);
-    const picker = await advances.findByRole("combobox", { name: "Priority to advance" });
-    classAt("IssuePriorityLine form", picker.closest("form"));
-    classAt("IssuePriorityLine picker", picker);
-    classAt("IssuePriorityLine Add", advances.getByRole("button", { name: "Add" }));
-    classAt("IssuePriorityLine Cancel", advances.getByRole("button", { name: "Cancel" }));
+    classAt("IssuePriorityLine chip", priorityLink.firstElementChild);
+    classAt(
+      "IssuePriorityLine inherited chip",
+      advances.getByRole("link", { name: /, inherited$/ }).firstElementChild
+    );
+    const priorityTrigger = advances.getByRole("button", { name: CONTROL_LABELS.edit_priorities });
+    classAt("IssuePriorityLine trigger", priorityTrigger);
+    classAt("IssuePriorityLine trigger square", priorityTrigger.firstElementChild);
 
     classAt("AgentName link", caseOf(view, "running").querySelector("a"));
     classAt("AgentName inline link", caseOf(view, "inline").querySelector("a"));
@@ -2784,20 +2786,17 @@ test("the default shapes keep main's class strings", async () => {
     undraw(pickers);
   }
 
-  // The lines' refusals: an issue at the cap whose priorities could not be read, a save of what
-  // an issue advances that failed, and a none attachment, whose change the server then refused.
+  // The lines' refusals: an issue whose priorities could not be read, a save of what an issue
+  // advances that failed, and a none attachment, whose change the server then refused.
   stubs.listPriorities.mockRejectedValueOnce(new Error("the priorities read failed"));
   const patchIssue = answerIssuePatches().mockRejectedValue(new Error("the connection dropped"));
   const refusals = draw(
     <>
-      <div data-case="at the cap">
+      <div data-case="unread">
         <IssuePriorityLine
           disabled={false}
           issue={{
-            advances: Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => ({
-              id: `priority-${index + 1}`,
-              inherited: false,
-            })),
+            advances: [{ id: "priority-1", inherited: false }],
             advances_revision: 1,
             key: "CORE-1",
           }}
@@ -2831,14 +2830,16 @@ test("the default shapes keep main's class strings", async () => {
     "outside"
   );
   try {
-    const atCap = within(caseOf(refusals, "at the cap"));
-    classAt("IssuePriorityLine at the cap", atCap.getByText(/^An issue advances at most/));
     classAt(
       "IssuePriorityLine priorities unread",
-      await atCap.findByText("Could not load the priorities.")
+      await within(caseOf(refusals, "unread")).findByText("Could not load the priorities.")
     );
+    // The line's own priority, unticked in its picker, which closes, and saves, on an Escape its
+    // search box takes.
     const notSaved = within(caseOf(refusals, "not saved"));
-    await user.click(notSaved.getByRole("button", { name: /^Remove / }));
+    await user.click(notSaved.getByRole("button", { name: CONTROL_LABELS.edit_priorities }));
+    await user.click(await within(refusals.baseElement).findByRole("option", { selected: true }));
+    await user.keyboard("{Escape}");
     classAt(
       "IssuePriorityLine not saved",
       await notSaved.findByText("Could not save what this issue advances.")
@@ -3390,7 +3391,7 @@ function recordEscapes(): { readonly presses: KeyboardEvent[]; readonly stop: ()
   return { presses, stop: () => document.removeEventListener("keydown", record, true) };
 }
 
-/** The priority line of an issue that advances none on `surface`: `main`'s line outside
+/** The priority line of an issue that advances none on `surface`: today's header's line outside
  *  `NoTooltips`, and the value of a row of Details inside it. */
 function addablePriorityLine(surface: Surface): ReactNode {
   return (
@@ -3402,40 +3403,49 @@ function addablePriorityLine(surface: Surface): ReactNode {
   );
 }
 
-/** The line's add control, checked to be the one `surface` draws: `main`'s "+" outside
- *  `NoTooltips`, and the words of Details inside it. */
-function addControlOf(view: RenderResult, surface: Surface): HTMLElement {
-  const add = within(view.container).getByRole("button", {
-    name: addPriorityControlName("CORE-1"),
-  });
-  expect(add.textContent).toBe(surface === "inside" ? CONTROL_LABELS.add_priority : "+");
-  return add;
+/** The name of the line's picker trigger on `surface` while the issue advances none: inside
+ *  `NoTooltips`, in a row of Details, the words it draws, then the word list's joining word and
+ *  the issue's key; outside, `edit_priorities`. */
+function triggerName(surface: Surface): string {
+  return surface === "inside"
+    ? `${CONTROL_LABELS.add_priority} ${CONTROL_LABELS.control_name_to} CORE-1`
+    : CONTROL_LABELS.edit_priorities;
 }
 
-/** The add form's first field, the priority picker, once the form is open. */
+/** The line's picker trigger, checked to be the one `surface` draws: the header's "+" outside
+ *  `NoTooltips`, and the words of Details inside it. */
+function triggerOf(view: RenderResult, surface: Surface): HTMLElement {
+  const trigger = within(view.container).getByRole("button", { name: triggerName(surface) });
+  expect(trigger.textContent).toBe(surface === "inside" ? CONTROL_LABELS.add_priority : "+");
+  return trigger;
+}
+
+/** The picker's search box, once the picker is open: its popover is portalled under
+ *  `document.body`. */
 function pickerOf(view: RenderResult): Promise<HTMLElement> {
-  return within(view.container).findByRole("combobox", {
+  return within(view.baseElement).findByRole("combobox", {
     name: CONTROL_LABELS.priority_to_advance,
   });
 }
 
 function pickerShown(view: RenderResult): boolean {
   return (
-    within(view.container).queryByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }) !==
-    null
+    within(view.baseElement).queryByRole("combobox", {
+      name: CONTROL_LABELS.priority_to_advance,
+    }) !== null
   );
 }
 
-// The ruling that focus handling may only improve: the add control the form replaces leaves the
-// page, so opening the form puts the focus in its first field rather than leaving it on the body.
-// On both sides of `NoTooltips`.
-test("the priority's add control puts the focus in its form", async () => {
+// Opening the priorities' picker by the keyboard puts the focus in its search box, as every
+// `MultiSelect` does, rather than leaving it on the trigger behind the popover. On both sides of
+// `NoTooltips`.
+test("the priorities' trigger puts the focus in its picker", async () => {
   const user = userEvent.setup();
   for (const surface of ["outside", "inside"] as const) {
     const view = draw(addablePriorityLine(surface), surface);
     try {
-      // A keyboard reaches the control and presses Enter on it.
-      addControlOf(view, surface).focus();
+      // A keyboard reaches the trigger and presses Enter on it.
+      triggerOf(view, surface).focus();
       await user.keyboard("{Enter}");
       expect(document.activeElement).toBe(await pickerOf(view));
     } finally {
@@ -3444,29 +3454,11 @@ test("the priority's add control puts the focus in its form", async () => {
   }
 });
 
-// The same ruling: Cancel leaves the page with the form, so the focus returns to the add control
-// drawn again in its place rather than dropping to the body.
-test("Cancel in the priority's form returns the focus to its add control", async () => {
-  const user = userEvent.setup();
-  for (const surface of ["outside", "inside"] as const) {
-    const view = draw(addablePriorityLine(surface), surface);
-    try {
-      await user.click(addControlOf(view, surface));
-      expect(document.activeElement).toBe(await pickerOf(view));
-      await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.cancel }));
-      expect(pickerShown(view)).toBe(false);
-      expect(document.activeElement).toBe(addControlOf(view, surface));
-    } finally {
-      undraw(view);
-    }
-  }
-});
-
-// Escape in the form is the form's: it closes the form, returns the focus to the add control and
-// reaches nothing around the line - neither a listener on `document`, where a panel listens, nor
-// the dialog binding that closes Details on a phone. Only a second Escape, pressed on the add
-// control, reaches them.
-test("Escape in the priority's form closes the form alone and returns the focus to its add control", async () => {
+// Escape in the picker is the picker's: it closes the picker, returns the focus to its trigger
+// and reaches nothing around the line - neither a listener on `document`, where a panel listens,
+// nor the dialog binding that closes Details on a phone. Only a second Escape, pressed on the
+// trigger, reaches them.
+test("Escape in the priorities' picker closes the picker alone and returns the focus to its trigger", async () => {
   const user = userEvent.setup();
   for (const surface of ["outside", "inside"] as const) {
     // What each Escape reached past the line, in order.
@@ -3486,14 +3478,14 @@ test("Escape in the priority's form closes the form alone and returns the focus 
     );
     try {
       // The sheet's first focus lands on its one control before the case presses anything.
-      await waitFor(() => expect(document.activeElement).toBe(addControlOf(view, surface)));
-      await user.click(addControlOf(view, surface));
+      await waitFor(() => expect(document.activeElement).toBe(triggerOf(view, surface)));
+      await user.click(triggerOf(view, surface));
       expect(document.activeElement).toBe(await pickerOf(view));
 
       await user.keyboard("{Escape}");
       expect(pickerShown(view)).toBe(false);
-      const add = addControlOf(view, surface);
-      expect(document.activeElement).toBe(add);
+      const trigger = triggerOf(view, surface);
+      expect(document.activeElement).toBe(trigger);
       expect(reached).toEqual([]);
       expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
 
@@ -4193,165 +4185,105 @@ test("inside NoTooltips a repository box keeps itself and its focus when the win
   }
 });
 
-// Add closes the priority's form and draws the add control in its place, refused while Add's
-// write is out, and inside `NoTooltips` until the read of the issue after it is drawn as well:
-// there the write returns its reads, and it stops pending only once they land. Inside, the add
-// control is `aria-disabled` in place of `disabled`, which holds no focus, so it takes the focus
-// at once and keeps it, and a press of it opens no form, while the write is out and while its
-// read is. Outside `NoTooltips` it is `disabled` while the write alone is out, as on `main`, so
-// the focus waits on the body and moves to it once the write settles. On both sides the focus is
-// on the add control once the read is drawn, and a focus the reader moved elsewhere while the
-// write was out stays where they put it.
-test("inside NoTooltips Add in the priority form keeps the focus on the add control until the issue is read", async () => {
+// A close of the priorities' picker that changed the set writes it, and the trigger takes back
+// the focus the picker held. The trigger is `aria-disabled` while that write is out, on both
+// sides of `NoTooltips`, so it keeps the focus and a press of it opens no picker; inside
+// `NoTooltips` it stays so until the read of the issue after the write is drawn as well: there
+// the write returns its reads, and it stops pending only once they land. Outside, the write stops
+// pending as it lands, before its read, as on `main`. A write that fails leaves the set as it was
+// and says why on the line. On both sides the focus is on the trigger once the read is drawn, and
+// a focus the reader moved elsewhere while the write was out stays where they put it.
+test("inside NoTooltips a close of the priorities' picker keeps the focus on its trigger until the issue is read", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
     for (const reader of ["waits", "moves on"] as const) {
-      const unemulate = emulateChromiumFocusFixup();
-      const reads = issueReads([]);
-      const written = Promise.withResolvers<Issue>();
-      const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
-      const view = draw(
-        <>
-          <button type="button">Elsewhere</button>
-          <ReadPriorityLine inRow={surface === "inside"} read={reads.read} />
-        </>,
-        surface
-      );
-      try {
-        const scope = within(view.container);
-        await scope.findByRole("button", { name: addPriorityControlName("CORE-1") });
-        addControlOf(view, surface).focus();
-        await user.keyboard("{Enter}");
-        const picker = await pickerOf(view);
-        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
-        await user.selectOptions(picker, "evals-now");
-        scope.getByRole("button", { name: CONTROL_LABELS.add }).focus();
-        await user.keyboard("{Enter}");
-        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-        await settleReads();
-        expect(pickerShown(view)).toBe(false);
-        const add = addControlOf(view, surface);
-        if (surface === "inside") {
-          expectRefusedHoldingFocus(add);
+      for (const write of ["lands", "fails"] as const) {
+        const unemulate = emulateChromiumFocusFixup();
+        const reads = issueReads([]);
+        const written = Promise.withResolvers<Issue>();
+        const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+        const view = draw(
+          <>
+            <button type="button">Elsewhere</button>
+            <ReadPriorityLine inRow={surface === "inside"} read={reads.read} />
+          </>,
+          surface
+        );
+        try {
+          const scope = within(view.container);
+          await scope.findByRole("button", { name: triggerName(surface) });
+          const trigger = triggerOf(view, surface);
+          trigger.focus();
+          await user.keyboard("{Enter}");
+          await pickerOf(view);
+          const listbox = within(view.baseElement).getByRole("listbox", {
+            name: "Priorities options",
+          });
+          await waitFor(() => expect(within(listbox).getAllByRole("option")).toHaveLength(2));
+          // Enter ticks the active row, the first priority, and Escape closes the picker.
+          await user.keyboard("{Enter}");
+          await user.keyboard("{Escape}");
+          await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+          expect(patchIssue.mock.calls[0]?.[1].advances).toEqual(["evals-now"]);
+          await settleReads();
+          expect(pickerShown(view)).toBe(false);
+          expectRefusedHoldingFocus(trigger);
           await user.keyboard("{Enter}");
           await settleReads();
           expect(pickerShown(view)).toBe(false);
-          expectRefusedHoldingFocus(add);
-        } else {
-          expectDisabledAsOnMain(add);
-          expect(document.activeElement).toBe(document.body);
-        }
-        const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
-        if (reader === "moves on") elsewhere.focus();
+          expectRefusedHoldingFocus(trigger);
+          const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
+          if (reader === "moves on") elsewhere.focus();
 
-        // The write lands, and the read after it is held.
-        const answerReread = await landHeld(reads.read, () => {
-          reads.advances = ["evals-now"];
+          // The write lands, or fails, and the read after it is held.
+          const answerReread = await landHeld(reads.read, () => {
+            if (write === "fails") {
+              written.reject(new Error("the connection dropped"));
+              return;
+            }
+            reads.advances = ["evals-now"];
+            written.resolve({} as Issue);
+          });
+          expect(trigger.isConnected).toBe(true);
+          if (surface === "inside" && reader === "waits") {
+            // A press while the read is out opens no picker, and the trigger is still refused.
+            await user.keyboard("{Enter}");
+            await settleReads();
+            expect(pickerShown(view)).toBe(false);
+            expectRefusedHoldingFocus(trigger);
+          } else if (surface === "outside") {
+            // The write stopped pending as it landed, before its read.
+            expect(trigger.hasAttribute("aria-disabled")).toBe(false);
+            expect(document.activeElement).toBe(reader === "waits" ? trigger : elsewhere);
+          }
+
+          answerReread(reads.answer());
+          if (write === "lands") {
+            await scope.findByRole("link", { name: "#1 Evals collecting data now" });
+          } else {
+            await scope.findByRole("alert");
+          }
+          await settleReads();
+          expect(trigger.isConnected).toBe(true);
+          expect(trigger.hasAttribute("aria-disabled")).toBe(false);
+          expect(trigger.hasAttribute("disabled")).toBe(false);
+          expect(document.activeElement).toBe(reader === "waits" ? trigger : elsewhere);
+          expect(patchIssue).toHaveBeenCalledTimes(1);
+        } finally {
           written.resolve({} as Issue);
-        });
-        expect(add.isConnected).toBe(true);
-        if (surface === "inside" && reader === "waits") {
-          // A press while the read is out opens no form, and the add control is still refused.
-          await user.keyboard("{Enter}");
-          await settleReads();
-          expect(pickerShown(view)).toBe(false);
-          expectRefusedHoldingFocus(add);
-        } else if (surface === "outside") {
-          // The write stopped pending as it landed, before its read, and a focus left on the body
-          // moved to the add control then.
-          expect(add.hasAttribute("disabled")).toBe(false);
-          expect(document.activeElement).toBe(reader === "waits" ? add : elsewhere);
+          patchIssue.mockRestore();
+          undraw(view);
+          unemulate();
         }
-
-        answerReread(reads.answer());
-        await scope.findByRole("link", { name: "P1 Evals collecting data now" });
-        await settleReads();
-        expect(add.isConnected).toBe(true);
-        expect(add.hasAttribute("aria-disabled")).toBe(false);
-        expect(add.hasAttribute("disabled")).toBe(false);
-        expect(document.activeElement).toBe(reader === "waits" ? add : elsewhere);
-        expect(patchIssue).toHaveBeenCalledTimes(1);
-      } finally {
-        written.resolve({} as Issue);
-        patchIssue.mockRestore();
-        undraw(view);
-        unemulate();
       }
     }
   }
 });
 
-// The priority's form stays open while a Remove's write is out, and its Add is refused then, and
-// inside `NoTooltips` until the read of the issue after the write is drawn as well. Inside it is
-// `aria-disabled` in place of `disabled`, so it keeps the focus, and a press of it sends nothing
-// and leaves the form open; once the read is drawn it takes the next press. Outside `NoTooltips`
-// it is `disabled` while the write is out, as on `main`.
-test("inside NoTooltips the priority form's Add is refused while a Remove's write and its read are out", async () => {
-  const user = userEvent.setup();
-  for (const surface of ["inside", "outside"] as const) {
-    const unemulate = emulateChromiumFocusFixup();
-    const reads = issueReads(["rocq-lean"]);
-    const written = Promise.withResolvers<Issue>();
-    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
-    const view = draw(<ReadPriorityLine read={reads.read} />, surface);
-    try {
-      const scope = within(view.container);
-      const remove = await scope.findByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
-      });
-      await user.click(scope.getByRole("button", { name: addPriorityControlName("CORE-1") }));
-      const picker = await pickerOf(view);
-      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(2));
-      await user.selectOptions(picker, "evals-now");
-      await user.click(remove);
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      await settleReads();
-      const submit = scope.getByRole("button", { name: CONTROL_LABELS.add });
-      if (surface === "outside") {
-        expectDisabledAsOnMain(submit);
-        continue;
-      }
-
-      submit.focus();
-      expectRefusedHoldingFocus(submit);
-      await user.keyboard("{Enter}");
-      await settleReads();
-      expect(patchIssue).toHaveBeenCalledTimes(1);
-      expect(pickerShown(view)).toBe(true);
-      expectRefusedHoldingFocus(submit);
-
-      // The write lands, and the read after it is held: a press then sends nothing either.
-      const answerReread = await landHeld(reads.read, () => {
-        reads.advances = [];
-        written.resolve({} as Issue);
-      });
-      await user.keyboard("{Enter}");
-      await settleReads();
-      expect(patchIssue).toHaveBeenCalledTimes(1);
-      expect(pickerShown(view)).toBe(true);
-      expectRefusedHoldingFocus(submit);
-
-      answerReread(reads.answer());
-      await waitFor(() => expect(remove.isConnected).toBe(false));
-      await settleReads();
-      expect(document.activeElement).toBe(submit);
-      expect(submit.hasAttribute("aria-disabled")).toBe(false);
-      await user.keyboard("{Enter}");
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
-      expect(patchIssue.mock.calls[1]?.[1].advances).toEqual(["evals-now"]);
-    } finally {
-      written.resolve({} as Issue);
-      patchIssue.mockRestore();
-      undraw(view);
-      unemulate();
-    }
-  }
-});
-
-// The line's own `disabled`, which today's header sets on a closed issue, disables the add
-// control on both sides of `NoTooltips`. Inside, `aria-disabled` holds the control only while a
-// write of the line is out, and never stands in for the line's `disabled`: a press opens no form.
-test("inside NoTooltips the add control of a disabled priority line is disabled and opens no form", async () => {
+// The line's own `disabled`, which today's header sets on a closed issue, disables the picker's
+// trigger on both sides of `NoTooltips`. `aria-disabled` holds the trigger only while a write of
+// the line is out, and never stands in for the line's `disabled`: a press opens no picker.
+test("inside NoTooltips the trigger of a disabled priority line is disabled and opens no picker", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(
@@ -4363,10 +4295,10 @@ test("inside NoTooltips the add control of a disabled priority line is disabled 
       surface
     );
     try {
-      const add = addControlOf(view, surface);
-      expect(add).toBeDisabled();
-      expect(add.hasAttribute("aria-disabled")).toBe(false);
-      await user.click(add);
+      const trigger = triggerOf(view, surface);
+      expect(trigger).toBeDisabled();
+      expect(trigger.hasAttribute("aria-disabled")).toBe(false);
+      await user.click(trigger);
       await settleReads();
       expect(pickerShown(view)).toBe(false);
     } finally {
@@ -5450,261 +5382,6 @@ function issueReads(advances: readonly string[]): IssueReads {
   return reads;
 }
 
-/** Has the priorities read name a third priority, `P3 Lean proofs checked`, after the
- *  fixture's two. */
-function listThreePriorities(): void {
-  const rows = priorities.priorities ?? [];
-  const first = rows[0];
-  if (first === undefined) throw new Error("the fixture lists no priority");
-  stubs.listPriorities.mockResolvedValue({
-    ...priorities,
-    priorities: [
-      ...rows,
-      { ...first, id: "lean-proofs", rank: "lean-proofs", title: "Lean proofs checked" },
-    ],
-  });
-}
-
-// A priority's Remove is refused while its write is out, and inside `NoTooltips` until the read
-// of the issue after it is drawn as well: there the write returns its reads, and it stops pending
-// only once they land. Inside, each Remove is `aria-disabled` in place of `disabled`, which drops
-// the focus to the body in a browser, so the pressed Remove keeps the focus, and a press sends no
-// second write, while the write is out and while its read is. Once that read draws the issue
-// without the entry, the focus that fell with its Remove goes to the Remove of the entry after
-// it, else of the entry before it, else to the add control; once the write failed, the entry
-// stays, and its Remove keeps the focus it held all along. Outside `NoTooltips` each Remove is
-// `disabled` while the write alone is out, as on `main`: the focus falls to the body, and the
-// line moves none.
-test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus until the issue is read, then hands it to the next priority's Remove", async () => {
-  const user = userEvent.setup();
-  listThreePriorities();
-  const evals = "Remove P1 Evals collecting data now from CORE-1";
-  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
-  const lean = "Remove P3 Lean proofs checked from CORE-1";
-  for (const surface of ["inside", "outside"] as const) {
-    for (const write of ["lands", "fails"] as const) {
-      const unemulate = emulateChromiumFocusFixup();
-      const reads = issueReads(["evals-now", "rocq-lean", "lean-proofs"]);
-      const patchIssue = answerIssuePatches();
-      const view = draw(<ReadPriorityLine read={reads.read} />, surface);
-      try {
-        const scope = within(view.container);
-        // Presses Enter on the Remove named `name`, holds its write and then the read after it,
-        // and lets both land; answers the Remove.
-        const press = async (name: string) => {
-          const remove = await scope.findByRole("button", { name });
-          const calls = patchIssue.mock.calls.length;
-          const written = Promise.withResolvers<Issue>();
-          patchIssue.mockImplementation(() => written.promise);
-          remove.focus();
-          await user.keyboard("{Enter}");
-          await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(calls + 1));
-          await settleReads();
-          if (surface === "inside") {
-            expectRefusedHoldingFocus(remove);
-            await user.keyboard("{Enter}");
-            await settleReads();
-            expect(patchIssue).toHaveBeenCalledTimes(calls + 1);
-          } else {
-            expectDisabledAsOnMain(remove);
-            expect(document.activeElement).toBe(document.body);
-          }
-
-          // The write lands, or fails, and the read after it is held.
-          const sent = patchIssue.mock.calls[calls]?.[1].advances ?? [];
-          const answerReread = await landHeld(reads.read, () => {
-            if (write === "fails") {
-              written.reject(new Error("the connection dropped"));
-              return;
-            }
-            reads.advances = sent;
-            written.resolve({} as Issue);
-          });
-          expect(remove.isConnected).toBe(true);
-          if (surface === "inside") {
-            // A press while the read is out sends no second write, and the Remove is still
-            // refused.
-            await user.keyboard("{Enter}");
-            await settleReads();
-            expect(patchIssue).toHaveBeenCalledTimes(calls + 1);
-            expectRefusedHoldingFocus(remove);
-          } else {
-            // The write stopped pending as it landed, before its read.
-            expect(remove.hasAttribute("disabled")).toBe(false);
-            expect(document.activeElement).toBe(document.body);
-          }
-
-          answerReread(reads.answer());
-          if (write === "lands") {
-            await waitFor(() => expect(remove.isConnected).toBe(false));
-          } else {
-            await scope.findByRole("alert");
-          }
-          await settleReads();
-          expect(patchIssue).toHaveBeenCalledTimes(calls + 1);
-          return remove;
-        };
-        if (write === "lands") {
-          // The first of three: the focus goes to the Remove of the entry after it.
-          await press(evals);
-          expect(document.activeElement).toBe(
-            surface === "inside" ? scope.getByRole("button", { name: rocq }) : document.body
-          );
-          // The last of two: the focus goes to the Remove of the entry before it.
-          await press(lean);
-          expect(document.activeElement).toBe(
-            surface === "inside" ? scope.getByRole("button", { name: rocq }) : document.body
-          );
-          // The only one left: the focus goes to the add control.
-          await press(rocq);
-          expect(document.activeElement).toBe(
-            surface === "inside"
-              ? scope.getByRole("button", { name: addPriorityControlName("CORE-1") })
-              : document.body
-          );
-        } else {
-          // The write failed and the entry stays: its Remove takes a press again, and inside it
-          // kept the focus.
-          const remove = await press(rocq);
-          expect(remove.isConnected).toBe(true);
-          expect(remove.hasAttribute("aria-disabled")).toBe(false);
-          expect(remove.hasAttribute("disabled")).toBe(false);
-          expect(document.activeElement).toBe(surface === "inside" ? remove : document.body);
-        }
-      } finally {
-        patchIssue.mockRestore();
-        undraw(view);
-        unemulate();
-      }
-    }
-  }
-});
-
-// The line takes the focus from the body alone. A reader who moves on while a Remove's write is
-// out keeps the focus where they put it once the write and the read after it land and the entry
-// leaves the page, on both sides of `NoTooltips`.
-test("inside NoTooltips a priority's Remove leaves a focus the reader moved elsewhere where it is", async () => {
-  const user = userEvent.setup();
-  for (const surface of ["inside", "outside"] as const) {
-    const unemulate = emulateChromiumFocusFixup();
-    const reads = issueReads(["evals-now", "rocq-lean"]);
-    const written = Promise.withResolvers<Issue>();
-    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
-    const view = draw(
-      <>
-        <ReadPriorityLine read={reads.read} />
-        <button type="button">Elsewhere</button>
-      </>,
-      surface
-    );
-    try {
-      const scope = within(view.container);
-      const remove = await scope.findByRole("button", {
-        name: "Remove P1 Evals collecting data now from CORE-1",
-      });
-      remove.focus();
-      await user.keyboard("{Enter}");
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
-      elsewhere.focus();
-
-      const answerReread = await landHeld(reads.read, () => {
-        reads.advances = ["rocq-lean"];
-        written.resolve({} as Issue);
-      });
-      expect(document.activeElement).toBe(elsewhere);
-      answerReread(reads.answer());
-      await waitFor(() => expect(remove.isConnected).toBe(false));
-      await settleReads();
-      expect(document.activeElement).toBe(elsewhere);
-      expect(patchIssue).toHaveBeenCalledTimes(1);
-    } finally {
-      written.resolve({} as Issue);
-      patchIssue.mockRestore();
-      undraw(view);
-      unemulate();
-    }
-  }
-});
-
-// The Remove of an entry with entries on both sides hands its focus to the Remove of the entry
-// after it, not of the entry before it. The case above presses a first and a last entry only,
-// where the two orders agree. Outside `NoTooltips` the focus stays on the body.
-test("inside NoTooltips the Remove of a middle priority hands its focus to the entry after it", async () => {
-  const user = userEvent.setup();
-  listThreePriorities();
-  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
-  const lean = "Remove P3 Lean proofs checked from CORE-1";
-  for (const surface of ["inside", "outside"] as const) {
-    const unemulate = emulateChromiumFocusFixup();
-    const reads = issueReads(["evals-now", "rocq-lean", "lean-proofs"]);
-    const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
-      reads.advances = input.advances ?? reads.advances;
-      return {} as Issue;
-    });
-    const view = draw(<ReadPriorityLine read={reads.read} />, surface);
-    try {
-      const scope = within(view.container);
-      const remove = await scope.findByRole("button", { name: rocq });
-      remove.focus();
-      await user.keyboard("{Enter}");
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(scope.queryByRole("button", { name: rocq })).toBeNull());
-      await settleReads();
-      expect(patchIssue.mock.calls[0]?.[1].advances).toEqual(["evals-now", "lean-proofs"]);
-      expect(document.activeElement).toBe(
-        surface === "inside" ? scope.getByRole("button", { name: lean }) : document.body
-      );
-    } finally {
-      patchIssue.mockRestore();
-      undraw(view);
-      unemulate();
-    }
-  }
-});
-
-// Inside `NoTooltips` a priority's Remove draws its cross as an inline svg in its own text size
-// and colour, since the page's typeface lacks "✕", and keeps its name; it draws no text. Outside,
-// it draws "✕" as on `main`.
-test("inside NoTooltips a priority's Remove draws its cross as an inline svg and keeps its name", async () => {
-  for (const surface of ["inside", "outside"] as const) {
-    const view = draw(
-      <IssuePriorityLine
-        disabled={false}
-        issue={{
-          advances: [{ id: "rocq-lean", inherited: false }],
-          advances_revision: 1,
-          key: "CORE-1",
-        }}
-      />,
-      surface
-    );
-    try {
-      const remove = await within(view.container).findByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
-      });
-      const crosses = [...remove.querySelectorAll("svg")];
-      if (surface === "inside") {
-        expect(remove.textContent).toBe("");
-        expect(crosses).toHaveLength(1);
-        const [cross] = crosses;
-        if (cross === undefined) throw new Error("the Remove draws no svg");
-        expect(cross.getAttribute("aria-hidden")).toBe("true");
-        expect(cross.hasAttribute("data-remove-glyph")).toBe(true);
-        expect(classOf(cross)).toContain("size-[1em]");
-        const paths = [...cross.querySelectorAll("path")];
-        expect(paths).toHaveLength(1);
-        expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
-      } else {
-        expect(remove.textContent).toBe("✕");
-        expect(crosses).toHaveLength(0);
-      }
-    } finally {
-      undraw(view);
-    }
-  }
-});
-
 /** What Dispatch answers a rebuild that restored the document's latest saved version. */
 const rebuiltReport: ArtifactRebuildReport = {
   head: 1,
@@ -6066,8 +5743,7 @@ interface DraftControl {
 }
 
 /** Each control a reader types or picks a draft in that its own Escape closes: the route and
- *  parent editors, the repository box opened from a row of Details, and the priority's form, whose
- *  Escape is the form's on both sides of `NoTooltips`. */
+ *  parent editors, and the repository box opened from a row of Details. */
 const DRAFT_CONTROLS: readonly DraftControl[] = [
   ...FIELD_EDITORS.map(
     ([field, label]): DraftControl => ({
@@ -6106,26 +5782,6 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
     },
     surface: "inside",
   },
-  ...(["inside", "outside"] as const).map(
-    (surface): DraftControl => ({
-      draft: "evals-now",
-      fieldOf: (view) =>
-        within(view.container).queryByRole("combobox", {
-          name: CONTROL_LABELS.priority_to_advance,
-        }),
-      node: addablePriorityLine(surface),
-      open: async (view, user, draft) => {
-        // The sheet's first focus lands on the add control before the case presses anything.
-        await waitFor(() => expect(document.activeElement).toBe(addControlOf(view, surface)));
-        await user.click(addControlOf(view, surface));
-        const picker = (await pickerOf(view)) as HTMLSelectElement;
-        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
-        await user.selectOptions(picker, draft);
-        return picker;
-      },
-      surface,
-    })
-  ),
 ];
 
 // An Escape that ends an IME composition gives up what the reader was composing, not the control

@@ -485,10 +485,13 @@ var (
 	// key, no installation, no contents read, or no such branch.
 	SourceUnreadable = Condition{"source unreadable"}
 	// PriorityInputInvalid is a priority's title, id or write that names nothing the write
-	// refuses.
+	// refuses, and an expected naming an attribute the same write does not write.
 	PriorityInputInvalid = Condition{"priority input invalid"}
 	// PriorityIDHeld is a priority's id the store already holds.
 	PriorityIDHeld = Condition{"priority id held"}
+	// PriorityWrittenSinceRead is a priority write whose expected title or description is no
+	// longer the one the priority stores: somebody wrote it after the writer's edit began.
+	PriorityWrittenSinceRead = Condition{"priority written since the edit began"}
 )
 
 // The conditions of the GitHub App's installation read and of the secrets broker's relays.

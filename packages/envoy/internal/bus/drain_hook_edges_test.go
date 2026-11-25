@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // discardingCache is a kvwatch.Cache that keeps nothing: these tests read the watcher's consumers,
@@ -32,8 +33,8 @@ func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwat
 	}
 	watcher := kvwatch.New("drain-test", kv, discardingCache{})
 	watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: the first scan can end late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if err := watcher.WaitReady(ctx); err != nil {
 		t.Fatalf("wait for the watcher: %v", err)
 	}

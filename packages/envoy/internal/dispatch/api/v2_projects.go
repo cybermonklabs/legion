@@ -54,6 +54,7 @@ var (
 	gitHubAppKeyMissingRefusal       = apicode.Refusal{Condition: apicode.GitHubAppKeyMissing, Code: apicode.GitHubAppUnconfigured}
 	priorityInputRefusal             = apicode.Refusal{Condition: apicode.PriorityInputInvalid, Code: apicode.PriorityInput}
 	priorityIDHeldRefusal            = apicode.Refusal{Condition: apicode.PriorityIDHeld, Code: apicode.PriorityExists}
+	priorityWrittenRefusal           = apicode.Refusal{Condition: apicode.PriorityWrittenSinceRead, Code: apicode.PriorityChanged}
 )
 
 // projectDefaultAssigneeText is what the routes that read or write a project's default assignee
@@ -350,8 +351,10 @@ func (s *server) v2ProjectRows() []routeRow {
 				"open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the "+
 				"relation and every issue below one of them. Beside the envelope it answers the two faults: "+
 				"work_under_no_priority {count, by_project}, the open issues in flight (in_progress, testing, needs_review, "+
-				"retro) that advance no live priority, and priority_work_parked {count, by_priority}, the issues that advance "+
-				"one and stand in backlog or icebox; include=fault_issues adds to each its issues, the newest %d rows, each "+
+				"retro) that advance no live priority, and priority_work_parked {count, by_priority}, the open issues in "+
+				"backlog or icebox whose own row names a live priority no issue above them carries (a child that only "+
+				"inherits a priority, or restates one an issue above it carries, is no such fault), by_priority counting "+
+				"each under every priority it so names; include=fault_issues adds to each its issues, the newest %d rows, each "+
 				"carrying advances as the issue read does. empty is the sentence saying why the list is empty where no "+
 				"priority is live. A priority belongs to no project, so any authenticated caller reads this; project=<key>, "+
 				"repeatable, narrows the work counted and both faults to those projects and never the priorities "+
@@ -369,12 +372,17 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/priorities", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("Write one priority {id?, title, description?, owner?}, a bearer naming its session "+
-				"in actor: title is required, and id defaults to the title written as a slug; a title with nothing in it "+
-				"or over %d characters, an id that is no slug of lowercase letters, digits and single hyphens, one over %d "+
-				"characters, none and any (the issue listing's keywords), and a title no slug can be written from are "+
-				"each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new "+
-				"priority takes the last place of the order. A credential scoped to one project is refused, since a "+
-				"priority belongs to none. Answers 201 the priority.", contracts.IssueTitleMax, priorityIDMax),
+				"in actor: title is required, and a title with nothing in it or over %[1]d characters is 400 "+
+				"PRIORITY_INPUT. A body that names no id takes the title written as a slug (lowercase ASCII letters and "+
+				"digits, each other run of characters one hyphen), and a slug over %[2]d characters is cut to its longest "+
+				"start of at most %[2]d characters that ends at the end of a word, or to its first %[2]d characters when its "+
+				"first word is longer, so a long title is written whole under a cut id. A title with no ASCII letter or "+
+				"digit, or one the cut leaves as none or any, takes the id priority- and the first 12 lower-case hex "+
+				"characters of the SHA-256 of the title's UTF-8 bytes instead, so every title gives an id. A given id that "+
+				"is no slug of lowercase letters, digits and single hyphens, one over %[2]d characters, and none and any "+
+				"(the issue listing's keywords) are each 400 PRIORITY_INPUT; an id the store already holds is 409 "+
+				"PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project "+
+				"is refused, since a priority belongs to none. Answers 201 the priority.", contracts.IssueTitleMax, priorityIDMax),
 			Handler:  s.createPriorityV2,
 			Resource: "priorities", Kind: kindCollection, Key: "{id}",
 			Body:     requestBody{Kind: bodyJSON, Type: createPriorityInput{}},
@@ -399,20 +407,29 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodPatch, Pattern: "/priorities/{id}", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("Write one priority's title, description or owner, and move its order {title?, "+
-				"description?, owner?, rank?}, a bearer naming its session in actor: each field named is written and each "+
-				"left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands "+
-				"below; a rank naming neither, a neighbour that is this priority, and one no live priority carries are each "+
-				"400 RANK_INPUT. A title with nothing in it or over %d characters and a body naming nothing to write are 400 "+
-				"PRIORITY_INPUT. Answers the priority and appends priority.updated. A credential scoped to one project is "+
-				"refused. 404 PRIORITY_NOT_FOUND for an id no priority carries, or one whose priority is gone.",
-				contracts.IssueTitleMax),
+				"description?, owner?, rank?, expected?}, a bearer naming its session in actor: each field named is "+
+				"written and each left out is left alone. rank is {before, after}, the priority this one lands above and "+
+				"the one it lands below; a rank naming neither, a neighbour that is this priority, and one no live "+
+				"priority carries are each 400 RANK_INPUT. A title with nothing in it or over %[1]d characters and a body "+
+				"naming nothing to write are 400 PRIORITY_INPUT. expected is {title?, description?}, the value the "+
+				"writer's edit of each started from, for the title and the description this same write writes; owner "+
+				"and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One "+
+				"that differs from the value the priority stores now (the title compared with the stored title exactly, "+
+				"which is stored trimmed, so a writer sends the title it read; the description exactly) is 409 "+
+				"PRIORITY_CHANGED, whose message names each attribute that differs and its value now, quoted and cut "+
+				"past %[2]d characters with a trailing …; that write writes nothing and appends no priority.updated. The "+
+				"compare and the write are one transaction holding the priority's row, so a write naming expected waits "+
+				"for any other write of the priority in flight and compares against what that one wrote. A body with no "+
+				"expected writes over whatever is stored. Answers the priority and appends priority.updated. A "+
+				"credential scoped to one project is refused. 404 PRIORITY_NOT_FOUND for an id no priority carries, or "+
+				"one whose priority is gone.", contracts.IssueTitleMax, priorityChangedQuoteMax),
 			Handler:  s.patchPriorityV2,
 			Resource: "priorities", Kind: kindItem, Key: "{id}",
 			Body:     requestBody{Kind: bodyJSON, Type: patchPriorityInput{}},
 			Shape:    routeShape{Status: http.StatusOK, Response: model.Priority{}},
 			Scope:    scopeDeployment,
 			IDs:      &idRoute{Reason: "a priority id, a slug of its own and no uuid at all"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, priorityMissingRefusal, priorityInputRefusal, rankInvalidRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, priorityMissingRefusal, priorityInputRefusal, rankInvalidRefusal, priorityWrittenRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/priorities/{id}/acts", Auth: authAny, Versions: onlyV2,

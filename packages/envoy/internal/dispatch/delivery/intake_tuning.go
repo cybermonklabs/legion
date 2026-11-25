@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -9,13 +10,14 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
-// intakeTuning is what one intake times its work by, and the steps a test reaches into it at:
-// newIntakeTuning gives production's values, which StartIntakes builds both intakes with. Each
-// intake holds its tuning (heldDurable.tuning) and every delivery it makes holds the same one
-// (intakeDelivery.tuning), so a test that shortens a timer or hooks a step of its own intakes runs
-// beside tests that do not: no test changes a value another test's intake reads. The durations and
-// createDurable are read once the intake runs, so a test sets them before it starts its intakes;
-// the waits and hooks a test changes while its intakes run are atomic.
+// intakeTuning is what one intake times its work by, the logger it writes its lines to, and the
+// steps a test reaches into it at: newIntakeTuning gives production's values, which StartIntakes
+// builds both intakes with. Each intake holds its tuning (heldDurable.tuning) and every delivery
+// it makes holds the same one (intakeDelivery.tuning), so a test that shortens a timer, hooks a
+// step or reads the lines of its own intakes runs beside tests that do not: no test changes a
+// value another test's intake reads. The durations, createDurable and log are read once the
+// intake runs, so a test sets them before it starts its intakes; the waits and hooks a test
+// changes while its intakes run are atomic.
 type intakeTuning struct {
 	// messageTimeout bounds one handler's own work (Intake.deliver) and one job read
 	// (JobIntake.fire): intakeMessageTimeout.
@@ -51,9 +53,16 @@ type intakeTuning struct {
 	// before it releases the hold (heldDurable.finalizeHandBacks), so a test sees that
 	// stopIntakes waits for it. Nil outside tests.
 	beforeRelease atomic.Pointer[func()]
+	// log is where the intake side writes its lines: both intakes, their deliveries, callNATS,
+	// and the SettingsCache startIntakes builds for them. newIntakeTuning sets the default logger
+	// as it is at that moment, which is what those lines went to before, so a program that sets
+	// no logger of its own writes exactly what it wrote. A test sets a logger over a buffer of its
+	// own (captureIntakeLogs) and reads its own intakes' lines without the default's.
+	log *slog.Logger
 }
 
-// newIntakeTuning is production's tuning, a new one for each call.
+// newIntakeTuning is production's tuning, a new one for each call, logging to the default logger
+// as it is when newIntakeTuning is called.
 func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
 		messageTimeout:         intakeMessageTimeout,
@@ -61,6 +70,7 @@ func newIntakeTuning() *intakeTuning {
 		stopBudget:             intakeStopBudget,
 		headWriteMaxDeliveries: headWriteMaxDeliveries,
 		createDurable:          addDurable,
+		log:                    slog.Default(),
 	}
 	tuning.callWait.Store(int64(bus.ConnLockWait))
 	tuning.drainWait.Store(int64(natsgo.DefaultDrainTimeout))

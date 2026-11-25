@@ -29,7 +29,7 @@ import (
 // read through unnest, whose rows a generic plan sizes at 10 whatever the arrays hold, the four
 // statements over it touched 6.7 to 45.8 times the shared buffers of the plans made for their
 // arguments under the generic plan, which the held connection ran from its sixth run on
-// (PostgreSQL 18.6, 2026-11-22); priorityMemberTerms says how the seed is read now. The test reads
+// (PostgreSQL 18.6, 2026-11-22); priorityRelationSeed says how the seed is read now. The test reads
 // the plans a connection really ran, where the speed tests (priority_speed_test.go) count each
 // statement under a plan they force.
 

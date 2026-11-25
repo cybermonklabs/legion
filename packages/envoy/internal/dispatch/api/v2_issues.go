@@ -167,7 +167,11 @@ var issueListText = fmt.Sprintf("status=, repeatable, keeps the issues standing 
 	"blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no "+
 	"issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, "+
 	"repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no "+
-	"live priority or any for the work that advances one, own or inherited, several a union; open=true the open "+
+	"live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the "+
+	"issues the advances values answer, those whose own row names a priority a value matches and no issue above them "+
+	"carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and "+
+	"none keeps nothing, and without an advances value it filters nothing (advances=any&own=true over backlog and "+
+	"icebox is the second fault of GET /api/v2/priorities); open=true the open "+
 	"issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each "+
 	"from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from "+
 	"is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, "+
@@ -763,6 +767,10 @@ type issueFiltersV2 struct {
 	Label    []string `query:"label"`
 	Priority []string `query:"priority"`
 	Advances []string `query:"advances"`
+	// Own keeps, of the issues the Advances values answer, those whose own row names a matched
+	// priority no issue above them carries, as GET /api/v1/issues's own=true does
+	// (advancesOriginTerms); without an Advances value it filters nothing.
+	Own bool `query:"own"`
 	// RouteStatus keeps the open issues whose route stands so.
 	RouteStatus string `query:"route_status" enum:"live,holder_unresponsive,no_holder,unknown"`
 	Open        bool   `query:"open"`
@@ -1195,7 +1203,7 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 	arguments := []any{projects, parseStatusFilter(filters.Status), strings.TrimSpace(filters.Parent),
 		store.MicrosecondCeiling(filters.UpdatedFrom), labels, open, priorities, unsetPriority,
 		store.MicrosecondCeiling(filters.ClosedFrom), store.MicrosecondCeiling(filters.ClosedTo), advances, noAdvances, anyAdvances,
-		filters.Moved, store.MicrosecondCeiling(filters.UpdatedTo), keys}
+		filters.Moved, filters.Own, store.MicrosecondCeiling(filters.UpdatedTo), keys}
 	if filters.Pinned {
 		arguments = append(arguments, login)
 	}

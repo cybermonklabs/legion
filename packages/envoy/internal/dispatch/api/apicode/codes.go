@@ -333,13 +333,18 @@ var (
 	PossibleDuplicate     = both("POSSIBLE_DUPLICATE", http.StatusConflict)
 	PostDeleted           = both("POST_DELETED", http.StatusConflict)
 	PreconditionFailed    = both("PRECONDITION_FAILED", http.StatusConflict)
+	// PriorityChanged refuses a patch whose expected title or description is not the one the
+	// priority stores now: somebody else wrote it after the writer's edit began, and the patch
+	// would write over that change unseen (the api package's priorityChangedRefusal).
+	PriorityChanged = both("PRIORITY_CHANGED", http.StatusConflict)
 	// PriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (ProjectExists): a second create would write its own history over
 	// the first write's.
 	PriorityExists = both("PRIORITY_EXISTS", http.StatusConflict)
 	// PriorityInput refuses a body no priority can be written from: a title with nothing in it
-	// or one longer than an issue title may be, an id that is no priority id, a title no id can
-	// be derived from, and a patch that names nothing to write.
+	// or one longer than an issue title may be, an id the caller names that is no priority id, a
+	// patch that names nothing to write, and a patch whose expected names an attribute the same
+	// patch does not write.
 	PriorityInput = both("PRIORITY_INPUT", http.StatusBadRequest)
 	// PriorityNotFound answers a route addressed to an id no priority row carries: a write of
 	// it, and the read of its history.

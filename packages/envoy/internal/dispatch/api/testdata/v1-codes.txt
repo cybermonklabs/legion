@@ -293,6 +293,7 @@ PARENT_STATUS_CONFLICT 409 # #4631, a parent and child would break the status ru
 PLAN_INPUT 400 # #4488, each retro rates the plan its issue ran
 PLAN_OTHER_ISSUE 409 # #4488, each retro rates the plan its issue ran
 POST_DELETED 409 # #3512, the author of a comment or an issue message can correct or delete it
+PRIORITY_CHANGED 409 # #4316, a priority write refuses one whose expected title or description is no longer stored
 QUEUED_ON_BUS 404 # #4088, a message to a session the listener knows nothing about is queued
 READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
 REFERENCES_TIMEOUT 503 # #4554, an issue's reference closure walk runs under a 2 s statement_timeout
