@@ -11,13 +11,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -38,8 +39,9 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	t.Helper()
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
+		// url.Parse's error quotes the URL it was given, and the error it wraps can quote a part of
+		// it (a password read as the port of a URL that names no host), so only its class prints.
+		t.Fatalf("parse the admin URL of the Postgres server: %v", redact.Class(err))
 	}
 	name, err := newDatabaseName(prefix)
 	if err != nil {
