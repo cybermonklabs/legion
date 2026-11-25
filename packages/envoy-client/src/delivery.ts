@@ -1209,7 +1209,6 @@ function targetedDelivery(
     };
   }
   if (checked.type === "comment.created" && isCommentTargetedDelivery(requested)) {
-    if (!DispatchTargetedCommentPayloadSchema.safeParse(checked.payload).success) return undefined;
     return {
       resource: "comment",
       id: requested.comment_id,

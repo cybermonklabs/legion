@@ -1777,11 +1777,12 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // attempts and settles its unsettled rows with nothing published, in one commit (deleteComment in
 // internal/dispatch/api), so a pass that claimed a row before that commit and read the attempts
 // after it finds them failed, the state in which it publishes; and a batch that read the attempts
-// before the delete can hold a row after it, which the delete never settled. So the last read of
-// a decision to publish is whether the comment is deleted (fallbackCopyWithdrawn): a copy of a
-// deleted comment is withdrawn, its row settled with nothing sent (fallbackWithdrawn). Only a pass
-// that decided before the delete committed and publishes after it sends the copy as recorded, a
-// send in flight.
+// before the delete can hold a row after it, which the delete never settled; and the receipt of
+// an attempt the delete failed can reopen a row the delete settled (reopenOnReceipt). So the last
+// read of a decision to publish is whether the comment is deleted (fallbackCopyWithdrawn): a copy
+// of a deleted comment is withdrawn, its row settled with nothing sent (fallbackWithdrawn). Only a
+// pass that decided before the delete committed and publishes after it sends the copy as
+// recorded, a send in flight.
 //
 // It reports what the holder does next, as a batch reports it (Outbox.scan): full, the claim
 // filled its batch, so rows it did not reach are due now and the holder scans and passes again

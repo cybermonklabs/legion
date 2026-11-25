@@ -188,8 +188,8 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // generic skill. The rule lives in skills/agent-secrets/SKILL.md, which a session reads when a
 // command needs a secret. The blocker bullet, which every session holds whole, is the line that
 // sends an agent to open an ask, so its exception sits there and links the rule. Before this
-// sentence came, #5051 cut 80 words from dispatch-writing-specs, which left the three skills at
-// 2,257 words. The three skills now stand at 2,276 words, 64 under the bound.
+// sentence came, #5051 had cut 80 words from dispatch-writing-specs, and the three skills stood at
+// 2,310 words. They now stand at 2,329 words, 11 under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
@@ -200,7 +200,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_355);
+  expect(words).toBeLessThan(2_340);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

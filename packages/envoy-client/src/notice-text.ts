@@ -84,8 +84,8 @@ export function encodeFieldLines(fields: object): Iterable<string> {
 /**
  * `value` with each string in it, at any depth, holding one space for each character of
  * `UNESCAPED_LINE_BREAKS` in it. Nothing of `value` is written to: every list and plain object in
- * it (`copiesAsData`), `value` itself included, is copied, as the encoder copies each again
- * (`normalizeValue` in `@toon-format/toon`), so copying only those that change would save nothing.
+ * it (`copiesAsData`), `value` itself included, is copied. The encoder copies each of them again
+ * (`normalizeValue` in `@toon-format/toon`), so one more copy of each keeps the walk simple.
  * Any other object, such as a `Date`, goes to the encoder as itself. A copy has the prototype of
  * what it copies (none for an object made with none), and holds its own fields alone, in their
  * order, each defined rather than assigned (`defineOwn`); a list's copy keeps its length. The

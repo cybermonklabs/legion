@@ -747,7 +747,7 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				t.Fatalf("the todo wrote notices %+v, want none", added)
 			case tc.told != "":
 				// The todo wrote one notice row, on the root's rows, for the architect and not for
-				// the controller, with what StatusReassertedNotice writes: its kind, the root, the
+				// the controller, that states the facts of the set-back: its kind, the root, the
 				// session, the status it wrote and the status the daemon set back.
 				told := record.Notice{Kind: tc.told, Issue: root, Session: tc.session, Wrote: "todo", Status: "in_progress"}
 				if want := []record.OutboxPayload{told}; !reflect.DeepEqual(added, want) {
