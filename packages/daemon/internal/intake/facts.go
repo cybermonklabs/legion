@@ -461,6 +461,25 @@ type DispatchClaim struct {
 
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
+// DispatchResultChanged is a change of what Dispatch computes for the checks of Key's
+// Verification document, at Seq in Key's event log: a result recorded against one of them
+// (result.recorded, with its id, its check's block id and its verdict), a retraction of one
+// (result.retracted, with no verdict), or a pull request that reached Key or left it
+// (issue.pull_request_attribution_changed, with no result and no check). Dispatch appends a
+// result's events on the issue whose document holds the check, whichever issue the result was
+// recorded on, so Key is the issue whose close the change may decide. None of them decides a
+// check: the read of the checks does (record.CloseRead), which each queues for an issue whose
+// close waits.
+type DispatchResultChanged struct {
+	Key      string
+	Seq      int64
+	ResultID string
+	Check    string
+	Verdict  string
+}
+
+func (f DispatchResultChanged) namedIssue() (string, bool) { return f.Key, true }
+
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
 // redeliveries and naks included — and whether it is idle, nothing pending or unacknowledged at

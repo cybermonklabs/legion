@@ -39,6 +39,15 @@ type Client interface {
 	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
 	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
+	// ArtifactToken reads the whole-document token and the version of the issue's document at
+	// slug, which an upload names to replace exactly what it read (UploadArtifactOver). A
+	// document the issue does not hold is ErrDocumentNotFound.
+	ArtifactToken(ctx context.Context, key, slug string) (DocumentToken, error)
+	// UploadArtifactOver writes a markdown document on the issue under name over the version whose
+	// token it names, and answers the slug Dispatch filed it under. An empty token names none, as
+	// the first write of a document does. A token the document moved past is refused with the
+	// token that stands (StaleDocument).
+	UploadArtifactOver(ctx context.Context, key, name, content, token string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
@@ -613,13 +622,37 @@ const (
 var ErrNoChangesRoute = errors.New("dispatch has no changes route")
 
 // ErrDocumentNotFound is a Dispatch that holds no document of the id a read of one document
-// names, GET /api/v1/artifacts/{id}/changes or GET /api/v1/artifacts/{id}/reviews: it answered
-// 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a document deleted since its gate recorded it. A
-// build without a route answers its router's own 404, whose code is not this one (NoRoute), so
-// the two stay apart and the reason recorded says which it was. ArtifactChanges and
-// ApprovedVersionBefore wrap it around Dispatch's own refusal, and a caller records what it asked
-// unreadable at once: a deleted document does not come back with a wait.
+// names, GET /api/v1/artifacts/{id}/changes or GET /api/v1/artifacts/{id}/reviews, or no
+// document of the slug a read of an issue's document names (ArtifactToken): it answered 404
+// ARTIFACT_NOT_FOUND (ArtifactNotFound), a document deleted since its gate recorded it, or one
+// never written. A build without a route answers its router's own 404, whose code is not this one
+// (NoRoute), so the two stay apart and the reason recorded says which it was. ArtifactChanges,
+// ApprovedVersionBefore and ArtifactToken wrap it around Dispatch's own refusal. A caller of the
+// first two records what it asked unreadable at once: a deleted document does not come back with
+// a wait.
 var ErrDocumentNotFound = errors.New("dispatch holds no such document")
+
+// DocumentToken is a document's whole-document token and the number of its newest version, as GET
+// /api/v1/issues/{key}/artifacts/{slug}/text answers them (ArtifactToken). The token is what an
+// upload names to replace the document it read (UploadArtifactOver). Version is 0 where Dispatch
+// names none.
+type DocumentToken struct {
+	Token   string
+	Version int
+}
+
+// StaleDocument is Dispatch's 409 PRECONDITION_FAILED to an upload that named a token of a version
+// that no longer stands (UploadArtifactOver). Current is the token of the version that stands,
+// which an upload names to replace it, and "" where Dispatch named none: a token named where no
+// document stands, or a document that has no token. Err is Dispatch's own refusal, which
+// PermanentRefusal reads as it reads any coded 409.
+type StaleDocument struct {
+	Current string
+	Err     *Error
+}
+
+func (e *StaleDocument) Error() string { return e.Err.Error() }
+func (e *StaleDocument) Unwrap() error { return e.Err }
 
 // ArtifactNotFound is Dispatch's own spelling of the 404 its artifact routes answer for an id
 // that names no artifact (packages/envoy/internal/dispatch/api/artifacts.go,

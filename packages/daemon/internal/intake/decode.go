@@ -572,6 +572,39 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, nil
 		}
 		return DispatchClaim{Key: event.IssueKey, Seq: event.Seq, ClaimedBy: holder}, nil
+	case "result.recorded", "result.retracted":
+		// A result's events are appended on the issue whose Verification document holds the check
+		// (the event's issue_key), whichever issue the result was recorded on, which the payload's
+		// issue names. A field that cannot be read is named in unread rather than making the event
+		// poison: the event's one act is to have the issue's checks read again, which needs only
+		// its issue.
+		var result struct {
+			ResultID string `json:"result_id"`
+			Check    string `json:"check_block_id"`
+			Verdict  string `json:"verdict"`
+		}
+		if err := json.Unmarshal(event.Payload, &result); err != nil {
+			return nil, fmt.Errorf("decode Dispatch %s payload: %w", event.Type, err)
+		}
+		if result.ResultID == "" {
+			*unread = append(*unread, event.Type+" has no result_id")
+		}
+		if result.Check == "" {
+			*unread = append(*unread, event.Type+" has no check_block_id")
+		}
+		changed := DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq, ResultID: result.ResultID, Check: result.Check}
+		if event.Type == "result.recorded" {
+			if result.Verdict == "" {
+				*unread = append(*unread, "result.recorded has no verdict")
+			}
+			changed.Verdict = result.Verdict
+		}
+		return changed, nil
+	case "issue.pull_request_attribution_changed":
+		// A pull request reached the issue or left it, which can change the commits Dispatch
+		// compares each check's results with. Dispatch appends the event on each issue the move
+		// concerns, so this one is the event's issue.
+		return DispatchResultChanged{Key: event.IssueKey, Seq: event.Seq}, nil
 	default:
 		return nil, nil
 	}

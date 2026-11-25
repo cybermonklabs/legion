@@ -18,6 +18,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchAskReply":        DispatchAskReply{Key: issue},
 		"DispatchApprovalMoved":   DispatchApprovalMoved{Key: issue},
 		"DispatchClaim":           DispatchClaim{Key: issue},
+		"DispatchResultChanged":   DispatchResultChanged{Key: issue},
 		"Handover":                Handover{Issue: issue},
 		"MergeQueueReadDone":      MergeQueueReadDone{Issue: issue},
 		"ConflictConfirmDone":     ConflictConfirmDone{Issue: issue},

@@ -329,6 +329,80 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 	return response.Artifact.Slug, nil
 }
 
+// ArtifactToken reads GET /api/v1/issues/{key}/artifacts/{slug}/text and answers the document's
+// whole-document token and the number of its newest version. The route also answers the
+// document's markdown, which is not kept. A 404 ARTIFACT_NOT_FOUND, an issue that holds no
+// document of that slug, is ErrDocumentNotFound wrapped around Dispatch's own refusal, so a
+// caller tells a document never written from a read that failed.
+func (c *HTTPClient) ArtifactToken(ctx context.Context, key, slug string) (DocumentToken, error) {
+	var response struct {
+		Token   string `json:"token"`
+		Version *int   `json:"version"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts/"+url.PathEscape(slug)+"/text", nil, &response); err != nil {
+		var refusal *Error
+		if errors.As(err, &refusal) && artifactNotFound(refusal) {
+			return DocumentToken{}, documentNotFound(err)
+		}
+		return DocumentToken{}, err
+	}
+	if response.Token == "" {
+		return DocumentToken{}, fmt.Errorf("read the token of Dispatch document %s of %s: the answer names no token", slug, key)
+	}
+	read := DocumentToken{Token: response.Token}
+	if response.Version != nil {
+		read.Version = *response.Version
+	}
+	return read, nil
+}
+
+// UploadArtifactOver writes a markdown document on the issue through POST
+// /api/v1/issues/{key}/artifacts, as the daemon's own session, over the version whose
+// whole-document token it names (precondition.document), and returns the slug Dispatch filed it
+// under. An empty token names none, which is the first write of a document. A token the document
+// moved past is refused 409 PRECONDITION_FAILED, whose body names the token that stands
+// (current.document): that refusal is a *StaleDocument carrying it, so the caller can write again
+// over what stands now. Every other refusal is Dispatch's *Error, as every route's is.
+func (c *HTTPClient) UploadArtifactOver(ctx context.Context, key, name, content, token string) (string, error) {
+	upload := artifactUpload{Name: name, Content: content, Actor: daemonActor(key)}
+	if token != "" {
+		upload.Precondition = &uploadPrecondition{Document: token}
+	}
+	payload, err := c.call(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", upload)
+	var refusal *Error
+	if errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == preconditionFailed {
+		var stale struct {
+			Current struct {
+				Document string `json:"document"`
+			} `json:"current"`
+		}
+		// A body that does not decode names no standing token, which the caller reads as such.
+		_ = json.Unmarshal(payload, &stale)
+		return "", &StaleDocument{Current: stale.Current.Document, Err: refusal}
+	}
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		Artifact struct {
+			Slug string `json:"slug"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return "", fmt.Errorf("decode Dispatch POST upload of %s of %s response: %w", name, key, err)
+	}
+	if response.Artifact.Slug == "" {
+		return "", fmt.Errorf("upload Dispatch document %s of %s: the answer names no slug", name, key)
+	}
+	return response.Artifact.Slug, nil
+}
+
+// preconditionFailed is Dispatch's own spelling of the 409 a write answers when the token it names
+// is not the one that stands (packages/envoy/internal/dispatch/api/handler_errors.go,
+// preconditionBody). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const preconditionFailed = "PRECONDITION_FAILED"
+
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
@@ -642,6 +716,24 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	payload, err := c.call(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	if into == nil {
+		return nil
+	}
+	if err := json.Unmarshal(payload, into); err != nil {
+		return fmt.Errorf("decode Dispatch %s %s response: %w", method, path, err)
+	}
+	return nil
+}
+
+// call makes one request, bounded by the client's timeout, and answers the body Dispatch sent with
+// the error: nil for a 2xx answer, Dispatch's refusal (*Error) for any other, with the refusal's
+// own body beside it for a caller that reads more of it than its code (UploadArtifactOver), or a
+// failure of the transport, with no body.
+func (c *HTTPClient) call(ctx context.Context, method, path string, body any) ([]byte, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -650,12 +742,12 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if body != nil {
 		encoded, err = json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
 	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
-		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.token)
@@ -665,23 +757,17 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
+		return nil, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
+		return nil, fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		return payload, dispatchError(response.StatusCode, response.Status, payload)
 	}
-	if into == nil {
-		return nil
-	}
-	if err := json.Unmarshal(payload, into); err != nil {
-		return fmt.Errorf("decode Dispatch %s %s response: %w", method, path, err)
-	}
-	return nil
+	return payload, nil
 }
 
 // TransportRefusal reports whether err, anywhere in its chain, is a failure of Dispatch's transport
@@ -913,12 +999,20 @@ type daemonWrite struct {
 	Actor            actor    `json:"actor"`
 }
 
-// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
-// all fields Dispatch's JSON upload reads.
+// artifactUpload is the body of a document upload: its name, its markdown, the daemon's actor and,
+// where the upload replaces a version it read, the token of that version, all fields Dispatch's
+// JSON upload reads.
 type artifactUpload struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Actor   actor  `json:"actor"`
+	Name         string              `json:"name"`
+	Content      string              `json:"content"`
+	Actor        actor               `json:"actor"`
+	Precondition *uploadPrecondition `json:"precondition,omitempty"`
+}
+
+// uploadPrecondition is the precondition of an upload that replaces a version it read: that
+// version's whole-document token.
+type uploadPrecondition struct {
+	Document string `json:"document"`
 }
 
 // gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the
