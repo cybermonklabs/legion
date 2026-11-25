@@ -62,7 +62,9 @@
 # cutover whose tree defines no registerEntry, and this change with no version.go, which it cannot
 # read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet,
 # and so with that branch's refusal where the two have two merge bases (the crossed branch: the
-# stacked branch with a commit from before the cutover merged, which the first branch merges too).
+# stacked branch with a commit from before the cutover merged, which the first branch merges too);
+# and a branch whose entry declares no constant, over a main where another change's entry file
+# declares the one the script would name it.
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
 # way, over a main that took the first branch as a squash: over its merge base with that main the
 # stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it;
@@ -96,11 +98,12 @@ repo_stacked=$scratch/repo-stacked
 branch_crossed=convert-test-crossed-$$
 branch_conflict=convert-test-conflict-$$
 branch_rebased=convert-test-rebased-$$
+branch_named=convert-test-named-$$
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_stacked" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" "$branch_rebased" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" "$branch_rebased" "$branch_named" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -403,6 +406,41 @@ git checkout -q "$branch_crossed"
 refused "the conversion of the crossed branch over the first branch, not converted yet, with two merge bases," \
   "$side_base (${side_base:0:10}) declares \`const DaemonAPIVersion\`" "it has not merged the cutover" \
   -- --base "$side_base"
+git checkout -q "$branch_stacked"
+cd "$repo"
+
+step "an entry with no constant is refused where an entry file of the ref declares the one it would get"
+# A branch from the base adds numbered entry $k with no constant of its own, whose text opens with
+# dispatch://INFRA-1569, so the script would name its constant infra1569Contract. Over a main where
+# another change's entry file declares that name, the second declaration would not compile.
+cd "$repo_stacked"
+git checkout -q -b "$branch_named" "$base"
+python3 - "$k" <<'PY'
+import re, sys
+
+k = sys.argv[1]
+path = "packages/daemon/internal/api/version.go"
+with open(path) as f:
+    text = f.read()
+new, count = re.subn(r"\nconst DaemonAPIVersion = \d+\n",
+                     f"\n//\n// {k}: dispatch://INFRA-1569 conversion test -- an entry with no constant of its own.\n"
+                     f"const DaemonAPIVersion = {k}\n", text, count=1)
+if count != 1:
+    sys.exit(f"{path}: no const line")
+with open(path, "w") as f:
+    f.write(new)
+PY
+git commit -q -am "feat(daemon): the conversion test's entry $k, with no constant"
+named_file=$api/contract_20000101000000_infra-1569.go
+named_blob=$(printf '%s\n' "package api" "" \
+  "// 20000101000000 infra-1569: dispatch://INFRA-1569 conversion test -- another change's entry, which took the name." \
+  "const infra1569Contract = 20000101000000" "" "func init() {" \
+  '	registerEntry(contractEntry{id: infra1569Contract, slug: "infra-1569"})' "}" | git hash-object -w --stdin)
+named_main=$(git commit-tree "$(tree_with "$this" --add --cacheinfo "100644,$named_blob,$named_file")" -p "$this" \
+  -m "convert-test: this change, with another change's entry file that declares infra1569Contract")
+refused "the conversion of an entry with no constant over a main whose entry file declares the one it would get" \
+  "entry $k of this branch declares no constant, and the one this script names it, infra1569Contract, $named_file of $named_main declares" \
+  "Or another change took that name: give the entry a constant of another name in the branch" -- --base "$named_main"
 git checkout -q "$branch_stacked"
 cd "$repo"
 
