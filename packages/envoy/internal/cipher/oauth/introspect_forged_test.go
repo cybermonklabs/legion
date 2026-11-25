@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // A token whose HMAC is not the broker's is answered not live without a read of the store: the
@@ -23,7 +23,7 @@ func TestAnUnsignedTokenIsAnsweredWithNoStoreRead(t *testing.T) {
 	ctx := context.Background()
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	random, _, found := strings.Cut(token, ".")
 	if !found {
 		t.Fatalf("the broker's token %q has no '.', so the forged tokens below do not have its shape", "<redacted>")

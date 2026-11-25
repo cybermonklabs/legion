@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -724,9 +727,9 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 	// What the provider sets from its identity registry (identity.Registry.TokenTypeNames), as
 	// oauth.New does before the exchange serves.
 	s.ExchangeTypes([]string{
-		oauthwire.SubjectTokenTypeKubernetes, oauthwire.SubjectTokenTypeGitHub,
-		oauthwire.SubjectTokenTypeGoogle, oauthwire.SubjectTokenTypePerson,
-	}, []string{oauthwire.ActorTokenTypeMachine})
+		kubernetes.SubjectTokenType, github.SubjectTokenType,
+		google.SubjectTokenType, google.PersonTokenType,
+	}, []string{google.ActorTokenTypeMachine})
 	client, err := s.GetClient(ctx, oauthwire.ExchangeClientID)
 	if err != nil {
 		t.Fatalf("GetClient: %v", err)
@@ -745,8 +748,8 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 	}{
 		{name: "subject token types", got: exchanger.GetSupportedSubjectTokenTypes(),
 			want: []string{
-				oauthwire.SubjectTokenTypeKubernetes, oauthwire.SubjectTokenTypeGitHub,
-				oauthwire.SubjectTokenTypeGoogle, oauthwire.SubjectTokenTypePerson,
+				kubernetes.SubjectTokenType, github.SubjectTokenType,
+				google.SubjectTokenType, google.PersonTokenType,
 				"urn:ietf:params:oauth:token-type:access_token",
 			}},
 		{name: "requested token types", got: exchanger.GetSupportedRequestTokenTypes(),
@@ -758,7 +761,7 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 			}
 		})
 	}
-	if got := exchanger.GetSupportedActorTokenTypes(); !slices.Equal(got, []string{oauthwire.ActorTokenTypeMachine}) {
+	if got := exchanger.GetSupportedActorTokenTypes(); !slices.Equal(got, []string{google.ActorTokenTypeMachine}) {
 		t.Errorf("actor token types = %v, want the machine's Google identity token alone: an empty list means every type, and any other type is one nobody may act under", got)
 	}
 	if !exchanger.GetAllowActorTokenWithoutMayAct() {

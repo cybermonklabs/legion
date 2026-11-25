@@ -324,7 +324,7 @@ func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	token := accessTokenOf(t, status, body)
 	if body["issued_token_type"] != "urn:ietf:params:oauth:token-type:access_token" {
 		t.Errorf("exchange answered issued_token_type %v, want the access token type", body["issued_token_type"])
@@ -363,7 +363,7 @@ func (f *exchangeFixture) introspected(t *testing.T, token string) oauthwire.Int
 // no scope, as the read entry's one client sends it.
 func (f *exchangeFixture) readPodForm(t *testing.T) url.Values {
 	t.Helper()
-	return exchangeForm(f.podTokenOf(t, readAccount, "pod-uid-reader"), oauthwire.SubjectTokenTypeKubernetes, "")
+	return exchangeForm(f.podTokenOf(t, readAccount, "pod-uid-reader"), kubernetes.SubjectTokenType, "")
 }
 
 // TestAReadEntrysPodExchangesForATokenThatOnlyReads: a pod of the account the read entry lists
@@ -404,14 +404,14 @@ func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing
 		t.Errorf("a read entry's exchange naming the scope %s introspects as %+v, want the scope %q alone and the project scope %q",
 			oauthwire.Scope, answer, oauthwire.ScopeRead, oauthwire.ProjectScopeNone)
 	}
-	daemon := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+	daemon := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, "")
 	daemon.Set("scope", oauthwire.Scope)
 	if answer := f.introspected(t, f.exchanged(t, daemon, key)); answer.Scope != oauthwire.ScopeLegionStatus || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{project}) {
 		t.Errorf("the Legion daemon's exchange naming the scope %s introspects as %+v, want the scope %q alone and the named project %s",
 			oauthwire.Scope, answer, oauthwire.ScopeLegionStatus, project)
 	}
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	named := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+	named := exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1")
 	named.Set("scope", oauthwire.Scope)
 	if answer := f.introspected(t, f.exchanged(t, named, key)); answer.Scope != "" || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{project}) {
 		t.Errorf("a named entry's exchange naming the scope %s introspects as %+v, want no scope and the named project %s", oauthwire.Scope, answer, project)
@@ -496,10 +496,10 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 		want  oauthwire.Introspection
 	}{
 		{name: "a pod of the Legion daemon's account, whose entry fixes legion-daemon:ACME",
-			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
+			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, ""), key),
 			want:  oauthwire.Introspection{Active: true, Scope: oauthwire.ScopeLegionStatus, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a run of a fixed-session workflow",
-			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
+			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), github.SubjectTokenType, deploySession), key),
 			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -520,8 +520,8 @@ func TestAPodExchangesTheSameTokenTwice(t *testing.T) {
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	subject := f.podToken(t, "pod-uid-1", nil)
-	first := f.exchanged(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-	second := f.exchanged(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	first := f.exchanged(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
+	second := f.exchanged(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if first == second {
 		t.Fatal("the renewal answered the token the first exchange did")
 	}
@@ -539,15 +539,15 @@ func TestAWorkflowTokenIsRefusedTheSecondTime(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	subject := f.workflowToken(t, "4242", nil)
-	f.exchanged(t, exchangeForm(subject, oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
-	status, body := f.exchange(t, exchangeForm(subject, oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	f.exchanged(t, exchangeForm(subject, github.SubjectTokenType, "ci-release"), key)
+	status, body := f.exchange(t, exchangeForm(subject, github.SubjectTokenType, "ci-release"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("the second exchange of one workflow token = %d %v, want 400 invalid_request", status, body)
 	}
 	// A fresh run presents a fresh token, and is the same workflow, so it writes under the same
 	// session name.
 	fresh := f.workflowToken(t, "4243", nil)
-	f.exchanged(t, exchangeForm(fresh, oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	f.exchanged(t, exchangeForm(fresh, github.SubjectTokenType, "ci-release"), key)
 }
 
 // TestASubjectTokenMintedForAnotherAudienceIsRefused: the library checks a subject token's issuer
@@ -559,7 +559,7 @@ func TestASubjectTokenMintedForAnotherAudienceIsRefused(t *testing.T) {
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
 		claims["aud"] = []string{"https://another.example"}
 	})
-	status, body := f.exchange(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange of a token for another audience = %d %v, want 400 invalid_request", status, body)
 	}
@@ -576,7 +576,7 @@ func TestAnUnlistedAccountIsRefused(t *testing.T) {
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
 		claims["sub"] = "system:serviceaccount:example-ns:example-other"
 	})
-	status, body := f.exchange(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange by an unlisted account = %d %v, want 400 invalid_request", status, body)
 	}
@@ -590,7 +590,7 @@ func TestAPodTokenBoundToNoPodIsRefused(t *testing.T) {
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
 		delete(claims, "kubernetes.io")
 	})
-	status, body := f.exchange(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange of a token bound to no pod = %d %v, want 400 invalid_request", status, body)
 	}
@@ -607,10 +607,10 @@ func TestASessionNameAnotherPrincipalHoldsIsRefused(t *testing.T) {
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	f.registers(t, otherAccount, "pod-uid-2", "implementer-g1")
 	f.registers(t, otherAccount, "pod-uid-2", "implementer-g2")
-	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-2"), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	refusedTheName(t, status, body, "implementer-g1")
-	f.exchanged(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g2"), key)
+	f.exchanged(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-2"), kubernetes.SubjectTokenType, "implementer-g2"), key)
 }
 
 // refusedTheName fails the test unless an exchange was refused invalid_grant for naming session,
@@ -633,7 +633,7 @@ func refusedTheName(t *testing.T, status int, body map[string]any, session strin
 func TestAnExchangeAskingForAJSONWebTokenIsRefused(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
-	form := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+	form := exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1")
 	form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:jwt")
 	status, body := f.exchange(t, form, key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
@@ -667,7 +667,7 @@ func TestASubjectTokenSignedWithASharedSecretIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, body := f.exchange(t, exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(subject, kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange of a token signed with a shared secret = %d %v, want 400 invalid_request", status, body)
 	}
@@ -927,7 +927,7 @@ func TestEveryPodOfAFixedSessionAccountWritesUnderItsName(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	for _, uid := range []string{"pod-uid-old", "pod-uid-new", "pod-uid-old", "pod-uid-new"} {
-		token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, uid), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, uid), kubernetes.SubjectTokenType, ""), key)
 		f.introspectsAs(t, token, daemonSession, person, project)
 	}
 }
@@ -943,7 +943,7 @@ func TestEveryRunOfAFixedSessionWorkflowWritesUnderItsName(t *testing.T) {
 		claims["job_workflow_ref"] = claims["workflow_ref"]
 	}
 	for _, run := range []string{"4242", "4243", "4244"} {
-		token := f.exchanged(t, exchangeForm(f.workflowToken(t, run, deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key)
+		token := f.exchanged(t, exchangeForm(f.workflowToken(t, run, deploy), github.SubjectTokenType, deploySession), key)
 		f.introspectsAs(t, token, deploySession, person, project)
 	}
 }
@@ -957,7 +957,7 @@ func TestAFixedSessionEntryNeedsNoRegistration(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	for _, uid := range []string{"pod-uid-old", "pod-uid-replacement"} {
-		token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, uid), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, uid), kubernetes.SubjectTokenType, ""), key)
 		f.introspectsAs(t, token, daemonSession, person, project)
 	}
 	deploy := func(claims map[string]any) {
@@ -965,7 +965,7 @@ func TestAFixedSessionEntryNeedsNoRegistration(t *testing.T) {
 		claims["job_workflow_ref"] = claims["workflow_ref"]
 	}
 	for _, run := range []string{"4242", "4243"} {
-		token := f.exchanged(t, exchangeForm(f.workflowToken(t, run, deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key)
+		token := f.exchanged(t, exchangeForm(f.workflowToken(t, run, deploy), github.SubjectTokenType, deploySession), key)
 		f.introspectsAs(t, token, deploySession, person, project)
 	}
 	if rows := f.count(t, "oauth_pod_sessions"); rows != 0 {
@@ -986,17 +986,17 @@ func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
 	const role = "implementer-g1"
 	for _, uid := range []string{"pod-uid-1", "pod-uid-replacement"} {
 		f.registers(t, account, uid, role)
-		f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key), role, person, project)
+		f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), kubernetes.SubjectTokenType, role), key), role, person, project)
 	}
 	f.registers(t, account, "pod-uid-third", "implementer-g2")
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-third", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-third", nil), kubernetes.SubjectTokenType, role), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
 		t.Fatalf("the exchange of a third pod of %s naming %s = %d %v, want 400 invalid_grant and no access token: a pod writes under a session name its deployment registered for it", account, role, status, body)
 	}
 	if hint, _ := body["error_description"].(string); !strings.Contains(hint, "'"+role+"'") || !strings.Contains(hint, "registration") {
 		t.Errorf("the refusal reads %q, which does not name the session %s and say that a pod writes under a name its deployment registered for it", hint, role)
 	}
-	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-third", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g2"), key), "implementer-g2", person, project)
+	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-third", nil), kubernetes.SubjectTokenType, "implementer-g2"), key), "implementer-g2", person, project)
 }
 
 // TestAnUnregisteredPodSessionIsRetryable: a pod's trade can reach the broker before its
@@ -1010,7 +1010,7 @@ func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role, uid = "implementer-g1", "pod-uid-early"
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, uid, nil), kubernetes.SubjectTokenType, role), key)
 	description, _ := body["error_description"].(string)
 	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
 		t.Fatalf("the trade of pod %s under %s before its registration = %d %v, want 400 invalid_grant and no access token", uid, role, status, body)
@@ -1019,7 +1019,7 @@ func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
 		t.Fatalf("the refusal reads %q, want it to begin %q, the words a client trades again on, and to name the session %s", description, "pod_session_not_registered: ", role)
 	}
 	f.registers(t, account, uid, role)
-	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key), role, person, project)
+	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), kubernetes.SubjectTokenType, role), key), role, person, project)
 }
 
 // TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses: the review's reproduction. With
@@ -1033,14 +1033,14 @@ func TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses(t *testing.T) 
 	const role = "019a-role-session"
 	f.registers(t, account, "pod-uid-1", role)
 	f.registers(t, otherAccount, "pod-uid-other", role)
-	first := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	first := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, role), key)
 	time.Sleep(time.Second + 500*time.Millisecond)
 	if answer, err := f.provider.Introspect(context.Background(), first); err != nil || answer.Active {
 		t.Fatalf("Introspect of the holder's token past its lifetime = %+v, %v, want it lapsed", answer, err)
 	}
-	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), kubernetes.SubjectTokenType, role), key)
 	refusedTheName(t, status, body, role)
-	renewed := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	renewed := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, role), key)
 	f.introspectsAs(t, renewed, role, person, project)
 }
 
@@ -1059,9 +1059,9 @@ func TestANameAnEntryFixesIsRefusedToEveryOtherCaller(t *testing.T) {
 	// Registered for the name, so what refuses the pod of the other account is the entry that
 	// fixes the name for the daemon's, which no registration of another pod touches.
 	f.registers(t, otherAccount, "pod-uid-other", daemonSession)
-	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, daemonSession), key)
+	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), kubernetes.SubjectTokenType, daemonSession), key)
 	refusedTheName(t, status, body, daemonSession)
-	token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+	token := f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, ""), key)
 	f.introspectsAs(t, token, daemonSession, person, project)
 	status, body = f.exchange(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, daemonSession), key)
 	refusedTheName(t, status, body, daemonSession)
@@ -1080,10 +1080,10 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 	old := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	daemonForm := func(f *exchangeFixture, session string) url.Values {
-		return exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, session)
+		return exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, session)
 	}
 	otherToken := func(f *exchangeFixture) string {
-		return f.exchanged(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		return f.exchanged(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), kubernetes.SubjectTokenType, ""), key)
 	}
 	old.introspectsAs(t, old.exchanged(t, daemonForm(old, ""), key), daemonSession, person, project)
 
@@ -1105,7 +1105,7 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 
 	late := old.replica(t)
 	late.registers(t, account, "pod-uid-1", "implementer-g1")
-	late.exchanged(t, exchangeForm(late.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	late.exchanged(t, exchangeForm(late.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	var holder string
 	if err := old.pool.QueryRow(context.Background(), `select principal from oauth_session_bindings where session = $1`, daemonSession).Scan(&holder); err != nil {
 		t.Fatalf("read the claim on %s: %v", daemonSession, err)
@@ -1137,7 +1137,7 @@ func TestAPrincipalReclaimsItsOwnNameAsOftenAsItLikes(t *testing.T) {
 		// Each pod of the account is registered for the name as its deployment starts it; a
 		// relaunch is a second uid registered for the same name, which is why the name survives it.
 		f.registers(t, account, uid, role)
-		token = f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+		token = f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), kubernetes.SubjectTokenType, role), key)
 		f.introspectsAs(t, token, role, person, project)
 	}
 	answer, err := f.provider.Introspect(context.Background(), token)
@@ -1169,11 +1169,11 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 	ctx := context.Background()
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	revoked := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	revoked := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set active = false`); err != nil {
 		t.Fatalf("revoke the token: %v", err)
 	}
-	expired := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	expired := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	live, err := f.provider.Introspect(ctx, expired)
 	if err != nil || !live.Active {
 		t.Fatalf("Introspect of a fresh token = %+v, %v, want it live", live, err)
@@ -1209,7 +1209,7 @@ func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), newKey(t))
 	// The control: the token as it was minted is live, so each refusal below is the added
 	// character's.
 	if live := f.introspected(t, token); !live.Active {
@@ -1278,7 +1278,7 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 	ctx := context.Background()
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 
 	t.Run("a stored row naming a client the provider does not register", func(t *testing.T) {
 		if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, '{client_id}', '"unregistered-client"')`); err != nil {
@@ -1326,7 +1326,7 @@ func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) 
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), newKey(t))
 	// The control: the token's row as it was written is live, so the failure below is the
 	// rewrite's.
 	if live := f.introspected(t, token); !live.Active {
@@ -1361,14 +1361,14 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 		{
 			name: "the exchange client presenting no credential is the one case",
 			form: func(t *testing.T) url.Values {
-				return exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+				return exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1")
 			},
 			status: http.StatusOK,
 		},
 		{
 			name: "another client id presenting no credential is refused",
 			form: func(t *testing.T) url.Values {
-				form := exchangeForm(f.podToken(t, "pod-uid-2", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g2")
+				form := exchangeForm(f.podToken(t, "pod-uid-2", nil), kubernetes.SubjectTokenType, "implementer-g2")
 				form.Set("client_id", "example-client")
 				return form
 			},
@@ -1378,7 +1378,7 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 		{
 			name: "the machine login's client presenting no credential is refused",
 			form: func(t *testing.T) url.Values {
-				form := exchangeForm(f.podToken(t, "pod-uid-3", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g3")
+				form := exchangeForm(f.podToken(t, "pod-uid-3", nil), kubernetes.SubjectTokenType, "implementer-g3")
 				form.Set("client_id", oauthwire.ClientID)
 				return form
 			},
@@ -1400,7 +1400,7 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 		{
 			name: "the exchange client presenting a wrong secret is refused",
 			form: func(t *testing.T) url.Values {
-				form := exchangeForm(f.podToken(t, "pod-uid-4", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g4")
+				form := exchangeForm(f.podToken(t, "pod-uid-4", nil), kubernetes.SubjectTokenType, "implementer-g4")
 				form.Set("client_secret", "not-the-secret")
 				return form
 			},
@@ -1426,7 +1426,7 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 func TestAnIssuerTheBrokerWasNotToldAboutRegistersNoType(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {}, func(id *identities) { id.githubIssuer = issuer{} })
 	key := newKey(t)
-	status, body := f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	status, body := f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), github.SubjectTokenType, "ci-release"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange against an unconfigured issuer = %d %v, want 400 invalid_request", status, body)
 	}
@@ -1439,7 +1439,7 @@ func TestAnIssuerTheBrokerWasNotToldAboutRegistersNoType(t *testing.T) {
 func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {}, listing(nil, nil))
 	key := newKey(t)
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("an exchange against an empty policy = %d %v, want 400 invalid_request", status, body)
 	}
@@ -1675,20 +1675,20 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
-	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), github.SubjectTokenType, "ci-release"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 
 	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Projects = access
 	}, listing(nil, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
-	form := exchangeForm(machines.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
+	form := exchangeForm(machines.machineToken(t, signInMachine, machineAudience, true), google.SubjectTokenType, "example-machine")
 	status, body = machines.exchange(t, form, key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 
 	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
-	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
@@ -1704,7 +1704,7 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 	ctx := context.Background()
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	tag, err := f.pool.Exec(ctx, `update oauth_access_tokens
 		set request = jsonb_set(request #- '{session,extra,projects}', '{session,extra,project}', to_jsonb($1::text))
 		where request #> '{session,extra,projects}' is not null and request #> '{session,extra,project_scope}' is not null`, project)
@@ -1751,7 +1751,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 			c.Exchange.Projects = access
 		}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 		f.registers(t, account, "pod-uid-1", "public-session-1")
-		status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+		status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "public-session-1"), newKey(t))
 		return f, status, body
 	}
 	mints := func(t *testing.T, access projectaccess.Access) {
@@ -1799,7 +1799,7 @@ func TestANamedTradeMintsAsTodayWithNoProjectAccess(t *testing.T) {
 	unchecked := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	unchecked.registers(t, account, "pod-uid-1", "implementer-g1")
-	unchecked.introspectsProjects(t, unchecked.exchanged(t, exchangeForm(unchecked.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
+	unchecked.introspectsProjects(t, unchecked.exchanged(t, exchangeForm(unchecked.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
 
 	// A person's list, though, is never minted unchecked: with no check configured, a trade
@@ -1886,7 +1886,7 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 	}
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), newKey(t))
 	if got := olderClaim(t, f, "implementer-g1"); got != project {
 		t.Fatalf("the named token's stored `project` claim = %#v, want %q, so an older replica answers it and this release's readers refuse it", got, project)
 	}
@@ -1898,7 +1898,7 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 
 	public := newExchangeFixture(t, func(*oauth.Config) {}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 	public.registers(t, account, "pod-uid-1", "public-session-1")
-	public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+	public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "public-session-1"), newKey(t))
 	if got := olderClaim(t, public, "public-session-1"); got != nil {
 		t.Fatalf("the public-session token's stored `project` claim = %#v, want none", got)
 	}
@@ -1916,7 +1916,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 	machine := f.devBoxToken(t, key, person)
 	status, body = f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
@@ -1937,7 +1937,7 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
 	if got := logs.lines("unchecked", account, "implementer-g1"); len(got) != 0 {
 		t.Fatalf("the refused entry logged %d lines of an unchecked mint naming %s, want none:\n%s", len(got), account, strings.Join(got, "\n"))
@@ -1947,7 +1947,7 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 		c.Exchange.Projects = access
 	}, listing([]kubernetes.AccountEntry{{Account: otherAccount, Person: person}}, nil))
 	public.registers(t, otherAccount, "pod-uid-2", "public-session-1")
-	public.exchanged(t, exchangeForm(public.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)
+	public.exchanged(t, exchangeForm(public.podTokenOf(t, otherAccount, "pod-uid-2"), kubernetes.SubjectTokenType, "public-session-1"), key)
 	if got := logs.lines("unchecked", otherAccount, "public-session-1"); len(got) != 1 {
 		t.Fatalf("the no-project entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), otherAccount, strings.Join(logs.lines(), "\n"))
 	}
@@ -2044,22 +2044,22 @@ func TestAJobEntryMintsATokenThatNamesItsIdentityAndNoPerson(t *testing.T) {
 	}{
 		{
 			name:    "a named job pod, under the session it is registered for",
-			form:    exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"),
+			form:    exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), kubernetes.SubjectTokenType, "example-job-1"),
 			session: "example-job-1", service: jobAccount, scope: oauthwire.ProjectScopeNamed, projects: []string{project},
 		},
 		{
 			name:    "a public job pod, under the session its entry fixes",
-			form:    exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""),
+			form:    exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), kubernetes.SubjectTokenType, ""),
 			session: publicJobSession, service: publicJobAccount, scope: oauthwire.ProjectScopePublic, projects: []string{"PRIVA", "PRIVB"},
 		},
 		{
 			name:    "a public job workflow's run, in GitHub's own claims",
-			form:    exchangeForm(f.workflowToken(t, "6", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-6"),
+			form:    exchangeForm(f.workflowToken(t, "6", actionsRun(jobWorkflow)), github.SubjectTokenType, "example-run-6"),
 			session: "example-run-6", service: repository + "/" + jobWorkflow + "@" + ref, scope: oauthwire.ProjectScopePublic, projects: []string{"PRIVA"},
 		},
 		{
 			name:    "a named job machine, with its Google identity token",
-			form:    exchangeForm(f.machineToken(t, jobMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-job-machine"),
+			form:    exchangeForm(f.machineToken(t, jobMachine, machineAudience, true), google.SubjectTokenType, "example-job-machine"),
 			session: "example-job-machine", service: jobMachine, scope: oauthwire.ProjectScopeNamed, projects: []string{project},
 		},
 	} {
@@ -2098,17 +2098,17 @@ func TestAJobTradeNamingAProjectOutsideItsEntryIsRefused(t *testing.T) {
 	}{
 		{
 			name:    "a named job pod naming another project",
-			form:    withProjects(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"), otherProject),
+			form:    withProjects(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), kubernetes.SubjectTokenType, "example-job-1"), otherProject),
 			outside: otherProject,
 		},
 		{
 			name:    "a public job pod naming a public project beside a key of its list",
-			form:    withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""), "PRIVA PUB"),
+			form:    withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), kubernetes.SubjectTokenType, ""), "PRIVA PUB"),
 			outside: "PUB",
 		},
 		{
 			name:    "a public job workflow's run naming a private project its list does not",
-			form:    withProjects(exchangeForm(f.workflowToken(t, "7", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-7"), "PRIVB"),
+			form:    withProjects(exchangeForm(f.workflowToken(t, "7", actionsRun(jobWorkflow)), github.SubjectTokenType, "example-run-7"), "PRIVB"),
 			outside: "PRIVB",
 		},
 	} {
@@ -2123,7 +2123,7 @@ func TestAJobTradeNamingAProjectOutsideItsEntryIsRefused(t *testing.T) {
 			}
 		})
 	}
-	f.introspectsProjects(t, f.exchanged(t, withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""), "PRIVA"), key),
+	f.introspectsProjects(t, f.exchanged(t, withProjects(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), kubernetes.SubjectTokenType, ""), "PRIVA"), key),
 		oauthwire.ProjectScopePublic, []string{"PRIVA", "PRIVB"})
 }
 
@@ -2145,9 +2145,9 @@ func TestAJobTradeAskingForReadIsRefused(t *testing.T) {
 		name string
 		form url.Values
 	}{
-		{"a named job pod", asRead(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"))},
-		{"a public job pod", asRead(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), oauthwire.SubjectTokenTypeKubernetes, ""))},
-		{"a public job workflow's run", asRead(exchangeForm(f.workflowToken(t, "8", actionsRun(jobWorkflow)), oauthwire.SubjectTokenTypeGitHub, "example-run-8"))},
+		{"a named job pod", asRead(exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), kubernetes.SubjectTokenType, "example-job-1"))},
+		{"a public job pod", asRead(exchangeForm(f.podTokenOf(t, publicJobAccount, "pod-uid-sweeper"), kubernetes.SubjectTokenType, ""))},
+		{"a public job workflow's run", asRead(exchangeForm(f.workflowToken(t, "8", actionsRun(jobWorkflow)), github.SubjectTokenType, "example-run-8"))},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			status, body := f.exchange(t, c.form, key)
@@ -2157,6 +2157,6 @@ func TestAJobTradeAskingForReadIsRefused(t *testing.T) {
 			}
 		})
 	}
-	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), oauthwire.SubjectTokenTypeKubernetes, "example-job-1"), key),
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podTokenOf(t, jobAccount, "pod-uid-job"), kubernetes.SubjectTokenType, "example-job-1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
 }

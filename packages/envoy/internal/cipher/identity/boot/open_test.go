@@ -12,8 +12,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/identity/boot"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -83,9 +84,9 @@ func TestOpenBuildsEachProviderFromItsSettings(t *testing.T) {
 		names = append(names, tt.Name)
 	}
 	want := []string{
-		oauthwire.SubjectTokenTypeKubernetes,
-		oauthwire.SubjectTokenTypeGoogle, oauthwire.SubjectTokenTypePerson, oauthwire.ActorTokenTypeMachine,
-		oauthwire.SubjectTokenTypeGitHub,
+		kubernetes.SubjectTokenType,
+		google.SubjectTokenType, google.PersonTokenType, google.ActorTokenTypeMachine,
+		github.SubjectTokenType,
 	}
 	if !slices.Equal(names, want) {
 		t.Errorf("TokenTypes() = %v, want %v", names, want)
@@ -227,10 +228,10 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	if b.Pods == nil {
 		t.Fatal("Pods = nil; want a pod verifier for the cluster's issuer")
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeKubernetes); keys == nil || keys != identity.KeySource(d.keys["https://cluster.example"]) {
+	if keys := keysOf(b, kubernetes.SubjectTokenType); keys == nil || keys != identity.KeySource(d.keys["https://cluster.example"]) {
 		t.Fatalf("the exchange's key source = %v, want the cluster's own, %p", keys, d.keys["https://cluster.example"])
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys != nil {
+	if keys := keysOf(b, google.SubjectTokenType); keys != nil {
 		t.Fatalf("the exchange was handed a Google key set (%v) with no Google audience; it must then register no Google subject token type", keys)
 	}
 	if strings.Contains(strings.ToLower(logged.String()), "google") {
@@ -253,7 +254,7 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 	if want := []string{"https://cluster.example", google.DefaultIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[google.DefaultIssuer]) {
+	if keys := keysOf(b, google.SubjectTokenType); keys == nil || keys != identity.KeySource(d.keys[google.DefaultIssuer]) {
 		t.Fatalf("the exchange's Google key source = %v, want Google's own, %p", keys, d.keys[google.DefaultIssuer])
 	}
 	lines := strings.Count(logged.String(), "google machine identity")
@@ -278,7 +279,7 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 	if want := []string{"https://cluster.example", standIn}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
-	if keys := keysOf(b, oauthwire.SubjectTokenTypeGoogle); keys == nil || keys != identity.KeySource(d.keys[standIn]) {
+	if keys := keysOf(b, google.SubjectTokenType); keys == nil || keys != identity.KeySource(d.keys[standIn]) {
 		t.Fatalf("the exchange's Google key source = %v, want the stand-in issuer's own, %p", keys, d.keys[standIn])
 	}
 	if !strings.Contains(logged.String(), "issuer=http://127.0.0.1:18080") {

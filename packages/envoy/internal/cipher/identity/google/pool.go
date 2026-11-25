@@ -1,6 +1,6 @@
-// packages/envoy/internal/cipherclient/pool.go
+// packages/envoy/internal/cipher/identity/google/pool.go
 
-package cipherclient
+package google
 
 import (
 	"bytes"
@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -35,6 +37,11 @@ const (
 	poolScope = "https://www.googleapis.com/auth/cloud-platform"
 	// poolTimeout bounds each of the two calls a pool mint makes.
 	poolTimeout = 20 * time.Second
+	// grantTypeTokenExchange is RFC 8693's grant type, which Google's security token service
+	// reads as every other exchange does. The client package names the same string for the
+	// broker's own exchange; this package cannot import it, since the client reads this
+	// registry.
+	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // PoolIdentity is the identity of a machine with no Google service account of its own: an
@@ -50,7 +57,7 @@ const (
 type PoolIdentity struct {
 	// Subject is the external credential the pool federates: the identity this machine already
 	// holds, such as a projected Kubernetes service-account token minted for Audience.
-	Subject Source
+	Subject identity.Source
 	// Audience is the workload identity pool provider the external credential is presented to,
 	// the full resource name Google spells
 	// //iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>.
@@ -82,43 +89,12 @@ func (p *PoolIdentity) Describe() string {
 	if poolProvider.MatchString(p.Audience) {
 		pool = p.Audience + " (" + PoolAudienceVar + " names it)"
 	}
-	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + ServiceAccountWords(p.ServiceAccount, PoolAccountVar)
+	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + identity.MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + googleidentity.ServiceAccountWords(p.ServiceAccount, PoolAccountVar)
 }
 
 // poolProvider is a workload identity pool provider's full resource name, as Google spells it:
 // the one shape of AGENT_SECRETS_POOL_AUDIENCE Describe prints.
 var poolProvider = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$`)
-
-// serviceAccountEmail and serviceAccountID are the ways Google names a service account, its
-// email and its numeric unique id: the shapes of an account ServiceAccountShaped admits. An email
-// is a name of lower-case letters, digits and dashes at a domain under gserviceaccount.com: a
-// user-managed account's (<name>@<project>.iam.gserviceaccount.com), a Google service agent's
-// (service-<number>@gcp-sa-<service>.iam.gserviceaccount.com), Compute Engine's default
-// (<project number>-compute@developer.gserviceaccount.com), App Engine's default
-// (<project id>@appspot.gserviceaccount.com) and Cloud Build's (<number>@cloudbuild...).
-var (
-	serviceAccountEmail = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}@[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*\.gserviceaccount\.com$`)
-	serviceAccountID    = regexp.MustCompile(`^[0-9]{1,32}$`)
-)
-
-// ServiceAccountShaped reports whether account has the shape of a Google service account's email
-// or unique id: lower-case letters, digits and dashes in Google's own forms, no control character
-// and nothing a pasted credential's text could pass as. A message prints an account Google or a
-// setting named only where it is so shaped, agent-secrets' using line and userinfo refusal among
-// them.
-func ServiceAccountShaped(account string) bool {
-	return serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account)
-}
-
-// ServiceAccountWords is account as a message names it: whole where it has a service account's
-// shape (ServiceAccountShaped), else as the service account setting names, which is not printed.
-// agent-secrets names a credentials file's account by it too.
-func ServiceAccountWords(account, setting string) string {
-	if ServiceAccountShaped(account) {
-		return account
-	}
-	return "the service account " + setting + " names (not printed: it has neither the shape of a service account's email nor of its unique id)"
-}
 
 // Token trades the external credential for a federated access token and spends it on one
 // generateIdToken, answering the identity token that mint produced. Every error names the call
@@ -132,11 +108,11 @@ func (p *PoolIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, ServiceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
+	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, googleidentity.ServiceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
 	if err != nil {
 		return "", "", err
 	}
-	return token, oauthwire.SubjectTokenTypeGoogle, nil
+	return token, SubjectTokenType, nil
 }
 
 // federate is the security token service's half: the external credential for a federated access
@@ -148,10 +124,10 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 	}
 	body, err := json.Marshal(map[string]string{
 		"audience":           p.Audience,
-		"grantType":          GrantTypeTokenExchange,
+		"grantType":          grantTypeTokenExchange,
 		"requestedTokenType": poolRequestedTokenType,
 		"scope":              poolScope,
-		"subjectTokenType":   poolSubjectTokenType(subjectType),
+		"subjectTokenType":   subjectType,
 		"subjectToken":       subject,
 	})
 	if err != nil {
@@ -237,15 +213,4 @@ func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer strin
 		return errors.New("the answer is not the JSON this call reads")
 	}
 	return nil
-}
-
-// poolSubjectTokenType is the subjectTokenType the security token service reads an external
-// credential under. A Kubernetes projected token is a JWT there, whatever name the broker's own
-// exchange knows it by, since the pool provider that verifies it is an OIDC provider and not
-// this broker.
-func poolSubjectTokenType(brokerType string) string {
-	if brokerType == oauthwire.SubjectTokenTypeKubernetes {
-		return "urn:ietf:params:oauth:token-type:jwt"
-	}
-	return brokerType
 }

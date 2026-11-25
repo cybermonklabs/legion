@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -18,7 +17,7 @@ import (
 const Kind identity.Kind = "github"
 
 // SubjectTokenType is the token type a workflow run's token is traded under.
-const SubjectTokenType = oauthwire.SubjectTokenTypeGitHub
+const SubjectTokenType = "urn:envoy:params:oauth:token-type:github-workflow-run"
 
 // tolerance admits a workflow run's token, which lives minutes, while bounding how stale an iat
 // the exchange accepts.

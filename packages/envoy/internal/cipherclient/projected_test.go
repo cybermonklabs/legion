@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // TestProjectedServiceAccountTokenIsTradedAndRenewed drives one client from its first trade
@@ -43,7 +45,7 @@ func TestProjectedServiceAccountTokenIsTradedAndRenewed(t *testing.T) {
 	client, err := New(Config{
 		BrokerURL:   broker.Address(),
 		Key:         testKey(t),
-		Subject:     NewProjectedToken(path),
+		Subject:     kubernetes.NewProjectedToken(path),
 		Session:     "example-worker-session",
 		RenewBefore: 5 * time.Minute,
 		After: func(d time.Duration) <-chan time.Time {
@@ -140,7 +142,7 @@ func TestProjectedTokenThatCannotBeReadReachesTheBrokerNever(t *testing.T) {
 	client, err := New(Config{
 		BrokerURL: broker.Address(),
 		Key:       testKey(t),
-		Subject:   NewProjectedToken(filepath.Join(t.TempDir(), "absent")),
+		Subject:   kubernetes.NewProjectedToken(filepath.Join(t.TempDir(), "absent")),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

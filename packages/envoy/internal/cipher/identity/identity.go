@@ -14,9 +14,13 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Kind names one identity provider: "kubernetes", "google", "github".
@@ -247,3 +251,125 @@ type Mention struct {
 // an account of its kind. A setting matches it (errors.Is) to refuse in its own words, naming
 // its entry form.
 var ErrAccountForm = errors.New("the account is written in no form this build of cipherd reads")
+
+// --- What a machine's own client proves, the other half of a provider: where the server verifies
+// a token, the client makes one. Each provider declares the sources its kind of machine holds,
+// and the clients choose among them through identity/providers. ---
+
+// MachineTokenFileVar and MachineAudienceVar are read by sources of more than one provider — a
+// pod's projected token file is also what a workload identity pool federates, and the machine
+// audience is the Google token's — so they are named here rather than in one provider.
+const (
+	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
+	MachineAudienceVar  = "AGENT_SECRETS_MACHINE_AUDIENCE"
+)
+
+// Source is one platform identity a process can prove, read fresh each time it is asked: the
+// subject token of the broker's RFC 8693 exchange, and the type the exchange reads it under. The
+// grant issues no refresh token, so every renewal asks its Source again — a projected token the
+// kubelet rewrote in place, a metadata token minted anew, a pool token traded again, a GitHub
+// Actions run's token asked of GitHub again — and a Source that caches must cache for less than
+// the token it answers lives.
+type Source interface {
+	// Token is the subject token and its type, read now.
+	Token(ctx context.Context) (token, tokenType string, err error)
+	// Describe names the identity in a log line and in a refusal, naming no credential.
+	Describe() string
+}
+
+// Variable is one environment variable a source reads, and whether its value is a path, which a
+// program that writes a machine's environment (the helper's install) treats as one. Platform
+// marks a variable the platform sets for each run, such as the URL and token GitHub gives one
+// job: it is no deployment's setting, so no such program carries it over.
+type Variable struct {
+	Name     string
+	Path     bool
+	Platform bool
+}
+
+// SourceEntry is one identity AGENT_SECRETS_MACHINE_IDENTITY names, declared by the provider
+// whose tokens it makes.
+type SourceEntry struct {
+	// Name is the value AGENT_SECRETS_MACHINE_IDENTITY takes for it.
+	Name string
+	// Provider is the kind of provider that verifies its tokens.
+	Provider Kind
+	// Launcher says the broker mints a launcher credential for this source's tokens, so a
+	// machine naming it can register a session of its own; false for a pod's projected token.
+	Launcher bool
+	// Variables are the variables it reads, in the order it asks for them.
+	Variables []Variable
+	// FromEnv builds the source, asking need for each variable it cannot do without; need
+	// answers the refusal a missing one gets.
+	FromEnv func(need func(variable string) (string, error), client *http.Client) (Source, error)
+}
+
+// Skipped is one place a detector looked and found nothing it could trade, and why, in words a
+// refusal prints as they stand.
+type Skipped struct {
+	Source, Reason string
+}
+
+// Detector finds a machine's identity where no variable names one, from a field of the broker's
+// own GET /v1/settings answer.
+type Detector struct {
+	Provider Kind
+	// SettingsField is the field of the settings answer that carries the audience it needs
+	// ("google_exchange_audience").
+	SettingsField string
+	// KeptFile is the file name a client keeps that audience under, beside its credentials.
+	KeptFile string
+	// Words is how a message names the audience ("Google exchange audience").
+	Words string
+	// Detect is the identity this machine holds for audience, with the places looked first.
+	Detect func(ctx context.Context, audience string, client *http.Client) (Source, []Skipped, error)
+}
+
+// TokenReader reads a service's own platform token for the NATS auth service; it is natscred's
+// TokenReader shape, which cannot be named here because natscred reads this registry.
+type TokenReader interface {
+	Read() (string, error)
+}
+
+// ServiceTokenSource is one way a service of the bus proves itself to the NATS auth service with
+// a token of its provider's kind, declared by that provider: the variable a process names it by,
+// natsprobe's flag for it, the row `envoy-dispatch settings` prints, and the words a line naming
+// the credential a process connects as (bus.CredentialName) puts before the variable's value.
+type ServiceTokenSource struct {
+	Provider    Kind
+	Variable    string
+	Flag        string
+	Usage       string
+	Description string
+	// Named is how bus.CredentialName names this credential, followed by the variable's value:
+	// "the Google identity token for the audience".
+	Named  string
+	Reader func(value string) TokenReader
+}
+
+// ReadTokenFile is the token in the file at path, trimmed, where described is how a message names
+// that file ("the projected service-account token <variable> names"). A file that cannot be read,
+// or that holds nothing, is refused by those words alone and never by its path: for a person who
+// pasted a token into that variable, the path is the token (redact.File).
+func ReadTokenFile(path, described string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", described, redact.File(err))
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("%s is empty", described)
+	}
+	return token, nil
+}
+
+// AudienceText names the audience MachineAudienceVar sets, as an identity's Describe prints it:
+// as written when it is a plain http(s) URL (internal/redact's allow-list), and by the variable
+// alone otherwise, since the audience is a configured value a person can paste a credential into,
+// and an identity's Describe is in every trade's log line and error.
+func AudienceText(audience string) string {
+	if redact.Clean(audience) {
+		return audience + " (" + MachineAudienceVar + ")"
+	}
+	return "the audience " + MachineAudienceVar + " names"
+}

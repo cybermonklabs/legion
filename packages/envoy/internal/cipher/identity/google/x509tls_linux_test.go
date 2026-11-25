@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/x509tls_linux_test.go
+// packages/envoy/internal/cipher/identity/google/x509tls_linux_test.go
 //
 // An X.509 external_account credential's exchange presents its certificate to the security token
 // service over TLS, as Google's mTLS endpoint requires, whichever way the credential names its
@@ -7,7 +7,7 @@
 // SSL_CERT_FILE names the stand-in's certificate: crypto/x509 reads that variable once, when it
 // first loads the system's roots, and on Linux only, hence this file's name.
 
-package cipherclient
+package google
 
 import (
 	"bytes"
@@ -128,7 +128,7 @@ func mintAsX509Child(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-		Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: os.Getenv(x509ChildIAM)}
+		Audience: testAudience, HTTP: &http.Client{}, IAMCredentialsURL: os.Getenv(x509ChildIAM)}
 	token, _, err := identity.Token(context.Background())
 	if err != nil {
 		fmt.Println("refused:", err)

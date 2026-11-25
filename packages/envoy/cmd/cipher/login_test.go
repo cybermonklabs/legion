@@ -28,7 +28,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -499,7 +499,7 @@ func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
 				}
 				return
 			}
-			if len(forms) != 1 || forms[0].Get("actor_token") != "metadata-identity-token" || forms[0].Get("actor_token_type") != oauthwire.ActorTokenTypeMachine {
+			if len(forms) != 1 || forms[0].Get("actor_token") != "metadata-identity-token" || forms[0].Get("actor_token_type") != google.ActorTokenTypeMachine {
 				t.Fatalf("the trades = %v; want one whose actor is the metadata server's identity token", forms)
 			}
 		})

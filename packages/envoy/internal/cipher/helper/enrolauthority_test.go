@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -161,7 +162,7 @@ func machineIdentityBroker(t *testing.T, f *enrolBroker) (*Broker, *ecdsa.Privat
 	}
 	identity, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: cipheraddr.New(f.srv.URL), Key: key,
-		Subject: cipherclient.NewProjectedToken(filepath.Join(t.TempDir(), "token")),
+		Subject: kubernetes.NewProjectedToken(filepath.Join(t.TempDir(), "token")),
 	})
 	if err != nil {
 		t.Fatal(err)

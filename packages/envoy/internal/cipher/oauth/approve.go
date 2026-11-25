@@ -8,6 +8,7 @@ import (
 	"authelia.com/provider/oauth2"
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
@@ -79,7 +80,7 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 // proxy release a session runs with. The library mints nothing, and no approve-capable token ever
 // leaves the broker.
 func (p *Provider) grantApprove(ctx context.Context, session *oauthstore.ExchangeSession, subjectTokenType, credentialID string) (map[string]any, error) {
-	if subjectTokenType != oauthwire.SubjectTokenTypePerson || p.approve == nil || credentialID == "" {
+	if p.launcher(subjectTokenType) != identity.LauncherSignIn || p.approve == nil || credentialID == "" {
 		return nil, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.")
 	}
 	held, err := placeholder.Mint(placeholder.MintedPrefix(ApproveWord))

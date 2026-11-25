@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -28,7 +29,7 @@ func TestARefusalWithABodyItCannotReadStillRefusesTheTrade(t *testing.T) {
 			t.Run(fmt.Sprintf("%d with a body %s refuses an entry's token", status, body), func(t *testing.T) {
 				f := fixture(t)
 				f.registers(t, account, "pod-uid-1", "implementer-g1")
-				got, answer := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+				got, answer := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), newKey(t))
 				refusedSaying(t, got, answer, http.StatusInternalServerError, "server_error", says)
 			})
 			t.Run(fmt.Sprintf("%d with a body %s refuses a person's trade naming no project", status, body), func(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"authelia.com/provider/oauth2/handler/rfc8693"
 
 	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
@@ -54,7 +55,7 @@ func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 			claims := s.cluster.Claims(account, podAudience)
 			claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": "pod-uid-1"}}
 			spoil(claims)
-			return exchangeForm(mint(s.cluster, s.clusterKey, claims, byStranger), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+			return exchangeForm(mint(s.cluster, s.clusterKey, claims, byStranger), kubernetes.SubjectTokenType, "implementer-g1")
 		}},
 		{"a workflow run's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := map[string]any{
@@ -64,12 +65,12 @@ func TestEachSubjectTypeIsHeldToItsIssuerAudienceAndExpiry(t *testing.T) {
 				"job_workflow_ref": repository + "/" + workflow + "@" + ref, "ref": ref,
 			}
 			spoil(claims)
-			return exchangeForm(mint(s.githubIssuer, s.githubKey, claims, byStranger), oauthwire.SubjectTokenTypeGitHub, "release-bot")
+			return exchangeForm(mint(s.githubIssuer, s.githubKey, claims, byStranger), github.SubjectTokenType, "release-bot")
 		}},
 		{"a machine's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := googleClaims("machine-subject", signInMachine, machineAudience)
 			spoil(claims)
-			return exchangeForm(mint(s.googleIssuer, s.googleKey, claims, byStranger), oauthwire.SubjectTokenTypeGoogle, "example-machine")
+			return exchangeForm(mint(s.googleIssuer, s.googleKey, claims, byStranger), google.SubjectTokenType, "example-machine")
 		}},
 		{"a person's", func(spoil func(map[string]any), byStranger bool) url.Values {
 			claims := googleClaims("109ada", person, deviceAudience)
@@ -114,9 +115,9 @@ func TestAnActorTokenBesideAPodsTokenIsIgnoredAsBefore(t *testing.T) {
 		id.accounts = []kubernetes.AccountEntry{{Account: account, Project: project, Person: person}}
 	})
 	s.registers(t, account, "pod-uid-1", "implementer-g1")
-	form := exchangeForm(s.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+	form := exchangeForm(s.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1")
 	form.Set("actor_token", s.machineToken(t, signInMachine, "https://elsewhere.example", true))
-	form.Set("actor_token_type", oauthwire.ActorTokenTypeMachine)
+	form.Set("actor_token_type", google.ActorTokenTypeMachine)
 	status, body := s.exchange(t, form, newKey(t))
 	s.introspectsAs(t, accessTokenOf(t, status, body), "implementer-g1", person, project)
 }
@@ -141,14 +142,14 @@ func TestTheExchangeClientPermitsEveryRegisteredType(t *testing.T) {
 	exchanger := client.(rfc8693.Client)
 	subject := slices.Sorted(slices.Values(exchanger.GetSupportedSubjectTokenTypes()))
 	want := slices.Sorted(slices.Values([]string{
-		oauthwire.SubjectTokenTypeKubernetes, oauthwire.SubjectTokenTypeGitHub,
-		oauthwire.SubjectTokenTypeGoogle, oauthwire.SubjectTokenTypePerson,
+		kubernetes.SubjectTokenType, github.SubjectTokenType,
+		google.SubjectTokenType, google.PersonTokenType,
 		oauthwire.SubjectTokenTypeAccessToken,
 	}))
 	if !slices.Equal(subject, want) {
 		t.Errorf("subject token types = %v, want %v", subject, want)
 	}
-	if got := exchanger.GetSupportedActorTokenTypes(); !slices.Equal(got, []string{oauthwire.ActorTokenTypeMachine}) {
+	if got := exchanger.GetSupportedActorTokenTypes(); !slices.Equal(got, []string{google.ActorTokenTypeMachine}) {
 		t.Errorf("actor token types = %v, want the machine's Google identity token alone", got)
 	}
 }

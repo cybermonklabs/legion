@@ -38,10 +38,10 @@ import (
 // type listed here must be one the client accepts. A new type the client takes fails that test
 // until its kinds are written here.
 var tradeKinds = map[string][]string{
-	oauthwire.SubjectTokenTypeKubernetes:  {"pod-entry", "pod-entry-no-person", "read-entry"},
-	oauthwire.SubjectTokenTypeGitHub:      {"workflow-entry"},
-	oauthwire.SubjectTokenTypeGoogle:      {"google-identity-no-person", "google-identity-with-a-person"},
-	oauthwire.SubjectTokenTypePerson:      {"person-sign-in"},
+	kubernetes.SubjectTokenType:           {"pod-entry", "pod-entry-no-person", "read-entry"},
+	github.SubjectTokenType:               {"workflow-entry"},
+	google.SubjectTokenType:               {"google-identity-no-person", "google-identity-with-a-person"},
+	google.PersonTokenType:                {"person-sign-in"},
 	oauthwire.SubjectTokenTypeAccessToken: {"machine-login"},
 }
 
@@ -107,26 +107,26 @@ const (
 var narrowingRows = map[string]narrowingRow{
 	"pod-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		f.registers(t, account, narrowedPodUID, narrowedPodSession)
-		return narrowingTrade{form: exchangeForm(f.podToken(t, narrowedPodUID, nil), oauthwire.SubjectTokenTypeKubernetes, narrowedPodSession),
+		return narrowingTrade{form: exchangeForm(f.podToken(t, narrowedPodUID, nil), kubernetes.SubjectTokenType, narrowedPodSession),
 			key: newKey(t), session: narrowedPodSession}
 	}},
 	"pod-entry-no-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
-		return narrowingTrade{form: exchangeForm(f.podTokenOf(t, personlessAccount, "pod-uid-public"), oauthwire.SubjectTokenTypeKubernetes, ""),
+		return narrowingTrade{form: exchangeForm(f.podTokenOf(t, personlessAccount, "pod-uid-public"), kubernetes.SubjectTokenType, ""),
 			key: newKey(t), session: personlessSession}
 	}},
 	"read-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: f.readPodForm(t), key: newKey(t), session: readSession}
 	}},
 	"workflow-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
-		return narrowingTrade{form: exchangeForm(f.workflowToken(t, uuid.NewString(), nil), oauthwire.SubjectTokenTypeGitHub, narrowedRunSession),
+		return narrowingTrade{form: exchangeForm(f.workflowToken(t, uuid.NewString(), nil), github.SubjectTokenType, narrowedRunSession),
 			key: newKey(t), session: narrowedRunSession}
 	}},
 	"google-identity-no-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
-		return narrowingTrade{form: exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedFleetSession),
+		return narrowingTrade{form: exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), google.SubjectTokenType, narrowedFleetSession),
 			key: newKey(t), session: narrowedFleetSession}
 	}},
 	"google-identity-with-a-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
-		return narrowingTrade{form: exchangeForm(f.machineToken(t, pinnedMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedPinnedSession),
+		return narrowingTrade{form: exchangeForm(f.machineToken(t, pinnedMachine, machineAudience, true), google.SubjectTokenType, narrowedPinnedSession),
 			key: newKey(t), session: narrowedPinnedSession}
 	}},
 	"person-sign-in": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
@@ -512,7 +512,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 		}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil, google.GoogleEntry{Account: signInMachine, Service: signInFleet}))
 		f.registers(t, account, "pod-uid-public", "public-session-1")
 		_, status, body := both(t, f, func() narrowingTrade {
-			return narrowingTrade{form: exchangeForm(f.podToken(t, "pod-uid-public", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key: newKey(t)}
+			return narrowingTrade{form: exchangeForm(f.podToken(t, "pod-uid-public", nil), kubernetes.SubjectTokenType, "public-session-1"), key: newKey(t)}
 		})
 		f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopeReadNamed, nil)
 		if got := logs.lines("unchecked", account, "public-session-1"); len(got) != 2 {
@@ -611,22 +611,22 @@ func TestANarrowedTokenExpiresNoLaterThanItsSubject(t *testing.T) {
 		{"a pod's token", func(t *testing.T, at time.Time) narrowingTrade {
 			f.registers(t, account, narrowedPodUID, narrowedPodSession)
 			subject := f.podToken(t, narrowedPodUID, func(claims map[string]any) { expires(claims, at) })
-			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, narrowedPodSession), key: newKey(t)}
+			return narrowingTrade{form: exchangeForm(subject, kubernetes.SubjectTokenType, narrowedPodSession), key: newKey(t)}
 		}},
 		{"the pod's token of an entry naming no person", func(t *testing.T, at time.Time) narrowingTrade {
 			subject := f.podToken(t, "pod-uid-public", func(claims map[string]any) {
 				claims["sub"] = personlessAccount
 				expires(claims, at)
 			})
-			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeKubernetes, ""), key: newKey(t)}
+			return narrowingTrade{form: exchangeForm(subject, kubernetes.SubjectTokenType, ""), key: newKey(t)}
 		}},
 		{"a workflow run's token", func(t *testing.T, at time.Time) narrowingTrade {
 			subject := f.workflowToken(t, uuid.NewString(), func(claims map[string]any) { expires(claims, at) })
-			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeGitHub, narrowedRunSession), key: newKey(t)}
+			return narrowingTrade{form: exchangeForm(subject, github.SubjectTokenType, narrowedRunSession), key: newKey(t)}
 		}},
 		{"a machine's Google identity token", func(t *testing.T, at time.Time) narrowingTrade {
 			subject := googleToken(t, signInMachine, machineAudience, "110"+signInMachine, at, nil)
-			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeGoogle, narrowedFleetSession), key: newKey(t)}
+			return narrowingTrade{form: exchangeForm(subject, google.SubjectTokenType, narrowedFleetSession), key: newKey(t)}
 		}},
 		{"a person's Google identity token", func(t *testing.T, at time.Time) narrowingTrade {
 			box := newKey(t)

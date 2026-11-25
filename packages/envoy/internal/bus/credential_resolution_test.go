@@ -8,6 +8,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natscred"
 )
@@ -40,17 +41,17 @@ func TestCredentialResolution(t *testing.T) {
 		{name: "a seed", env: map[string]string{NkeySeedEnvVar: seed}, nkey: true},
 		{name: "a seed file beside a seed, the file winning", env: map[string]string{nkeySeedFileVariable: seedFile, NkeySeedEnvVar: "not-read"}, nkey: true},
 		{name: "a service token file", env: map[string]string{ServiceTokenFileEnvVar: tokenFile}, user: natscred.ServiceUser},
-		{name: "a Google audience", env: map[string]string{ServiceGoogleAudienceEnvVar: "envoy-nats"}, user: natscred.ServiceUser},
-		{name: "a token file beside an audience", env: map[string]string{ServiceTokenFileEnvVar: tokenFile, ServiceGoogleAudienceEnvVar: "envoy-nats"},
-			refuses: []string{ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar}},
+		{name: "a Google audience", env: map[string]string{google.ServiceAudienceVar: "envoy-nats"}, user: natscred.ServiceUser},
+		{name: "a token file beside an audience", env: map[string]string{ServiceTokenFileEnvVar: tokenFile, google.ServiceAudienceVar: "envoy-nats"},
+			refuses: []string{ServiceTokenFileEnvVar, google.ServiceAudienceVar}},
 		{name: "a token file beside a seed file", env: map[string]string{ServiceTokenFileEnvVar: tokenFile, nkeySeedFileVariable: seedFile},
 			refuses: []string{ServiceTokenFileEnvVar, nkeySeedFileVariable}},
-		{name: "an audience beside a seed", env: map[string]string{ServiceGoogleAudienceEnvVar: "envoy-nats", NkeySeedEnvVar: seed},
-			refuses: []string{ServiceGoogleAudienceEnvVar, NkeySeedEnvVar}},
+		{name: "an audience beside a seed", env: map[string]string{google.ServiceAudienceVar: "envoy-nats", NkeySeedEnvVar: seed},
+			refuses: []string{google.ServiceAudienceVar, NkeySeedEnvVar}},
 		{name: "an empty token file setting", env: map[string]string{ServiceTokenFileEnvVar: ""}, refuses: []string{ServiceTokenFileEnvVar}},
 		{name: "a token file that is not there", env: map[string]string{ServiceTokenFileEnvVar: filepath.Join(dir, "missing")},
 			refuses: []string{ServiceTokenFileEnvVar, filepath.Join(dir, "missing")}},
-		{name: "an empty audience", env: map[string]string{ServiceGoogleAudienceEnvVar: " "}, refuses: []string{ServiceGoogleAudienceEnvVar}},
+		{name: "an empty audience", env: map[string]string{google.ServiceAudienceVar: " "}, refuses: []string{google.ServiceAudienceVar}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			option, err := credential(func(name string) (string, bool) {

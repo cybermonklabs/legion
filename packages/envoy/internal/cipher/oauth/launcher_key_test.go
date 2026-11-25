@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -404,7 +405,7 @@ func TestNoKeyIsBothAReadTokensAndALauncherCredentials(t *testing.T) {
 		{"a Google machine, with the key its earlier trade put a credential on", func(t *testing.T) narrowingTrade {
 			tr := narrowingRows["google-identity-no-person"].trade(t, f)
 			mints(t, "the machine's earlier trade", tradeAnswer(f.send(t, tr, "", "")))
-			tr.form = exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedFleetSession)
+			tr.form = exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), google.SubjectTokenType, narrowedFleetSession)
 			return tr
 		}, oauthwire.ScopeRead, keyRuleRefusal},
 		{"a pod whose key holds a token login's credential", func(t *testing.T) narrowingTrade {

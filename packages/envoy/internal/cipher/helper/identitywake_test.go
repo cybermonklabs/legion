@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -86,7 +87,7 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	// has (Session.identity), which this test's enrol below names.
 	machine, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: cipheraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
-		Subject: cipherclient.NewProjectedToken(tokenFile),
+		Subject: kubernetes.NewProjectedToken(tokenFile),
 	})
 	if err != nil {
 		t.Fatal(err)

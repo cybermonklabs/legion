@@ -10,11 +10,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -337,30 +340,30 @@ func TestInstallWritesTheResolvedSignInDirectoryIntoTheUnit(t *testing.T) {
 }
 
 // TestInstallWritesThisMachinesIdentityIntoTheUnit: without these the installed helper proves
-// no identity of its own — it falls back to the device-grant machine login, which a broker with
+// no identityEnv of its own — it falls back to the device-grant machine login, which a broker with
 // BROKER_MACHINE_LOGIN_URL unset does not serve — and knows no sign-in client, so it ignores
 // every `agent-secrets login` on the box. Each is written when set, with the same escaping and
 // absolute-path rules as the helper's own files.
 func TestInstallWritesThisMachinesIdentityIntoTheUnit(t *testing.T) {
 	r := newInstallRig(t)
 	dir := filepath.Dir(r.sock)
-	identity := map[string]string{
-		cipherclient.IdentityVar:               cipherclient.IdentityPool,
-		cipherclient.MachineTokenFileVar:       filepath.Join(dir, "token"),
-		cipherclient.MachineAudienceVar:        "https://secrets.example",
-		cipherclient.PoolAudienceVar:           "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
-		cipherclient.PoolAccountVar:            "example-fleet@example-project.iam.gserviceaccount.com",
+	identityEnv := map[string]string{
+		cipherclient.IdentityVar:               "pool",
+		identity.MachineTokenFileVar:           filepath.Join(dir, "token"),
+		identity.MachineAudienceVar:            "https://secrets.example",
+		google.PoolAudienceVar:                 "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
+		google.PoolAccountVar:                  "example-fleet@example-project.iam.gserviceaccount.com",
 		cipherclient.SignInIssuerVar:           "https://accounts.google.com",
 		cipherclient.SignInClientIDVar:         "example-device-client.apps.googleusercontent.com",
 		cipherclient.SignInClientSecretFileVar: filepath.Join(dir, "device-client-secret"),
 		cipherclient.PersonVar:                 "ada@example.com",
 		cipherclient.SessionVar:                "this-box",
 	}
-	for name, value := range identity {
+	for name, value := range identityEnv {
 		r.env[name] = value
 	}
 	// install loads the helper's own configuration, which reads the device client's secret.
-	if err := os.WriteFile(identity[cipherclient.SignInClientSecretFileVar], []byte("example-device-secret"), 0o600); err != nil {
+	if err := os.WriteFile(identityEnv[cipherclient.SignInClientSecretFileVar], []byte("example-device-secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.run("--url", "https://secrets.example"); err != nil {
@@ -370,28 +373,67 @@ func TestInstallWritesThisMachinesIdentityIntoTheUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range identity {
+	for name, value := range identityEnv {
 		if want := "\nEnvironment=" + name + "=" + value + "\n"; !strings.Contains(string(data), want) {
 			t.Errorf("unit lacks %q:\n%s", want, data)
 		}
 	}
 
 	spaced := newInstallRig(t)
-	spaced.env[cipherclient.PoolAccountVar] = "an account@example.com"
-	if err := spaced.run("--url", "https://secrets.example"); err == nil || !strings.Contains(err.Error(), cipherclient.PoolAccountVar) {
-		t.Fatalf("install with a spaced pool account: %v; want a refusal naming %s", err, cipherclient.PoolAccountVar)
+	spaced.env[google.PoolAccountVar] = "an account@example.com"
+	if err := spaced.run("--url", "https://secrets.example"); err == nil || !strings.Contains(err.Error(), google.PoolAccountVar) {
+		t.Fatalf("install with a spaced pool account: %v; want a refusal naming %s", err, google.PoolAccountVar)
 	}
 	if _, err := os.Stat(spaced.unit); !os.IsNotExist(err) {
 		t.Fatalf("a refused install wrote the unit: %v", err)
 	}
 
-	// An identity's own words are not paths, so a value with no leading slash is no refusal:
+	// An identityEnv's own words are not paths, so a value with no leading slash is no refusal:
 	// a pool audience begins `//iam.googleapis.com/`, and a client id and a person never do.
 	relative := newInstallRig(t)
-	relative.env[cipherclient.IdentityVar] = cipherclient.IdentityMetadata
-	relative.env[cipherclient.MachineAudienceVar] = "https://secrets.example"
+	relative.env[cipherclient.IdentityVar] = "metadata"
+	relative.env[identity.MachineAudienceVar] = "https://secrets.example"
 	if err := relative.run("--url", "https://secrets.example"); err != nil {
-		t.Fatalf("install with a metadata identity: %v; want it written, since neither value is a path", err)
+		t.Fatalf("install with a metadata identityEnv: %v; want it written, since neither value is a path", err)
+	}
+}
+
+// TestHelperInstallWritesTheSameVariables: the unit carries exactly the variables it carried
+// before the identity registry, in the same order and with the same path flags, with each
+// identity's own coming from the providers (providers.SourceVariables) rather than from a list
+// here. A provider left out of a build takes its variables out of the unit, which is why the
+// list is the registry's; the names below are what a deployment on this build writes today.
+func TestHelperInstallWritesTheSameVariables(t *testing.T) {
+	var names []string
+	paths := map[string]bool{}
+	for _, variable := range unitVariables {
+		names = append(names, variable.name)
+		paths[variable.name] = variable.path
+	}
+	want := []string{
+		"AGENT_SECRETS_HELPER_SOCK", "AGENT_SECRETS_OPERATOR_FILE", "AGENT_SECRETS_MACHINE_FILE",
+		"AGENT_SECRETS_KEY_DIR", cipherclient.SignInDirVar, cipherclient.IdentityVar,
+		identity.MachineTokenFileVar, identity.MachineAudienceVar,
+		google.PoolAudienceVar, google.PoolAccountVar,
+		cipherclient.SignInIssuerVar, cipherclient.SignInClientIDVar,
+		cipherclient.SignInClientSecretFileVar, cipherclient.PersonVar, cipherclient.SessionVar,
+	}
+	if !slices.Equal(names, want) {
+		t.Fatalf("the unit's variables are\n%v\nwant\n%v", names, want)
+	}
+	for name, path := range map[string]bool{
+		"AGENT_SECRETS_HELPER_SOCK": true, "AGENT_SECRETS_OPERATOR_FILE": true,
+		"AGENT_SECRETS_MACHINE_FILE": true, "AGENT_SECRETS_KEY_DIR": true,
+		cipherclient.SignInDirVar: true, cipherclient.IdentityVar: false,
+		identity.MachineTokenFileVar: true, identity.MachineAudienceVar: false,
+		google.PoolAudienceVar: false, google.PoolAccountVar: false,
+		cipherclient.SignInIssuerVar: false, cipherclient.SignInClientIDVar: false,
+		cipherclient.SignInClientSecretFileVar: true, cipherclient.PersonVar: false,
+		cipherclient.SessionVar: false,
+	} {
+		if paths[name] != path {
+			t.Errorf("%s is written with path=%t, want %t", name, paths[name], path)
+		}
 	}
 }
 
@@ -401,7 +443,7 @@ func TestInstallWritesThisMachinesIdentityIntoTheUnit(t *testing.T) {
 func TestInstallRefusesARelativeHelperPath(t *testing.T) {
 	for _, name := range []string{
 		"AGENT_SECRETS_HELPER_SOCK", "AGENT_SECRETS_OPERATOR_FILE", "AGENT_SECRETS_MACHINE_FILE",
-		cipherclient.MachineTokenFileVar, cipherclient.SignInClientSecretFileVar,
+		identity.MachineTokenFileVar, cipherclient.SignInClientSecretFileVar,
 	} {
 		r := newInstallRig(t)
 		r.env[name] = "relative/" + strings.ToLower(name)

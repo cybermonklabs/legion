@@ -26,6 +26,10 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -63,22 +67,22 @@ func namesAll(t *testing.T, what, text string, named ...string) {
 // read error, in the empty-file refusal, in Describe, and in the trade's error and log line.
 func TestATokenFilePrintsItsSettingAndNeverItsPath(t *testing.T) {
 	dir := t.TempDir()
-	missing := NewProjectedToken(filepath.Join(dir, printedSecret))
+	missing := kubernetes.NewProjectedToken(filepath.Join(dir, printedSecret))
 	_, _, err := missing.Token(context.Background())
 	if err == nil {
 		t.Fatal("Token read a token file that is not there")
 	}
 	holdsNoSecret(t, "the missing file's error", err.Error())
-	namesAll(t, "the missing file's error", err.Error(), MachineTokenFileVar, "no such file or directory")
+	namesAll(t, "the missing file's error", err.Error(), identity.MachineTokenFileVar, "no such file or directory")
 	holdsNoSecret(t, "Describe", missing.Describe())
-	namesAll(t, "Describe", missing.Describe(), MachineTokenFileVar)
+	namesAll(t, "Describe", missing.Describe(), identity.MachineTokenFileVar)
 
 	empty := filepath.Join(dir, "empty-"+printedSecret)
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := NewProjectedToken(empty).Token(context.Background()); err == nil || !strings.Contains(err.Error(), MachineTokenFileVar) {
-		t.Errorf("the empty file's error = %v, want one naming %s", err, MachineTokenFileVar)
+	if _, _, err := kubernetes.NewProjectedToken(empty).Token(context.Background()); err == nil || !strings.Contains(err.Error(), identity.MachineTokenFileVar) {
+		t.Errorf("the empty file's error = %v, want one naming %s", err, identity.MachineTokenFileVar)
 	} else {
 		holdsNoSecret(t, "the empty file's error", err.Error())
 	}
@@ -96,7 +100,7 @@ func TestATokenFilePrintsItsSettingAndNeverItsPath(t *testing.T) {
 		t.Fatal("the trade went ahead with no token")
 	}
 	holdsNoSecret(t, "the trade's error", err.Error())
-	namesAll(t, "the trade's error", err.Error(), MachineTokenFileVar)
+	namesAll(t, "the trade's error", err.Error(), identity.MachineTokenFileVar)
 	// Token answers the failure and logs nothing. The renewal loop logs it before it waits to
 	// ask again, and that first wait ends the loop here.
 	loop, cancel := context.WithCancel(context.Background())
@@ -111,7 +115,7 @@ func TestATokenFilePrintsItsSettingAndNeverItsPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run = %v, want the failed trade logged and asked again", err)
 	}
-	namesAll(t, "the client's log", log.String(), "asking again", MachineTokenFileVar)
+	namesAll(t, "the client's log", log.String(), "asking again", identity.MachineTokenFileVar)
 	holdsNoSecret(t, "the client's log", log.String())
 }
 
@@ -158,11 +162,11 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 
 	run := map[string]string{
-		ActionsIDTokenRequestURLVar:   "https://token.actions.example/idtoken?api-version=" + printedSecret,
-		ActionsIDTokenRequestTokenVar: printedSecret,
-		MachineAudienceVar:            "https://cipher.example/" + printedSecret,
+		github.ActionsIDTokenRequestURLVar:   "https://token.actions.example/idtoken?api-version=" + printedSecret,
+		github.ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:                   "https://cipher.example/" + printedSecret,
 	}
-	for _, missing := range []string{ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar} {
+	for _, missing := range []string{github.ActionsIDTokenRequestURLVar, github.ActionsIDTokenRequestTokenVar, MachineAudienceVar} {
 		t.Run(IdentityGitHubActions+" without "+missing, func(t *testing.T) {
 			env := map[string]string{IdentityVar: IdentityGitHubActions}
 			for name, value := range run {
@@ -220,10 +224,10 @@ func TestADeviceLoginIsRefusedByName(t *testing.T) {
 // audience prints as written where it is a plain URL, and by its variable otherwise.
 func TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken(t *testing.T) {
 	env := map[string]string{
-		IdentityVar:                   IdentityGitHubActions,
-		ActionsIDTokenRequestURLVar:   "https://tokuser9f3:" + printedSecret + "@token.actions.example/idtoken?api-version=2.0",
-		ActionsIDTokenRequestTokenVar: printedSecret,
-		MachineAudienceVar:            "https://cipher.example",
+		IdentityVar:                          IdentityGitHubActions,
+		github.ActionsIDTokenRequestURLVar:   "https://tokuser9f3:" + printedSecret + "@token.actions.example/idtoken?api-version=2.0",
+		github.ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:                   "https://cipher.example",
 	}
 	getenv := func(name string) string { return env[name] }
 	source, err := MachineIdentity(getenv)
@@ -231,7 +235,7 @@ func TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken(t *testing.T
 		t.Fatalf("MachineIdentity: %v", err)
 	}
 	holdsNoSecret(t, "Describe", source.Describe())
-	namesAll(t, "Describe", source.Describe(), "GitHub Actions", ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar, "https://cipher.example")
+	namesAll(t, "Describe", source.Describe(), "GitHub Actions", github.ActionsIDTokenRequestURLVar, github.ActionsIDTokenRequestTokenVar, MachineAudienceVar, "https://cipher.example")
 
 	env[MachineAudienceVar] = "https://cipher.example/?token=" + printedSecret
 	source, err = MachineIdentity(getenv)
@@ -239,7 +243,43 @@ func TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken(t *testing.T
 		t.Fatalf("MachineIdentity: %v", err)
 	}
 	holdsNoSecret(t, "Describe", source.Describe())
-	namesAll(t, "Describe", source.Describe(), ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar)
+	namesAll(t, "Describe", source.Describe(), github.ActionsIDTokenRequestURLVar, github.ActionsIDTokenRequestTokenVar, MachineAudienceVar)
+}
+
+// TestAnUnknownIdentityNamesEverySourceInOrderAndNotTheValue: a value
+// AGENT_SECRETS_MACHINE_IDENTITY does not take is refused with every identity this build
+// registers, in the registry's own order and joined as a sentence ("kubernetes, metadata, pool or
+// github-actions"), and never with the value, which is where a credential pasted into the wrong
+// variable shows up (Review focus 5). A build with a provider left out lists one fewer, so the
+// list is read from the registry rather than written here twice.
+func TestAnUnknownIdentityNamesEverySourceInOrderAndNotTheValue(t *testing.T) {
+	names := providers.SourceNames()
+	if len(names) == 0 {
+		t.Fatal("this build registers no identity source, so this check enumerated nothing")
+	}
+	_, err := MachineIdentity(func(name string) string {
+		if name == IdentityVar {
+			return printedSecret
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("MachineIdentity took an identity kind it does not know")
+	}
+	holdsNoSecret(t, "MachineIdentity's error", err.Error())
+	want := strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("MachineIdentity's error = %q, want it naming the registry's identities as %q", err, want)
+	}
+	// In the registry's order, not sorted or set-ordered: each name after the one before it.
+	at := -1
+	for _, name := range names {
+		next := strings.Index(err.Error(), name)
+		if next <= at {
+			t.Fatalf("MachineIdentity's error = %q, want %v in the registry's order", err, names)
+		}
+		at = next
+	}
 }
 
 // TestAnIssuerThatCarriesACredentialIsNotPrinted: AGENT_SECRETS_SIGNIN_ISSUER is a URL, and every

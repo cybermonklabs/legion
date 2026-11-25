@@ -29,23 +29,19 @@ type (
 )
 
 // The variables a program reads to build this machine's identity; internal/cipherclient's
-// environment.go documents each.
+// environment.go documents each. The variables one identity reads are its provider's own
+// (internal/cipher/identity and the provider packages): a machine is told which identity it has
+// (IdentityVar) and the client reads the rest. IdentityKubernetes and MachineTokenFileVar are the
+// one exception, for packages/daemon: its daemon proves its own pod's identity, and names both
+// in the refusal that tells an operator how to set it up.
 const (
-	BrokerURLVar                  = internal.BrokerURLVar
-	IdentityVar                   = internal.IdentityVar
-	MachineTokenFileVar           = internal.MachineTokenFileVar
-	MachineAudienceVar            = internal.MachineAudienceVar
-	PoolAudienceVar               = internal.PoolAudienceVar
-	PoolAccountVar                = internal.PoolAccountVar
-	ActionsIDTokenRequestURLVar   = internal.ActionsIDTokenRequestURLVar
-	ActionsIDTokenRequestTokenVar = internal.ActionsIDTokenRequestTokenVar
-	SessionVar                    = internal.SessionVar
-	KeyDirVar                     = internal.KeyDirVar
-	RoleKeyFile                   = internal.RoleKeyFile
-	IdentityKubernetes            = internal.IdentityKubernetes
-	IdentityMetadata              = internal.IdentityMetadata
-	IdentityPool                  = internal.IdentityPool
-	IdentityGitHubActions         = internal.IdentityGitHubActions
+	BrokerURLVar        = internal.BrokerURLVar
+	IdentityVar         = internal.IdentityVar
+	MachineTokenFileVar = internal.MachineTokenFileVar
+	SessionVar          = internal.SessionVar
+	KeyDirVar           = internal.KeyDirVar
+	RoleKeyFile         = internal.RoleKeyFile
+	IdentityKubernetes  = internal.IdentityKubernetes
 )
 
 // New forwards to internal/cipherclient.New.

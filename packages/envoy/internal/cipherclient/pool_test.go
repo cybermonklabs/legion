@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/pool_test.go
+// packages/envoy/internal/cipher/identity/google/pool_test.go
 //
 // The workload identity pool's whole path, which is an acceptance clause of
 // dispatch://INFRA-958: the credential this machine already holds is traded at Google's security
@@ -12,6 +12,7 @@ package cipherclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,6 +20,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 )
 
 func TestPoolIdentityMintsThroughTheSecurityTokenServiceAndIAMCredentials(t *testing.T) {
@@ -58,18 +64,36 @@ func TestPoolIdentityMintsThroughTheSecurityTokenServiceAndIAMCredentials(t *tes
 			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "expires_in": 3600,
 		}
 	})
+	// The pool identity is built as a machine builds it, through the registry
+	// (AGENT_SECRETS_MACHINE_IDENTITY=pool), so its subject is the provider's own: the token
+	// file answered under the JWT type Google's security token service reads.
+	entry, held := providers.Source("pool")
+	if !held {
+		t.Fatal("this build registers no pool identity")
+	}
+	env := map[string]string{
+		identity.MachineTokenFileVar: external,
+		identity.MachineAudienceVar:  clientID,
+		google.PoolAudienceVar:       poolAudience,
+		google.PoolAccountVar:        serviceAccount,
+	}
+	source, err := entry.FromEnv(func(variable string) (string, error) {
+		if value := env[variable]; value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("%s is required by the pool identity", variable)
+	}, HTTPClient())
+	if err != nil {
+		t.Fatalf("build the pool identity: %v", err)
+	}
+	pool := source.(*google.PoolIdentity)
+	pool.SecurityTokenServiceURL = securityTokenService + "/v1/token"
+	pool.IAMCredentialsURL = iamCredentials
 	client, err := New(Config{
 		BrokerURL: broker.Address(),
 		Key:       testKey(t),
-		Subject: &PoolIdentity{
-			Subject:                 NewProjectedToken(external),
-			Audience:                poolAudience,
-			ServiceAccount:          serviceAccount,
-			TokenAudience:           clientID,
-			SecurityTokenServiceURL: securityTokenService + "/v1/token",
-			IAMCredentialsURL:       iamCredentials,
-		},
-		Session: "example-fleet-session",
+		Subject:   pool,
+		Session:   "example-fleet-session",
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -136,8 +160,8 @@ func TestPoolIdentityRefusedByTheSecurityTokenServiceNamesIt(t *testing.T) {
 	})
 	client, err := New(Config{
 		BrokerURL: broker.Address(), Key: testKey(t),
-		Subject: &PoolIdentity{
-			Subject: NewProjectedToken(external), Audience: "//iam.googleapis.com/example",
+		Subject: &google.PoolIdentity{
+			Subject: kubernetes.NewProjectedToken(external), Audience: "//iam.googleapis.com/example",
 			ServiceAccount: "example-fleet@example-project.iam.gserviceaccount.com", TokenAudience: "example-client",
 			SecurityTokenServiceURL: securityTokenService + "/v1/token", IAMCredentialsURL: "http://127.0.0.1:1",
 		},

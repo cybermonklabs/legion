@@ -155,14 +155,14 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	}
 	provider := &Provider{exchange: ExchangeConfig{Registry: registry}}
 	return provider, []claimsSubject{{
-		tokenType: oauthwire.SubjectTokenTypeKubernetes,
+		tokenType: kubernetes.SubjectTokenType,
 		token: map[string]any{
 			"sub":           claimsPodAccount,
 			"aud":           claimsAudience,
 			"kubernetes.io": map[string]any{"pod": map[string]any{"uid": claimsPodUID}},
 		},
 	}, {
-		tokenType: oauthwire.SubjectTokenTypeKubernetes,
+		tokenType: kubernetes.SubjectTokenType,
 		token: map[string]any{
 			"sub":           claimsReadAccount,
 			"aud":           claimsAudience,
@@ -182,14 +182,14 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 		},
 		cut: "2026-11-18T09:30:00.123456Z",
 	}, {
-		tokenType: oauthwire.SubjectTokenTypeGoogle,
+		tokenType: google.SubjectTokenType,
 		token: map[string]any{
 			"aud":            claimsGoogleAudience,
 			"email_verified": true,
 			"email":          claimsGoogleAccount,
 		},
 	}, {
-		tokenType: oauthwire.SubjectTokenTypePerson,
+		tokenType: google.PersonTokenType,
 		token: map[string]any{
 			"sub":            "109" + claimsPerson,
 			"aud":            claimsDeviceAudience,

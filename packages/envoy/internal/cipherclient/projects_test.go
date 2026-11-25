@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
@@ -60,7 +61,7 @@ func TestATradeSendsTheProjectsItWasGiven(t *testing.T) {
 		})
 		client, err := New(Config{
 			BrokerURL: cipheraddr.New(broker.URL()), Key: testKey(t), Session: "ada-box-1", Projects: c.projects,
-			Subject: &scriptedSource{token: "person.token", tokenType: oauthwire.SubjectTokenTypePerson, describe: "a person's sign-in"},
+			Subject: &scriptedSource{token: "person.token", tokenType: google.PersonTokenType, describe: "a person's sign-in"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -80,7 +81,7 @@ func TestATradeSendsTheProjectsItWasGiven(t *testing.T) {
 func TestNewRefusesProjectsThatAreNoList(t *testing.T) {
 	_, err := New(Config{
 		BrokerURL: cipheraddr.New("http://broker.test"), Key: testKey(t), Projects: []string{"PUB", "PRIV"},
-		Subject: &scriptedSource{token: "t", tokenType: oauthwire.SubjectTokenTypePerson, describe: "a person's sign-in"},
+		Subject: &scriptedSource{token: "t", tokenType: google.PersonTokenType, describe: "a person's sign-in"},
 	})
 	if err == nil {
 		t.Fatal("New with an unsorted list = nil error, want a refusal")

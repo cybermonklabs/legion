@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/detect_test.go
+// packages/envoy/internal/cipher/identity/google/detect_test.go
 //
 // DetectMachineIdentity finds the identity a machine can trade at the broker with no setting of
 // its own, for the Google exchange audience the broker's settings name: an external_account
@@ -6,7 +6,7 @@
 // that order. Each row runs the real readers against local stand-ins: a credentials file
 // GOOGLE_APPLICATION_CREDENTIALS names, and a metadata server GCE_METADATA_HOST points at.
 
-package cipherclient
+package google
 
 import (
 	"context"
@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -286,7 +286,7 @@ func writeX509Credential(t *testing.T, dir, sts, impersonation string) x509Files
 }
 
 // reasons is each skipped source's reason, in order.
-func reasons(skipped []Skipped) []string {
+func reasons(skipped []identity.Skipped) []string {
 	out := make([]string, len(skipped))
 	for i, s := range skipped {
 		out[i] = s.Reason
@@ -302,7 +302,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		externalAccountFile(t, sts, impersonation)
 		metadata := startDetectMetadata(t)
 
-		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
+		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -318,7 +318,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+		if token != "robot-identity-token" || tokenType != SubjectTokenType {
 			t.Fatalf("Token = %q, %q; want the identity token generateIdToken minted, as a Google identity token", token, tokenType)
 		}
 		checkExchange(t, exchange(), "the.workload.credential", "urn:ietf:params:oauth:token-type:jwt")
@@ -358,7 +358,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", files.credential)
 			metadata := startDetectMetadata(t)
 
-			source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
+			source, skipped, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -371,7 +371,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Token: %v", err)
 			}
-			if token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+			if token != "robot-identity-token" || tokenType != SubjectTokenType {
 				t.Fatalf("Token = %q, %q; want the identity token generateIdToken minted, as a Google identity token", token, tokenType)
 			}
 			checkExchange(t, exchange(), files.subjectToken, x509SubjectTokenType)
@@ -397,7 +397,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		}
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 		metadata := startDetectMetadata(t)
-		source, _, err := DetectMachineIdentity(context.Background(), testAudience)
+		source, _, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 		// The error names the variable and not its value: the file holds a credential, and for a
 		// person who pasted the credential itself into the variable its path is the credential.
 		if err == nil || source != nil || !strings.Contains(err.Error(), "GOOGLE_APPLICATION_CREDENTIALS") || strings.Contains(err.Error(), path) {
@@ -411,7 +411,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 	t.Run("metadata server", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 		startDetectMetadata(t)
-		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
+		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -426,7 +426,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		// other process can take it and answer as one (testport.Refused).
 		t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 		start := time.Now()
-		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
+		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 		elapsed := time.Since(start)
 		if err != nil || source != nil {
 			t.Fatalf("DetectMachineIdentity = %#v, %v; want no identity and no error", source, err)

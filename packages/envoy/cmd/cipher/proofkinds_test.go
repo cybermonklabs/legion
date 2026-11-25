@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -85,7 +86,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 	if err := os.WriteFile(subjectFile, []byte(rig.MintSubjectToken(t, ciphertest.ExchangeAccount, uuid.NewString())), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(rig.URL), Key: machineKey, Subject: cipherclient.NewProjectedToken(subjectFile)})
+	client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(rig.URL), Key: machineKey, Subject: kubernetes.NewProjectedToken(subjectFile)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func tradeWithProof(t *testing.T, rig *ciphertest.Rig, signed string) error {
 		"grant_type":         {cipherclient.GrantTypeTokenExchange},
 		"client_id":          {oauthwire.ExchangeClientID},
 		"subject_token":      {rig.MintSubjectToken(t, ciphertest.ExchangeAccount, uuid.NewString())},
-		"subject_token_type": {oauthwire.SubjectTokenTypeKubernetes},
+		"subject_token_type": {kubernetes.SubjectTokenType},
 	}
 	request, err := http.NewRequest(http.MethodPost, rig.URL+cipherclient.TokenPath, strings.NewReader(form.Encode()))
 	if err != nil {

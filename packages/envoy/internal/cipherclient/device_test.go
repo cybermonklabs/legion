@@ -21,7 +21,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -76,8 +76,8 @@ func TestDeviceSignInAsksForWhoTheyAreAndNothingElse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the person's identity at the next trade: %v", err)
 	}
-	if tokenType != oauthwire.SubjectTokenTypePerson {
-		t.Errorf("a person's token is presented as %q, want %q", tokenType, oauthwire.SubjectTokenTypePerson)
+	if tokenType != google.PersonTokenType {
+		t.Errorf("a person's token is presented as %q, want %q", tokenType, google.PersonTokenType)
 	}
 	if token == "" {
 		t.Error("the refresh answered no identity token")

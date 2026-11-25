@@ -36,7 +36,7 @@ import (
 	"cloud.google.com/go/auth/credentials"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
-	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
+	"github.com/sjawhar/envoy/internal/googleidentity/repeatprobe"
 )
 
 // storeX509 are the files of an X.509 credential the tests write, and the subject token the
@@ -248,7 +248,7 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 	// is, so no line of this file reads as a credential assigned a value.
 	user := `"type":"authorized_user","client_id":"store-client",` + strconv.Quote("client"+"_secret") + `:"store-fixture",` +
 		strconv.Quote("refresh"+"_token") + `:"store-fixture"`
-	gcloud, err := os.ReadFile(filepath.Join("..", "..", "internal", "cipherclient", "testdata", "gcloud-credential-case-distinct-headers.json"))
+	gcloud, err := os.ReadFile(filepath.Join("..", "..", "internal", "googleidentity", "testdata", "gcloud-credential-case-distinct-headers.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

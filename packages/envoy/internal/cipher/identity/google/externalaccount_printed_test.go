@@ -1,11 +1,11 @@
-// packages/envoy/internal/cipherclient/externalaccount_printed_test.go
+// packages/envoy/internal/cipher/identity/google/externalaccount_printed_test.go
 //
 // What an external_account identity prints of its audience and its account, in every trade's log
 // line and error that names it: the audience (the broker's Google exchange audience, text a
 // broker's settings answer wrote) only where it is a plain http(s) URL internal/redact prints, and
 // the account only where it is a service account's email or unique id, the account the
 // credentials file GOOGLE_APPLICATION_CREDENTIALS names otherwise.
-package cipherclient
+package google
 
 import (
 	"context"
@@ -23,6 +23,7 @@ import (
 
 	"cloud.google.com/go/auth/credentials"
 
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
@@ -62,7 +63,7 @@ func TestAnExternalAccountIdentityPrintsItsAudienceAndAccountOnlyWhereTheyAreWha
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: account, Audience: audience, HTTP: HTTPClient(), IAMCredentialsURL: refusing(t)}
+		return &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: account, Audience: audience, HTTP: &http.Client{}, IAMCredentialsURL: refusing(t)}
 	}
 	for _, row := range []struct {
 		name, audience, account string
@@ -259,7 +260,7 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			identity := &ExternalAccountIdentity{CredentialsJSON: externalAccountJSON(t, sts, row.source(t)), ServiceAccount: "deploy-bot@example-project.iam.gserviceaccount.com",
-				Audience: "https://aud.example", HTTP: HTTPClient()}
+				Audience: "https://aud.example", HTTP: &http.Client{}}
 			_, _, err := identity.Token(context.Background())
 			if err == nil {
 				t.Fatal("the exchange minted a token")
@@ -288,7 +289,7 @@ func TestARefusalAtIAMCredentialsImpersonationNamesIt(t *testing.T) {
 	})
 	iam, _ := accountIAM(t)
 	externalAccountFile(t, sts, "https://iamcredentials.googleapis.com")
-	source, _, err := externalAccountFor(testAudience)
+	source, _, err := externalAccountFor(testAudience, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +327,9 @@ func TestOnlyTheLibrarysOwnQuoteIsReadAsAnAnswer(t *testing.T) {
 			"the request failed"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			var fields credentialFields
+			var fields googleidentity.CredentialFields
 			fields.TokenURL = row.tokenURL
-			fields.Source = &credentialSource{Certificate: &certificateSource{}}
+			fields.Source = &googleidentity.CredentialSource{Certificate: &googleidentity.CertificateSource{}}
 			if got := externalAccountFailure(fields, &oauthrefusal.Recorder{}, errors.New(row.text)); got != row.want {
 				t.Fatalf("externalAccountFailure(%q) = %q; want %q", row.text, got, row.want)
 			}
@@ -405,7 +406,7 @@ func TestAnEnterpriseCertificateProxyConfigurationRunsNothing(t *testing.T) {
 			}
 
 			identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-				Audience: testAudience, HTTP: HTTPClient()}
+				Audience: testAudience, HTTP: &http.Client{}}
 			_, _, err = identity.Token(context.Background())
 			if err == nil || !strings.Contains(err.Error(), row.want) {
 				t.Fatalf("Token: %v; want %q", err, row.want)
@@ -475,7 +476,7 @@ func TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog(t *testing.T) 
 
 	control := captureStderr(t, func() {
 		creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data,
-			&credentials.DetectOptions{Scopes: []string{poolScope}, Client: HTTPClient()})
+			&credentials.DetectOptions{Scopes: []string{poolScope}, Client: &http.Client{}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -490,7 +491,7 @@ func TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog(t *testing.T) 
 	}
 
 	identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-		Audience: "https://aud.example", HTTP: HTTPClient(), IAMCredentialsURL: iam}
+		Audience: "https://aud.example", HTTP: &http.Client{}, IAMCredentialsURL: iam}
 	var token string
 	var mintErr error
 	out := captureStderr(t, func() { token, _, mintErr = identity.Token(context.Background()) })

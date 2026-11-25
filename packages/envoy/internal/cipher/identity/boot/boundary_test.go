@@ -1,6 +1,8 @@
 package boot_test
 
 import (
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -88,5 +90,57 @@ func TestEachProviderStaysInItsPackage(t *testing.T) {
 	}
 	if seenProvider != len(providers) {
 		t.Errorf("go list listed %d of the %d provider packages %v", seenProvider, len(providers), kinds)
+	}
+}
+
+// TestNoTokenTypeLiteralOutsideItsProvider: a provider's token types are its own strings
+// (kubernetes.SubjectTokenType, github.SubjectTokenType, google.SubjectTokenType,
+// google.PersonTokenType, google.ActorTokenTypeMachine), so no non-test file outside the
+// provider packages may spell one out: a second copy of a wire value is the drift the registry
+// exists to stop. It fails when it reads no Go file, since a check that enumerated nothing has
+// not passed.
+func TestNoTokenTypeLiteralOutsideItsProvider(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The token-type URNs, built from parts so this file holds none of them whole either.
+	const prefix = "urn:envoy:params:oauth:token-type:"
+	types := []string{
+		prefix + "kubernetes-service-account", prefix + "github-workflow-run",
+		prefix + "google-identity", prefix + "person-google-identity",
+		prefix + "machine-google-identity",
+	}
+	provider := filepath.Join(root, "internal", "cipher", "identity")
+	var read int
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case entry.IsDir() && (entry.Name() == "node_modules" || entry.Name() == ".git"):
+			return filepath.SkipDir
+		case entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go"):
+			return nil
+		case strings.HasPrefix(path, provider+string(filepath.Separator)):
+			return nil
+		}
+		read++
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, tokenType := range types {
+			if strings.Contains(string(source), tokenType) {
+				rel, _ := filepath.Rel(root, path)
+				t.Errorf("%s spells out the token type %s; it is the provider's own constant (internal/cipher/identity/<kind>)", rel, tokenType)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read == 0 {
+		t.Fatalf("no Go file under %s was read, so this check enumerated nothing", root)
 	}
 }

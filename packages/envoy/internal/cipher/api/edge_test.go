@@ -26,6 +26,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -425,7 +428,7 @@ func TestTheEdgeTokenRouteRefusesPodAndWorkflowTrades(t *testing.T) {
 		}
 	}
 	podTrade := func() url.Values {
-		return exchange(rig.MintSubjectToken(t, ciphertest.ExchangeAccount, uuid.NewString()), oauthwire.SubjectTokenTypeKubernetes)
+		return exchange(rig.MintSubjectToken(t, ciphertest.ExchangeAccount, uuid.NewString()), kubernetes.SubjectTokenType)
 	}
 	with := func(form url.Values, set map[string][]string) url.Values {
 		maps.Copy(form, set)
@@ -436,13 +439,13 @@ func TestTheEdgeTokenRouteRefusesPodAndWorkflowTrades(t *testing.T) {
 		form url.Values
 	}{
 		{"a pod's trade", podTrade()},
-		{"a workflow run's trade", exchange(rig.MintWorkflowToken(t, ciphertest.ExchangeRepository, ciphertest.ExchangeWorkflow, ciphertest.ExchangeRef, "1"), oauthwire.SubjectTokenTypeGitHub)},
-		{"a machine's Google trade", exchange("a-google-identity-token", oauthwire.SubjectTokenTypeGoogle)},
-		{"a person's Google trade", with(exchange("a-person-token", oauthwire.SubjectTokenTypePerson), map[string][]string{"actor_token": {"a-machine-token"}, "actor_token_type": {oauthwire.ActorTokenTypeMachine}})},
-		{"an access token traded with an actor", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{"actor_token": {"a-machine-token"}, "actor_token_type": {oauthwire.ActorTokenTypeMachine}})},
-		{"an access token traded with an actor token type", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{"actor_token_type": {oauthwire.ActorTokenTypeMachine}})},
+		{"a workflow run's trade", exchange(rig.MintWorkflowToken(t, ciphertest.ExchangeRepository, ciphertest.ExchangeWorkflow, ciphertest.ExchangeRef, "1"), github.SubjectTokenType)},
+		{"a machine's Google trade", exchange("a-google-identity-token", google.SubjectTokenType)},
+		{"a person's Google trade", with(exchange("a-person-token", google.PersonTokenType), map[string][]string{"actor_token": {"a-machine-token"}, "actor_token_type": {google.ActorTokenTypeMachine}})},
+		{"an access token traded with an actor", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{"actor_token": {"a-machine-token"}, "actor_token_type": {google.ActorTokenTypeMachine}})},
+		{"an access token traded with an actor token type", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{"actor_token_type": {google.ActorTokenTypeMachine}})},
 		{"an access token traded with an empty actor token", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{"actor_token": {""}})},
-		{"two subject token types", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeAccessToken, oauthwire.SubjectTokenTypeKubernetes}})},
+		{"two subject token types", with(exchange("an-access-token", oauthwire.SubjectTokenTypeAccessToken), map[string][]string{oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeAccessToken, kubernetes.SubjectTokenType}})},
 		{"no subject token type", url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "client_id": {oauthwire.ExchangeClientID}, "subject_token": {"an-access-token"}}},
 		{"client credentials", url.Values{"grant_type": {"client_credentials"}, "client_id": {oauthwire.ExchangeClientID}}},
 		{"an authorization code", url.Values{"grant_type": {"authorization_code"}, "code": {"x"}, "client_id": {oauthwire.ClientID}}},

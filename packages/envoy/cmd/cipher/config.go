@@ -31,22 +31,30 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
 // clientConfigKeys are the settings the file takes. The machine identity's own settings are
 // among them because `agent-secrets login`, and a sign-in's renewal, present the machine as the
-// actor: without them a sign-in made in a shell could not renew in a unit.
-var clientConfigKeys = []string{
+// actor: without them a sign-in made in a shell could not renew in a unit. Each identity's own
+// variables come from the provider registry (providers.SourceVariables), so a provider adds its
+// settings to this file by registering its source.
+var clientConfigKeys = append([]string{
 	cipherclient.BrokerURLVar,
 	cipherclient.SignInIssuerVar,
 	cipherclient.SignInClientIDVar,
 	cipherclient.SignInClientSecretFileVar,
 	cipherclient.IdentityVar,
-	cipherclient.MachineTokenFileVar,
-	cipherclient.MachineAudienceVar,
-	cipherclient.PoolAudienceVar,
-	cipherclient.PoolAccountVar,
+}, sourceVariableNames()...)
+
+// sourceVariableNames are the variables this build's identity sources read, in registry order.
+func sourceVariableNames() []string {
+	var names []string
+	for _, variable := range providers.SourceVariables() {
+		names = append(names, variable.Name)
+	}
+	return names
 }
 
 // clientConfig is what loadClientConfig read from the file, nil before it ran or where there is

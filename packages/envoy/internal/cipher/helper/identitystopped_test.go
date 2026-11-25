@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -84,7 +85,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	r.waits = &tradeWaits{}
 	machine, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: cipheraddr.New(r.broker.srv.URL), Key: key, HTTP: r.broker.srv.Client(),
-		Subject: cipherclient.NewProjectedToken(tokenFile), After: r.waits.after,
+		Subject: kubernetes.NewProjectedToken(tokenFile), After: r.waits.after,
 	})
 	if err != nil {
 		t.Fatal(err)

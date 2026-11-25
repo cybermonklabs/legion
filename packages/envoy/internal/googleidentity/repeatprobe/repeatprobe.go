@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/repeatprobe/repeatprobe.go
+// packages/envoy/internal/googleidentity/repeatprobe/repeatprobe.go
 //
 // Package repeatprobe writes, for the tests of a reader of external_account credentials files, the
 // X.509 credentials files that repeat a key at each level such a reader decodes: the credentials

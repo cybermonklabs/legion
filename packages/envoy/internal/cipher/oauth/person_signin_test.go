@@ -210,9 +210,9 @@ func (f *signInFixture) machineToken(t *testing.T, account, audience string, ver
 // signInForm is a complete sign-in trade: the person's token as the subject and the machine's as
 // the actor, under the two types the exchange client is registered for.
 func signInForm(personToken, machineToken, session string) url.Values {
-	form := exchangeForm(personToken, oauthwire.SubjectTokenTypePerson, session)
+	form := exchangeForm(personToken, google.PersonTokenType, session)
 	form.Set("actor_token", machineToken)
-	form.Set("actor_token_type", oauthwire.ActorTokenTypeMachine)
+	form.Set("actor_token_type", google.ActorTokenTypeMachine)
 	return form
 }
 
@@ -477,7 +477,7 @@ func TestASignInTradeIsRefusedWhatItCannotDecide(t *testing.T) {
 		{
 			name: "no actor token at all",
 			form: exchangeForm(f.personToken(t, person, deviceAudience, true, signInDomain),
-				oauthwire.SubjectTokenTypePerson, "ada-box"),
+				google.PersonTokenType, "ada-box"),
 			code: "invalid_request", says: "actor",
 			proves: "a person's token alone says nothing about which box is asking",
 		},
@@ -522,7 +522,7 @@ func TestABrokerWithNoDeviceAudienceRegistersNeitherSignInType(t *testing.T) {
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("the trade = %d %v, want 400 invalid_request: a broker told about no device audience takes no person's token", status, body)
 	}
-	if !strings.Contains(description, oauthwire.SubjectTokenTypePerson) {
+	if !strings.Contains(description, google.PersonTokenType) {
 		t.Errorf("the refusal reads %q, which does not name the type it refuses", description)
 	}
 }

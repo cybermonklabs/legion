@@ -12,6 +12,8 @@ import (
 	"authelia.com/provider/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -95,11 +97,11 @@ func TestK3TradesByDispatchState(t *testing.T) {
 		want      []string // one answer per state, minted or the OAuth error code
 		wantScope string   // the scope a machine login's trade is minted in, where it is
 	}{
-		{name: "named entry, project ACC", tokenType: oauthwire.SubjectTokenTypeKubernetes, person: full, scope: oauthwire.ProjectScopeNamed, projects: []string{"ACC"},
+		{name: "named entry, project ACC", tokenType: kubernetes.SubjectTokenType, person: full, scope: oauthwire.ProjectScopeNamed, projects: []string{"ACC"},
 			want: []string{minted, minted, "server_error", "temporarily_unavailable"}},
-		{name: "full member's sign-in, no project", tokenType: oauthwire.SubjectTokenTypePerson, person: full, scope: oauthwire.ProjectScopePerson,
+		{name: "full member's sign-in, no project", tokenType: google.PersonTokenType, person: full, scope: oauthwire.ProjectScopePerson,
 			want: []string{minted, minted, minted, minted}},
-		{name: "full member's sign-in, project ACC", tokenType: oauthwire.SubjectTokenTypePerson, person: full, scope: oauthwire.ProjectScopePerson, projects: []string{"ACC"},
+		{name: "full member's sign-in, project ACC", tokenType: google.PersonTokenType, person: full, scope: oauthwire.ProjectScopePerson, projects: []string{"ACC"},
 			want: []string{"invalid_request", minted, "server_error", "temporarily_unavailable"}},
 		{name: "full member's machine, no project", tokenType: tokenTypeAccessToken, person: full,
 			want: []string{minted, minted, "server_error", "temporarily_unavailable"}, wantScope: oauthwire.ProjectScopePerson},

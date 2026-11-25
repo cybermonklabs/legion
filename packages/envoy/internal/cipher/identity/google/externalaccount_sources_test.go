@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/externalaccount_sources_test.go
+// packages/envoy/internal/cipher/identity/google/externalaccount_sources_test.go
 //
 // Each credential_source an external_account credential file takes its subject token from mints
 // the broker's identity token the same way: the file's own exchange at the security token
@@ -7,7 +7,7 @@
 // local stand-ins: the file GOOGLE_APPLICATION_CREDENTIALS names, the security token service its
 // token_url names, the impersonation URL, and the source of its subject token.
 
-package cipherclient
+package google
 
 import (
 	"context"
@@ -21,8 +21,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // TestEachCredentialSourceMintsWithTheAccountsAccessToken: a credential file of the url kind (the
@@ -133,7 +131,7 @@ func TestEachCredentialSourceMintsWithTheAccountsAccessToken(t *testing.T) {
 			}
 			t.Setenv(credentialsFileVar, path)
 
-			source, reason, err := externalAccountFor(testAudience)
+			source, reason, err := externalAccountFor(testAudience, nil)
 			external, ok := source.(*ExternalAccountIdentity)
 			if err != nil || !ok || external.ServiceAccount != "robot@example.iam.gserviceaccount.com" {
 				t.Fatalf("externalAccountFor = %#v, %q, %v; want the credential acting as robot@example.iam.gserviceaccount.com", source, reason, err)
@@ -141,7 +139,7 @@ func TestEachCredentialSourceMintsWithTheAccountsAccessToken(t *testing.T) {
 			external.IAMCredentialsURL = iam
 			external.HTTP = iamCredentialsAt(t, impersonation)
 			token, tokenType, err := external.Token(context.Background())
-			if err != nil || token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+			if err != nil || token != "robot-identity-token" || tokenType != SubjectTokenType {
 				t.Fatalf("Token = %q, %q, %v; want the identity token generateIdToken minted", token, tokenType, err)
 			}
 			sent := exchange()
@@ -167,6 +165,11 @@ func equals(want string) func(t *testing.T, got string) {
 		}
 	}
 }
+
+// roundTripFunc is a transport that answers every request with f.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // iamCredentialsAt is a client that sends a request for Google's IAM Credentials
 // (iamcredentials.googleapis.com) to the stand-in at base, and any other as it stands. The
@@ -201,7 +204,7 @@ func TestAnExchangeThatAnswersNoAccessTokenMintsNothing(t *testing.T) {
 		http.Error(w, "no credential", http.StatusUnauthorized)
 	})
 	identity := &ExternalAccountIdentity{CredentialsJSON: externalAccountJSON(t, sts, map[string]any{"file": subjectTokenFile(t, "file-subject-token")}),
-		ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: iam}
+		ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: &http.Client{}, IAMCredentialsURL: iam}
 	_, _, err := identity.Token(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "the exchange answered no access token") {
 		t.Fatalf("Token: %v; want the empty access_token named", err)

@@ -11,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -184,8 +185,8 @@ func TestMigrateRecordsLogsNoPath(t *testing.T) {
 // a path or an account; a value it can write is written whole.
 func TestInstallRefusesAValueWithoutPrintingIt(t *testing.T) {
 	for _, c := range []struct{ name, value, secret, rule string }{
-		{cipherclient.PoolAccountVar, "hunter2pw tok-acct-5Lm1", "tok-acct-5Lm1", "escaped"},
-		{cipherclient.MachineTokenFileVar, "hunter2pw-rel-3Qw7", "hunter2pw-rel-3Qw7", "absolute"},
+		{google.PoolAccountVar, "hunter2pw tok-acct-5Lm1", "tok-acct-5Lm1", "escaped"},
+		{identity.MachineTokenFileVar, "hunter2pw-rel-3Qw7", "hunter2pw-rel-3Qw7", "absolute"},
 	} {
 		r := newInstallRig(t)
 		r.env[c.name] = c.value

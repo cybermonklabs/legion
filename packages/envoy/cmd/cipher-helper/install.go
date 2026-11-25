@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -34,25 +35,37 @@ import (
 // device-grant machine login, and one started without the key directory and the sign-in client
 // enrols every session under this machine rather than under the person who ran
 // `agent-secrets login` on it.
-var unitVariables = []struct {
+type unitVariable struct {
 	name string
 	path bool
-}{
+}
+
+// unitVariables are the variables the unit carries, in the order it writes them: this helper's
+// own, the sign-in's, and, after AGENT_SECRETS_MACHINE_IDENTITY, the variables each identity
+// source of this build reads (providers.SourceVariables), so a provider's own settings reach a
+// machine's unit by being registered.
+var unitVariables = append(append([]unitVariable{
 	{name: "AGENT_SECRETS_HELPER_SOCK", path: true},
 	{name: "AGENT_SECRETS_OPERATOR_FILE", path: true},
 	{name: "AGENT_SECRETS_MACHINE_FILE", path: true},
 	{name: "AGENT_SECRETS_KEY_DIR", path: true},
 	{name: cipherclient.SignInDirVar, path: true},
 	{name: cipherclient.IdentityVar},
-	{name: cipherclient.MachineTokenFileVar, path: true},
-	{name: cipherclient.MachineAudienceVar},
-	{name: cipherclient.PoolAudienceVar},
-	{name: cipherclient.PoolAccountVar},
+}, sourceVariables()...), []unitVariable{
 	{name: cipherclient.SignInIssuerVar},
 	{name: cipherclient.SignInClientIDVar},
 	{name: cipherclient.SignInClientSecretFileVar, path: true},
 	{name: cipherclient.PersonVar},
 	{name: cipherclient.SessionVar},
+}...)
+
+// sourceVariables are the variables this build's identity sources read, in registry order.
+func sourceVariables() []unitVariable {
+	var variables []unitVariable
+	for _, variable := range providers.SourceVariables() {
+		variables = append(variables, unitVariable{name: variable.Name, path: variable.Path})
+	}
+	return variables
 }
 
 // unitValue is what the unit says `name` is: this process's own value for it, and for the

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -100,7 +101,7 @@ func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
 	form := url.Values{
 		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
 		"subject_token":            {ts.audienceToken(t, ciphertest.ExchangeAccount, "pod-uid-reader", ciphertest.ExchangeAudience, time.Hour)},
-		oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes}, "scope": {oauthwire.ScopeRead},
+		oauth.FormSubjectTokenType: {kubernetes.SubjectTokenType}, "scope": {oauthwire.ScopeRead},
 	}
 	traded := send(t, http.DefaultClient, request(t, http.MethodPost, tokenURL, strings.NewReader(form.Encode()), map[string]string{
 		"Content-Type":             "application/x-www-form-urlencoded",

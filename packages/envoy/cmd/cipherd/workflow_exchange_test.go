@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -104,6 +105,6 @@ func mintRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, gitR
 // workflowForm is the trade of a run's token for an access token under workflowSession.
 func workflowForm(runToken string) url.Values {
 	form := exchangeForm(runToken, workflowSession)
-	form.Set("subject_token_type", oauthwire.SubjectTokenTypeGitHub)
+	form.Set("subject_token_type", github.SubjectTokenType)
 	return form
 }

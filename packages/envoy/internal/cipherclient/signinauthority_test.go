@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -56,7 +56,7 @@ func newSignInRig(t *testing.T, answer func(n int, form url.Values) (int, map[st
 		issuer: issuer, flow: flow, broker: broker, store: store,
 		authority: &SignInAuthority{
 			Store:     store,
-			Machine:   &scriptedSource{token: "this-machine's-identity-token", tokenType: oauthwire.SubjectTokenTypeGoogle, describe: "this machine"},
+			Machine:   &scriptedSource{token: "this-machine's-identity-token", tokenType: google.SubjectTokenType, describe: "this machine"},
 			Flow:      flow,
 			BrokerURL: broker.Address(),
 		},
@@ -152,10 +152,10 @@ func TestASignInMadeWhileTheProcessRunsIsTakenAtTheNextEnrolment(t *testing.T) {
 		t.Fatalf("the authority made %d trades, want one", len(trades))
 	}
 	form := trades[0].Form
-	if got := form.Get("subject_token_type"); got != oauthwire.SubjectTokenTypePerson {
+	if got := form.Get("subject_token_type"); got != google.PersonTokenType {
 		t.Errorf("the trade's subject is %q, want the person's own identity token", got)
 	}
-	if got := form.Get("actor_token_type"); got != oauthwire.ActorTokenTypeMachine {
+	if got := form.Get("actor_token_type"); got != google.ActorTokenTypeMachine {
 		t.Errorf("the trade's actor is %q, want this machine's identity token", got)
 	}
 	// The exchange fixes no session for a sign-in and refuses a name belonging to another

@@ -283,8 +283,8 @@ func TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken(t *testing.T) 
 }
 
 // rolesSubject is one issue pod's exchange token as a role's broker client presents it: under the
-// broker's Kubernetes subject token type (oauthwire.SubjectTokenTypeKubernetes, which this module
-// cannot import).
+// broker's Kubernetes subject token type (kubernetes.SubjectTokenType, in
+// packages/envoy/internal/cipher/identity/kubernetes, which this module cannot import).
 type rolesSubject struct{ token string }
 
 func (s rolesSubject) Token(context.Context) (string, string, error) {

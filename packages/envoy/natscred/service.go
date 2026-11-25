@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-
-	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
 // ServiceUser is the CONNECT user a service presents beside its platform identity token as the
@@ -212,29 +210,6 @@ func (f serviceFile) Read() (string, error) {
 	token := strings.TrimSpace(string(contents))
 	if token == "" {
 		return "", fmt.Errorf("natscred: the service token %s is empty", string(f))
-	}
-	return token, nil
-}
-
-// googleReadTimeout bounds one read of the metadata server.
-const googleReadTimeout = 10 * time.Second
-
-// ServiceGoogle is this VM's Google identity token for audience, minted by its metadata server at
-// every Read (cipherclient.MetadataIdentity).
-func ServiceGoogle(audience string) TokenReader {
-	return serviceGoogle{identity: cipherclient.NewMetadataIdentity(audience)}
-}
-
-type serviceGoogle struct {
-	identity *cipherclient.MetadataIdentity
-}
-
-func (g serviceGoogle) Read() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), googleReadTimeout)
-	defer cancel()
-	token, _, err := g.identity.Token(ctx)
-	if err != nil {
-		return "", fmt.Errorf("natscred: read %s: %w", g.identity.Describe(), err)
 	}
 	return token, nil
 }

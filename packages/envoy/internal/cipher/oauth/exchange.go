@@ -623,7 +623,7 @@ const placeholderReadRefused = "A trade for the approve capability's proxy place
 func (p *Provider) holderKey(ctx context.Context, r *http.Request, subjectTokenType string, session *oauthstore.ExchangeSession, read bool) (string, error) {
 	proofs := r.Header.Values(oauthwire.HeaderDPoPHolder)
 	switch {
-	case len(proofs) == 0 && read && subjectTokenType == oauthwire.SubjectTokenTypePerson:
+	case len(proofs) == 0 && read && p.launcher(subjectTokenType) == identity.LauncherSignIn:
 		return "", oauth2.ErrInvalidRequest.WithHint("A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.")
 	case len(proofs) == 0:
 		return "", nil

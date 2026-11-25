@@ -144,10 +144,10 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 	require.NoError(t, service.Ready(ctx))
 
 	environment := map[string]string{
-		cipherclient.BrokerURLVar:        stub.server.URL,
-		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
-		cipherclient.MachineTokenFileVar: write("pod-token", "pod-token"),
-		cipherclient.SessionVar:          "ses_a",
+		cipherclient.BrokerURLVar:    stub.server.URL,
+		cipherclient.IdentityVar:     "kubernetes",
+		identity.MachineTokenFileVar: write("pod-token", "pod-token"),
+		cipherclient.SessionVar:      "ses_a",
 	}
 	getenv := func(name string) string { return environment[name] }
 	serviceFile := write("service-token", platformToken(daemonAccount, time.Hour))
@@ -187,10 +187,10 @@ func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
 	pod := filepath.Join(t.TempDir(), "pod-token")
 	require.NoError(t, os.WriteFile(pod, []byte("pod-token"), 0o600))
 	environment := map[string]string{
-		cipherclient.BrokerURLVar:        stub.server.URL,
-		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
-		cipherclient.MachineTokenFileVar: pod,
-		cipherclient.SessionVar:          "ses_a",
+		cipherclient.BrokerURLVar:    stub.server.URL,
+		cipherclient.IdentityVar:     "kubernetes",
+		identity.MachineTokenFileVar: pod,
+		cipherclient.SessionVar:      "ses_a",
 	}
 	var stdout, stderr bytes.Buffer
 	exit := run([]string{"--servers", url, "--wait", "1s", "--subscribe", "notifications.envoy.deliver.ses_a"},

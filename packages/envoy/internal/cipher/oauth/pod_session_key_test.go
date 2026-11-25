@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // The pod both roles run in, and the two roles' sessions.
@@ -39,7 +38,7 @@ func (f *exchangeFixture) registersBound(t *testing.T, of, uid, session, jkt str
 // podTrade is the issue pod's trade for session, presenting a fresh projected token.
 func (f *exchangeFixture) podTrade(t *testing.T, session string) url.Values {
 	t.Helper()
-	return exchangeForm(f.podToken(t, issuePod, nil), oauthwire.SubjectTokenTypeKubernetes, session)
+	return exchangeForm(f.podToken(t, issuePod, nil), kubernetes.SubjectTokenType, session)
 }
 
 // TestASiblingRoleCannotTradeForAnotherRolesSession: pod P is registered for A with A's key and

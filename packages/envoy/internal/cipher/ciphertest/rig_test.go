@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -107,7 +108,7 @@ func tradeAs(t *testing.T, rig *Rig, account string) (exchangeAnswer, oauthwire.
 		"grant_type":         {cipherclient.GrantTypeTokenExchange},
 		"client_id":          {oauthwire.ExchangeClientID},
 		"subject_token":      {rig.MintSubjectToken(t, account, uuid.NewString())},
-		"subject_token_type": {oauthwire.SubjectTokenTypeKubernetes},
+		"subject_token_type": {kubernetes.SubjectTokenType},
 	}
 	proved := &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
 	status, body := postForm(t, proved, rig.URL+cipherclient.TokenPath, form)

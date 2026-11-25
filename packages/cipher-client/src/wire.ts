@@ -61,7 +61,7 @@ export const SUBJECT_TOKEN_TYPE_KUBERNETES =
 export const SUBJECT_TOKEN_TYPE_GOOGLE = "urn:envoy:params:oauth:token-type:google-identity";
 
 /** The `subject_token_type` a GitHub Actions run presents the OIDC token GitHub minted for it
- *  under (`oauthwire.SubjectTokenTypeGitHub`), which the broker answers from the workflow's entry. */
+ *  under (Go's `github.SubjectTokenType`), which the broker answers from the workflow's entry. */
 export const SUBJECT_TOKEN_TYPE_GITHUB = "urn:envoy:params:oauth:token-type:github-workflow-run";
 
 /** The `subject_token_type` a person presents their own Google identity token under, which only a

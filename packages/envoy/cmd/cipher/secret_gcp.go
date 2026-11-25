@@ -57,7 +57,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
-	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -88,7 +87,7 @@ func checkSettingsKMSKeyName(settings Settings) error {
 // gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
 // file. The file is checked first, in the machine source's words, before any reader reads it
-// (cipherclient.CredentialsFileFailure): one that repeats a key, or an X.509 certificate's whose
+// (googleidentity.CredentialsFileFailure): one that repeats a key, or an X.509 certificate's whose
 // files cannot be used, is refused before Google's library reads a configuration that would make
 // it start an enterprise certificate proxy's signer. An external_account file is loaded by
 // externalAccountCredentials. A file it cannot read is the os error, one the check refuses a
@@ -99,7 +98,7 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	if err != nil {
 		return nil, err
 	}
-	if reason := cipherclient.CredentialsFileFailure(data); reason != "" {
+	if reason := googleidentity.CredentialsFileFailure(data); reason != "" {
 		return nil, fileRefusal(reason)
 	}
 	var file struct {
@@ -137,7 +136,7 @@ func externalAccountCredentials(data []byte) (*google.Credentials, error) {
 }
 
 // fileRefusal is why a credentials file must not be loaded, in words that print no path and no part
-// of it (cipherclient.CredentialsFileFailure).
+// of it (googleidentity.CredentialsFileFailure).
 type fileRefusal string
 
 func (r fileRefusal) Error() string { return string(r) }
@@ -779,7 +778,7 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 		// The metadata server's answer prints only where it is a service account's: it is any
 		// text whoever answers at GCE_METADATA_HOST writes, line breaks included.
 		principal := gcpMetadataPrincipal(ctx)
-		if !cipherclient.ServiceAccountShaped(principal) {
+		if !googleidentity.ServiceAccountShaped(principal) {
 			principal = metadataGenericPrincipal
 		}
 		b.source, b.sourcePhrase, b.principal, b.creds = sourceMetadata, "the metadata server", principal, creds
@@ -844,7 +843,7 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 // its service_account_impersonation_url (an external_account workload identity federation
 // credential, such as a dev box's, or an impersonated_service_account file), else
 // principalUnknown (an authorized_user file, a federation credential that impersonates no one).
-// Either names an account as cipherclient.ServiceAccountWords does, as the token client's
+// Either names an account as googleidentity.ServiceAccountWords does, as the token client's
 // external_account identity does: whole only where it has a service account's shape, since the
 // file is a credential's place and a field of it that is no service account's prints as fixed
 // words.
@@ -863,7 +862,7 @@ func credentialsFilePrincipal(creds *google.Credentials) string {
 	if account == "" {
 		return principalUnknown
 	}
-	return cipherclient.ServiceAccountWords(account, "the credentials file")
+	return googleidentity.ServiceAccountWords(account, "the credentials file")
 }
 
 // gcpBackend is the secretBackend for store "gcp-secret-manager": GCP Secret Manager under the
@@ -931,7 +930,7 @@ func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.sourcePhrase, err)
 	case email == "":
 		return "", fmt.Errorf("Google's userinfo endpoint names no email for %s", b.sourcePhrase)
-	case !personAccount(email) && cipherclient.ServiceAccountShaped(email):
+	case !personAccount(email) && googleidentity.ServiceAccountShaped(email):
 		return "", fmt.Errorf("Google's userinfo endpoint names %s as the service account %s, which is no person's email", b.sourcePhrase, email)
 	case !personAccount(email):
 		return "", fmt.Errorf("Google's userinfo endpoint names %s as an account that is no person's email (not printed: it has neither a person's email's shape nor a service account's)", b.sourcePhrase)

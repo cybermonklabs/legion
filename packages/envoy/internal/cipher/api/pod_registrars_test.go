@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -137,7 +138,7 @@ func (ts *testServer) exchangeProvedBy(t *testing.T, key *ecdsa.PrivateKey, subj
 	t.Helper()
 	form := url.Values{
 		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
-		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes},
+		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {kubernetes.SubjectTokenType},
 		oauthwire.FormSession: {session},
 	}
 	client := &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}

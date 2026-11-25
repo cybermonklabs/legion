@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/externalaccount_repeated_test.go
+// packages/envoy/internal/cipher/identity/google/externalaccount_repeated_test.go
 //
 // A credentials file or a certificate configuration that repeats a key is refused before anything
 // reads it: two keys of one object that Go's JSON decoder puts in one place of the types Google's
@@ -8,27 +8,21 @@
 // a pointer to nil, and a map keeps each spelling. So two readers of one such file, this client's
 // check and Google's library, can read two different credentials. In an object the library decodes
 // into a map, keys that differ in case are two keys. Each row runs the real reader against local
-// stand-ins.
+// stand-ins. The check's own reading of a file (googleidentity.RepeatsKey and the types it reads a
+// file with) is tested beside it, in internal/googleidentity.
 
-package cipherclient
+package google
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,8 +31,8 @@ import (
 
 	"cloud.google.com/go/auth/credentials"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
-	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
+	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/googleidentity/repeatprobe"
 )
 
 // TestACredentialThatRepeatsAKeyIsRefused: an X.509 credential that repeats a key, exactly or in
@@ -89,7 +83,7 @@ func TestACredentialThatRepeatsAKeyIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			identity := &ExternalAccountIdentity{CredentialsJSON: []byte(row.edit(t, string(data), files)),
-				ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: iam}
+				ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: &http.Client{}, IAMCredentialsURL: iam}
 			token, _, err := identity.Token(context.Background())
 			switch {
 			case row.want == "" && (err != nil || token != "robot-identity-token"):
@@ -116,7 +110,7 @@ func TestACredentialSourceThatNamesBothConfigurationsIsRefused(t *testing.T) {
 	if data == string(original) {
 		t.Fatalf("the credential %s names no certificate to add the default configuration to", original)
 	}
-	identity := &ExternalAccountIdentity{CredentialsJSON: []byte(data), ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient()}
+	identity := &ExternalAccountIdentity{CredentialsJSON: []byte(data), ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: &http.Client{}}
 	_, _, err = identity.Token(context.Background())
 	if want := "its credential_source names a certificate configuration and asks for the default one too"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Token: %v; want %q", err, want)
@@ -158,7 +152,7 @@ func TestACredentialsFileThatRepeatsAKeyRunsNoSigner(t *testing.T) {
 			files := writeX509Credential(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid")
 			ecp, ran := proxyConfiguration(t, dir)
 			if row.defaultIsProxy {
-				t.Setenv(certificateConfigVar, ecp)
+				t.Setenv(googleidentity.CertificateConfigVar, ecp)
 			}
 			data, err := os.ReadFile(files.credential)
 			if err != nil {
@@ -188,7 +182,7 @@ func TestACredentialsFileThatRepeatsAKeyRunsNoSigner(t *testing.T) {
 			}
 
 			identity := &ExternalAccountIdentity{CredentialsJSON: []byte(credential), ServiceAccount: "robot@example.iam.gserviceaccount.com",
-				Audience: testAudience, HTTP: HTTPClient()}
+				Audience: testAudience, HTTP: &http.Client{}}
 			_, _, err = identity.Token(context.Background())
 			if want := "repeats a key"; err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Token: %v; want %q", err, want)
@@ -212,68 +206,12 @@ func TestAMachineCredentialsFileThatRepeatsAKeyIsAnError(t *testing.T) {
 	}
 	rewrite(t, path, strings.Replace(string(data), `{`, `{"Type":"external_account",`, 1))
 	metadata := startDetectMetadata(t)
-	source, _, err := DetectMachineIdentity(context.Background(), testAudience)
+	source, _, err := DetectMachineIdentity(context.Background(), testAudience, nil)
 	if err == nil || source != nil || !strings.Contains(err.Error(), credentialsFileVar+" names repeats a key") || strings.Contains(err.Error(), path) {
 		t.Fatalf("DetectMachineIdentity = %#v, %v; want an error that the file repeats a key, naming %s and not its path", source, err, credentialsFileVar)
 	}
 	if n := metadata.requests.Load(); n != 0 {
 		t.Fatalf("the metadata server saw %d requests; a broken credentials file stops before it", n)
-	}
-}
-
-// TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace: repeatsKey finds two keys of one object
-// that the decoder puts in one place of the types Google's library decodes the file into, wherever
-// the object is: in a struct, two keys that name one field as strings.EqualFold matches them; in a
-// map, two equal keys. Controls: header names that differ in case (a map), keys that name no field
-// and what is under them, one field at two depths, and a number outside float64's range, which
-// the decoder skips.
-func TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace(t *testing.T) {
-	file, config := credentialFieldsType, certificateConfigType
-	for _, row := range []struct {
-		name    string
-		schema  reflect.Type
-		data    string
-		repeats bool
-	}{
-		{"a field repeated exactly", file, `{"type":"a","type":"b"}`, true},
-		{"a field repeated in another case", file, `{"type":"x","TYPE":"y"}`, true},
-		{"a field repeated with ſ for s", file, `{"credential_source":{},"credential_ſource":{}}`, true},
-		{"a field repeated through an escape", file, `{"type":"a","\u0074ype":"b"}`, true},
-		{"a field repeated after a null", file, `{"credential_source":{"file":"a"},"credential_source":null}`, true},
-		{"a field of the certificate repeated in another case", file, `{"credential_source":{"certificate":{"trust_chain_path":"a","TRUST_CHAIN_PATH":"b"}}}`, true},
-		{"a header repeated exactly", file, `{"credential_source":{"headers":{"X-Example":"a","X-Example":"b"}}}`, true},
-		{"a field of the configuration repeated with the Kelvin sign for k", config, `{"cert_configs":{"workload":{"key_path":"a","\u212aey_path":"b"}}}`, true},
-		{"a field of the configuration repeated in another case", config, `{"cert_configs":{},"Cert_Configs":{}}`, true},
-		{"control: headers whose names differ in case", file, `{"credential_source":{"headers":{"X-Example":"e","x-example":"e"}}}`, false},
-		{"control: a key that names no field, in another case", file, `{"extension":1,"EXTENSION":2}`, false},
-		{"control: keys repeated under a key that names no field", file, `{"extension":{"type":1,"type":2}}`, false},
-		// enterprise-certificate-proxy's util.LoadSignerBinaryPath decodes libs.ecp, but only for a
-		// configuration with no workload, which certificateFailure refuses before the library reads it.
-		{"control: keys repeated under libs, of which this client reads nothing", config, `{"libs":{"ecp":"a","ecp":"b"}}`, false},
-		{"control: one field at two depths", file, `{"type":"a","credential_source":{"format":{"type":"b"}}}`, false},
-		{"control: an object where the library decodes a string, which it refuses", file, `{"type":{"a":1,"a":2}}`, false},
-		{"control: a number outside float64's range", file, `{"type":"external_account","unknown_extension":1e400}`, false},
-		{"control: no object", file, `[1,"a",null]`, false},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			repeats, err := repeatsKey([]byte(row.data), row.schema)
-			if err != nil || repeats != row.repeats {
-				t.Fatalf("repeatsKey(%s) = %t, %v; want %t", row.data, repeats, err, row.repeats)
-			}
-		})
-	}
-	for _, data := range []string{``, `{`, `{"a":1`, `{"a" 1}`, `{} {}`, `{}x`, `{"a":1,}`, `{"a":[1}`} {
-		if _, err := repeatsKey([]byte(data), file); err == nil {
-			t.Errorf("repeatsKey(%q) answered no error; want one, as for data that is not one JSON value", data)
-		}
-	}
-	// Data after the value is repeatsKey's own error, and a repeat found before a defect answers
-	// true with no error.
-	if _, err := repeatsKey([]byte(`{} {}`), file); err == nil || err.Error() != "more than one JSON value" {
-		t.Errorf("repeatsKey of two values: %v; want the error more than one JSON value", err)
-	}
-	if repeats, err := repeatsKey([]byte(`{"type":"a","type":"b"`), file); !repeats || err != nil {
-		t.Errorf("repeatsKey of a truncated object that repeats a key = %t, %v; want true and no error", repeats, err)
 	}
 }
 
@@ -285,7 +223,7 @@ func TestARepeatedKeyIsFoundWhereTheLibraryDecodesOnePlace(t *testing.T) {
 // sent both headers, and the account's access token, which the impersonation URL mints, is spent on
 // generateIdToken. Each Google host the file names is routed to a local stand-in.
 func TestAGcloudFileWithHeadersThatDifferInCaseMints(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("testdata", "gcloud-credential-case-distinct-headers.json"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "googleidentity", "testdata", "gcloud-credential-case-distinct-headers.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +239,7 @@ func TestAGcloudFileWithHeadersThatDifferInCaseMints(t *testing.T) {
 	impersonation, impersonated := impersonationStandIn(t)
 	iam, _ := accountIAM(t)
 	t.Setenv(credentialsFileVar, path)
-	source, reason, err := externalAccountFor(testAudience)
+	source, reason, err := externalAccountFor(testAudience, nil)
 	if err != nil || source == nil {
 		t.Fatalf("externalAccountFor = %v, %q, %v; want the file's identity", source, reason, err)
 	}
@@ -309,7 +247,7 @@ func TestAGcloudFileWithHeadersThatDifferInCaseMints(t *testing.T) {
 	identity.IAMCredentialsURL = iam
 	identity.HTTP = routedClient(t, map[string]string{"tokens.example.invalid": subject, "sts.googleapis.com": sts, "iamcredentials.googleapis.com": impersonation})
 	token, tokenType, err := identity.Token(context.Background())
-	if err != nil || token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+	if err != nil || token != "robot-identity-token" || tokenType != SubjectTokenType {
 		t.Fatalf("Token = %q, %q, %v; want the identity token", token, tokenType, err)
 	}
 	mu.Lock()
@@ -352,7 +290,7 @@ func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
 				rewrite(t, files.config, strings.Replace(string(config), `{`, `{`+extension, 1))
 			}
 			identity := &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-				Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: iam}
+				Audience: testAudience, HTTP: &http.Client{}, IAMCredentialsURL: iam}
 			if token, _, err := identity.Token(context.Background()); err != nil || token != "robot-identity-token" {
 				t.Errorf("%s with %s: Token = %q, %v; want the identity token", where, extension, token, err)
 			}
@@ -373,7 +311,7 @@ func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
 			t.Fatalf("control: Google's library did not start the signer: %v", err)
 		}
 		identity := &ExternalAccountIdentity{CredentialsJSON: []byte(credential), ServiceAccount: "robot@example.iam.gserviceaccount.com",
-			Audience: testAudience, HTTP: HTTPClient()}
+			Audience: testAudience, HTTP: &http.Client{}}
 		_, _, err = identity.Token(context.Background())
 		if want := "holds no workload certificate and private key"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Token: %v; want %q", err, want)
@@ -382,200 +320,6 @@ func TestAnOutOfRangeNumberHidesNothingFromTheCheck(t *testing.T) {
 			t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
 		}
 	})
-}
-
-// TestTheMirroredTypesAreGooglesLibrarys: credentialFields and certificateConfig, from which
-// repeatsKey reads which objects are structs and which are maps, have the shape of the types
-// Google's library decodes a credentials file and a certificate configuration into, read from the
-// library's own source in the module this package builds with: each field's JSON name, and a
-// struct, a pointer, a map or a leaf of one kind (string, bool, int, interface and the rest) where
-// the library has one. A type of the library's that the check cannot name fails it. Controls: the
-// library's types with credential_source a struct and not a pointer, headers a string and not a
-// map, type an any and not a string, headers a map of any and not of string, or type a named type
-// the check does not know, each fail it.
-func TestTheMirroredTypesAreGooglesLibrarys(t *testing.T) {
-	list := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "cloud.google.com/go/auth")
-	out, err := list.Output()
-	if err != nil {
-		t.Fatalf("go list -m cloud.google.com/go/auth: %v", err)
-	}
-	dir := strings.TrimSpace(string(out))
-	for _, row := range []struct {
-		file, root string
-		mirror     reflect.Type
-	}{
-		{"internal/credsfile/filetype.go", "ExternalAccountFile", credentialFieldsType},
-		{"internal/transport/cert/workload_cert.go", "certificateConfig", certificateConfigType},
-	} {
-		types := structTypes(t, filepath.Join(dir, row.file))
-		if reason := mirrorFailure(astShape(types[row.root], types), reflectShape(row.mirror)); reason != "" {
-			t.Errorf("%s in %s %s", row.root, row.file, reason)
-		}
-	}
-
-	const differs = "has the shape"
-	for _, control := range []struct {
-		name string
-		edit func(types map[string]ast.Expr)
-		want string
-	}{
-		{"credential_source a struct", func(types map[string]ast.Expr) {
-			field := fieldTagged(t, types["ExternalAccountFile"], "credential_source")
-			field.Type = field.Type.(*ast.StarExpr).X
-		}, differs},
-		{"headers a string", func(types map[string]ast.Expr) {
-			fieldTagged(t, types["CredentialSource"], "headers").Type = ast.NewIdent("string")
-		}, differs},
-		{"type an any", func(types map[string]ast.Expr) {
-			fieldTagged(t, types["ExternalAccountFile"], "type").Type = ast.NewIdent("any")
-		}, differs},
-		{"headers a map of any", func(types map[string]ast.Expr) {
-			fieldTagged(t, types["CredentialSource"], "headers").Type = &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}
-		}, differs},
-		{"type a named type", func(types map[string]ast.Expr) {
-			fieldTagged(t, types["ExternalAccountFile"], "type").Type = ast.NewIdent("credentialKind")
-		}, "names a type this check does not know: credentialKind"},
-	} {
-		types := structTypes(t, filepath.Join(dir, "internal/credsfile/filetype.go"))
-		control.edit(types)
-		if got := mirrorFailure(astShape(types["ExternalAccountFile"], types), reflectShape(credentialFieldsType)); !strings.Contains(got, control.want) {
-			t.Errorf("control: with %s, the check says %q; want it to say %q", control.name, got, control.want)
-		}
-	}
-}
-
-// unknownType is how astShape writes a type it cannot name.
-var unknownType = regexp.MustCompile(`unknown\(([^)]*)\)`)
-
-// mirrorFailure is why library, the shape of a type of Google's library, is not mirror, the shape
-// of its mirror, and "" where the two are one: a type of the library's that astShape cannot name,
-// or another shape.
-func mirrorFailure(library, mirror string) string {
-	if unknown := unknownType.FindAllStringSubmatch(library, -1); unknown != nil {
-		var names []string
-		for _, match := range unknown {
-			names = append(names, match[1])
-		}
-		return "names a type this check does not know: " + strings.Join(names, ", ")
-	}
-	if library != mirror {
-		return "has the shape\n  " + library + "\nand the mirror\n  " + mirror
-	}
-	return ""
-}
-
-// structTypes is every struct type the Go file at path declares, by name.
-func structTypes(t *testing.T, path string) map[string]ast.Expr {
-	t.Helper()
-	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	types := map[string]ast.Expr{}
-	ast.Inspect(parsed, func(n ast.Node) bool {
-		if spec, ok := n.(*ast.TypeSpec); ok {
-			if _, ok := spec.Type.(*ast.StructType); ok {
-				types[spec.Name.Name] = spec.Type
-			}
-		}
-		return true
-	})
-	return types
-}
-
-// fieldTagged is the field of the struct expr whose JSON name is name.
-func fieldTagged(t *testing.T, expr ast.Expr, name string) *ast.Field {
-	t.Helper()
-	for _, field := range expr.(*ast.StructType).Fields.List {
-		if jsonName(field) == name {
-			return field
-		}
-	}
-	t.Fatalf("no field %s", name)
-	return nil
-}
-
-// jsonName is the JSON name a struct field's tag gives it, or its Go name.
-func jsonName(field *ast.Field) string {
-	if field.Tag != nil {
-		tag, err := strconv.Unquote(field.Tag.Value)
-		if err == nil {
-			if name, _, _ := strings.Cut(reflect.StructTag(tag).Get("json"), ","); name != "" {
-				return name
-			}
-		}
-	}
-	return field.Names[0].Name
-}
-
-// leafKinds names, as reflect.Kind names it, the kind of each of Go's predeclared types a field can
-// have: byte and rune are uint8 and int32, and any an interface.
-var leafKinds = map[string]string{
-	"bool": "bool", "string": "string", "int": "int", "int8": "int8", "int16": "int16", "int32": "int32",
-	"int64": "int64", "uint": "uint", "uint8": "uint8", "uint16": "uint16", "uint32": "uint32",
-	"uint64": "uint64", "uintptr": "uintptr", "float32": "float32", "float64": "float64",
-	"complex64": "complex64", "complex128": "complex128", "byte": "uint8", "rune": "int32", "any": "interface",
-}
-
-// astShape is the shape of a type expression of a file whose struct types are types: a leaf's
-// kind (leafKinds, and "interface" for an interface with no methods), "*" and the shape pointed
-// at, "map[" key "]" value, "[]" element, or "{" each field's JSON name and shape "}", in name
-// order. Any other type, such as a named type that is no struct of the file or a type of another
-// package, is "unknown(" its name or Go type ")".
-func astShape(expr ast.Expr, types map[string]ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		if named, ok := types[e.Name]; ok {
-			return astShape(named, types)
-		}
-		if kind, ok := leafKinds[e.Name]; ok {
-			return kind
-		}
-		return "unknown(" + e.Name + ")"
-	case *ast.InterfaceType:
-		if len(e.Methods.List) == 0 {
-			return "interface"
-		}
-	case *ast.StarExpr:
-		return "*" + astShape(e.X, types)
-	case *ast.MapType:
-		return "map[" + astShape(e.Key, types) + "]" + astShape(e.Value, types)
-	case *ast.ArrayType:
-		return "[]" + astShape(e.Elt, types)
-	case *ast.StructType:
-		var fields []string
-		for _, field := range e.Fields.List {
-			fields = append(fields, jsonName(field)+":"+astShape(field.Type, types))
-		}
-		slices.Sort(fields)
-		return "{" + strings.Join(fields, ",") + "}"
-	}
-	return fmt.Sprintf("unknown(%T)", expr)
-}
-
-// reflectShape is the shape of a type, as astShape writes it, a leaf as its kind.
-func reflectShape(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.Pointer:
-		return "*" + reflectShape(t.Elem())
-	case reflect.Map:
-		return "map[" + reflectShape(t.Key()) + "]" + reflectShape(t.Elem())
-	case reflect.Slice, reflect.Array:
-		return "[]" + reflectShape(t.Elem())
-	case reflect.Struct:
-		var fields []string
-		for i := range t.NumField() {
-			field := t.Field(i)
-			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-			if name == "" {
-				name = field.Name
-			}
-			fields = append(fields, name+":"+reflectShape(field.Type))
-		}
-		slices.Sort(fields)
-		return "{" + strings.Join(fields, ",") + "}"
-	}
-	return t.Kind().String()
 }
 
 // routedClient is a client that sends a request for each host routes names to the stand-in at its
@@ -599,27 +343,6 @@ func routedClient(t *testing.T, routes map[string]string) *http.Client {
 	})}
 }
 
-// TestACredentialSourceReadsAsGooglesLibraryReadsIt: credentialFields decodes credential_source
-// as the pointer Google's library decodes it into, so a null drops what came before it, as the
-// library's does, and certificateConfig its workload the same way.
-func TestACredentialSourceReadsAsGooglesLibraryReadsIt(t *testing.T) {
-	fields, err := readCredentialFields([]byte(`{"credential_source":{"certificate":{"certificate_config_location":"/workload.json"}},` +
-		`"credential_source":null,"credential_source":{"certificate":{"use_default_certificate_config":true}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if certificate := fields.certificate(); certificate == nil || certificate.Config != "" || !certificate.UseDefault {
-		t.Fatalf("the certificate source read %+v; want the default configuration and no location, as the library reads it", certificate)
-	}
-	var config certificateConfig
-	if err := json.Unmarshal([]byte(`{"cert_configs":{"workload":{"cert_path":"/c","key_path":"/k"},"workload":null}}`), &config); err != nil {
-		t.Fatal(err)
-	}
-	if config.CertConfigs.Workload != nil {
-		t.Fatalf("the workload read %+v; want none, as the library reads it", config.CertConfigs.Workload)
-	}
-}
-
 // TestNoCredentialThatRepeatsAKeyStartsASigner: every credentials file repeatprobe writes, which
 // repeat a key at each level of the credentials file and of its certificate configuration, in each
 // spelling Go's JSON decoder matches, is refused as one that repeats a key, and none starts the
@@ -631,7 +354,7 @@ func TestNoCredentialThatRepeatsAKeyStartsASigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(certificateConfigVar, surface.Proxy)
+	t.Setenv(googleidentity.CertificateConfigVar, surface.Proxy)
 	inputs, err := surface.Inputs("http://127.0.0.1:9/v1/token",
 		"https://iamcredentials.invalid/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateAccessToken")
 	if err != nil {
@@ -654,7 +377,7 @@ func TestNoCredentialThatRepeatsAKeyStartsASigner(t *testing.T) {
 			reached++
 		}
 		identity := &ExternalAccountIdentity{CredentialsJSON: input.Credential, ServiceAccount: "robot@example.iam.gserviceaccount.com",
-			Audience: testAudience, HTTP: HTTPClient()}
+			Audience: testAudience, HTTP: &http.Client{}}
 		_, _, err := identity.Token(context.Background())
 		if ran() {
 			t.Errorf("SIGNER RAN: %s", input.Name)

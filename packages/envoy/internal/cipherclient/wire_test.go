@@ -24,6 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
@@ -180,7 +183,7 @@ func corpusSource(t *testing.T, spec corpusToken) Source {
 		if err := os.WriteFile(path, []byte(spec.Token+"\n"), 0o600); err != nil {
 			t.Fatalf("write the projected token: %v", err)
 		}
-		return NewProjectedToken(path)
+		return kubernetes.NewProjectedToken(path)
 	case "google-metadata":
 		return metadataSource(t, spec.Token)
 	case "github-actions-run":
@@ -211,7 +214,7 @@ func metadataSource(t *testing.T, token string) Source {
 	const audience = "example-machine-audience"
 	server := newStubMetadata(t, audience, token)
 	t.Setenv("GCE_METADATA_HOST", server)
-	return NewMetadataIdentity(audience)
+	return google.NewMetadataIdentity(audience)
 }
 
 // actionsSource serves GitHub's OIDC token endpoint answering token, and the identity of the run
@@ -231,7 +234,7 @@ func actionsSource(t *testing.T, token string) Source {
 			_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
 		}
 	})
-	return &GitHubActionsIdentity{RequestURL: server + "/idtoken", RequestToken: actionsRequestToken, Audience: audience, HTTP: HTTPClient()}
+	return &github.GitHubActionsIdentity{RequestURL: server + "/idtoken", RequestToken: actionsRequestToken, Audience: audience, HTTP: HTTPClient()}
 }
 
 // checkRequest holds one trade to the corpus entry: the endpoint, the whole form, and the whole

@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -34,7 +34,7 @@ const signedInPerson = "ada@example.com"
 type boxMachine struct{}
 
 func (boxMachine) Token(context.Context) (string, string, error) {
-	return "this-machine's-identity-token", oauthwire.SubjectTokenTypeGoogle, nil
+	return "this-machine's-identity-token", google.SubjectTokenType, nil
 }
 
 func (boxMachine) Describe() string { return "this machine" }

@@ -1,8 +1,9 @@
 // packages/cipher-client/src/github-actions-identity.ts
 //
 // The identity of a GitHub Actions run: the OIDC token GitHub mints for the job. It is a port of
-// the Go client's `GitHubActionsIdentity` (`packages/envoy/internal/cipherclient/githubactions.go`),
-// and asks GitHub as Go asks, so a job that names this identity gets one token from either client.
+// the Go client's `GitHubActionsIdentity`
+// (`packages/envoy/internal/cipher/identity/github/source.go`), and asks GitHub as Go asks, so a
+// job that names this identity gets one token from either client.
 
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl } from "@legion/contracts/log-text";

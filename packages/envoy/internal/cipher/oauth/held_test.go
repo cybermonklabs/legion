@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -243,8 +244,8 @@ func TestHeldExchangeEntryIsRefused(t *testing.T) {
 	f := newExchangeFixture(t, d.configure)
 	adaKey, otherKey, readKey := newKey(t), newKey(t), newKey(t)
 	f.registers(t, otherAccount, "pod-uid-other", "other-session")
-	adaPod := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-ada"), oauthwire.SubjectTokenTypeKubernetes, daemonSession)
-	otherPod := exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, "other-session")
+	adaPod := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-ada"), kubernetes.SubjectTokenType, daemonSession)
+	otherPod := exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), kubernetes.SubjectTokenType, "other-session")
 	readPod := f.readPodForm(t)
 	d.hold(person)
 

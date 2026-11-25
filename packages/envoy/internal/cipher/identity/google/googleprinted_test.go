@@ -1,10 +1,10 @@
-// packages/envoy/internal/cipherclient/googleprinted_test.go
+// packages/envoy/internal/cipher/identity/google/googleprinted_test.go
 //
 // What a mint through Google's token services prints: the call, the service's status and its
 // registered error code, and nothing of its answer's body, which a server can fill with anything,
 // an echo of the subject token it was sent included.
 
-package cipherclient
+package google
 
 import (
 	"context"
@@ -42,7 +42,7 @@ func TestAGoogleRefusalPrintsItsStatusAndCodeAlone(t *testing.T) {
 	}
 	pool := func(stsURL string) *PoolIdentity {
 		return &PoolIdentity{
-			Subject: NewProjectedToken(file), Audience: "//iam.googleapis.com/example",
+			Subject: &tokenFile{Path: file}, Audience: "//iam.googleapis.com/example",
 			ServiceAccount: "example-fleet@example-project.iam.gserviceaccount.com", TokenAudience: "example-client",
 			SecurityTokenServiceURL: stsURL, IAMCredentialsURL: iam,
 		}
@@ -99,7 +99,7 @@ func TestACredentialsFilePrintsItsSettingAndNeverItsPathOrContent(t *testing.T) 
 		}
 	}
 	t.Setenv(credentialsFileVar, filepath.Join(t.TempDir(), secret))
-	if _, _, err := externalAccountFor("agent-secrets-vm"); err == nil {
+	if _, _, err := externalAccountFor("agent-secrets-vm", nil); err == nil {
 		t.Fatal("externalAccountFor read a file that is not there")
 	} else {
 		check(t, "the missing file's error", err.Error())
@@ -110,7 +110,7 @@ func TestACredentialsFilePrintsItsSettingAndNeverItsPathOrContent(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Setenv(credentialsFileVar, file)
-	if _, reason, err := externalAccountFor("agent-secrets-vm"); err != nil || reason == "" {
+	if _, reason, err := externalAccountFor("agent-secrets-vm", nil); err != nil || reason == "" {
 		t.Fatalf("externalAccountFor = %q, %v; want a reason it skipped the file", reason, err)
 	} else {
 		check(t, "the skip reason", reason)
@@ -126,7 +126,7 @@ func TestACredentialsFilePrintsItsSettingAndNeverItsPathOrContent(t *testing.T) 
 	}
 	identity := &ExternalAccountIdentity{
 		CredentialsJSON: []byte(`{"type":"external_account","audience":"//iam.googleapis.com/example","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"` + sts + `/v1/token","credential_source":{"file":"` + subject + `"},"service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateAccessToken"}`),
-		ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: "agent-secrets-vm", HTTP: HTTPClient(),
+		ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: "agent-secrets-vm", HTTP: &http.Client{},
 	}
 	if _, _, err := identity.Token(context.Background()); err == nil {
 		t.Fatal("the identity minted through a refusing security token service")

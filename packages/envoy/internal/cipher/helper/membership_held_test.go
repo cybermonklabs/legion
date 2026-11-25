@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -140,7 +141,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		waits := &tradeWaits{}
 		machine, err := cipherclient.New(cipherclient.Config{
 			BrokerURL: cipheraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
-			Subject: cipherclient.NewProjectedToken(tokenFile),
+			Subject: kubernetes.NewProjectedToken(tokenFile),
 			After:   waits.after,
 		})
 		if err != nil {

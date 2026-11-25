@@ -13,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -82,7 +84,7 @@ func TestTheMetadataDocumentNamesTheBrokersOwnEndpoints(t *testing.T) {
 	// The rig's exchange is told about a cluster and GitHub and about no Google issuer, so it
 	// names those two kinds and the access token a dev box session presents, and no other.
 	wantSubjects := []string{
-		oauthwire.SubjectTokenTypeGitHub, oauthwire.SubjectTokenTypeKubernetes, oauthwire.SubjectTokenTypeAccessToken,
+		github.SubjectTokenType, kubernetes.SubjectTokenType, oauthwire.SubjectTokenTypeAccessToken,
 	}
 	slices.Sort(wantSubjects)
 	if !slices.Equal(document.SubjectTokenTypesSupported, wantSubjects) {

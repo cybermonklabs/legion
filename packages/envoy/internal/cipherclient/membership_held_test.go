@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // heldDescription is the broker's description of its membership_held refusal, with the person's
@@ -126,8 +126,8 @@ func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 		source Source
 		names  string // how the refusal names the identity
 	}{
-		{"a pod's projected token", &scriptedSource{token: "projected.service.account.token", tokenType: oauthwire.SubjectTokenTypeKubernetes,
-			describe: NewProjectedToken(tokenFile).Describe()}, "this machine's identity"},
+		{"a pod's projected token", &scriptedSource{token: "projected.service.account.token", tokenType: kubernetes.SubjectTokenType,
+			describe: kubernetes.NewProjectedToken(tokenFile).Describe()}, "this machine's identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {

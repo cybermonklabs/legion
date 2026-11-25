@@ -49,6 +49,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redirects"
@@ -673,10 +674,10 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the machine this person signed in on: %w", err)
 		}
-		if actorType == oauthwire.SubjectTokenTypeGoogle {
-			// The same token under the type that says what it proves here: not who is
-			// asking, but which box the person is asking from.
-			actorType = oauthwire.ActorTokenTypeMachine
+		// The same token under the type that says what it proves here: not who is asking,
+		// but which box the person is asking from, as its own provider names that type.
+		if machineType, ok := providers.ActorTokenType(actorType); ok {
+			actorType = machineType
 		}
 		form.Set("actor_token", actor)
 		form.Set("actor_token_type", actorType)

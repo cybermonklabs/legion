@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -77,7 +78,7 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 		brokerURL, trades := stubBroker(t, 15*time.Minute)
 		identity := filepath.Join(t.TempDir(), "token")
 		require.NoError(t, os.WriteFile(identity, []byte("pod-token"), 0o600))
-		client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(brokerURL), Key: key, Subject: cipherclient.NewProjectedToken(identity), Session: "ses_a"})
+		client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(brokerURL), Key: key, Subject: kubernetes.NewProjectedToken(identity), Session: "ses_a"})
 		require.NoError(t, err)
 		option, _ := natscred.Session(client)
 		nc, err := connect(t, rig.url, option)
@@ -209,7 +210,7 @@ func TestSessionKeeperMovesOffAPresentedTokenThatLapsesFirst(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			brokerURL, trades := stubBroker(t, row.presented)
-			client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(brokerURL), Key: key, Subject: cipherclient.NewProjectedToken(identity), Session: "ses_a"})
+			client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(brokerURL), Key: key, Subject: kubernetes.NewProjectedToken(identity), Session: "ses_a"})
 			require.NoError(t, err)
 			option, keeper := natscred.Session(client)
 			var reconnected atomic.Int64

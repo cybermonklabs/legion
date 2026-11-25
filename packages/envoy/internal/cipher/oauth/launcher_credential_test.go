@@ -20,7 +20,7 @@ import (
 // in on send, bar the one parameter each test below sets for itself.
 func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 	t.Helper()
-	return exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, session)
+	return exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), google.SubjectTokenType, session)
 }
 
 // TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the shape of a TypeScript client's

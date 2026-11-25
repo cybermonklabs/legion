@@ -19,7 +19,7 @@ import (
 const Kind identity.Kind = "kubernetes"
 
 // SubjectTokenType is the token type a pod's projected token is traded under.
-const SubjectTokenType = oauthwire.SubjectTokenTypeKubernetes
+const SubjectTokenType = "urn:envoy:params:oauth:token-type:kubernetes-service-account"
 
 // tolerance admits a projected service-account token's whole life. Kubernetes bounds one at 24
 // hours, so a shorter window would refuse a freshly minted token outright for expiring too far in

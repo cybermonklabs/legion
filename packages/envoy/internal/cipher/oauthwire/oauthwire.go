@@ -117,31 +117,12 @@ const (
 	// token to that key rather than to the DPoP proof's, so a read token is never bound to a key
 	// that signs launcher proofs: a person's read trade must send it, and any read trade may.
 	HeaderDPoPHolder = "DPoP-Holder"
-	// SubjectTokenTypeKubernetes is the subject_token_type a pod presents its projected
-	// Kubernetes service-account token under. RFC 8693 registers no name for one, so the broker
-	// defines this one and the exchange client is the only client that may present it.
-	SubjectTokenTypeKubernetes = "urn:envoy:params:oauth:token-type:kubernetes-service-account"
-	// SubjectTokenTypeGitHub is the subject_token_type a continuous-integration workflow run
-	// presents its GitHub token under, broker-defined for the same reason as
-	// SubjectTokenTypeKubernetes.
-	SubjectTokenTypeGitHub = "urn:envoy:params:oauth:token-type:github-workflow-run"
-	// SubjectTokenTypeGoogle is the subject_token_type a machine presents its Google identity
-	// token under: the token a Compute Engine VM reads from its metadata server, or one minted
-	// for a workload identity pool, which carries the machine's service account in its `email`
-	// claim. Broker-defined for the same reason as SubjectTokenTypeKubernetes.
-	SubjectTokenTypeGoogle = "urn:envoy:params:oauth:token-type:google-identity"
-	// SubjectTokenTypePerson is the subject_token_type a person presents their own Google
-	// identity token under: the ID token `agent-secrets login`'s device grant (RFC 8628) got for
-	// them, minted for the device-flow client BROKER_SIGNIN_DEVICE_AUDIENCE names. It is the
-	// person half of a sign-in on a machine; the machine half is ActorTokenTypeMachine, which
-	// the same request carries. Broker-defined for the reason SubjectTokenTypeKubernetes is.
-	SubjectTokenTypePerson = "urn:envoy:params:oauth:token-type:person-google-identity"
-	// ActorTokenTypeMachine is the actor_token_type a machine presents its own Google identity
-	// token under while the person signed in on it trades theirs (RFC 8693 Section 2.1). It is
-	// the very token SubjectTokenTypeGoogle names, under a type of its own because what it
-	// proves here is different: not who is asking, but which box the person is asking from.
-	// Broker-defined for the reason SubjectTokenTypeKubernetes is.
-	ActorTokenTypeMachine = "urn:envoy:params:oauth:token-type:machine-google-identity"
+	// The subject and actor token types a provider's own tokens are traded under are that
+	// provider's (internal/cipher/identity/<kind>: kubernetes.SubjectTokenType,
+	// github.SubjectTokenType, google.SubjectTokenType, google.PersonTokenType and
+	// google.ActorTokenTypeMachine). Each is broker-defined, since RFC 8693 registers no name
+	// for a platform identity token, and the exchange client is the only client that presents
+	// one. This package holds the wire's own names alone, which every build has.
 	// SubjectTokenTypeAccessToken is RFC 8693's own name for an access token: the only kind the
 	// exchange mints, the kind it asks for, and the kind a dev box session presents its machine
 	// login's token as. The library spells it in a package its users cannot import.

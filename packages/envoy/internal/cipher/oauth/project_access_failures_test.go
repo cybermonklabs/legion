@@ -63,14 +63,14 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 			logs := capturedLog(t)
 			named := newExchangeFixture(t, func(cfg *oauth.Config) { cfg.Exchange.Projects = c.dispatch(t) })
 			named.registers(t, account, "pod-uid-1", "implementer-g1")
-			status, body := named.exchange(t, exchangeForm(named.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+			status, body := named.exchange(t, exchangeForm(named.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), newKey(t))
 			refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
 
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
 				cfg.Exchange.Projects = c.dispatch(t)
 			}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 			public.registers(t, account, "pod-uid-1", "public-session-1")
-			public.introspectsProjects(t, public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t)),
+			public.introspectsProjects(t, public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "public-session-1"), newKey(t)),
 				oauthwire.ProjectScopeNamed, nil)
 			if got := logs.lines("unchecked", account, "public-session-1"); len(got) != 1 {
 				t.Fatalf("the entry naming no project logged %d lines of an unchecked mint, want 1:\n%s", len(got), strings.Join(logs.lines(), "\n"))
@@ -114,7 +114,7 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 			named := newExchangeFixture(t, func(cfg *oauth.Config) { cfg.Exchange.Projects = client })
 			key := newKey(t)
 			named.registers(t, account, "pod-uid-1", "implementer-g1")
-			status, body := named.exchange(t, exchangeForm(named.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+			status, body := named.exchange(t, exchangeForm(named.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "implementer-g1"), key)
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 			status, body = named.exchange(t, exchangeForm(named.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
@@ -123,7 +123,7 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 				cfg.Exchange.Projects = client
 			}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 			public.registers(t, account, "pod-uid-1", "public-session-1")
-			status, body = public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+			status, body = public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "public-session-1"), newKey(t))
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 
 			if calls := server.Calls(); calls != 0 {
@@ -147,7 +147,7 @@ func TestAnUnknownMemberKindRefusesTheTrade(t *testing.T) {
 		}, listing([]kubernetes.AccountEntry{{Account: account, Person: person}}, nil))
 		key := newKey(t)
 		public.registers(t, account, "pod-uid-1", "public-session-1")
-		status, body := public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)
+		status, body := public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), kubernetes.SubjectTokenType, "public-session-1"), key)
 		refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 		status, body = public.exchange(t, exchangeForm(public.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
 		refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)

@@ -17,7 +17,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -305,7 +305,11 @@ func (p *PersonIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return signIn.IDToken, oauthwire.SubjectTokenTypePerson, nil
+	tokenType, ok := providers.PersonTokenType()
+	if !ok {
+		return "", "", errors.New("this build holds no identity provider that verifies a person's sign-in, so there is no type to present one under")
+	}
+	return signIn.IDToken, tokenType, nil
 }
 
 func (p *PersonIdentity) Describe() string {

@@ -479,7 +479,10 @@ func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []ciphe
 	if err := checkGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
 		return nil, nil, err
 	}
-	identity, skipped, err := cipherclient.DetectMachineIdentity(ctx, settings.GoogleExchangeAudience)
+	// The detectors read their audience out of the settings by field name, the name this answer
+	// carries it under (Settings.GoogleExchangeAudience's own JSON member). The next commit has
+	// machineSource walk every detector and read each one's own field.
+	identity, skipped, err := cipherclient.DetectMachineIdentity(ctx, map[string]string{"google_exchange_audience": settings.GoogleExchangeAudience})
 	if err != nil || identity == nil || !keep {
 		return identity, skipped, err
 	}

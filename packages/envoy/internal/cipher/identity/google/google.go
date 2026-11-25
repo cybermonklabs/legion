@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -26,9 +25,9 @@ const Kind identity.Kind = "google"
 // person's own identity token as a subject, and the machine's token as the actor of a person's
 // trade.
 const (
-	SubjectTokenType      = oauthwire.SubjectTokenTypeGoogle
-	PersonTokenType       = oauthwire.SubjectTokenTypePerson
-	ActorTokenTypeMachine = oauthwire.ActorTokenTypeMachine
+	SubjectTokenType      = "urn:envoy:params:oauth:token-type:google-identity"
+	PersonTokenType       = "urn:envoy:params:oauth:token-type:person-google-identity"
+	ActorTokenTypeMachine = "urn:envoy:params:oauth:token-type:machine-google-identity"
 )
 
 // tolerance admits a machine's Google identity token, which Google mints for an hour and which its

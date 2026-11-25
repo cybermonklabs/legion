@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
@@ -42,7 +43,7 @@ type setting struct {
 // its children's, the GitHub App, cookies, service-account tokens, the secrets broker and the
 // Legion status scope it grants, meaning search's model service, the model the server generates
 // text with, the dashboard, and local and test runs.
-var settings = []setting{
+var settings = append(append([]setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
@@ -89,8 +90,20 @@ var settings = []setting{
 		Description: "Nkey seed of the NATS user Dispatch connects as; unset, it connects with no credential. A set but unusable seed refuses startup."},
 	{Name: "NATS_SERVICE_TOKEN_FILE", Required: "no",
 		Description: "File holding the platform identity token Dispatch presents to a NATS hub whose connections the auth service admits (user `service`, the token as the password): a projected Kubernetes ServiceAccount token for the NATS audience, read afresh at each connect, and the connection moves to a later token before the one it presented lapses. Set beside a seed variable, it refuses startup naming both."},
-	{Name: "NATS_SERVICE_GOOGLE_AUDIENCE", Required: "no",
-		Description: "Audience of the Google identity token this VM's metadata server mints, which Dispatch presents to a NATS hub whose connections the auth service admits, as `NATS_SERVICE_TOKEN_FILE` presents a file's. Set beside another credential variable, it refuses startup naming both."},
+}, serviceTokenRows()...), settingsAfterServiceTokens...)
+
+// serviceTokenRows are the rows of the providers' own service-token variables
+// (providers.ServiceTokenSources), each printed where NATS_SERVICE_GOOGLE_AUDIENCE's row stood
+// before the registry: a provider left out of this build prints none.
+func serviceTokenRows() []setting {
+	var rows []setting
+	for _, source := range providers.ServiceTokenSources() {
+		rows = append(rows, setting{Name: source.Variable, Required: "no", Description: source.Description})
+	}
+	return rows
+}
+
+var settingsAfterServiceTokens = []setting{
 	{Name: "ENVOY_NATS_SOCKS5_PROXY", Required: "no",
 		Description: "SOCKS5 proxy, as `host:port`, that every NATS connection Dispatch makes goes through, each server's host name handed to the proxy unresolved; unset, Dispatch dials NATS directly. A set proxy needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy chooses the server. A deployment that reaches NATS through a tailnet sidecar's SOCKS5 server (tailscaled's `TS_SOCKS5_SERVER`) sets it."},
 	{Name: "ENVOY_NATS_REPLICAS", Default: "`1`", Required: "no",

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -26,27 +28,20 @@ import (
 const (
 	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
 	BrokerURLVar = "AGENT_SECRETS_URL"
-	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
-	// github-actions. Unset, this machine has none and nothing trades — which is every deployment
-	// that has not turned the exchange on, and is why no program here fails for want of it.
+	// IdentityVar says which identity this machine proves, one of the names its providers
+	// register (providers.Sources): kubernetes, metadata, pool or github-actions. Unset, this
+	// machine has none and nothing trades — which is every deployment that has not turned the
+	// exchange on, and is why no program here fails for want of it. The variables each identity
+	// reads are the provider's own, named in identity (MachineTokenFileVar, MachineAudienceVar)
+	// where sources of two providers read them.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
-	// IdentityKubernetes reads and IdentityPool federates.
-	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
-	// MachineAudienceVar is the audience of this machine's identity token: the metadata server
-	// mints it for that audience, a pool mint names it as the minted token's own, and GitHub
-	// mints a GitHub Actions run's for it.
-	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
-	// PoolAudienceVar is the workload identity pool provider an external credential is traded
-	// at, the full //iam.googleapis.com/projects/… resource name.
-	PoolAudienceVar = "AGENT_SECRETS_POOL_AUDIENCE"
-	// PoolAccountVar is the managed identity generateIdToken is called on.
-	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
-	// ActionsIDTokenRequestURLVar and ActionsIDTokenRequestTokenVar are where a GitHub Actions
-	// job asks GitHub for its OIDC token, and the bearer it asks with, which GitHub sets in a job
-	// that holds `id-token: write` (IdentityGitHubActions).
-	ActionsIDTokenRequestURLVar   = "ACTIONS_ID_TOKEN_REQUEST_URL"
-	ActionsIDTokenRequestTokenVar = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+	// IdentityKubernetes reads and IdentityPool federates, and MachineAudienceVar the audience
+	// of this machine's identity token. Both are identity's own; they are named here as well for
+	// a caller that tells a deployment which variables to set, such as the Legion daemon's
+	// refusal through the cipherclient package.
+	MachineTokenFileVar = identity.MachineTokenFileVar
+	MachineAudienceVar  = identity.MachineAudienceVar
 	// SessionVar is the session a trade writes under for a caller that acts as no session of
 	// its own, which a daemon, a command and this helper are (TradeSession).
 	SessionVar = "AGENT_SECRETS_SESSION"
@@ -75,12 +70,14 @@ const (
 	// DefaultSignInIssuer is where every real person signs in.
 	DefaultSignInIssuer = "https://accounts.google.com"
 
-	// The values IdentityVar takes.
+	// The names IdentityVar takes that a caller compares against: each is a name a provider
+	// registers (identity/providers), which MachineIdentity reads through the registry. A pod
+	// role's key (MachineKey), the Legion daemon's refusal and agent-secrets' own refusals name
+	// them.
 	IdentityKubernetes    = "kubernetes"
 	IdentityMetadata      = "metadata"
 	IdentityPool          = "pool"
 	IdentityGitHubActions = "github-actions"
-
 	// identityDeviceLogin is a value IdentityVar takes that this client refuses by name: a
 	// machine's device login (`dispatch login --device`), which only the TypeScript client
 	// (packages/cipher-client/src/device-login.ts) trades. A laptop sets it for its sessions, so a
@@ -159,65 +156,39 @@ func ProjectsRefusal(setting, held string) error {
 // a mistake in it. A kind it does not know is an error naming the variable and the kinds it
 // takes, and not the value, which is where a credential pasted into the wrong variable shows up;
 // device-login, which only the TypeScript client trades, is refused by name.
+//
+// The identities are the ones this build's providers register (identity/providers), so a
+// provider left out with -tags cipher_no_<kind> takes its own out of the list a refusal prints.
 func MachineIdentity(getenv func(string) string) (Source, error) {
 	kind := strings.TrimSpace(getenv(IdentityVar))
-	switch kind {
-	case "":
+	switch {
+	case kind == "":
 		return nil, nil
-	case IdentityKubernetes:
-		path, err := required(getenv, MachineTokenFileVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		return NewProjectedToken(path), nil
-	case IdentityMetadata:
-		audience, err := required(getenv, MachineAudienceVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		return NewMetadataIdentity(audience), nil
-	case IdentityPool:
-		path, err := required(getenv, MachineTokenFileVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		audience, err := required(getenv, MachineAudienceVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		pool, err := required(getenv, PoolAudienceVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		account, err := required(getenv, PoolAccountVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		return &PoolIdentity{
-			Subject: NewProjectedToken(path), Audience: pool, ServiceAccount: account,
-			TokenAudience: audience, HTTP: HTTPClient(),
-		}, nil
-	case IdentityGitHubActions:
-		requestURL, err := required(getenv, ActionsIDTokenRequestURLVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		audience, err := required(getenv, MachineAudienceVar, kind)
-		if err != nil {
-			return nil, err
-		}
-		return &GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient()}, nil
-	case identityDeviceLogin:
-		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s, %s or %s",
-			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
-	default:
-		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
-			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+	case kind == identityDeviceLogin:
+		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s",
+			IdentityVar, identityDeviceLogin, sourceNames())
 	}
+	source, held := providers.Source(kind)
+	if !held {
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s",
+			IdentityVar, sourceNames())
+	}
+	return source.FromEnv(func(variable string) (string, error) {
+		return required(getenv, variable, kind)
+	}, HTTPClient())
+}
+
+// sourceNames lists this build's identities as a refusal names them: "kubernetes, metadata, pool
+// or github-actions", in the registry's own order.
+func sourceNames() string {
+	names := providers.SourceNames()
+	switch len(names) {
+	case 0:
+		return "none: this build holds no identity provider"
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // MachineKey is the key a machine trade proves. A role in a pod, where IdentityVar is

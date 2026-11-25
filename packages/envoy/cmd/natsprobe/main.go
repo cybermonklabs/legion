@@ -36,6 +36,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/natscred"
@@ -63,7 +64,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	subscribe := flags.String("subscribe", "", "the subject to subscribe to")
 	publish := flags.String("publish", "", "the subject to publish to")
 	tokenFile := flags.String("service-token-file", "", "connect as a service presenting the platform token in this file")
-	googleAudience := flags.String("service-google-audience", "", "connect as a service presenting this VM's Google identity token for this audience")
+	// One flag per provider that lets a service connect by its own token, from the registry:
+	// --service-google-audience today.
+	serviceFlags := map[string]*string{}
+	for _, source := range providers.ServiceTokenSources() {
+		serviceFlags[source.Flag] = flags.String(source.Flag, "", source.Usage)
+	}
 	none := flags.Bool("no-credential", false, "connect presenting no credential")
 	wait := flags.Duration("wait", 3*time.Second, "how long to wait for the hub to refuse the subscribe or publish")
 	if err := flags.Parse(args); err != nil {
@@ -81,13 +87,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return usage("--servers is required")
 	case (*subscribe == "") == (*publish == ""):
 		return usage("name one of --subscribe and --publish")
-	case countSet(*tokenFile != "", *googleAudience != "", *none) > 1:
-		return usage("name at most one of --service-token-file, --service-google-audience and --no-credential")
+	case countSet(append([]bool{*tokenFile != "", *none}, serviceFlagsSet(serviceFlags)...)...) > 1:
+		return usage("name at most one of " + credentialFlags())
 	case *wait <= 0:
 		return usage("--wait must be positive")
 	}
 
-	option, name, err := credential(getenv, *tokenFile, *googleAudience, *none)
+	option, name, err := credential(getenv, *tokenFile, serviceFlagValues(serviceFlags), *none)
 	if err != nil {
 		fmt.Fprintf(stderr, "natsprobe: %v\n", err)
 		return exitFailed
@@ -112,7 +118,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// and Connect returns it: the probe never sent a CONNECT, so the hub refused nothing, and
 		// which credential such a hub takes is the probe's to say, by its flags.
 		if errors.Is(err, cipherclient.ErrNoNonce) {
-			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
+			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: %s\n", err, credentialFlagsTaken())
 			return exitFailed
 		}
 		fmt.Fprintf(stderr, "natsprobe: connect: %v\n", err)
@@ -146,17 +152,22 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 }
 
 // credential is the option the probe connects with and the name it says it connects as: none for
-// none, a service's when a token file or a Google audience is named, and otherwise a session's,
-// traded from this machine's identity.
-func credential(getenv func(string) string, tokenFile, googleAudience string, none bool) (nats.Option, string, error) {
+// none, a service's when a token file or one of the providers' own service-token flags is named,
+// and otherwise a session's, traded from this machine's identity.
+func credential(getenv func(string) string, tokenFile string, serviceValues map[string]string, none bool) (nats.Option, string, error) {
 	if none {
 		return func(*nats.Options) error { return nil }, "no credential", nil
 	}
-	if tokenFile != "" || googleAudience != "" {
-		reader := natscred.ServiceFile(tokenFile)
-		if googleAudience != "" {
-			reader = natscred.ServiceGoogle(googleAudience)
+	var reader natscred.TokenReader
+	if tokenFile != "" {
+		reader = natscred.ServiceFile(tokenFile)
+	}
+	for _, source := range providers.ServiceTokenSources() {
+		if value := serviceValues[source.Flag]; value != "" {
+			reader = source.Reader(value)
 		}
+	}
+	if reader != nil {
 		token, err := reader.Read()
 		if err != nil {
 			return nil, "", err
@@ -212,6 +223,45 @@ func countSet(set ...bool) int {
 		}
 	}
 	return count
+}
+
+// serviceFlagsSet is whether each service-token flag was given, one entry per registered source.
+func serviceFlagsSet(flags map[string]*string) []bool {
+	var set []bool
+	for _, source := range providers.ServiceTokenSources() {
+		set = append(set, *flags[source.Flag] != "")
+	}
+	return set
+}
+
+// serviceFlagValues is each service-token flag's value, by the flag's own name.
+func serviceFlagValues(flags map[string]*string) map[string]string {
+	values := map[string]string{}
+	for name, value := range flags {
+		values[name] = *value
+	}
+	return values
+}
+
+// credentialFlags lists the credential flags this build takes, in the order the usage prints
+// them: the token file, each provider's own, and no credential.
+func credentialFlags() string {
+	names := []string{"--service-token-file"}
+	for _, source := range providers.ServiceTokenSources() {
+		names = append(names, "--"+source.Flag)
+	}
+	names = append(names, "--no-credential")
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
+// credentialFlagsTaken lists the same flags as the no-nonce hint names them: a hub that runs no
+// auth service takes no session's token, so that sentence puts --no-credential first.
+func credentialFlagsTaken() string {
+	names := []string{"--no-credential", "--service-token-file"}
+	for _, source := range providers.ServiceTokenSources() {
+		names = append(names, "--"+source.Flag)
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // serverText is the server's own text of err, without nats.go's prefix: `Permissions Violation for

@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -1694,7 +1695,7 @@ func mintMachineToken(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, 
 // name it asks to write under.
 func machineForm(subjectToken, session string) url.Values {
 	form := exchangeForm(subjectToken, session)
-	form.Set("subject_token_type", oauthwire.SubjectTokenTypeGoogle)
+	form.Set("subject_token_type", google.SubjectTokenType)
 	return form
 }
 
@@ -1728,7 +1729,7 @@ func exchangeForm(subjectToken, session string) url.Values {
 		"grant_type":         {exchangeGrantType},
 		"client_id":          {oauthwire.ExchangeClientID},
 		"subject_token":      {subjectToken},
-		"subject_token_type": {oauthwire.SubjectTokenTypeKubernetes},
+		"subject_token_type": {kubernetes.SubjectTokenType},
 		"session":            {session},
 	}
 }

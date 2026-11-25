@@ -14,6 +14,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -137,7 +138,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s", []any{exchange.ErrNoComputeEngine, corpusMachine, "legion-prod", "worker-*"}, googleMachineSource},
 	{"%w: %s presented a token minted in the project %s, and its entry takes machines of %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "other-project", "legion-prod"}, googleMachineSource},
 	{"%w: %s presented a token minted on the instance %s, and its entry takes the names %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "box-1", "worker-*"}, googleMachineSource},
-	{"%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", []any{exchange.ErrNoActorToken, oauthwire.ActorTokenTypeMachine}, googlePersonSource},
+	{"%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", []any{exchange.ErrNoActorToken, google.ActorTokenTypeMachine}, googlePersonSource},
 	{"%w: the actor token carries no email claim, so it names no machine (ask for it with format=full)", []any{exchange.ErrClaimMissing}, googlePersonSource},
 	{"%w: no entry lists the Google account %s, which the actor token names as the machine", []any{exchange.ErrNoEntry, corpusMachine}, googlePersonSource},
 	{"%w: the machine %s presented an actor token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, googlePersonSource},

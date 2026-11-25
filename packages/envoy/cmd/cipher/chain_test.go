@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -531,7 +531,7 @@ func (r *chainRig) assertMachineCache() {
 func machineExchanges(broker *chainBroker) []url.Values {
 	var out []url.Values
 	for _, form := range broker.exchanged() {
-		if form.Get("subject_token_type") == oauthwire.SubjectTokenTypeGoogle {
+		if form.Get("subject_token_type") == google.SubjectTokenType {
 			out = append(out, form)
 		}
 	}
@@ -665,7 +665,7 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 
 			r.mustUse()
 			exchanges := broker.exchanged()
-			if len(exchanges) != 1 || exchanges[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGoogle {
+			if len(exchanges) != 1 || exchanges[0].Get("subject_token_type") != google.SubjectTokenType {
 				t.Fatalf("the broker saw the exchanges %v; want one trading the identity token the setting names", exchanges)
 			}
 			if n := metadata.metadataIdentityRequests(); n != 1 {
@@ -1080,7 +1080,7 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 							t.Fatalf("exit %d, stdout %q, stderr %q; want the metadata source to sign", code, stdout, stderr)
 						}
 						exchanges := broker.exchanged()
-						if len(exchanges) != 1 || exchanges[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGoogle || metadata.metadataIdentityRequests() != 1 {
+						if len(exchanges) != 1 || exchanges[0].Get("subject_token_type") != google.SubjectTokenType || metadata.metadataIdentityRequests() != 1 {
 							t.Fatalf("the broker saw the exchanges %v; want one trading the metadata server's identity token, not the projected token", exchanges)
 						}
 						assertInjectedFromStore(t, store, stderr)

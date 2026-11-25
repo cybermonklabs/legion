@@ -27,7 +27,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	githubidentity "github.com/sjawhar/envoy/internal/cipher/identity/github"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -176,8 +176,8 @@ func (s *stubGitHub) seen() ([]actionsRequest, []string) {
 
 // actionsIdentity is the identity of a job GitHub gave requestToken, whose request URL is
 // requestURL, for the fixture's audience.
-func actionsIdentity(fixture actionsFixture, requestURL, requestToken string) *GitHubActionsIdentity {
-	return &GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: fixture.Audience, HTTP: HTTPClient()}
+func actionsIdentity(fixture actionsFixture, requestURL, requestToken string) *githubidentity.GitHubActionsIdentity {
+	return &githubidentity.GitHubActionsIdentity{RequestURL: requestURL, RequestToken: requestToken, Audience: fixture.Audience, HTTP: HTTPClient()}
 }
 
 // TestGitHubActionsIdentityAsksForItsAudienceWithTheRequestToken: the job asks GitHub once per
@@ -232,8 +232,8 @@ func TestGitHubActionsIdentityAsksForItsAudienceWithTheRequestToken(t *testing.T
 	if got := trades[0].Form.Get("subject_token"); got != answered[0] {
 		t.Errorf("the trade carried the subject token %q, want the one GitHub answered", got)
 	}
-	if got := trades[0].Form.Get("subject_token_type"); got != oauthwire.SubjectTokenTypeGitHub {
-		t.Errorf("the trade presented the run's token as %q, want %q", got, oauthwire.SubjectTokenTypeGitHub)
+	if got := trades[0].Form.Get("subject_token_type"); got != githubidentity.SubjectTokenType {
+		t.Errorf("the trade presented the run's token as %q, want %q", got, githubidentity.SubjectTokenType)
 	}
 }
 
@@ -249,8 +249,8 @@ func TestGitHubActionsIdentityAsksAgainForEveryToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Token: %v", err)
 		}
-		if tokenType != oauthwire.SubjectTokenTypeGitHub {
-			t.Errorf("the token type is %q, want %q", tokenType, oauthwire.SubjectTokenTypeGitHub)
+		if tokenType != githubidentity.SubjectTokenType {
+			t.Errorf("the token type is %q, want %q", tokenType, githubidentity.SubjectTokenType)
 		}
 		got = append(got, token)
 	}
@@ -282,7 +282,7 @@ func TestGitHubActionsIdentityRefusalNamesItsStatusAndNothingItWasSent(t *testin
 	if err == nil {
 		t.Fatal("the trade went ahead with a request token GitHub refused")
 	}
-	namesAll(t, "the refusal", err.Error(), ActionsIDTokenRequestURLVar, "HTTP 401")
+	namesAll(t, "the refusal", err.Error(), githubidentity.ActionsIDTokenRequestURLVar, "HTTP 401")
 	holdsNoSecret(t, "the refusal", err.Error())
 	var answer map[string]any
 	if err := json.Unmarshal(fixture.Refused.Body, &answer); err != nil {
@@ -305,7 +305,7 @@ func TestGitHubActionsIdentityRefusalNamesItsStatusAndNothingItWasSent(t *testin
 	if err == nil {
 		t.Fatal("Token answered with no GitHub to ask")
 	}
-	namesAll(t, "the failed request", err.Error(), ActionsIDTokenRequestURLVar, "connection refused")
+	namesAll(t, "the failed request", err.Error(), githubidentity.ActionsIDTokenRequestURLVar, "connection refused")
 	holdsNoSecret(t, "the failed request", err.Error())
 }
 
@@ -328,7 +328,7 @@ func TestGitHubActionsIdentityFollowsNoRedirect(t *testing.T) {
 			if err == nil {
 				t.Fatal("Token took a redirect for a token")
 			}
-			namesAll(t, "the refusal", err.Error(), ActionsIDTokenRequestURLVar, "HTTP "+strconv.Itoa(status))
+			namesAll(t, "the refusal", err.Error(), githubidentity.ActionsIDTokenRequestURLVar, "HTTP "+strconv.Itoa(status))
 			if n := asked.Load(); n != 1 {
 				t.Errorf("the request URL was asked %d times, want once", n)
 			}
@@ -365,7 +365,7 @@ func TestGitHubActionsIdentityRefusesAPlainHTTPRequestURLOffLoopback(t *testing.
 			if err == nil {
 				t.Fatal("Token asked a request URL that is not https")
 			}
-			namesAll(t, "the refusal", err.Error(), ActionsIDTokenRequestURLVar, "https")
+			namesAll(t, "the refusal", err.Error(), githubidentity.ActionsIDTokenRequestURLVar, "https")
 			holdsNoSecret(t, "the refusal", err.Error())
 			if n := sent.Load(); n != 0 {
 				t.Errorf("%d requests were sent, want none", n)
@@ -398,7 +398,7 @@ func TestGitHubActionsIdentityRefusesAnAnswerWithNoValue(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Token took %s for a token", row.body)
 			}
-			namesAll(t, "the refusal", err.Error(), ActionsIDTokenRequestURLVar, row.says)
+			namesAll(t, "the refusal", err.Error(), githubidentity.ActionsIDTokenRequestURLVar, row.says)
 			holdsNoSecret(t, "the refusal", err.Error())
 		})
 	}

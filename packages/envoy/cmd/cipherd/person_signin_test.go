@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
@@ -304,8 +305,8 @@ func mintPersonToken(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, l
 // as the subject, the machine's as the actor, and the session name the box asks to write under.
 func signInForm(personToken, machineToken, session string) url.Values {
 	form := exchangeForm(personToken, session)
-	form.Set("subject_token_type", oauthwire.SubjectTokenTypePerson)
+	form.Set("subject_token_type", google.PersonTokenType)
 	form.Set("actor_token", machineToken)
-	form.Set("actor_token_type", oauthwire.ActorTokenTypeMachine)
+	form.Set("actor_token_type", google.ActorTokenTypeMachine)
 	return form
 }

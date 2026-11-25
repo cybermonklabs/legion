@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 )
 
 // The waits of a start that waits out a refusal of its credential (WithCredentialWait): a second
@@ -145,10 +147,11 @@ func withLastRefusal(err, refusal error) error {
 
 // CredentialName names the NATS user the environment names its credential as (credential), for
 // the line an operator reads to find the user a server refused: "nkey user" and the public key of
-// a seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), the variable that names a service's token, "no
-// credential" when none is set, and the reason a credential is unusable. It never carries a seed
-// or a token: nats.Nkey keeps the public key in the options it sets, which is all this reads of
-// the seed's option.
+// a seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), the variable that names a service's token, or a
+// provider's own service-token variable in that source's words (identity.ServiceTokenSource.Named)
+// beside its value, "no credential" when none is set, and the reason a credential is unusable. It
+// never carries a seed or a token: nats.Nkey keeps the public key in the options it sets, which is
+// all this reads of the seed's option.
 func CredentialName(environment func(string) (string, bool)) string {
 	option, err := credential(environment)
 	switch {
@@ -160,8 +163,10 @@ func CredentialName(environment func(string) (string, bool)) string {
 	if file, set := environment(ServiceTokenFileEnvVar); set {
 		return "the service token " + ServiceTokenFileEnvVar + " names (" + file + ")"
 	}
-	if audience, set := environment(ServiceGoogleAudienceEnvVar); set {
-		return "the Google identity token for the audience " + strings.TrimSpace(audience)
+	for _, source := range providers.ServiceTokenSources() {
+		if value, set := environment(source.Variable); set {
+			return source.Named + " " + strings.TrimSpace(value)
+		}
 	}
 	var options nats.Options
 	if err := option(&options); err != nil || options.Nkey == "" {

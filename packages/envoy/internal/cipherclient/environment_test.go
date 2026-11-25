@@ -21,7 +21,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 // TestMachineKeyIsTheRolesKey: a role in a pod, where AGENT_SECRETS_MACHINE_IDENTITY is kubernetes
@@ -98,7 +98,7 @@ func tradeThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 	})
 	client, err := New(Config{
 		BrokerURL: broker.Address(), Key: key,
-		Subject: &scriptedSource{token: "projected.role.token", tokenType: oauthwire.SubjectTokenTypeKubernetes, describe: "the role's projected token"},
+		Subject: &scriptedSource{token: "projected.role.token", tokenType: kubernetes.SubjectTokenType, describe: "the role's projected token"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

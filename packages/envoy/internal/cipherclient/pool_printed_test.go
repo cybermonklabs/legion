@@ -1,4 +1,4 @@
-// packages/envoy/internal/cipherclient/pool_printed_test.go
+// packages/envoy/internal/cipher/identity/google/pool_printed_test.go
 //
 // What a workload identity pool identity prints of its settings, in every trade log line and
 // error that names it: the token audience as internal/redact's allow-list prints a URL, beside
@@ -17,6 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
 )
 
 // accessField is the JSON field a token service names its access token in, built from parts so no
@@ -41,17 +44,17 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 		want                          []string
 	}{
 		{"an audience URL with a user and password", "https://tokuser9f3:" + secret + "@aud.example", provider, account,
-			[]string{MachineAudienceVar, provider, account}},
+			[]string{identity.MachineAudienceVar, provider, account}},
 		{"an audience URL with a query", "https://aud.example/?key=" + secret, provider, account,
-			[]string{MachineAudienceVar, provider, account}},
+			[]string{identity.MachineAudienceVar, provider, account}},
 		{"a pool audience that is a pasted credential", "https://aud.example", secret, account,
-			[]string{"https://aud.example", PoolAudienceVar, account}},
+			[]string{"https://aud.example", google.PoolAudienceVar, account}},
 		{"a provider's resource name with more after it", "https://aud.example", provider + "?token=" + secret, account,
-			[]string{"https://aud.example", PoolAudienceVar, account}},
+			[]string{"https://aud.example", google.PoolAudienceVar, account}},
 		{"an account that is a pasted credential", "https://aud.example", provider, secret,
-			[]string{"https://aud.example", provider, PoolAccountVar}},
+			[]string{"https://aud.example", provider, google.PoolAccountVar}},
 		{"an account that is no service account's email", "https://aud.example", provider, "tokuser9f3:" + secret + "@example.iam.gserviceaccount.com",
-			[]string{"https://aud.example", provider, PoolAccountVar}},
+			[]string{"https://aud.example", provider, google.PoolAccountVar}},
 		{"control: a plain audience, a provider's resource name and a service account's email", "https://aud.example", provider, account,
 			[]string{"https://aud.example", provider, account}},
 		{"control: a service account's numeric unique id", "https://aud.example", provider, "100000000000000000001",
@@ -63,14 +66,14 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 				t.Fatal(err)
 			}
 			env := map[string]string{
-				IdentityVar: IdentityPool, MachineTokenFileVar: external, MachineAudienceVar: row.audience,
-				PoolAudienceVar: row.pool, PoolAccountVar: row.account,
+				IdentityVar: "pool", identity.MachineTokenFileVar: external, identity.MachineAudienceVar: row.audience,
+				google.PoolAudienceVar: row.pool, google.PoolAccountVar: row.account,
 			}
 			source, err := MachineIdentity(func(name string) string { return env[name] })
 			if err != nil {
 				t.Fatal(err)
 			}
-			pool := source.(*PoolIdentity)
+			pool := source.(*google.PoolIdentity)
 			pool.SecurityTokenServiceURL = newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"` + accessField + `":"federated-access-token","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600}`))
@@ -112,11 +115,11 @@ func TestPoolIdentityPrintsItsSettingsOnlyWhereTheyAreWhatTheyNameElseItsVariabl
 	// IAM Credentials' refusal of the mint names the account the same way, whether it is one
 	// (the control) or a pasted credential.
 	for _, row := range []struct{ account, want string }{
-		{secret, PoolAccountVar},
+		{secret, google.PoolAccountVar},
 		{account, "for " + account},
 	} {
 		t.Run("a refused mint for "+row.account, func(t *testing.T) {
-			pool := &PoolIdentity{
+			pool := &google.PoolIdentity{
 				Subject:  &scriptedSource{token: "external", tokenType: "urn:ietf:params:oauth:token-type:jwt", describe: "a test credential"},
 				Audience: provider, ServiceAccount: row.account, TokenAudience: "https://aud.example",
 				SecurityTokenServiceURL: newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {

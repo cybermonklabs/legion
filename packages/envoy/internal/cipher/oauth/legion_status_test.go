@@ -100,14 +100,14 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 	}{
 		{name: "the daemon's entry, an account of ACME fixing legion-daemon:ACME",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, ""), key)
 			},
 			scope: legionStatusScope,
 			caller: ciphertoken.Caller{Session: daemonSession, Person: person, Projects: []string{project},
 				ProjectScope: ciphertoken.ProjectScopeNamed, LegionStatus: true}},
 		{name: "the daemon's entry, whose trade asks for read",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				asked := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+				asked := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, "")
 				asked.Set("scope", oauthwire.ScopeRead)
 				return f.exchanged(t, asked, key)
 			},
@@ -117,38 +117,38 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 		{name: "the plain account entry, which fixes no session",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
 				f.registers(t, account, "pod-uid-plain", "implementer-g1")
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, account, "pod-uid-plain"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, account, "pod-uid-plain"), kubernetes.SubjectTokenType, "implementer-g1"), key)
 			},
 			caller: ciphertoken.Caller{Session: "implementer-g1", Person: person, Projects: []string{project}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "an account of OTHERP fixing no session, whose request names legion-daemon:OTHERP",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
 				f.registers(t, otherProjectAccount, "pod-uid-otherp", "legion-daemon:OTHERP")
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, otherProjectAccount, "pod-uid-otherp"), oauthwire.SubjectTokenTypeKubernetes, "legion-daemon:OTHERP"), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, otherProjectAccount, "pod-uid-otherp"), kubernetes.SubjectTokenType, "legion-daemon:OTHERP"), key)
 			},
 			caller: ciphertoken.Caller{Session: "legion-daemon:OTHERP", Person: person, Projects: []string{"OTHERP"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "an account of P2 fixing legion-daemon:P3",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, crossProjectAccount, "pod-uid-cross"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, crossProjectAccount, "pod-uid-cross"), kubernetes.SubjectTokenType, ""), key)
 			},
 			caller: ciphertoken.Caller{Session: "legion-daemon:P3", Person: person, Projects: []string{"P2"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "an account naming no project, fixing legion-daemon:",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, noProjectAccount, "pod-uid-noproject"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, noProjectAccount, "pod-uid-noproject"), kubernetes.SubjectTokenType, ""), key)
 			},
 			caller: ciphertoken.Caller{Session: "legion-daemon:", Person: person, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "an account of ACME fixing the role's session legion-acme-acme-1-implementer",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.podTokenOf(t, roleAccount, "pod-uid-role"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+				return f.exchanged(t, exchangeForm(f.podTokenOf(t, roleAccount, "pod-uid-role"), kubernetes.SubjectTokenType, ""), key)
 			},
 			caller: ciphertoken.Caller{Session: roleSession, Person: person, Projects: []string{project}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "a workflow of WF fixing legion-daemon:WF",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.workflowToken(t, "7001", legion), oauthwire.SubjectTokenTypeGitHub, ""), key)
+				return f.exchanged(t, exchangeForm(f.workflowToken(t, "7001", legion), github.SubjectTokenType, ""), key)
 			},
 			caller: ciphertoken.Caller{Session: "legion-daemon:WF", Person: person, Projects: []string{"WF"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "a VM entry with a person, of VM, fixing legion-daemon:VM",
 			trade: func(t *testing.T, key *ecdsa.PrivateKey) string {
-				return f.exchanged(t, exchangeForm(f.machineToken(t, vmMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, ""), key)
+				return f.exchanged(t, exchangeForm(f.machineToken(t, vmMachine, machineAudience, true), google.SubjectTokenType, ""), key)
 			},
 			caller: ciphertoken.Caller{Session: "legion-daemon:VM", Person: person, Projects: []string{"VM"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		{name: "a machine login's trade, naming legion-daemon:DEV",
@@ -190,7 +190,7 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 
 	t.Run("the daemon's entry, whose request names legion-status in its scope parameter", func(t *testing.T) {
 		before := f.count(t, "oauth_access_tokens")
-		asked := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, "")
+		asked := exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), kubernetes.SubjectTokenType, "")
 		asked.Set("scope", legionStatusScope)
 		status, body := f.exchange(t, asked, newKey(t))
 		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {

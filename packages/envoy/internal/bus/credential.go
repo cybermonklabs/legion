@@ -9,25 +9,27 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity/providers"
 	"github.com/sjawhar/envoy/natscred"
 )
 
 // The variables a process names its NATS credential with: its user's nkey seed, as a file holding
 // the seed or as the seed itself, or a service's platform identity token for a hub whose
 // connections the auth service admits (internal/cipher/natscallout), as a file holding the token
-// (a projected Kubernetes ServiceAccount token) or as the audience this VM's Google identity token
-// is minted for. NkeySeedEnvVar and the two service variables are exported for what writes a
-// process's environment.
+// (a projected Kubernetes ServiceAccount token) or through one of the identity providers' own
+// service-token variables (providers.ServiceTokenSources: the Google provider's
+// NATS_SERVICE_GOOGLE_AUDIENCE today). NkeySeedEnvVar and ServiceTokenFileEnvVar are exported for
+// what writes a process's environment; a provider's own variable is named by its registry entry.
 const (
-	nkeySeedFileVariable        = "NATS_NKEY_SEED_FILE"
-	NkeySeedEnvVar              = "NATS_NKEY_SEED"
-	ServiceTokenFileEnvVar      = "NATS_SERVICE_TOKEN_FILE"
-	ServiceGoogleAudienceEnvVar = "NATS_SERVICE_GOOGLE_AUDIENCE"
+	nkeySeedFileVariable   = "NATS_NKEY_SEED_FILE"
+	NkeySeedEnvVar         = "NATS_NKEY_SEED"
+	ServiceTokenFileEnvVar = "NATS_SERVICE_TOKEN_FILE"
 )
 
 // credential is the NATS credential this process connects as, from its environment, as the option
 // every connection of a bus client applies; nil is no credential. A service token
-// (ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar) is presented through natscred.Service, and
+// (ServiceTokenFileEnvVar, or a provider's own service-token variable) is presented through
+// natscred.Service, and
 // its keeper runs beside each connection (keepAlongside); a seed is presented as an nkey user
 // (nkeyCredential). A process connects as one identity, so a service variable set beside any
 // other credential variable is an error naming both, never a choice between them; the two seed
@@ -43,9 +45,13 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		}
 		return named
 	}
-	services, seeds := set(ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar), set(nkeySeedFileVariable, NkeySeedEnvVar)
+	serviceVariables := []string{ServiceTokenFileEnvVar}
+	for _, source := range providers.ServiceTokenSources() {
+		serviceVariables = append(serviceVariables, source.Variable)
+	}
+	services, seeds := set(serviceVariables...), set(nkeySeedFileVariable, NkeySeedEnvVar)
 	switch {
-	case len(services) == 2:
+	case len(services) > 1:
 		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], services[1])
 	case len(services) == 1 && len(seeds) > 0:
 		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], seeds[0])
@@ -60,11 +66,15 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		}
 		return keptService(reader), nil
 	}
-	if audience, ok := lookup(ServiceGoogleAudienceEnvVar); ok {
-		if strings.TrimSpace(audience) == "" {
-			return nil, fmt.Errorf("%s is set but empty", ServiceGoogleAudienceEnvVar)
+	for _, source := range providers.ServiceTokenSources() {
+		value, ok := lookup(source.Variable)
+		if !ok {
+			continue
 		}
-		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience))), nil
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("%s is set but empty", source.Variable)
+		}
+		return keptService(source.Reader(strings.TrimSpace(value))), nil
 	}
 	return nkeyCredential(lookup)
 }
