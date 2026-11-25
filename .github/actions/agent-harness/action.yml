@@ -214,13 +214,14 @@ runs:
     # The rollout a release meets first: this checkout's listeners, natsd, Dispatch and bridge with
     # pi-envoy and claude-envoy built from the base. A head that breaks the plugins main ships fails
     # here.
+    # The directory holds the held ports' unix sockets, so its name stays short (Linux: 107 bytes).
     - name: Every Envoy event reaches the base's plugins once on this checkout's hub
       if: ${{ !cancelled() && inputs.leg == 'session-scripts' && steps.base.outcome == 'success' }}
       shell: bash
       env:
         LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         BASE: ${{ steps.base.outputs.sha }}
-      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-plugins-from" bash scripts/e2e/envoy-session-delivery.sh --plugins-from "$BASE"
+      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-base" bash scripts/e2e/envoy-session-delivery.sh --plugins-from "$BASE"
 
     # The upgrade: both sessions start on the base's plugins, and window a's resume starts them on
     # this checkout's. A Legion worker makes this move when its image is re-pinned.
@@ -230,7 +231,7 @@ runs:
       env:
         LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         BASE: ${{ steps.base.outputs.sha }}
-      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-resume-plugins-from" bash scripts/e2e/envoy-session-delivery.sh --disruptions a --resume-plugins-from "$BASE"
+      run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery-resume" bash scripts/e2e/envoy-session-delivery.sh --disruptions a --resume-plugins-from "$BASE"
 
     - name: A message to a role reaches the session that claimed it
       if: inputs.leg == 'plugin-smokes'
