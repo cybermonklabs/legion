@@ -33,6 +33,10 @@ export default {
       /** The control above the outline's first row under the issue while the outline read
        *  answers older comments than it holds, which reads the next page of them (R15). */
       older_comments: "Older comments",
+      /** The control at the foot of the Contents list while the outline read answers older
+       *  comments than it holds, which reads the next page of them, the same page the control
+       *  above the outline reads (R15). */
+      contents_older: "Load older comments",
       /** The control after the last row of an outline or a view while its read answers a next
        *  page, which reads that page (R15): the count before it is how many nodes the read holds
        *  after the pages read (its `remaining`) and carries `AUTHOR_TEXT_ATTRIBUTE`, and the

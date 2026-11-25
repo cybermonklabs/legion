@@ -22,6 +22,7 @@ import type {
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -2348,14 +2349,48 @@ test("a statement carries its mark while the asks read is out", () => {
 // line the view already says it in, and the issue's sentences say nothing, rather than that the
 // spec has no summary, which the view cannot know.
 test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
+  // Below 1024 px, where the view draws the sentences as its first group: from 1024 px up the
+  // Contents pane holds them, and the view draws no group to say anything in (R13).
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const { read, view } = drawBody(issueTree([]), [], { blocks: "failed" });
   try {
     await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    expect(view.container.querySelector('[data-testid="issue-three-things"]')).not.toBeNull();
     expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
     expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
   } finally {
     view.unmount();
+    restoreMatchMedia();
     read.mockRestore();
+  }
+});
+
+// R13: from 1024 px up the Contents pane stands beside the Spec view and holds the issue's three
+// sentences, so the view draws no first group of them; below 1024 px no pane stands, and the view
+// draws them as its first group, above its first statement, so they are drawn once at each width.
+test("the Spec view draws the three sentences as its first group below 1024 px, and none beside the Contents pane from 1024 px up", () => {
+  for (const width of [PHONE_WIDTH, DESKTOP_WIDTH]) {
+    const restoreMatchMedia = stubViewport(width);
+    const { read, view } = drawBody(issueTree([statement("r1")]));
+    try {
+      const groups = view.container.querySelectorAll(
+        '[data-spec-body] [data-testid="issue-three-things"]'
+      );
+      expect(groups.length, `the Spec view's first groups at ${width} px`).toBe(
+        width === PHONE_WIDTH ? 1 : 0
+      );
+      if (width === PHONE_WIDTH) {
+        expect(
+          (groups[0] as Element).compareDocumentPosition(rowOf(view, "spec#b-r1")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+          "the sentences do not stand above the view's first statement"
+        ).toBeTruthy();
+      }
+    } finally {
+      view.unmount();
+      read.mockRestore();
+      restoreMatchMedia();
+    }
   }
 });
 

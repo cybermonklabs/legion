@@ -26,11 +26,11 @@ const LABELS = [
  * The issue's three sentences under "In short", each after its label - what it is, why it
  * matters, done when (R1, R8).
  *
- * Where the approved pictures draw them: with no view on, in `slots/contents.tsx`
- * (`look="contents"`), which the page's frame draws at the head of the Contents pane from
- * 1024 px up and in the Outline sheet below that (never above the outline, where they cost a
- * phone's first screen 160 px to 239 px); under the Spec view, as its first group
- * (`look="spec"`, `spec-filter/`). Under Verification, Plan and Decisions they are not drawn.
+ * Where they are drawn: in `slots/contents.tsx` (`look="contents"`), which the page's frame draws
+ * at the head of the Contents pane from 1024 px up beside Conversation, each filter and Graph;
+ * below 1024 px the Outline sheet draws the list and not them, and they stand above the view's
+ * first row instead (`contents-frame.tsx`' `ThreeThingsAbove`, `look="spec"`); under the Spec
+ * view below 1024 px, as its first group (`look="spec"`, `spec-filter/`).
  * The two rows the spec named under them, "How it gets done" and "What you will be shown", are
  * not drawn at any width: the Plan and Verification controls' signals say the same.
  *

@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { focusOnDocument } from "../../shell/roving";
+import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -52,6 +53,10 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
  * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
  * focus back as it leaves.
+ *
+ * Below 1024 px, where no Contents pane holds them, the issue's three sentences stand above the
+ * slot (`contents-frame.tsx`'s `ThreeThingsAbove`), but under the Spec view, whose own first
+ * group draws them (R13).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -107,6 +112,8 @@ export function StageSlot({
     <ViewReadProvider issue={props.issue} preset={preset}>
       <DocumentStages>
         <ReaderActsWatch into={acts} key={following} />
+        {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
+        <ThreeThingsAbove {...props} view={View !== undefined} />
         {View === undefined ? (
           <StageBox>
             <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
