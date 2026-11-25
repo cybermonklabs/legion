@@ -3754,3 +3754,7 @@ package api
 // (This change keeps 283 at the merge that brought main in at ac1c9a332e, which declares 275
 // (#4392's entry above), 283 being above it.)
 const DaemonAPIVersion = 283
+
+// lookNamesItsCheckContract is the contract at which a production check's look report names its
+// check by HandoffCompleteRequest's checkOpenedAt (version.go's 283).
+const lookNamesItsCheckContract = 283
