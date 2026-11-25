@@ -77,6 +77,7 @@ func registerClaimants(t *testing.T, sessions *session.SessionRegistry, count in
 // naming one of the claimants. Both then ask that the role ended held by a claimant whose interest
 // row names the role topic, since a claim that landed must not have its topic rolled back under it.
 func TestRoleSetConcurrentClaimsOfOneRoleAnswerOnlyWhatTheRouteDocuments(t *testing.T) {
+	t.Parallel()
 	const claimants = 24
 
 	for _, tc := range []struct {
@@ -164,6 +165,7 @@ type roleClaimant struct {
 // the session the standing claim gives the role to - and for the bucket to name the claim that
 // was granted, the process it was granted to among it.
 func TestConcurrentSoftClaimsOfOneUnheldRoleAreGrantedToExactlyOneProcess(t *testing.T) {
+	t.Parallel()
 	const racers = 8
 
 	for _, tc := range []struct {

@@ -119,18 +119,14 @@ const XidFaultGap = 20 * time.Millisecond
 // else. A document call put back inside a window that runs a statement of its own is caught
 // there by that rule, in either build. One that spends its time in Go alone - the rig's own
 // control, and its deliberate-fault self-tests, which inject a sleep - is caught only by a plain
-// run. So in CI a race lane checks a window's shape alone, and the gap bound is judged in plain
-// runs: the docs window tests run under -race in envoy-go-race-docs (shape) and without it in
-// envoy-go-docs-finalizers (shape and gaps); the api and delivery window tests are
-// `//go:build !race`, so no race lane runs them and envoy-go's step "Test what the race build
-// cannot run at all or at full size" runs them plain (shape and gaps); refs' runs plain in
-// envoy-go's unit step. envoy-go and envoy-go-docs-finalizers are among the slow suites the
-// changes job holds back on a pull request: each runs on a merge group (its first attempt only),
-// on a manual dispatch, and on a pull request only while it carries the label `full-ci` or its
-// own `lane:<output>` (`lane:envoy_go`, `lane:envoy_go_race_docs`), and only when its filter
-// (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is judged in the merge
-// queue before every merge, not on every pull-request push. Under the race detector the docs
-// tests that inject a sleep skip their timing arm by name.
+// run. So in CI the gap bound is judged in plain runs, and no race lane runs a window test: the
+// api, delivery and docs window tests are `//go:build !race`, and envoy-go's step "Test what the
+// race build cannot run at all or at full size" runs them plain (shape and gaps); refs' runs
+// plain in envoy-go's unit step. envoy-go is among the slow suites the changes job holds back on
+// a pull request: it runs on a merge group (its first attempt only), on a manual dispatch, and on
+// a pull request only while it carries the `full-ci` or `lane:envoy_go` label, and only when its
+// filter (envoy_go) selects the change. So the gap bound is judged in the merge queue before
+// every merge, not on every pull-request push.
 func XidJudgesGaps() bool { return XidNoGapJudgment() == "" }
 
 // xidPollInterval is how often the poller reads pg_stat_activity: the plan's 0.5 ms. A poll's own

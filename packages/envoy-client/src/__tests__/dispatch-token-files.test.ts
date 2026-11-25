@@ -508,10 +508,12 @@ describe("the dispatch command's token files", () => {
 
     // The token goes to DISPATCH_URL's origin alone, whatever URL a caller names.
     const config = activeDispatchSettings(
-      sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
-        cwd: copy.dir,
-        tokenFiles: true,
-      }).dispatch
+      (
+        await sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
+          cwd: copy.dir,
+          tokenFiles: true,
+        })
+      ).dispatch
     );
     if (config === null) throw new Error("Dispatch is off");
     const elsewhere = `http://localhost:${new URL(dispatch.url).port}/api/v1/projects`;
@@ -658,10 +660,12 @@ describe("the dispatch command's token files", () => {
     // The credential the command resolves, held for the whole loop: one process, 50 reads.
     const env = commandEnvironment(copy, dispatch.url);
     const config = activeDispatchSettings(
-      sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
-        cwd: copy.dir,
-        tokenFiles: true,
-      }).dispatch
+      (
+        await sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
+          cwd: copy.dir,
+          tokenFiles: true,
+        })
+      ).dispatch
     );
     if (config === null) throw new Error("Dispatch is off");
     const client = new DispatchClient(config.url, config.credential);
@@ -822,8 +826,8 @@ describe("the dispatch command's token files", () => {
       ],
     ] as const) {
       for (const dispatch of [
-        sessionDispatchSettings(chosen, set, { cwd: copy.dir }).dispatch,
-        sessionSettings(chosen, set, { cwd: copy.dir, nats: false }).dispatch,
+        (await sessionDispatchSettings(chosen, set, { cwd: copy.dir })).dispatch,
+        (await sessionSettings(chosen, set, { cwd: copy.dir, nats: false })).dispatch,
       ]) {
         expect([label, dispatch.enabled]).toEqual([label, false]);
         const error = dispatch.enabled ? "" : (dispatch.error ?? "");
@@ -833,7 +837,7 @@ describe("the dispatch command's token files", () => {
       }
     }
 
-    const command = sessionDispatchSettings(chosen, env, { cwd: copy.dir, tokenFiles: true });
+    const command = await sessionDispatchSettings(chosen, env, { cwd: copy.dir, tokenFiles: true });
     if (!command.dispatch.enabled) throw new Error(`Dispatch is off: ${command.dispatch.error}`);
     expect(command.dispatch.url).toBe(url);
     expect(command.dispatch.credential.scheme).toBe("DPoP");
