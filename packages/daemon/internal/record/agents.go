@@ -20,7 +20,7 @@ import (
 // changes its name and no two agents of the version share one.
 //
 // A name a key held is that key's alone, in every later version and generation, whatever release
-// wrote the rows (keyHolders, from earlier and held by one rule): no step with no key and no other
+// wrote the rows (keyNamesHeld, from earlier and held by one rule): no step with no key and no other
 // key takes it, so no agent but that key ever runs in the name's claim and resumes its session. A
 // key the version no longer names keeps its name for its return; the agent that would have taken
 // it is left with no name.
