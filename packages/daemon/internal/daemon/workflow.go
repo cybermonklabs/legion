@@ -314,6 +314,9 @@ type workflowRuntime struct {
 	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	// dropFirstReadFailure, set only by tests, ends a climb on a read that failed with nothing to
+	// follow, as a climb ended before it read again after a failure (climbMergeState).
+	dropFirstReadFailure bool
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices

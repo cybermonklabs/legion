@@ -284,7 +284,7 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 			"head1 passed every check run; failed commit status ci/untested-draft"},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
-			if got := settlementDetail(shape.fact); got != shape.detail {
+			if got := settlementDetail(shape.fact, ciNextOf{}); got != shape.detail {
 				t.Fatalf("settlementDetail = %q, want %q", got, shape.detail)
 			}
 			rig := newWakeRig(t)
@@ -315,7 +315,7 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 		{"a failed check run and no failed status", checks([]string{"build"}, nil, status("deploy", "success", 1)), "head1 failed build"},
 		{"a cancelled check run and no status", checks(nil, []string{"build"}), "head1 had build cancelled"},
 	} {
-		if got := settlementDetail(today.fact); got != today.detail {
+		if got := settlementDetail(today.fact, ciNextOf{}); got != today.detail {
 			t.Errorf("%s: settlementDetail = %q, want today's %q", today.name, got, today.detail)
 		}
 	}

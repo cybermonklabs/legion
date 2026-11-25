@@ -189,22 +189,87 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
-	// noFixRule takes the fix rule out of the tail of every fact (apply), everyRoleToldCI tells a
-	// CI settlement of a task that takes a fix to every role, as for any other task (tellChecks),
+	// noFixRule takes the fix rule out of the tail of every fact (apply),
 	// fixStartInLine writes a fix's start into the line of starts that wait for a slot, as
 	// every other start is written (started), noWayKept leaves the way a fix took unwritten
 	// (afterFix), noEndHold holds no task's end for its CI (retroHold), noFixJoin takes out the
 	// fix rule's join of a failure to the fix that runs (fixFailure), and wayMarkRunningOnly marks
-	// only a running fix as taking no way at a stop, a leave or a new generation (dropFixWay). Only
-	// a test sets any of them, as the control of the rule it takes out.
-	noFixRule          bool
-	everyRoleToldCI    bool
-	fixStartInLine     bool
-	noWayKept          bool
-	noEndHold          bool
-	noFixJoin          bool
-	wayMarkRunningOnly bool
+	// only a running fix as taking no way at a stop, a leave or a new generation (dropFixWay).
+	//
+	// For the one writer of a task's branch: mergeForwardBesideFix asks a confirmed conflict while
+	// a fix holds the branch (mergeForward); waitForOwedMerge opens no fix while the implementer
+	// owes the merge of the head (openFix); mergeOutsideFix leaves an owed merge outside the fix,
+	// neither taken nor named in its task (takeOwedMerge, startFacts); ordinaryMergeAfterTakeover
+	// names the owed merge in the fix's task but takes no ownership of it, so its messages, its
+	// landing and its completion fence are a merge no fix took (takeOwedMerge); noAskAtWay reads
+	// no conflict again at the way after a fix, and askAtWayWithNoRules asks it there at once,
+	// with no rules read (mergeForwardAfterFix). wayFromRecordedHead moves the step the way after a
+	// fix starts to the head the record holds, not to the fix's own end (afterFix). Only a test sets
+	// any of them, as the control of the rule it takes out.
+	noFixRule                  bool
+	fixStartInLine             bool
+	noWayKept                  bool
+	noEndHold                  bool
+	noFixJoin                  bool
+	wayMarkRunningOnly         bool
+	mergeForwardBesideFix      bool
+	waitForOwedMerge           bool
+	mergeOutsideFix            bool
+	ordinaryMergeAfterTakeover bool
+	noAskAtWay                 bool
+	askAtWayWithNoRules        bool
+	wayFromRecordedHead        bool
+	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
+	// into the retro with no hold queues, at a transition and at the release of an end hold
+	// (queueTaskEnd). Only a test sets it.
+	noEndBesideDelete bool
+
+	// For a task's CI news (ci_news.go), each the fault its test plants first: assignFromSettlement
+	// gives the implementer a repair assignment of each failed run of a settlement (reportRuns);
+	// stateFromSettlement writes yes for a check whose run the settlement says succeeded
+	// (reportRuns); textDedupe reports no settlement whose text is the text before, and
+	// alsoRoleMessage tells main's settlement message beside the report (tellChecks);
+	// dropBesideFix reports no settlement while a fix is open, waitForJobName none while the open
+	// fix holds no job's name, and runsBeforeLost takes the record as holding no run and no status
+	// before the settlement (reportRuns); implementerInMerging reports to the implementer in
+	// merging too (ciReceivers); noHeadFence prompts at a head the task has left, noPromptJoin
+	// queues each prompt as a row of its own, and omitEmptyCheckSet drops a replacement of the
+	// head's set by no check (promptReaders); readersAtSettlement prompts the readers the last
+	// report chose, held in settlementReaders, and readersAsReceivers the report's receivers,
+	// whether their step runs or not (ciReaders); fixInMerging starts a fix for a failure in
+	// merging (fixFailure); tellCIFailureBesideFix tells a task that takes a fix of its failed CI
+	// job as any other task (tellCIFailure); noNextRead reads nothing of what Legion does next,
+	// nextByHoldAlone reads it from a hold for the fix alone, and noTestedHeadRead names no tested
+	// head (ciNext). Only a test sets any of them.
+	assignFromSettlement   bool
+	stateFromSettlement    bool
+	textDedupe             bool
+	alsoRoleMessage        bool
+	dropBesideFix          bool
+	waitForJobName         bool
+	runsBeforeLost         bool
+	implementerInMerging   bool
+	noHeadFence            bool
+	noPromptJoin           bool
+	omitEmptyCheckSet      bool
+	readersAtSettlement    bool
+	settlementReaders      map[string][]ciReader
+	readersAsReceivers     bool
+	fixInMerging           bool
+	tellCIFailureBesideFix bool
+	noNextRead             bool
+	nextByHoldAlone        bool
+	noTestedHeadRead       bool
 }
+
+// WithoutEmptyCheckSet sets the seam omitEmptyCheckSet on e: a prompt to read Dispatch names no
+// replacement of the head's set by no check (promptReaders). Only tests call it, as the control of
+// the removal of a head's last check on an engine another package builds.
+func (e *Engine) WithoutEmptyCheckSet() { e.omitEmptyCheckSet = true }
+
+// WithoutEndHold sets the seam noEndHold on e: no task's end is held for its CI (retroHold). Only
+// tests call it, as the control of the end hold on an engine another package builds.
+func (e *Engine) WithoutEndHold() { e.noEndHold = true }
 
 var _ intake.Handler = (*Engine)(nil)
 
@@ -1184,9 +1249,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// fenced: it moves nothing, and its handoff is the report of the work the role did before the
 	// move, which the next phase reads (leftItsPhase) and no later completion can make again,
 	// since the review a landed merge forward asks of the reviewer is made with none
-	// (record.MergeForwardReview).
+	// (record.MergeForwardReview). The fence is judged for the task of the issue's walk, whose fix
+	// may have taken a merge forward as its own (mergedForwardRefusal, fixOwns).
 	if current {
-		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+		task := ""
+		if pr != nil && pr.MergeForward != nil {
+			w, err := e.walk(ctx, tx, *issue)
+			if err != nil {
+				return intake.Result{}, err
+			}
+			task = w.Task
+		}
+		if refusal, fenced := mergedForwardRefusal(*issue, task, fact.Role, reported, fact.Commit, pr); fenced {
 			return refusal, nil
 		}
 	}

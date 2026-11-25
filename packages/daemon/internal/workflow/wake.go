@@ -227,14 +227,17 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// The workers of the pod's open phase are woken (OpenRoles): the settlement is their business and
-// no one else's, and an architect reads it from its own notices. That is the worker of the issue's
-// phase, and the implementer while a fix runs beside its step. A head that settles again as each
-// of its checks finishes wakes the pod no second time, because each role's resume is still open.
+// On a task that takes a fix (record.PlanTask.FixesCI) it wakes nobody itself: the listener's
+// report of the settlement (reportRuns) names each current reader, and the outbox wakes a released
+// one as it delivers the row. On every other task the worker of the pod's open phase is woken
+// (OpenRoles): the settlement is its business and no one else's, and an architect reads it from
+// its own notices. A head that settles again as each of its checks finishes wakes the pod no
+// second time, because the role's resume is still open. The wake's detail names what Legion
+// itself does next for the task where it acts next (ciNext, settlementDetail), the same act the
+// role's report of the settlement names.
 //
-// It answers the worker of the issue's phase where this call woke it, which tellChecks then tells
-// nothing, and "" otherwise. A fix's implementer it woke is not answered: a fix runs only on a task
-// that takes a fix (record.PlanTask.FixesCI), whose settlement tellChecks tells the owner alone.
+// It answers the role this call woke, which tellChecks then tells no role message, and ""
+// otherwise.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -249,6 +252,13 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
+		return "", err
+	}
+	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
+		return "", err
+	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
 		return "", err
 	}
 	// A role is the settlement's to tell only when this call is what woke it: a wake another
@@ -271,11 +281,15 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		if !found || released.ServingGeneration != issue.Generation {
 			continue
 		}
-		woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+		next, err := e.ciNext(ctx, tx, *issue, w, role)
 		if err != nil {
 			return "", err
 		}
-		if woken && !FixWork(*issue, role) {
+		woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact, next), e.now())
+		if err != nil {
+			return "", err
+		}
+		if woken {
 			phaseWorker = role
 		}
 	}
@@ -313,10 +327,19 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // gave before, word for word (dispatch://INFRA-4135 R3), whatever other word GitHub gave each
 // run: the word of a check that passed (success or neutral, which R1 counts as passed) adds
 // nothing to `passed every check`, and the CI message is where each check is named by its word.
-func settlementDetail(fact intake.PullRequestChecks) string {
+//
+// Where Legion itself acts next for the task (next, ciNext), the detail names GitHub's conclusion
+// of each run and each commit status of the settlement, as the report of it names them, and the
+// sentence of that act (nextSentence), and never passedEveryCheck: a woken role that read a pass
+// there could take for its own act what Legion decides. Where next names nothing, the detail is
+// the one above.
+func settlementDetail(fact intake.PullRequestChecks, next ciNextOf) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
 		head = head[:12]
+	}
+	if next.Next != record.CINextNone {
+		return head + " concluded " + githubConclusions(fact) + "; " + strings.TrimSuffix(nextSentence(next), ".")
 	}
 	var failed []string
 	for _, status := range fact.Statuses {
@@ -345,9 +368,9 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 	case len(skipped) > 0:
 		detail = head + " had no failed or cancelled check"
 	case len(failed) > 0:
-		detail = head + " passed every check run"
+		detail = head + " " + passedEveryCheck + " run"
 	default:
-		return head + " passed every check"
+		return head + " " + passedEveryCheck
 	}
 	if len(skipped) > 0 {
 		detail += "; skipped " + strings.Join(skipped, ", ") + ": " + skippedRanNothing
@@ -360,6 +383,45 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 	default:
 		return detail + "; failed commit statuses " + strings.Join(failed, ", ")
 	}
+}
+
+// passedEveryCheck is what a wake's detail says of a settlement that names no check failed,
+// cancelled or skipped (settlementDetail), and never where Legion itself acts next for the task.
+const passedEveryCheck = "passed every check"
+
+// githubConclusions is each run of fact by its name, quoted, and the word GitHub gave it where the
+// settlement carried one, else the conclusion its lists give it (shownAs), in name order, then
+// each commit status it names with its state (namedStatuses).
+func githubConclusions(fact intake.PullRequestChecks) string {
+	shown := make(map[string]string, len(fact.CheckRuns))
+	for _, run := range fact.CheckRuns {
+		conclusion := record.RunSucceeded
+		switch {
+		case slices.Contains(fact.Failing, run.Name):
+			conclusion = record.RunFailed
+		case slices.Contains(fact.Cancelled, run.Name):
+			conclusion = record.RunCancelled
+		case run.Conclusion == record.RunSkipped:
+			conclusion = record.RunSkipped
+		}
+		shown[run.Name] = shownAs(run, conclusion)
+	}
+	for _, name := range fact.Failing {
+		if _, ok := shown[name]; !ok {
+			shown[name] = string(record.RunFailed)
+		}
+	}
+	for _, name := range fact.Cancelled {
+		if _, ok := shown[name]; !ok {
+			shown[name] = string(record.RunCancelled)
+		}
+	}
+	statuses := slices.Clone(fact.Statuses)
+	slices.SortFunc(statuses, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	if len(shown) == 0 {
+		return "no check run" + namedStatuses(statuses)
+	}
+	return namedConclusions(shown) + namedStatuses(statuses)
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the

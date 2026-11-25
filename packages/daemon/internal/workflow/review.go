@@ -26,7 +26,9 @@ import (
 // the tester reads no CI, the implementer is told of a failed check a CI job runs by its own
 // message (tellCIFailure, INFRA-4843 R15a), and the reviewer and the architect read CI's state. A
 // failed check that a CI job runs is judged by Dispatch's check states instead, and for a task
-// that takes a fix the fix rule starts the fix (fixRule).
+// that takes a fix the fix rule starts the fix (fixRule). The record as it stood before the
+// settlement is kept for the report of a task that takes a fix, which names only what the
+// settlement newly put on it (reportRuns).
 //
 // It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
 // does not apply is named by one INFO line once the fact commits, since a pull request whose head
@@ -60,6 +62,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// intake.PullRequestChecks.StatusesUnread).
 	candidate := settlementCandidate(fact)
 	told := settledChecks(*pr)
+	before := *pr
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
 		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
@@ -101,7 +104,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
+	return intake.Result{}, e.tellChecks(ctx, tx, before, pr, told, woken)
 }
 
 // settlementCandidate is the settlement fact as the apply step reads it, and the one place it is
@@ -314,7 +317,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		}
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
+			if err := e.mergeForward(ctx, tx, *issue, w, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
@@ -520,39 +523,49 @@ func namedStatuses(statuses []record.CommitStatus) string {
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
-// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on and
-// asks nobody anything of it, no re-run, no wait and no fix, since the tester reads no CI
-// (INFRA-4843 R17a) and each other role's prompt says what it does with CI's state
-// (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
-// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. In merging the implementer is not told: the merge and what breaks
-// it are the merger's to decide, and the merger asks the implementer when it needs it
-// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
-// A task whose run takes a fix (record.PlanTask.FixesCI) tells the architect alone: the fix rule
-// gives each failure to the step that holds it, or starts a fix (fixRule), so neither the worker
-// of the phase nor the implementer gets the settlement beside it.
-// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
+// request's head says, and moves nothing: the daemon passes the CI result on and asks nobody
+// anything of it, no re-run, no wait and no fix, since the tester reads no CI (INFRA-4843 R17a)
+// and each other role's prompt says what it does with CI's state (dispatch://INFRA-714/spec R1).
+// before is the record as it stood before the settlement was applied, pr the record after it.
+// The receivers are three roles (ciReceivers) - the worker holding the issue's phase, the
+// implementer, whose code the checks ran on, and the architect that owns the issue
+// (owningArchitect) - each on its own role topic, the way the daemon reaches a role holder with a
+// message. In merging the implementer is not told: the merge and what breaks it are the merger's
+// to decide, and the merger asks the implementer when it needs it (cybermonklabs/legion#4979). A
+// held issue keeps the worker of Hold.From (record.StandsAt). A role named twice, the implementer
+// holding the phase, is told once, and a phase no worker holds names none (addressRoles). Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
 // suspended there, so the settlement is recorded and nobody is told.
 //
-// A role whose released pod this same settlement woke is told nothing: its wake task already
-// names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
-// would reach it as a second wake of one release, described to the worker as something somebody
-// published to its role topic. woken is that role, "" when the settlement woke nobody, and every
-// other role — a live one, and one the wake did not reach — is told as before.
+// A task whose run takes a fix (record.PlanTask.FixesCI) gets the listener's report instead
+// (reportRuns): each receiver one row of the runs and statuses the settlement newly put on the
+// record, which assigns nothing, since Dispatch's state of each check decides and the fix rule
+// alone assigns a repair (fixRule).
+//
+// Every other task is told as main tells it: told is what the settlement standing for the head
+// said before this one (settledChecks), so a second settlement of the same head that leaves the
+// same conclusions tells nobody again, and so does a settlement that stands for no head. Each
+// receiver gets the settlement's line in one role message (record.RoleMessage), but where Legion
+// itself acts next for the task (ciNext: the task held at its end for its CI or for its fix, a fix
+// that runs, the testing move waiting for Dispatch's states), which then gets one report of the
+// settlement's runs and statuses naming that act (record.CINews with Next) in its place, so no
+// receiver is told to decide what Legion decides. A settlement that reports no run and no status
+// has nothing such a report can carry, and is told by the role message.
+//
+// A role whose released pod this same settlement woke is told no role message: its wake task
+// already names the settlement (WakeTask with pods.WakeChecks), and a message about the same
+// settlement would reach it as a second wake of one release, described to the worker as something
+// somebody published to its role topic. woken is that role, "" when the settlement woke nobody,
+// and every other role — a live one, and one the wake did not reach — is told as before. A
+// report that names what Legion does next reaches the woken role all the same: it carries the act
+// the wake's detail names (settlementDetail), and as a row of no reader it is finished undelivered
+// for a released claim, as a role message is.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, before record.PullRequest, pr *record.PullRequest, told string, woken claim.Role) error {
 	settled := settledChecks(*pr)
-	if settled == "" || settled == told {
-		return nil
-	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return err
@@ -560,50 +573,51 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
-	// while its claim holds its role, else the nearest one above it that does, else the tree
-	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
-	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
-	// own released claim, which holds its role and so is that owner too.
-	recipients := []roleRecipient{}
-	if woken != claim.RoleArchitect {
-		owner, err := e.owningArchitect(ctx, tx, *issue)
-		if err != nil {
-			return err
-		}
-		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return err
 	}
-	// A task whose run takes a fix hears of a failure from the fix rule (fixRule), which tells the
-	// step that holds it, or starts the fix: the settlement goes to the owner alone, so the
-	// implementer never gets a failure as a second task beside its fix.
 	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
 		return err
 	}
-	var roles []claim.Role
-	if !fixesCI || e.everyRoleToldCI {
-		roles = append(roles, RoleFor(record.StandsAt(*issue)))
-		if !record.StandsIn(*issue, phase.Merging) {
-			roles = append(roles, claim.RoleImplementer)
+	if fixesCI {
+		if e.textDedupe && (settled == "" || settled == told) {
+			return nil
 		}
-	}
-	for _, role := range roles {
-		if role == claim.RoleArchitect || role == woken {
-			continue
-		}
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
-	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
-	if err != nil {
-		return err
-	}
-	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settled)
-	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		if err := e.reportRuns(ctx, tx, *issue, w, before, *pr); err != nil || !e.alsoRoleMessage {
 			return err
 		}
 	}
-	return nil
+	if settled == "" || settled == told {
+		return nil
+	}
+	recipients, err := e.ciReceivers(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	runs, statuses := settledRuns(*pr)
+	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settled)
+	return e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
+		var next ciNextOf
+		if !fixesCI {
+			if next, err = e.ciNext(ctx, tx, *issue, w, to.role); err != nil {
+				return err
+			}
+		}
+		if next.Next == record.CINextNone || (len(runs) == 0 && len(statuses) == 0) {
+			if to.role == woken {
+				return nil
+			}
+			return e.enqueue(ctx, tx, to.row, record.RoleMessage{Role: string(token), Body: body})
+		}
+		if next.Tested == pr.CheckedHead {
+			next.Tested = ""
+		}
+		return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsRuns, Role: string(token), Generation: issue.Generation,
+			Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: pr.CheckedHead, Next: next.Next, Tested: next.Tested,
+			Runs: runs, Statuses: statuses, Body: runsBody(issue.Key, pr.Number, pr.CheckedHead, runs, statuses, next)})
+	})
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner

@@ -175,10 +175,11 @@ func (r *fixRig) settledWakes() []string {
 	return roles
 }
 
-// A CI settlement of the head wakes both released roles of the pod while the fix runs beside the
-// review: the reviewer, the worker of the issue's phase, and the implementer, which runs the fix.
-// Each comes back with the one task that names the settlement, and each wake is recorded. The
-// control, kept: once the fix ended, the settlement wakes the reviewer alone.
+// A CI settlement of the head on a task that takes a fix wakes nobody itself while the fix runs
+// beside the review: its reports name each current reader, the fix the implementer runs and the
+// reviewer's step, and those rows wake their released readers when the outbox delivers them. The
+// control, kept: on a task that takes no fix the same settlement wakes the worker of the issue's
+// phase, the reviewer, as main wakes it.
 func TestACISettlementWakesTheFixAndTheReviewer(t *testing.T) {
 	settle := func(r *fixRig) {
 		r.engine.cfg.Pods = wakePods(t, r.pool)
@@ -188,24 +189,25 @@ func TestACISettlementWakesTheFixAndTheReviewer(t *testing.T) {
 			Snapshot: fixHead + "-snapshot", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}}, Failing: []string{"build"}})
 	}
 
-	t.Run("both roles wake", func(t *testing.T) {
+	t.Run("the reports name each reader and the settlement wakes nobody", func(t *testing.T) {
 		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 		settle(r)
-		assertStrings(t, "the settlement's wakes", r.settledWakes(), []string{string(claim.RoleReviewer), string(claim.RoleImplementer)})
-		resumes := wakeResumes(t, r.pool)
-		if len(resumes) != 2 || resumes[0] != [2]string{string(claim.RoleReviewer), pods.WakeChecks} ||
-			resumes[1] != [2]string{string(claim.RoleImplementer), pods.WakeChecks} {
-			t.Fatalf("pod resumes = %v, want the reviewer's and the implementer's settlement wakes", resumes)
+		assertStrings(t, "the settlement's wakes", r.settledWakes(), nil)
+		if resumes := wakeResumes(t, r.pool); len(resumes) != 0 {
+			t.Fatalf("pod resumes = %v, want none: the reports wake their readers", resumes)
 		}
+		assertStrings(t, "the reports", r.news(record.CINewsRuns), []string{"architect next=fix-runs",
+			"implementer " + r.fixReader() + " next=fix-runs", "reviewer " + r.stepReader(claim.RoleReviewer, phase.Reviewing) + " next=fix-runs"})
 	})
 
-	t.Run("the control: once the fix ended, the reviewer alone", func(t *testing.T) {
-		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
-		if result := r.apply("fix-done", fixCompletion(fixHead)); result.Refusal != nil {
-			t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
-		}
+	t.Run("the control: on a task that takes no fix the settlement wakes the reviewer", func(t *testing.T) {
+		r := reviewing(t)
+		r.releaseBefore()
 		settle(r)
 		assertStrings(t, "the settlement's wakes", r.settledWakes(), []string{string(claim.RoleReviewer)})
+		if resumes := wakeResumes(t, r.pool); len(resumes) != 1 || resumes[0] != [2]string{string(claim.RoleReviewer), pods.WakeChecks} {
+			t.Fatalf("pod resumes = %v, want the reviewer's settlement wake", resumes)
+		}
 	})
 }
 
