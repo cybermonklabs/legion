@@ -27,7 +27,8 @@ const (
 // ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
 // DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
 // issue's status, to take the legion label off an issue, or to move a Legion issue out from
-// under every labelled issue. The secrets broker grants it to the daemon's token alone, and
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
 // It is not in Scopes, and it must stay out. The browser's credential, the personal-token check

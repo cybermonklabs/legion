@@ -2691,7 +2691,7 @@ describe("executeDispatchTool", () => {
     // it, so neither answer may send it to issue-update.
     const claimed = await run({ issue: "DSP-1" });
     expect(claimed.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), and otherwise the daemon undoes it"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(claimed.text).not.toContain("issue-update");
     expect(claimed.text).toContain(
@@ -2700,7 +2700,7 @@ describe("executeDispatchTool", () => {
 
     const released = await run({ issue: "DSP-1", release: true });
     expect(released.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), and otherwise the daemon undoes it"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(released.text).not.toContain("issue-update");
     expect(released.text).not.toContain("now reach you directly");

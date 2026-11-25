@@ -1433,9 +1433,10 @@ issue: `true` renders `DISPATCH_LEGION_STATUS_SCOPE=on` on the `envoy-dispatch` 
 in every mode that runs Dispatch, right after `DISPATCH_PARENT_STATUS_RULE` (or where that
 variable would be). The three writes are a write of the issue's status, the removal of its
 `legion` label, and a move that leaves it under no labelled issue. With it Dispatch refuses
-them to a credential that holds neither the `person` scope nor `legion-status`. A Legion issue
-carries the `legion` label, in any letter case, or is under an issue that carries it. The setting's
-row in `packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
+them to a credential that holds neither the `person` scope nor `legion-status`, but for the
+status write of the architect of an issue above. A Legion issue carries the `legion` label, in
+any letter case, or is under an issue that carries it. The setting's row in
+`packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
 place of the procedure: which releases to deploy first, and the four conditions on each project's
 Legion daemon and controller under which an operator sets the input. The refusal needs no
 one-time step and no crossing: a pod with the setting off beside one with it on takes those writes

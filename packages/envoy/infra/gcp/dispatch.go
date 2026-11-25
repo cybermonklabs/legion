@@ -258,7 +258,8 @@ type DispatchArgs struct {
 	// LegionStatusScope renders DISPATCH_LEGION_STATUS_SCOPE=on, which turns on Dispatch's refusal
 	// of three writes of a Legion issue from a credential that holds neither the person scope nor
 	// legion-status: a write of its status, the removal of its legion label, and a move that leaves
-	// it under no labelled issue. Set it only once the four conditions of the setting's row hold
+	// it under no labelled issue, but for the status write of the architect of an issue above. Set
+	// it only once the four conditions of the setting's row hold
 	// (packages/envoy/cmd/dispatch/settings.go). Unset renders nothing, so a deployment that
 	// leaves it unset renders what it always rendered.
 	LegionStatusScope bool `pulumi:"legionStatusScope,optional"`

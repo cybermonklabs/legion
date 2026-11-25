@@ -43,9 +43,9 @@ const (
 	// token of an account entry that names a project and fixes the session legion-daemon:<that
 	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
 	// it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE refuses that write to
-	// others. The entry decides it, never the request: the exchange client is not registered for
-	// it, so the library refuses a request that names it invalid_scope. A resource server that
-	// does not read the word accepts the token and ignores it.
+	// others but the architect of an issue above. The entry decides it, never the request: the
+	// exchange client is not registered for it, so the library refuses a request that names it
+	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
 	ScopeLegionStatus = "legion-status"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.

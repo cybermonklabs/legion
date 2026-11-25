@@ -152,8 +152,9 @@ type Deps struct {
 	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
 	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
 	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
-	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus. False
-	// refuses none of them, which is every deployment that has not turned it on.
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus, but for the
+	// status write of the architect of an issue above (legion_status_scope.go). False refuses none
+	// of them, which is every deployment that has not turned it on.
 	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the

@@ -1274,8 +1274,9 @@ export class DispatchClient {
    *  `legion` label in any case or sits under one that does. On such an issue, where Dispatch
    *  runs with `DISPATCH_LEGION_STATUS_SCOPE` on, it refuses a status write from a credential
    *  that holds neither the `person` nor the `legion-status` scope
-   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`). Otherwise the daemon undoes a status anyone else
-   *  writes. */
+   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`), but for `done`, `backlog`, `icebox` or `triage` from
+   *  an architect of an issue above with its own broker token. Otherwise the daemon undoes a
+   *  status anyone else writes. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
     return this.#json(
       "POST",

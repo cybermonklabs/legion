@@ -849,7 +849,8 @@ type Config struct {
 	// fixed session is legion-daemon:<its own project> is a Legion daemon's own: the token minted
 	// for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
 	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
-	// needs it or the person scope. No other token the exchange mints holds legion-status,
+	// needs it or the person scope, but for one of the architect of an issue above, which writes
+	// with its own broker token. No other token the exchange mints holds legion-status,
 	// whatever session it carries. The session is everything after the third "=", so it alone
 	// may carry one. A namespace's default account is refused, as is an account listed twice.
 	// Needs BROKER_K8S_OIDC_ISSUER and

@@ -60,7 +60,8 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // write made stale. The third is R26's refusal (legion_status_scope.go). Where
 // DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs the person scope or the legion-status
 // scope to write the status of an issue that this label makes a Legion issue, to take this label
-// off an issue, or to move a Legion issue out from under every labelled issue.
+// off an issue, or to move a Legion issue out from under every labelled issue, but for the status
+// write of the architect of an issue above.
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by

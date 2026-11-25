@@ -215,7 +215,8 @@ type bootConfig struct {
 	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE=on. It turns on the refusal of three
 	// writes of a Legion issue from a credential that holds neither the person scope nor
 	// legion-status: a write of its status, the removal of its legion label, and a move that
-	// leaves it under no labelled issue. Unset or off, it is false (api.Deps.LegionStatusScope).
+	// leaves it under no labelled issue, but for the status write of the architect of an issue
+	// above (api's legion_status_scope.go). Unset or off, it is false (api.Deps.LegionStatusScope).
 	LegionStatusScope bool
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in

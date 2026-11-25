@@ -2509,8 +2509,8 @@ A later decision of that claim, such as a second stop, makes that write again on
 Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 **Who can write the set.**
-The route takes a write that names the actor `legion-daemon:<project>`.
-Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
+The route takes a write that names the actor `legion-daemon:<project>`, and with Dispatch's `DISPATCH_LEGION_STATUS_SCOPE` on only one from the daemon's own broker token.
+Before the airlock, Dispatch takes the session that a bearer caller names, so with that setting off any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
 The airlock closes that case.
 
 **A row of the new kind can stay through a rollback.**
@@ -2528,6 +2528,7 @@ delete from outbox where kind = 'role_holders_publish';
 While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, Dispatch also reads the set to let an architect's status write through (R26), and an earlier daemon leaves each stored set as it stands, so turn that setting off before such a rollback.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it

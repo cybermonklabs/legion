@@ -61,8 +61,9 @@ service, and Dispatch records its writes under that account. An entry that names
 its person, so no token held to a project is personless. An entry whose fixed session is
 `legion-daemon:<its own project>` is a Legion daemon's own, and its token holds the OAuth scope
 `legion-status` too. Dispatch reads that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that
-setting is on, a write of a Legion issue's status needs it or the `person` scope. No other token
-the exchange mints holds `legion-status`, whatever session it carries. A read entry, of
+setting is on, a write of a Legion issue's status needs it or the `person` scope, but for one of
+the architect of an issue above, which writes with its own broker token. No other token the
+exchange mints holds `legion-status`, whatever session it carries. A read entry, of
 `BROKER_EXCHANGE_READ_ACCOUNTS`, gives the pod's token a service and a fixed session instead, and
 no person and no project: the token holds the OAuth scope `read` alone. Dispatch serves such a
 token on the GET routes it classes as reads, and refuses it on every other route with
