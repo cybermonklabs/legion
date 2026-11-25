@@ -103,7 +103,7 @@ func TestRouteProbesNameEachGETRowsReadClasses(t *testing.T) {
 	classed, wrong := 0, []string{}
 	for _, row := range rows {
 		name := row.Method + " " + row.Pattern
-		entry, read := readClasses[name]
+		entry, read := readSources[name]
 		var want []string
 		for _, class := range entry.Classes {
 			want = append(want, string(class))

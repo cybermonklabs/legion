@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // rowDeadline is the deadline every wait of these rows takes: the test binary's, less
@@ -80,6 +81,7 @@ func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockP
 // registration takes no gate. The gate is read held first, so a row that took it would wait here
 // for the registration's 5 seconds and fail.
 func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -129,7 +131,7 @@ func mustDialPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 	if err != nil {
 		t.Fatalf("connect a page presenting %v: response=%#v err=%v", query, response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	return connection
 }
 
@@ -265,7 +267,7 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	if err != nil {
 		t.Fatalf("stage the future block as creatable: %v", err)
 	}
-	t.Cleanup(restoreCreatable)
+	testcleanup.Add(t, restoreCreatable)
 	markdown := "# First\n"
 	if future {
 		markdown += "\n:::future{#future-1}\nBody.\n:::\n"
@@ -281,10 +283,10 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restoreUncreatable)
+	testcleanup.Add(t, restoreUncreatable)
 	service := newTestServiceOn(t, database)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return service, artifactID, server
 }
 
@@ -548,7 +550,7 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 	if err != nil {
 		t.Fatalf("connect a slow page presenting %v: response=%#v err=%v", query, response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	// ygo sends a joining peer the room's state only in answer to that peer's own sync step 1
 	// (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go, reearth/ygo#342), so a page that
 	// asks for nothing is owed nothing and the writes below would never fill its buffer. The
@@ -575,7 +577,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restore)
+	testcleanup.Add(t, restore)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, bigDocumentMarkdown())
@@ -586,7 +588,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	accepted := &recordingListener{Listener: server.Listener, kernelSendBuffer: true}
 	server.Listener = accepted
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	// A page one version older represents everything this fleet creates, so its socket is
 	// admitted writable; it reads nothing, so the sync message stays part way out.
@@ -689,7 +691,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restore)
+	testcleanup.Add(t, restore)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	slowPage := schemaPage{version: version - 1, creatable: creatable, valid: true}
 	slowQuery := page(slowPage.version, slowPage.creatable)
@@ -703,7 +705,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	accepted := &recordingListener{Listener: server.Listener}
 	server.Listener = accepted
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	// The writer presents this build's numbers, which the fleet below still admits writable, so
 	// the re-check leaves its socket open. It stays connected to make the edit after the revoke.
@@ -860,6 +862,7 @@ func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAt, closedAt tim
 // writes: only an admission-revoked close frame attempted after the revoke and while the socket
 // was still open explains its end. The times are a trace's own instants, a millisecond apart.
 func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
+	t.Parallel()
 	at := func(ms int) time.Time { return time.Unix(0, 0).Add(time.Duration(ms) * time.Millisecond) }
 	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
 	otherClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, 1001))
@@ -944,7 +947,7 @@ func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, rev
 func admitSchemaSocket(t *testing.T, service *Service, room, token string, presented schemaPage, writable bool) (context.Context, *schemaAdmission) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	t.Cleanup(func() { cancel(nil) })
+	testcleanup.Add(t, func() { cancel(nil) })
 	admission := &schemaAdmission{
 		key:      schemaAdmissionKey{room: room, token: token},
 		page:     presented,
@@ -965,6 +968,7 @@ func admitSchemaSocket(t *testing.T, service *Service, room, token string, prese
 // - whichever of the two asks first. Matching a token to a socket by its key, or by the order the
 // two arrive in, answers one of these orders wrongly, since neither says which socket sent it.
 func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
+	t.Parallel()
 	for _, order := range []struct {
 		name         string
 		revokedFirst bool
@@ -1027,6 +1031,7 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 // since the fleet no longer admits the page - is admitted and answered read-only, while the
 // revoked socket's late token is answered read-only too.
 func TestARevokedPagesReconnectIsAdmittedBesideItsLateToken(t *testing.T) {
+	t.Parallel()
 	const room, token = "room", "2"
 	service := &Service{}
 	revokedCtx, revoked := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
@@ -1410,6 +1415,7 @@ func serverFrame(opcode byte, payload []byte) []byte {
 // in each is what that test requires to be past 64 KB, and the frames after it are how it knows
 // the server has finished writing that document.
 func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
+	t.Parallel()
 	const head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
 	const documentPayload = 70 * 1024
 	document := serverFrame(opcodeBinary, bytes.Repeat([]byte("d"), documentPayload))

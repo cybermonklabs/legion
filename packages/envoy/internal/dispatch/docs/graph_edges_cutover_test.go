@@ -154,6 +154,7 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // commit, and once every live process serves this build its announcement lists the kinds the
 // tuple arm renders (refs.TupleKinds), while the earlier one lists none.
 func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

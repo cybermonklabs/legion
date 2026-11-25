@@ -2,9 +2,15 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_READ_ONLY_TOKEN,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -844,9 +850,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
-  // because an argument is missing exits 2: a script reading the code alone tells it from a write
-  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
+  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
+  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1660,6 +1666,73 @@ describe("the dispatch CLI", () => {
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
+
+  // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
+  // command prints that refusal as a line of its own, its code first and then Dispatch's message,
+  // and exits 1, as for every write Dispatch refused. The credential is the read trade
+  // DISPATCH_TOKEN_BROKER_READ asks for, over the DISPATCH_TOKEN the shell also holds.
+  test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
+    const readToken = fixtureSecret("read");
+    const trades: URLSearchParams[] = [];
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        trades.push(new URLSearchParams(await request.text()));
+        return Response.json({
+          access_token: readToken,
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 600,
+          scope: "read",
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const refusal =
+      "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran";
+    const sent: { method: string; path: string; authorization: string }[] = [];
+    // The stand-in Dispatch: the test server answers every read, and every write is refused as
+    // Dispatch refuses a read-only token's.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (request.method === "GET") return await fetch(request);
+      return Response.json({ code: DISPATCH_READ_ONLY_TOKEN, error: refusal }, { status: 403 });
+    }) as typeof fetch;
+    let ran: { code: number; stdout: string };
+    try {
+      ran = await run(
+        ["message", "--issue", "DSP-1", "--body", "hello"],
+        {
+          ...omp,
+          DISPATCH_TOKEN_BROKER_READ: "1",
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+        },
+        "",
+        fetchImpl
+      );
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+
+    expect(ran.stdout.split("\n")).toContain(`${DISPATCH_READ_ONLY_TOKEN}: ${refusal}`);
+    expect(ran.code).toBe(1);
+    expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
+    expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    // Every request presented the read-only token, never the bearer the shell holds.
+    expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
+  });
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
@@ -1700,8 +1773,9 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
-  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
+  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
+  // the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.

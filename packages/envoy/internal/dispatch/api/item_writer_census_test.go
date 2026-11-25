@@ -107,6 +107,9 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/comment_create.go": {
 		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
 			"(lockCommentOwner)",
+		"queueCommentRow": "the owner's lock, which every caller holds: the comment route's, " +
+			"taken inside its transaction (createCommentFor, lockCommentOwner), and the issue " +
+			"write's that leaves a comment (writeIssue, lockIssueOwners)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
 		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
@@ -391,6 +394,7 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
+	"internal/dispatch/api/comment_create.go":  {"queueCommentRow": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},

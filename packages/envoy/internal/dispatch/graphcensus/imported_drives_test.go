@@ -263,7 +263,8 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // spec's approval request renewed on a retry and handed back, a settlement opening an ask a
 // session wrote as a block, and the tick indexing a version a build without the block index
 // wrote. The comment path's drives name the sites the path runs in turn (comment): the path
-// itself, which writes the comment's node and its tuples under its event, and who wrote it.
+// itself, which writes the comment's node before its row (queueCommentRow) and its tuples under its
+// event (queueCommentCreated), and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -307,7 +308,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: newBlockCounted,
 	}, {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)
@@ -327,7 +328,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},

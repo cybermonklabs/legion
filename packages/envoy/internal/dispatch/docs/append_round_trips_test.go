@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A round trip is one exchange with Postgres: the client sends and waits for the server. It is
@@ -316,7 +317,7 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 		Origins:  text.NewOrigins("https://dispatch.example"),
 		Settle:   time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -340,6 +341,7 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 // statement new to that connection, in a pipeline or beside it, adds a trip the list does not
 // hold and fails this test, as a fourth pipeline does.
 func TestAWarmBrowserKeystrokeFlushesInThreeRoundTrips(t *testing.T) {
+	t.Parallel()
 	service, artifactID, recorder := tracedRoomService(t)
 	// The first keystroke warms the room, the pool and the store's prepared statements; the
 	// second is the one measured.
@@ -387,6 +389,7 @@ func TestAWarmBrowserKeystrokeFlushesInThreeRoundTrips(t *testing.T) {
 // together, since each takes the document's owner row first (lockArtifactOwner), while nothing
 // but this lock orders a live write against the room's worker.
 func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T) {
+	t.Parallel()
 	service, artifactID, recorder := tracedRoomService(t)
 	head := storedHead(t, service.store, artifactID)
 	ctx := context.Background()
@@ -403,9 +406,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
 	// covers that, as it covers the rest of the room's own work.
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("the keystroke's append never came to wait on the room's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	written := make(chan error, 1)
 	// The write's trips from here on are its own, so the first of them that takes the room's
 	// transaction-level lock names the connection it runs on (connOf).
@@ -422,7 +423,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// queued, and the trips it has made say where it queued: its transaction, the document's
 	// owner row and the room's lock, with none of its append's.
 	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", roomWait(t))
-	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written, roomWait(t)); early {
+	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written); early {
 		t.Fatalf("the live write answered %v before it queued behind the room's lock: it waited on no lock of the room", err)
 	}
 	for _, appended := range []string{"the append gate read", "the append's insert"} {
@@ -479,6 +480,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 // it (gateAppend, storedHistoryHolds), which is Go work this transaction must not hold an xid
 // across (INFRA-636).
 func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	service, artifactID, recorder := tracedRoomService(t)
 	versioned := service.persistence.(*PgVersioned)
@@ -574,6 +576,7 @@ func appendXidWindowFailure(trips []roundTrip) string {
 // the writes, which the append's own pipeline rules out - so the check is known to red on the
 // one fault this transaction's shape exists to keep out, and on what each red says.
 func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
+	t.Parallel()
 	lock := `select pg_advisory_lock(hashtext($1))`
 	unlock := roundTrip{sql: []string{`select pg_advisory_unlock(hashtext($1))`}}
 	insert := `insert into doc_updates (artifact_id, version, update) values ($1, $2, $3)`
@@ -625,6 +628,7 @@ func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
 // commit would be a gap this guard must see. The call that asks whether an id was assigned
 // without assigning one is the near miss they must not drag in.
 func TestXidAssigningSQLKnowsWhatTakesATransactionId(t *testing.T) {
+	t.Parallel()
 	for sql, want := range map[string]bool{
 		`insert into doc_updates (artifact_id) values ($1)`:       true,
 		"update artifacts\n\t\tset title = $2\n\t\twhere id = $1": true,

@@ -593,10 +593,11 @@ func addressesOneSession(route apiRoute) bool {
 // project scope the broker answered, `named` and nothing else, so a scope this check does not
 // know is refused as a machine's is.
 //
-// A read-only token names a service and no person too, but it is no such caller: it reads only
-// what the read list names, and signing a person in is no remedy for it. It never reaches this
-// check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseReadOnlyToken).
+// A read-only token may name a service and no person too, an account entry's narrowed to
+// reading among them, but it is no such caller: it may only read, and signing a person in is no
+// remedy for it. It never reaches this check, since the read-only gate register puts outside it
+// has already answered it 403 READ_ONLY_TOKEN, as it answers a read-only token on every write
+// (refuseReadOnlyToken), and signInRequired answers it false.
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at
@@ -619,16 +620,18 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 }
 
 // signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
-// answers as sign_in_required: whether r presents a broker-issued token that resolved and names a
-// service and no person, and is no account entry's (actsAsItsAccount), which is a machine nobody
-// has signed in on, and the service that token names. Every other caller answers false: a
-// credential that is no broker token, one that did not resolve (its refusal is written further
-// in), one that names a person, and an account entry's token naming no person, whose writes are
-// recorded under its account. A read-only token would answer true, and reaches neither caller:
-// the read-only gate answers it first on every route but the read list's.
+// answers as sign_in_required: whether r presents a broker-issued token that resolved, may write,
+// and names a service and no person, and is no account entry's (actsAsItsAccount), which is a
+// machine nobody has signed in on, and the service that token names. Every other caller answers
+// false: a credential that is no broker token, one that did not resolve (its refusal is written
+// further in), one that names a person, an account entry's token naming no person, whose writes
+// are recorded under its account, and a read-only token, whatever it names. A read-only token
+// writes nothing whoever signs in: the read-only gate answers its every write 403
+// READ_ONLY_TOKEN before writeNeedsASignedInPerson runs, and whoami tells it read among its
+// scopes rather than that a person must sign in.
 func (s *server) signInRequired(r *http.Request) (string, bool) {
 	actor, resolved := s.brokerCredentialActor(r)
-	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) {
+	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) || (actor.Credential != nil && actor.Credential.ReadOnly) {
 		return "", false
 	}
 	return *actor.Service, true

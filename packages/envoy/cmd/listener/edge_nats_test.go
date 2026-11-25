@@ -49,6 +49,7 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID, projects, br
 // on a server that holds none, and it starts on the same server once a shared listener, which
 // owns the stream, has created it.
 func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	broker := ciphertokentest.NewStubBroker(t)

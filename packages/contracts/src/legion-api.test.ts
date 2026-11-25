@@ -1127,6 +1127,53 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
 });
 
+// Contract 246: the state golden carries LEGION-219, whose quiet pod the idle rule has held for
+// background work since the evening before: the reason in the rule's own word, the first and the
+// newest pass of the streak, and the kind the session reported. An issue whose pod no hold stands
+// on carries no key at all, as does every issue of the body served a caller before 246, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries a held pod's standing hold", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const kept = state.issues["LEGION-219"];
+  if (kept === undefined) {
+    throw new Error("state fixture lacks LEGION-219");
+  }
+  expect(kept.podHold).toEqual({
+    reason: "background_work",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+    detail: "async-job",
+  });
+  expect(state.issues["LEGION-208"]?.podHold).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 246, and one served to a caller below it.
+  const held = kept.podHold;
+  delete kept.podHold;
+  expect(parses()).toBeTrue();
+  // A reason a later daemon adds is read rather than refused, and a hold with no detail is the
+  // shape of every hold whose record holds none.
+  kept.podHold = {
+    reason: "a_later_hold",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+  };
+  expect(parses()).toBeTrue();
+  // An empty reason, a reason that is no string, and a pass time that is no time.
+  kept.podHold = { reason: "", firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: 7, firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: "image", firstAt: "the evening", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = held;
+  expect(parses()).toBeTrue();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
 // repository, pull request and merge commit the check looks for, the role that works it, its
 // looks, the wake that started the latest and when the next look is due. Its role is the
@@ -2756,12 +2803,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Three bands stand above 199: the repositories block's at 202, contract 220's, which takes
-  // `plan` off each assignment, so the golden's rows are compared without it, and the intake's
-  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off. One value strip stands above
-  // 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract 213,
-  // so that row is served here without its `source`, every other field of it and every other row
-  // as the state golden holds them.
+  // Six bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`; and contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; so the golden's issues, rows and claim views are compared without them. One value
+  // strip stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived
+  // at contract 213, so that row is served here without its `source`, every other field of it and
+  // every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2785,18 +2835,42 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
-    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
-      key,
-      issue.assignments === undefined
-        ? issue
-        : {
-            ...issue,
-            assignments: (issue.assignments as Record<string, unknown>[]).map(
-              ({ plan: _plan, ...row }) => row
-            ),
-          },
-    ])
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        narrowed.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
+    })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();

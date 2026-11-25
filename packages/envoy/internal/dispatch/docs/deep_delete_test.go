@@ -13,6 +13,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/stacktest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An authenticated peer grows a nested element chain through the document websocket, in updates
@@ -26,6 +27,9 @@ import (
 // of the recursive delete is 208 bytes, so at this depth it needs about 40 MiB, two and a half
 // times the cap.
 func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
+	// Not parallel: under the race detector this test grows the binary by about 1.3 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	stacktest.Under(t, 16<<20, func(t *testing.T) {
 		const (
 			levels      = 200_000
@@ -35,7 +39,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		service.settle = time.Hour
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		testcleanup.Add(t, httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // queueProbe makes the table the queue's tests write their steps' rows to, so what a commit left is
@@ -54,15 +55,16 @@ func joinProbe(t *testing.T, service *Service) (pgx.Tx, *Ledger) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	_, ledger := service.Join(context.Background(), tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 	return tx, ledger
 }
 
 // Commit runs the queued steps in the order they were queued, none of them before, and a step
 // that queues another once the write phase has begun is refused, as is one queued after Commit.
 func TestLedgerQueueRunsItsStepsInOrderAtCommit(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	queueProbe(t, service)
 	_, ledger := joinProbe(t, service)
@@ -103,6 +105,7 @@ func TestLedgerQueueRunsItsStepsInOrderAtCommit(t *testing.T) {
 // once the statements queued before it have run, no later step's statement runs, and the
 // transaction rolls back what the earlier steps wrote.
 func TestLedgerQueueStopsAtTheFirstFailingStepAndRollsBack(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	queueProbe(t, service)
 	_, ledger := joinProbe(t, service)
@@ -148,6 +151,7 @@ func refusingStep(refused error) WriteStep {
 // callback's error unchanged, no later statement's callback runs, and the statements after it,
 // which the server ran in the same batch, roll back with every earlier one.
 func TestLedgerBatchStopsAtARefusingCallbackAndRollsBack(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	queueProbe(t, service)
 	_, ledger := joinProbe(t, service)
@@ -174,6 +178,7 @@ func TestLedgerBatchStopsAtARefusingCallbackAndRollsBack(t *testing.T) {
 // violation - stops the server there, so a refusing callback queued after it never runs, and the
 // caller tells the violation apart as it would a statement run on its own.
 func TestLedgerBatchReturnsItsFirstFailingStatement(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	queueProbe(t, service)
 	_, ledger := joinProbe(t, service)
@@ -200,6 +205,7 @@ func TestLedgerBatchReturnsItsFirstFailingStatement(t *testing.T) {
 // Discard drops the queue: nothing it held runs, even when the transaction then commits, and the
 // ledger takes no more steps.
 func TestLedgerDiscardRunsNothingItQueued(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	queueProbe(t, service)
 	tx, ledger := joinProbe(t, service)
@@ -227,6 +233,7 @@ func TestLedgerDiscardRunsNothingItQueued(t *testing.T) {
 // Commit: until then its transaction has no transaction id, which only a write or a row lock gives
 // it. Commit writes it all.
 func TestAJoinedDocumentWriteHoldsNoTransactionIDUntilCommit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "Alpha paragraph cites dispatch://DOC-1.\n")
 	ctx := context.Background()
@@ -272,6 +279,7 @@ func TestAJoinedDocumentWriteHoldsNoTransactionIDUntilCommit(t *testing.T) {
 // append is still queued, so the second forks warm from the room rather than loading the stored
 // document; and both appends land as consecutive versions of the document's history.
 func TestOwnPendingAppendsKeepTheRoomAtTheHead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "The quick brown fox\n")
 	// The room is resident, so its cursor gates the transaction's appends.

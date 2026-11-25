@@ -981,5 +981,8 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	for _, artifact := range artifacts {
+		model.StateFileTokens(artifact.Kind, artifact.Versions)
+	}
 	return artifacts, nil
 }

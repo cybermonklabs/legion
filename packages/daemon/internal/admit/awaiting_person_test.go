@@ -173,7 +173,7 @@ func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 }
 
 // A person's answer resumes the root in the pass that reads it, with the cap full. The root
-// stands in the line among the issues whose work came back, oldest first, holding the row it
+// stands in the line within its priority, among the issues whose work came back, oldest first, holding the row it
 // took at its admission and kept through the wait, so its promotion takes no second row and
 // the cap holds it back for nothing. The resume is a handout: what it handed back before is
 // cleared, so only its next hand-back starts the next wait.

@@ -14,9 +14,21 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
+
+// CloneBound is CloneTimeout as ensureRepoClone reads it, through programbound: a variable so that
+// cmd/legion's tests, whose workspace-init runs the shared clone on a stand-in jj, can give it their
+// own deadline, since a stand-in slower than CloneTimeout, as a loaded machine can make one, is
+// killed there, and can read the bound the clone took (programbound.Of(&CloneBound)). CloneTimeout
+// stays the constant ProvisionBound sums.
+var CloneBound = CloneTimeout
+
+func init() {
+	programbound.Register(&CloneBound)
+}
 
 const provisioningTokenFileEnv = "LEGION_PROVISIONING_TOKEN_FILE"
 
@@ -317,7 +329,8 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	// Every step runs in the clone's parent, the directory os.MkdirAll made above: it is there
 	// before the first step starts, and it outlives them all, where temporary is filled by the
 	// steps themselves and then renamed or removed.
-	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(CloneTimeout), dir: filepath.Dir(cloneDir), credential: source}
+	bound := programbound.Of(&CloneBound)
+	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(bound), bound: bound, dir: filepath.Dir(cloneDir), credential: source}
 	if source.feed != "" {
 		if err := feedClone(ctx, run, steps, temporary, remote, defaultBranch, source); err != nil {
 			return err
@@ -397,7 +410,8 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 }
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at
-// deadline by clock: ProvisionBound budgets one CloneTimeout for workspace-init's clone. dir is
+// deadline by clock: ProvisionBound budgets one CloneTimeout for workspace-init's clone. bound is
+// that bound as the clone read it (CloneBound), which a step with nothing left names. dir is
 // where a step runs that opens no repository (`jj git clone`, `jj git init --colocate`): the
 // directory the shared clone is made beside, since a jj that opens no workspace would otherwise
 // search upwards from whatever directory the daemon or a test happens to run in and write the
@@ -407,6 +421,7 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 type cloneSteps struct {
 	clock      Clock
 	deadline   time.Time
+	bound      time.Duration
 	dir        string
 	credential remote
 }
@@ -423,7 +438,7 @@ func (s cloneSteps) run(ctx context.Context, run Runner, argv, env []string) err
 func (s cloneSteps) runIn(ctx context.Context, run Runner, dir string, argv, env []string) error {
 	left := s.deadline.Sub(s.clock.Now())
 	if left <= 0 {
-		return fmt.Errorf("the shared clone's %s bound ran out before %s", CloneTimeout, strings.Join(argv, " "))
+		return fmt.Errorf("the shared clone's %s bound ran out before %s", s.bound, strings.Join(argv, " "))
 	}
 	result, err := runCommandTimeout(ctx, run, argv, env, dir, left)
 	result.Stderr = s.credential.scrub(result.Stderr)

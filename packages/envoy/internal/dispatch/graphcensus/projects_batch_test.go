@@ -125,7 +125,7 @@ func TestTheObjectBatchWaitsForARemovalOnTheIssueRowAndWritesNoNode(t *testing.T
 		written, err := writeObjectBatch(ctx, database, kind, nodes)
 		answered <- answer{written, err}
 	}()
-	if queued := storetest.WaitForLockWaiters(t, removal, 1, 10*time.Second); queued < 1 {
+	if queued := storetest.WaitForLockWaiters(t, removal, 1); queued < 1 {
 		t.Fatal("the batch never queued behind the removal, so this test proves nothing")
 	}
 	if err := removal.Commit(ctx); err != nil {

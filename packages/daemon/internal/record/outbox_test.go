@@ -78,6 +78,21 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
+		// A release's workspace check, and a left pod's close's, which names the roles it closes and
+		// the newest turn start of the pass that queued it (IssueWorkspaceCheck.TurnStart).
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RoleImplementer},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RolePlanner,
+			CloseRoles: []claim.Role{claim.RolePlanner}, TurnStart: now.Add(-40 * time.Minute)},
+		// The stop and the Sandbox suspension that close queues after a clean read carry the same
+		// moment (SuperviseRequest.TurnStart, IssueSuspend.TurnStart), and the zero moment where no
+		// claim had had a turn: a fence any turn passes, which is no fence at all only where the row
+		// names none.
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(now.Add(-40 * time.Minute))},
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(time.Time{})},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
@@ -464,6 +479,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
 		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start fenced on a turn start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
+		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},

@@ -91,6 +91,10 @@ type bootConfig struct {
 	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
 	// gives none, and the boot then refuses to serve while a project has no owner.
 	ProjectOwnerFallback string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE=on: main runs R25's one-time fix at boot
+	// (api.RunParentStatusFixAtBoot), and the server it builds refuses a write that leaves a
+	// parent's status out of line with its children's. Unset or off is false.
+	ParentStatusRule bool
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -639,12 +643,6 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
-
-	if err != nil {
-		slog.Error("dispatch: build app context", "error", err)
-		os.Exit(1)
-	}
 
 	// Two or more envoy-dispatch processes serve one Postgres and one NATS, so each background
 	// loop below either runs once overall or is deliberately per-process. The ones that must run
@@ -796,6 +794,10 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
+	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
+	// process's count is the same with the setting off.
+	parentStatusFixLeases := reserve("parent status fix")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -818,6 +820,43 @@ func main() {
 	// has started yet - no loop, no intake, no listener - so this exit has nothing to stop.
 	if err := leaseCallers.Complete(); err != nil {
 		slog.Error("dispatch: the lease pool's callers are not its connections", "error", err)
+		os.Exit(1)
+	}
+
+	// R25's one-time fix, with DISPATCH_PARENT_STATUS_RULE on (api.RunParentStatusFixAtBoot): one
+	// process unlinks each open issue from its done parent and moves each not-started ancestor of an
+	// issue in work to in_progress, under the lease parent-status-fix, and then records that it ran.
+	// A process that finds the lease held waits for that record. The fix runs here, before the
+	// outbox, every loop and the listen, so the server takes no write and no loop writes until it is
+	// over. With the setting off it reads and writes nothing. A stop during the wait is a clean stop,
+	// as one during the registry's admission wait below is; a step that fails ends the boot with no
+	// record, and the next boot plans again from what stands.
+	parentStatusRule, err := api.RunParentStatusFixAtBoot(store.WithTransactionTracking(ctx),
+		api.Deps{Store: database, Docs: documentService, Events: broker}, parentStatusFixLeases, boot.ParentStatusRule)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			slog.Info("dispatch: stopped while waiting for the parent status fix")
+			return
+		}
+		slog.Error("dispatch: run the parent status fix", "error", err)
+		os.Exit(1)
+	}
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
+	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
+	// repairs. The grant appends events, so it runs after every step of the boot that takes the copy
+	// lock (restoreDecidedWordings above, the parent status fix just before it), and before the
+	// outbox, every loop and the listen, so the server serves no project without an owner.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
+	// The app context is built only now, so the rule the fix answered reaches the server
+	// (api.DepsInput through appContextOptions). Nothing above reads it.
+	built.ParentStatusRule = parentStatusRule
+	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	if err != nil {
+		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
 
@@ -1572,6 +1611,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
+	case "", "off":
+	case "on":
+		boot.ParentStatusRule = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_PARENT_STATUS_RULE=%q (expected on, off or unset)", rule)
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -2323,10 +2369,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
-// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
-// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
-// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
+// the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
+// service that asks for it, because its route table classes the GET rows such a token may call
+// (the read class, readClasses in internal/dispatch/api), and every other route answers it
+// 403 READ_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2344,8 +2391,8 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
+		// The read class and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the reads of that class and no other route.
 		ServesReadOnly: true,
 	})
 }

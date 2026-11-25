@@ -38,7 +38,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -58,7 +57,8 @@ import (
 // measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
 // and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
 // them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
-// (serverSlots), the count the lane's Postgres is sized for.
+// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// reserves both before its first start (dispatchSlots.reserve).
 
 const memoryTestToken = "memory-test-token"
 
@@ -179,34 +179,13 @@ func collectOnSignal() {
 	}()
 }
 
-// serverSlots holds one token for each Dispatch server running in this test binary, at most
-// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
-// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
-// instead, so tests that run at the same time share the servers the lane can serve.
-var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
-
-// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
-// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
-// A test holds a slot for each of its servers that is running, so a test that waits for one while
-// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
-// writer) waits for a server of another test, which never waits for a slot while it holds one:
-// every other test stops its server before it starts the next.
-func takeServerSlot(t *testing.T) (release func()) {
-	t.Helper()
-	serverSlots <- struct{}{}
-	var once sync.Once
-	release = func() { once.Do(func() { <-serverSlots }) }
-	t.Cleanup(release)
-	return release
-}
-
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
 // take the port before it serves. It takes the server's slot before the drain, so what the drain
 // leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
-	releaseSlot := takeServerSlot(t)
+	releaseSlot := dispatchSlots.take(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)

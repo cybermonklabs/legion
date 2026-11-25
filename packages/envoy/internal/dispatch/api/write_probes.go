@@ -47,7 +47,10 @@ var (
 // correspondence and calls every entry, and the acceptance driver reads it through RouteProbes.
 var writeProbes = map[string]writeProbe{
 	// An issue, and what it holds.
-	"PATCH /api/v1/issues/{key}":                           {byIssue, `{` + probeActor + `,"labels":["walked"]}`},
+	"PATCH /api/v1/issues/{key}": {byIssue, `{` + probeActor + `,"labels":["walked"]}`},
+	// main's status change (#4631) reads its issue as the caller sees it before any step
+	// (planStatusChange, loadIssue), so a key the caller cannot see is a key no issue holds.
+	"POST /api/v1/issues/{key}/status-change":              {byIssue, `{` + probeActor + `,"status":"triage","dry_run":true}`},
 	"POST /api/v1/issues/{key}/claim":                      {byIssue, `{` + probeActor + `}`},
 	"DELETE /api/v1/issues/{key}/claim":                    {byIssue, `{` + probeActor + `}`},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {readProbe{"key": probeIssue, "session_id": probeSession}, ""},

@@ -93,15 +93,16 @@ func (h *keywordHistory) keepInside(step string, backend int32) {
 }
 
 // keepAt keeps a time as keep does while the transactions of the backends open may be open: a
-// time inside their window when open names any.
+// time inside their window when open names any. Its wait for that moment has one bound, the test
+// binary's deadline (testwait.UntilPolling).
 func (h *keywordHistory) keepAt(step string, open []int32) {
 	h.t.Helper()
 	var kept keptTime
-	testwait.WithinPolling(h.t, 30*time.Second, 20*time.Millisecond,
-		fmt.Sprintf("a moment within 30 s after %s at which no other transaction of the database is open", step), func() bool {
+	testwait.UntilPolling(h.t, 20*time.Millisecond,
+		fmt.Sprintf("a moment after %s at which no other transaction of the database is open", step), func() (bool, bool) {
 			var quiet bool
 			kept, quiet = h.read(open)
-			return quiet
+			return quiet, quiet
 		})
 	kept.step, kept.inside = step, len(open) > 0
 	h.kept = append(h.kept, kept)
@@ -456,22 +457,18 @@ func (h *keywordHistory) requireVersion(step string, key keywordItem, want func(
 	}
 }
 
-// keywordAwaitReach waits up to 30 s for the keyword table's reach to come to at, the latest time
-// the test reads the relation at.
+// keywordAwaitReach waits for the keyword table's reach to come to at, the latest time the test
+// reads the relation at. Its one bound is the test binary's deadline (testwait.UntilPolling),
+// whose failure prints the reach last read.
 func keywordAwaitReach(t *testing.T, database *store.Store, at time.Time) {
 	t.Helper()
-	var reach time.Time
-	var reached bool
-	if !testwait.Holds(30*time.Second, 100*time.Millisecond, func() bool {
-		var err error
-		if reach, reached, err = database.TextVersionsReach(t.Context()); err != nil {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the keyword table's reach to come to the last kept time, "+at.Format(time.RFC3339Nano)+" (the reach last read)", func() (string, bool) {
+		reach, reached, err := database.TextVersionsReach(t.Context())
+		if err != nil {
 			t.Fatalf("read the keyword table's reach: %v", err)
 		}
-		return reached && !reach.Before(at.Truncate(time.Microsecond))
-	}) {
-		t.Fatalf("the keyword table's reach is %s (reached %v) 30 s on; the last kept time is %s",
-			reach.Format(time.RFC3339Nano), reached, at.Format(time.RFC3339Nano))
-	}
+		return fmt.Sprintf("%s (reached %v)", reach.Format(time.RFC3339Nano), reached), reached && !reach.Before(at.Truncate(time.Microsecond))
+	})
 }
 
 // keywordSameBody is whether v's body is text: the same words for a body read from a comment's

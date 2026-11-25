@@ -51,7 +51,7 @@ func RouteProbes() []RouteProbe {
 	for index, route := range table {
 		name := route.Method + " " + route.Pattern
 		row := RouteProbe{Method: route.Method, Pattern: route.Pattern, TestHook: !deployed[name]}
-		if entry, ok := readClasses[name]; ok {
+		if entry, ok := readSources[name]; ok {
 			row.Probe = probeMap(entry.Probe)
 			row.Classes = entry.Classes
 		}

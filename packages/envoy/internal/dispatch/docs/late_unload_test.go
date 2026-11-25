@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A room of a document can report its unload after a later room of the same document has loaded,
@@ -33,6 +34,7 @@ import (
 // alone, so bytes kept on the room's record would be taken back by it - leaving the figure short
 // by the whole of the resident room's history, for as long as that room lives.
 func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 	// What is left is the second room's load and its write.
@@ -57,6 +59,7 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 // (takeUpSettlementRoom): when that browser leaves too, its socket's end retires nothing, and the
 // room idles out as any room a browser left.
 func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	settlementRoom, letSettle := r.holdLateSettlementInItsRoom()
 	browser := admitSocket(t, r.url, r.room, "the browser that opens the document while the settlement runs")
@@ -89,6 +92,7 @@ func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
 // does a retirement run after it, as the end of any later holder would run one. The room idles out
 // as any room a write loaded.
 func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	settlementRoom, letSettle := r.holdLateSettlementInItsRoom()
 	// The write's own settlement runs once the write has ended, so nothing holds the room's
@@ -144,6 +148,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 // write, its own settlement and the late settlement have all ended, a retirement leaves the room
 // resident, as for a writer that took the room up after it loaded.
 func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded(t *testing.T) {
+	t.Parallel()
 	t.Run("the load ends before the write commits", func(t *testing.T) {
 		writerTakesUpALoadingSettlementRoom(t, false)
 	})
@@ -179,7 +184,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	loading, letLoad := make(chan struct{}), make(chan struct{})
 	var loadOnce sync.Once
 	releaseLoad := func() { loadOnce.Do(func() { close(letLoad) }) }
-	t.Cleanup(releaseLoad)
+	testcleanup.Add(t, releaseLoad)
 	var loadHeld atomic.Bool
 	countLoad := r.service.bootstrapping
 	r.service.bootstrapping = func(room string, state []byte) {
@@ -193,7 +198,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	forked, letWrite := make(chan struct{}), make(chan struct{})
 	var writeOnce sync.Once
 	releaseWrite := func() { writeOnce.Do(func() { close(letWrite) }) }
-	t.Cleanup(releaseWrite)
+	testcleanup.Add(t, releaseWrite)
 	var writeHeld atomic.Bool
 	r.service.afterForkRead = func(room string) {
 		if room == r.room && !writeHeld.Swap(true) {
@@ -326,6 +331,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 // settlement room's: the room keeps its mark, and the departing browser's socket end retires it as
 // it retires one that finished loading first.
 func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	// The second room leaves while the first room's unload is held. The first close holds the
 	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
@@ -354,6 +360,7 @@ func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testi
 // still loading as for one that has gone, and the room is the loading settlement's to retire as its
 // departing browser's socket ends.
 func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 	letDeparture := r.closeUnderHeldDeparture()
@@ -376,6 +383,7 @@ func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 // record (afterRetireReserved), and meets that reservation still held, since the first, having
 // left the room, ends it only once the second has met it or returned (afterRetireLeft).
 func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -383,7 +391,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 	secondIn, firstReserved := make(chan struct{}), make(chan struct{})
 	var reserveOnce sync.Once
 	letSecond := func() { reserveOnce.Do(func() { close(firstReserved) }) }
-	t.Cleanup(letSecond)
+	testcleanup.Add(t, letSecond)
 	secondDone, secondWaits := make(chan struct{}), make(chan struct{}, 1)
 	r.service.retireEntered = func(room string) {
 		if room != r.room {
@@ -457,6 +465,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // forked from against the room the name holds at the publish, not that some room is resident: a
 // room another load put back under the name is no room the write forked from.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -558,6 +567,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 // The settlement is an issue's synchronous one (settleOwedNow), which, as every caller of
 // settleRoomWithin does, holds the room's record while it runs.
 func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -650,6 +660,7 @@ var errLateSettlementStopsShort = errors.New("the test stops the late departure'
 // until the departing socket has ended, so the retry's end, not the socket's, is what retires the
 // room, and that end comes whatever the order the machine runs the two in.
 func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -658,7 +669,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 	socketEnded := make(chan struct{})
 	var endOnce sync.Once
 	letRetry := func() { endOnce.Do(func() { close(socketEnded) }) }
-	t.Cleanup(letRetry)
+	testcleanup.Add(t, letRetry)
 	var versionWrites atomic.Int32
 	r.service.afterSettleVersionWrite = func(room string) error {
 		if room != r.room {
@@ -697,6 +708,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 // departing browser's socket end retires nothing while the retry's timer is armed, and the
 // fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
 func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -746,6 +758,7 @@ func signal(c chan struct{}) {
 // unloads in full. Whatever the order, each unload ends one of the loads counted under the name,
 // so once both have run no bytes of either are counted and the name counts no load.
 func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	// The first room's unload goes on past what releaseUnloadedRoom reads, then waits before it
 	// ends a load (beforeUnloadEndsLoad); only that unload waits, and a sync.Once would make the
@@ -754,7 +767,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	proceed := make(chan struct{})
 	var proceedOnce sync.Once
 	letProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	t.Cleanup(letProceed)
+	testcleanup.Add(t, letProceed)
 	var held atomic.Bool
 	r.service.beforeUnloadEndsLoad = func(room string) {
 		if room != r.room || held.Swap(true) {
@@ -850,7 +863,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		Settle:   time.Hour,
 	})
 	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), lateUnloadShutdownWait)
 		defer cancel()
 		if err := service.Shutdown(ctx); err != nil {
@@ -865,7 +878,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 			ended <- struct{}{}
 		}
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	r := &reloadedRoom{t: t, service: service, url: server.URL, room: room, closed: make(chan error, 1), unloaded: make(chan struct{}, 3), ended: ended}
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == r.room {
@@ -895,7 +908,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	enter := make(chan struct{})
 	var enterOnce sync.Once
 	r.letFirstUnload = func() { enterOnce.Do(func() { close(enter) }) }
-	t.Cleanup(r.letFirstUnload)
+	testcleanup.Add(t, r.letFirstUnload)
 	var entered atomic.Bool
 	unload := service.srv.OnUnloadDocument
 	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
@@ -933,7 +946,7 @@ func (r *reloadedRoom) holdDeparture() (held <-chan struct{}, letGo func()) {
 	hold := &departureHold{held: make(chan struct{}), release: make(chan struct{})}
 	var once sync.Once
 	letGo = func() { once.Do(func() { close(hold.release) }) }
-	r.t.Cleanup(letGo)
+	testcleanup.Add(r.t, letGo)
 	r.hold.Store(hold)
 	return hold.held, letGo
 }
@@ -992,7 +1005,7 @@ func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, 
 	warmed, goOn := make(chan struct{}), make(chan struct{})
 	var goOnce sync.Once
 	letSettle = func() { goOnce.Do(func() { close(goOn) }) }
-	r.t.Cleanup(letSettle)
+	testcleanup.Add(r.t, letSettle)
 	var settling atomic.Bool
 	r.service.afterSettleWarm = func(room string) {
 		if room != r.room || settling.Swap(true) {
@@ -1044,7 +1057,7 @@ func (r *reloadedRoom) awaitSettlementLoadHeld(letDeparture func()) (letReady fu
 	reached, ready := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	letReady = func() { once.Do(func() { close(ready) }) }
-	r.t.Cleanup(letReady)
+	testcleanup.Add(r.t, letReady)
 	var holding atomic.Bool
 	load := r.service.srv.OnLoadDocument
 	r.service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {

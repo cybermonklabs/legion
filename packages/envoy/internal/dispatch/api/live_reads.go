@@ -42,7 +42,7 @@ func liveReadRefusal(ctx context.Context, sub, kind string, holds func(string) b
 		refusal := liveRefusal(sub, refused.code, refused.message)
 		return &refusal
 	}
-	classes := readClasses[route].Classes
+	classes := readSources[route].Classes
 	if !slices.Contains(classes, readclass.Deployment) {
 		return nil
 	}

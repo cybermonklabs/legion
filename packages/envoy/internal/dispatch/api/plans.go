@@ -21,8 +21,8 @@ import (
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
-// all its finished issues in one statement whatever their number, and a read-only token may call
-// it (readScopeRoutes).
+// all its finished issues in one statement whatever their number, and is a read of the read
+// class (readClasses), which a read-only token may call.
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to

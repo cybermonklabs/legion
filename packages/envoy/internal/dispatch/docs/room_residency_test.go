@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A room that only ever receives valid writes is never refused and never loses one while readers,
@@ -50,12 +51,13 @@ import (
 // replaced. Every load of the room is checked against the writes its earlier instances took
 // (watchRoomLoads), and the document the store holds at the end is the last one written.
 func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	loads := watchRoomLoads(service)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
@@ -169,7 +171,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
 				}
-				connection.SetReadDeadline(time.Now().Add(time.Second))
+				connection.SetReadDeadline(socketDeadline(t))
 				if _, _, err := connection.ReadMessage(); err != nil {
 					refuse("socket %d: first frame %v", round, err)
 				}
@@ -223,11 +225,12 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 // and the store holds both writes' text. The write here waits inside its Apply while the peer
 // leaves and a read loads the room again (roomIdleTimeout).
 func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
@@ -318,6 +321,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 // a room its last browser left (roomIdleTimeout), and the document reads back what the API wrote.
 // An agent's edit of a document no room holds loads none at all (publishLiveWrite).
 func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	// Production waits roomIdleTimeout; two seconds keeps the test short, and ygo then sweeps
@@ -647,6 +651,7 @@ func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 // read: a link reading back with the target the reader wrote, an answered ask with the choice it
 // wrote.
 func TestEditingALiveReadsTreeChangesNoLaterRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, `:::ask{#ask-1}
@@ -720,7 +725,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 		Origins:  text.NewOrigins("https://dispatch.example"),
 		Settle:   time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := service.Shutdown(ctx); err != nil {
@@ -740,6 +745,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 // goroutine. The test pauses the publish's commit in an observer, asks for the close there, and
 // lets the commit go on.
 func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		peer bool
@@ -779,7 +785,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			committed, proceed := make(chan struct{}), make(chan struct{})
 			var once, proceeded sync.Once
 			letGo := func() { proceeded.Do(func() { close(proceed) }) }
-			t.Cleanup(letGo)
+			testcleanup.Add(t, letGo)
 			load := service.srv.OnLoadDocument
 			service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 				if err := load(ctx, room, doc); err != nil {
@@ -804,12 +810,12 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			}
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-				t.Cleanup(httpServer.Close)
+				testcleanup.Add(t, httpServer.Close)
 				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
-				t.Cleanup(func() { _ = peer.Close() })
+				testcleanup.Add(t, func() { _ = peer.Close() })
 				peer.SetReadDeadline(time.Now().Add(5 * time.Second))
 				if _, _, err := peer.ReadMessage(); err != nil {
 					t.Fatalf("peer's first frame: %v", err)
@@ -1134,11 +1140,12 @@ func parkedCommitTrial() (int, bool) {
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
 // (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
-// left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
-// envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
+// left open there costs the whole run its deadline - the -timeout envoy-go-race-docs gives it -
+// and prints no --- FAIL line at all. This runs
 // the case in a child process of this test binary with one trial's commit parked for good and
 // requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
 		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
@@ -1155,7 +1162,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
-	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
+	// envoy-go-race-docs gives it), so a child
 	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
