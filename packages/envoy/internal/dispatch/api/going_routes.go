@@ -202,8 +202,14 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 		return err
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
-		Words:  request.Words,
-		Search: s.goingSearch(request.Project, request.Author),
+		Words: request.Words,
+		// The run searches as the server's own reader (everyReader): before this slice the search
+		// legs carried no visibility clause, so a run matched every row its author's query matched,
+		// and the server's reader reproduces exactly that. Threading the author's own reader would
+		// narrow what a run answers, which is a decision about whether a run answers what its
+		// author sees or what the server sees; it belongs to the slice that carries this file
+		// (S3c-issues) and to a person reading it, not to a slice that only threads readers.
+		Search: s.goingSearch(request.Project, everyReader),
 		Bodies: s.goingBodies(request.ID),
 	}, emit)
 	switch {

@@ -1917,7 +1917,7 @@ func loadArtifactDetails(ctx context.Context, q queryer, who model.Actor, artifa
 // validateArtifactRequestRef refuses an artifact route's {id} that is no uuid, as an id no row
 // holds; a route that names its artifact by owner and slug ({key} or {session_id}) has none.
 func validateArtifactRequestRef(r *http.Request) error {
-	if r.PathValue("key") != "" {
+	if r.PathValue("key") != "" || r.PathValue("session_id") != "" {
 		return nil
 	}
 	_, err := parseArtifactID(r.PathValue("id"))
