@@ -430,7 +430,11 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 		}
 		return value, nil
 	case BlockAttributeBlockList:
-		return ParseBlockPointerValue(text)
+		pointers, err := ParseBlockPointerValue(text)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrBlockPointer, err)
+		}
+		return pointers, nil
 	default:
 		return nil, fmt.Errorf("has unknown kind %q", attr.Kind)
 	}

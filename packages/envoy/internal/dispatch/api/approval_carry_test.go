@@ -688,7 +688,11 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, time.Second)
+			// Settling past the run (pastTheRun), so no settlement timer versions alice's second
+			// answer or writes the row back over the forgery before the named version holds both,
+			// however long a loaded machine takes between the requests; every settlement the test
+			// needs it makes at once (settledVersion, settledDecisionBlocks, settledWithoutVersion).
+			handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 			issue := createInteractionIssue(t, handler, "TEST", "Forged "+tc.attribute+" under the answer", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -782,7 +786,8 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 // settledWithoutVersion settles the document at once, for a document whose settlement is owed,
 // and waits until that settlement has committed: its pending-settlement row, which a live write
 // leaves and only a settlement's commit clears, is gone. It fails t when the document owes no
-// settlement, since then there would be nothing to wait for.
+// settlement, since then there would be nothing to wait for. The wait's one bound is the test
+// binary's deadline less testwait's margin.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
 	owed := func() bool {
@@ -796,11 +801,7 @@ func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
 	documents.SettleNow(artifactID)
-	for deadline := time.Now().Add(5 * time.Second); owed(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the document's settlement never committed")
-		}
-	}
+	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
 }
 
 // Stale: the agent changed a paragraph outside the blocks after his approval and before his answer.

@@ -29,6 +29,7 @@ import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
@@ -67,6 +68,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
@@ -78,6 +80,8 @@ import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
+import { useIssueStatusMove } from "./parent-status/useIssueStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -183,6 +187,11 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
+  // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
+  // parent or an open child, then the write below, or the question where Dispatch's rule would
+  // refuse it.
+  const statusMove = useIssueStatusMove(issue);
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -193,6 +202,11 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    // A status the page took for one the rule could not refuse, which Dispatch refused under it
+    // all the same, asks as a refused dry run does (`statusMove.onError`).
+    onError: (error, input) => {
+      statusMove.onError(error, issue.key, input);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -216,6 +230,12 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
+  const requestStatus = (status: string) => {
+    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+  };
+  // A status write is out, or the rule's question is checking or asking about one: no second
+  // status write can start.
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
@@ -224,17 +244,17 @@ export function IssueHeader({
       id: "close",
       keys: [],
       label: "Close issue",
-      run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
-      // rendered at all; a row offered while the write is in flight would submit a second one.
-      when: () => !isClosed && !updateIssue.isPending,
+      run: () => requestStatus("done"),
+      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
+      // all; a row offered while a status write is in flight would submit a second one.
+      when: () => !isClosed && !statusBusy,
     },
     {
       id: "reopen",
       keys: [],
       label: "Reopen issue",
-      run: () => drafts.requestStatusSubmit("backlog"),
-      when: () => isClosed && !updateIssue.isPending,
+      run: () => requestStatus("backlog"),
+      when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       id: `set-p${level}`,
@@ -245,8 +265,14 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
-  const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // The status the select and the closed line show while it is out: the one the rule's question
+  // is checking or asking about, else the one the write is saving.
+  const checkingStatus = statusMove.pending;
+  const statusSaving =
+    checkingStatus !== undefined ||
+    (updateIssue.isPending && updateIssue.variables?.status !== undefined);
+  const pendingStatus =
+    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -260,6 +286,20 @@ export function IssueHeader({
       : waitingForHuman.length > 0
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
+  // The priorities the issue advances, each the chip of its place in the order, and the picker's
+  // "+". From 768 px up they stand in the state row right after the P0-P3 tag: that row wraps,
+  // where the details row scrolls sideways and is long enough without them. Below it the state
+  // row has no room left on its first line, so there they stand first in the details row, in view
+  // before it is scrolled: a line of their own in the state row would push the page down under
+  // every sheet and pill a phone pins to the screen's foot. One line is drawn, in one place.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const priorityLine = (
+    <IssuePriorityLine
+      className={phone ? "shrink-0" : undefined}
+      disabled={isClosed}
+      issue={issue}
+    />
+  );
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
@@ -407,8 +447,8 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            disabled={statusBusy}
+            onClick={() => requestStatus("backlog")}
             title="Reopen into Backlog"
             type="button"
           >
@@ -443,6 +483,11 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  // A key that ends an input method's composition - the Enter that takes the word
+                  // composed, the Escape that drops it - is no key of the reader's: it neither
+                  // writes the title nor closes its editor. Safari sends it after its
+                  // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -501,8 +546,8 @@ export function IssueHeader({
             <select
               aria-label="Status"
               className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
+              disabled={isClosed || statusBusy}
+              onChange={(event) => requestStatus(event.target.value)}
               value={pendingStatus ?? issue.status}
             >
               {selectableStatuses.map((status) => (
@@ -517,6 +562,7 @@ export function IssueHeader({
             issueKey={issue.key}
             write={priorityWrite}
           />
+          {phone ? null : priorityLine}
           <AssigneeControl
             assignee={issue.assignee}
             disabled={isClosed || updateIssue.isPending}
@@ -587,8 +633,8 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              disabled={statusBusy}
+              onClick={() => requestStatus("done")}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -611,6 +657,7 @@ export function IssueHeader({
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
         >
+          {phone ? priorityLine : null}
           {whoseTurn === null ? null : (
             <span
               className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
@@ -619,7 +666,6 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
-          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>
@@ -843,6 +889,11 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
+      <IssueStatusNotes
+        issueKey={issue.key}
+        noteClassName={`mt-1 text-sm ${dangerText}`}
+        statusMove={statusMove}
+      />
       {subscribersOpen ? (
         <SubscribedAgents
           onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}

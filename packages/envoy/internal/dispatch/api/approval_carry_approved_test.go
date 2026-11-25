@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The version a human approved is compared with a later version byte for byte once both have had
@@ -17,9 +16,9 @@ import (
 //
 // Each test approves inside the window a live write opens, so each guards the race it could lose:
 // the review route pins the latest version, and a settlement that fires first repairs the block
-// and moves the latest on. The review's version must be the one the test meant, and that
-// version's markdown must show what the test put there, or the test fails as setup rather than
-// passing over a version that never showed it.
+// and moves the latest on. The tests settle on demand so those writes cannot race the approval.
+// The review must still name the intended version, and its markdown must show what the test put
+// there, or the test fails as setup rather than passing over a version that never showed it.
 
 // approveVersion approves the document as login through the review route, which pins its latest
 // version, and fails t unless that is version number: the version the test meant.
@@ -63,7 +62,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
+			handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 			issue := createInteractionIssue(t, handler, "TEST", "Approved "+tc.attribute+" other than the row's", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -106,7 +105,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 // block and the human answers it, which writes one version of its block's state alone, so the approval stays stale.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
 	t.Parallel()
-	handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
+	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved under other wording", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -129,6 +128,7 @@ func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t 
 	}
 
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
+	settledVersion(t, handler, documents, issue.PrimaryArtifactID, 5)
 	requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 4, 1)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 }

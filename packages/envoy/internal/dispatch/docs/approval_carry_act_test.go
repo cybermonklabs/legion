@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An answer an agent made for its person under an act - the agent's session and the scopes its
@@ -46,7 +47,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
 	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {

@@ -26,12 +26,9 @@ function withFutureBlock(creatable: boolean): BlockSchema {
   };
 }
 
-// The page presents the manifest it was built with: its version V, and R, the highest `since`
-// among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
-// computes it. Today's manifest creates every element it reads, the newest of them included, so
-// its R is its version, whatever version that is: the numbers come from the manifest, never from
-// a literal here, so raising the manifest does not break this row.
-test("the compiled manifest is the page's own, and it creates everything it reads", () => {
+// Schema 6 can read decisions, readings and shaped pointers from a later release.
+// The last version whose elements the page may introduce is still 5.
+test("the compiled manifest reads the new blocks before it creates them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -42,7 +39,8 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "decision",
     "reading",
   ]);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);
+  expect(compiledBlockSchema.version).toBe(6);
+  expect(schemaCreatable(compiledBlockSchema)).toBe(5);
 });
 
 test("an element the page creates counts toward its creatable version, one it only reads does not", () => {
@@ -52,7 +50,7 @@ test("an element the page creates counts toward its creatable version, one it on
 
 test("nodes, marks, attributes and enum choices each count toward the creatable version", () => {
   const version = compiledBlockSchema.version + 1;
-  const shipped = schemaCreatable(compiledBlockSchema);
+  const creatableAtNextVersion = schemaCreatable({ ...compiledBlockSchema, version });
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const urgency = ask?.attributes.urgency;
   if (ask === undefined || urgency === undefined) {
@@ -85,7 +83,7 @@ test("nodes, marks, attributes and enum choices each count toward the creatable 
       ],
       version,
     })
-  ).toBe(shipped);
+  ).toBe(creatableAtNextVersion);
   expect(
     schemaCreatable(
       withAsk({ due: { creatable_since: version, kind: "timestamp", since: version } })

@@ -20,8 +20,7 @@
 #            every --patch-path passed through. Without such a tag the release
 #            line has not started, which is an error, unless --first-npm names
 #            the npm package whose published version (0.0.0 when npm has none)
-#            stands in for the tag, over the whole history. release-bump.sh's
-#            `empty` (no commit in the paths) and `none` (no version-bumping
+#            stands in for the tag, over the whole history. `.github/scripts/release-bump.sh#empty` (no commit in the paths) and `none` (no version-bumping
 #            commit: a ::notice and a job-summary line) both give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
@@ -268,9 +267,10 @@
 #            fix merges. The fragments and their refusals are fold-notes', and
 #            each <package-dir> is one of fold-orphans'. changie is what
 #            renders them, so the command looks for it before anything else
-#            and refuses naming it where it is not on PATH. ci.yaml's test job
-#            runs it over .github/changelog-packages, beside the changie its
-#            release-push.test.sh cases need.
+#            and refuses naming it where it is not on PATH. ci.yaml's
+#            tooling-checks job runs it over .github/changelog-packages, with
+#            the changie it installs as the test job does for the
+#            release-push.test.sh cases that need it.
 # leak guard: every write this script makes to a public GitHub repository
 #            passes this repository's own private-name rules before it is made,
 #            and is refused when they match: `release`'s create, its upload to
@@ -911,7 +911,7 @@ case "$command" in
         prev_version=$(npm view "$first_npm" version 2>/dev/null || echo 0.0.0)
         range=HEAD
       else
-        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2
+        echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the first release's parent commit)" >&2
         exit 1
       fi
       # release-bump.sh refuses a previous version that is not X.Y.Z (the

@@ -1563,7 +1563,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			at = pmdoc.Range{From: 0, To: pmdoc.Size(tree.node)}
 		}
 		// Front matter opens only the document's start, so only there does the insert read it.
-		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget)
+		with, err := uploadedInput(pmdoc.ParseFragmentHolding(op.Markdown, opensDocument(tree.node, at.From), budget, tree.node))
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
 		}

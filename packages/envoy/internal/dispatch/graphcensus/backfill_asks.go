@@ -18,7 +18,7 @@ import (
 // The asks and their followers. An ask's node holds the documents it is
 // anchored to, owned by and part of, who asked it, its answer and the sessions that follow it, and
 // asks and ask_followers are the projection of those tuples from the moment a row names its node
-// (20261116094058's node_kind and node_address). A row a build before this release wrote names
+// (20261125163550's node_kind and node_address). A row a build before this release wrote names
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
 // mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run

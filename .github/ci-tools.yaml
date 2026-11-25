@@ -11,13 +11,14 @@
 # for crane, changie, elan and the Pulumi CLI the row is the pin itself, since install-crane,
 # install-changie, install-elan and install-pulumi hold no version of their own and install the
 # version this row names,
-# `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
-# `ARG JJ_TOOL` of that same file for jj,
-# `ARG UV_VERSION` of that same file for uv, whose `primary_digest` is that file's
-# `ARG UV_SHA256`, because the image's own toolchain stage builds uv from those two,
-# `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go for the
+# `packages/daemon/docker/worker.Dockerfile#ARG MISE_VERSION` for mise,
+# `packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL` for jj,
+# `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` for uv, whose `primary_digest` is
+# `packages/daemon/docker/worker.Dockerfile#ARG UV_SHA256`, because the image's own toolchain
+# stage builds uv from those two,
+# `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion` for the
 # docker provider plugin the envoy-infra live tests install,
-# the `HELM=` line of packages/envoy/loadtest/cluster/render-nats.sh for helm, whose render runs
+# the `packages/envoy/loadtest/cluster/render-nats.sh#HELM=` line for helm, whose render runs
 # an installed helm only where that helm answers the version the line names,
 # and .bun-version for the three bun rows.
 # A row named `<tool>-aarch64` is the arm64 build of the `<tool>` row beside it, for the jobs that
@@ -26,7 +27,7 @@
 # Bun's own assets do, and answer to .bun-version each.
 # .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
 # shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
-# ci.yaml's `ci-images` job, the one copy path this repository has.
+# `.github/workflows/ci.yaml#ci-images` job, the one copy path this repository has.
 #
 # Raising a tool is one commit: the row, its `-aarch64` row where it has one, and the pin they
 # answer to move together.
@@ -37,13 +38,14 @@
 # second one, with .bun-version. That raise takes two because it moves a container image as
 # well as these rows: .github/ci-images.yaml's new `oven/bun` row goes first and alone, since a
 # consumer there names a digest and the new row is inert until a `FROM` moves onto it, and
-# .bun-version, `ARG BUN_VERSION`, every `FROM` and these three rows follow in the second
+# the `ARG BUN_VERSION` defaults, every `FROM`, .bun-version and these three rows follow in the second
 # commit. What a tool row cannot do is go ahead of its pin the way an image row can, because a
 # call site names a row rather than a version: a second row of the same tool for the same machine
 # has no name a call site could use, and this file's gate refuses two rows of one name for that
 # reason.
 #
-# One commit races nothing: ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs each declare
+# One commit races nothing: `.github/workflows/ci.yaml#tool-fallback` and
+# `.github/workflows/ci.yaml#tool-fallback-arm` jobs each declare
 # `needs: [changes, ci-images]`, so the copy of the new row is filled before either reads it, and
 # no other job waits on that copy, because an install reaches the copy only where its primary did
 # not serve the bytes.
@@ -100,7 +102,7 @@
 # able to state that rather than force a fiction (dispatch://INFRA-1974).
 # A `tools:` row cannot carry it, and the reason is what a row says rather than any field of it:
 # a row is the statement that two sources serve these bytes, which is the one thing a decline
-# denies. The gate reads that statement as a shape — ci.yaml's `tool-fallback` job fails for a
+# denies. The gate reads that statement as a shape — `.github/workflows/ci.yaml#tool-fallback` job fails for a
 # row no install reads, and .github/scripts/check-ci-tools.sh refuses a `second_source` that is
 # none of the six words .github/scripts/ci-tools.sh reads a source with, before the row is read
 # at all — so a row of one source is refused whichever way it is written.
@@ -267,9 +269,9 @@ tools:
   # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
   # it, which is what the copy holds.
   - name: jj
-    version: 0.46.0-sami.20261120-120102
-    digest: cb07d4a4c9f5c0d1b6cf8e58e0547d05c5c062f06b222cf47ce6696831c970f9
-    digest_of: the jj binary itself, the 24839104-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261125-112159
+    digest: 30d788fe079498d55b13812e7a4baa6007c5a099f3009e31b6853120fdf60e70
+    digest_of: the jj binary itself, the 25537536-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -277,7 +279,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-x86_64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261125-112159/jj-v0.46.0-sami.20261125-112159-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
@@ -285,9 +287,9 @@ tools:
   # of the binary mise installs; the release's own asset digest answers for the tarball
   # `mirror_from` names, and this one was read out of it.
   - name: jj-aarch64
-    version: 0.46.0-sami.20261120-120102
-    digest: 03f182b4d287a43f7bbabc4c88c9fc8a32b485a212287950d327fe377ad881d5
-    digest_of: the jj binary itself, the 21257568-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261125-112159
+    digest: 139aa8928983c01923513ca5c2a4e18dc63d7a73259c6ebbaa6681ee1ce08005
+    digest_of: the jj binary itself, the 21813088-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -295,7 +297,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-aarch64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261125-112159/jj-v0.46.0-sami.20261125-112159-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
@@ -389,7 +391,8 @@ tools:
     mirror_member: ""
 
   # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by
-  # `ARG UV_VERSION` and `ARG UV_SHA256` of packages/daemon/docker/worker.Dockerfile, which the
+  # `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` and
+  # `packages/daemon/docker/worker.Dockerfile#ARG UV_SHA256`, which the
   # image's own toolchain stage builds uv from.
   # This is the one row whose `digest` is of a member. PyPI's wheel and GitHub's tarball are two
   # archives of one binary, so the binary is the only literal both sources can be held to:
@@ -414,8 +417,8 @@ tools:
     # or a `.zip` is read with python3's zipfile and anything else with `tar -xzO`.
     second_member: uv-0.13.5.data/scripts/uv
 
-  # The docker provider plugin ci.yaml's envoy-infra live tests install. Its version is the
-  # `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go the
+  # The docker provider plugin ci.yaml's envoy-infra live tests install. Its version is
+  # `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, which the
   # live programs pin. get.pulumi.com serves this tarball byte for byte, so the second source is
   # that address and no copy.
   - name: pulumi-docker
@@ -505,7 +508,7 @@ no_second_source:
   # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
   # this digest in one commit.
   - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
-    digest: aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+    digest: bedea356fa433d3114780b4d0960cc46c715271c915732a7edd5194a1f664632
     pinned_in: packages/daemon/docker/worker.Dockerfile
     pinned_as: ARG OMP_SHA256
     why: >-

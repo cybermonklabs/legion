@@ -48,17 +48,36 @@ check "exits 3" "$(is "$status" 3)"
 check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the default')"
 
 echo "case: a peak over the limit fails the run and names the test that was running"
-# Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives long
-# enough for the sampler to take a second sample at 5 s, by when the stream has been read.
+# Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives until
+# the case has seen the sampler take its second sample (the first at 0 s, the next 5 s later, by
+# when the stream has been read), and only then ends: the case waits on the sampler's own lines,
+# not on a clock, so a sampler a loaded runner holds back still samples the grown process. The
+# 60 s bounds only end a run whose sample never comes, which the checks then report.
+release=$(mktemp -u)
 grower='
-import json, sys, time
+import json, os, sys, time
 sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
 sys.stdout.flush()
 block = b"x" * (64 * 1024 * 1024)
-time.sleep(6)
+deadline = time.monotonic() + 60
+while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
+    time.sleep(0.05)
 sys.stdout.write(str(len(block)) + "\n")
 '
-run_sampler 1 python3 -c "$grower"
+sampled=$(mktemp)
+env "RACE_MEM_LIMIT_KB=1" "$sampler" python3 -c "$grower" "$release" > "$sampled" 2>&1 &
+sampler_pid=$!
+for _ in $(seq 1200); do
+  [ "$(grep -c -- ' s, VmRSS ' "$sampled" || true)" -ge 2 ] && break
+  sleep 0.05
+done
+touch "$release"
+set +e
+wait "$sampler_pid"
+status=$?
+set -e
+out=$(cat "$sampled")
+rm -f "$release" "$sampled"
 check "exits 1" "$(is "$status" 1)"
 check "names the limit it was given" "$(contains "$out" 'the limit is 1 kB (RACE_MEM_LIMIT_KB)')"
 check "its decision line names the tests at the highest sample" \

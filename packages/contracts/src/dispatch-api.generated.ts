@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message at its current body (edited_at when edited), a deleted comment or message in its place with deleted_at and deleted_by and an empty text, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -408,7 +408,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. */
+    /** @description Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -839,10 +839,11 @@ export interface paths {
     get: operations["getApiV1CommentsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete a comment: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it; the suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its artifact.version event keeps the name it carried); each block is removed with its excerpt cleared and the text every revision recorded of it cleared too, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A mention attempt its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. */
+    delete: operations["deleteApiV1CommentsById"];
     options?: never;
     head?: never;
-    /** @description Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. */
+    /** @description Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. */
     patch: operations["patchApiV1CommentsById"];
     trace?: never;
   };
@@ -891,6 +892,23 @@ export interface paths {
     put?: never;
     /** @description Retry a comment mention delivery; target is required when it has multiple mentions. */
     post: operations["postApiV1CommentsByIdDeliveries"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/comments/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text. */
+    get: operations["getApiV1CommentsByIdHistory"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1279,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 24 of the 42 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1313,7 +1331,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
+    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. Once a comment or an issue message whose text the run gave its model is deleted, every read of the stream gives none of the run's frames and only the error ANSWER_WITHDRAWN, under the id of the run's ending, and nothing to a reader that already holds that id. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
     get: operations["getApiV1GoingRequestsByIdStream"];
     put?: never;
     post?: never;
@@ -1364,10 +1382,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
+    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), own (true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing; without an advances value it filters nothing; advances=any&own=true over backlog and icebox is the second fault of GET /api/v1/priorities), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as the second fault of GET /api/v1/priorities reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. advances is the priorities the new issue advances, a list of priority ids: more than 20 of them, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT, and the create writes nothing; a create carries no advances_revision and is never refused for one, since the new issue holds no relation yet. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1399,14 +1417,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. */
+    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
     get: operations["getApiV1IssuesByKey"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), advances, or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). advances is the issue's whole list of its own priorities, which replaces the list it holds ([] clears it; an inherited entry is no relation of the issue and no write states or retracts one): more than 20 ids, counted before duplicates are removed, an id no priority carries, and one whose priority is gone are each 400 ADVANCES_INPUT. advances_revision is the advances_revision of the issue read the write answers: a write whose advances_revision is not the revision the issue holds is 409 ADVANCES_REVISION naming the one it holds, and a write that names no revision may assert or retract one relation, so one that would change two or more is 409 ADVANCES_REVISION too, naming the revision held. A closed issue refuses advances (409 ISSUE_CLOSED). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that would leave a parent out of line with its children is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, relation parent or child, issues naming each issue that holds the rule. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1593,7 +1611,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1720,6 +1738,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/legion": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue. */
+    get: operations["getApiV1IssuesByKeyLegion"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/messages": {
     parameters: {
       query?: never;
@@ -1730,7 +1765,7 @@ export interface paths {
     /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. */
     get: operations["getApiV1IssuesByKeyMessages"];
     put?: never;
-    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. */
+    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyMessages"];
     delete?: never;
     options?: never;
@@ -1763,7 +1798,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyPlansById"];
     post?: never;
     delete?: never;
@@ -1842,6 +1877,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/status-change": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. When the options changed at least one issue, the issue the call names gets one comment from Dispatch too, after the last write, that names the call and lists each of those changes. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. The answer's issue is read at the issue's own write, so later events of the same call can follow it on the stored issue: a child.status for each direct child that include_children moves after it, for a status in work, and the comment.created of the comment on the issue the call names. So the stored last_seq can be past the answer's, and a client that sends the answer's last_seq as expected_sequence can get 409 ISSUE_CHANGED: it reads the issue again before a write that the sequence fences. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 403 PROJECT_SCOPE: the request's credential may write one project, and a write of the call is of an issue of another project (a parent may be one), refused before any write, also for a dry run. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal above carries changed: the entries of the writes that committed before it, [] when none did. A repeat under the same Idempotency-Key while the first call runs is 409 KEY_IN_FLIGHT, whose changed is the entries of the writes the first call has committed so far. */
+    post: operations["postApiV1IssuesByKeyStatusChange"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/steps": {
     parameters: {
       query?: never;
@@ -1849,7 +1901,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -1869,6 +1921,23 @@ export interface paths {
     get?: never;
     /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps/{id}/experiment": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write the experiment and the variant of a run's issue {actor, experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyStepsByIdExperiment"];
     post?: never;
     delete?: never;
     options?: never;
@@ -2053,10 +2122,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -2074,11 +2143,11 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Revoke a personal agent token. */
+    /** @description Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED. */
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -2299,10 +2368,12 @@ export interface paths {
     get: operations["getApiV1MessagesById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete an issue message: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The message keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/messages/{id}/history reads the mark in its place. Each block is removed with its excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A send its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED. */
+    delete: operations["deleteApiV1MessagesById"];
     options?: never;
     head?: never;
-    patch?: never;
+    /** @description Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. */
+    patch: operations["patchApiV1MessagesById"];
     trace?: never;
   };
   "/api/v1/messages/{id}/blocks": {
@@ -2356,6 +2427,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/messages/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A message nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a message deleted with no edit lists one, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text. */
+    get: operations["getApiV1MessagesByIdHistory"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/messages/{id}/reply": {
     parameters: {
       query?: never;
@@ -2380,7 +2468,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit, read_ms, read_stage}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build; read_ms is how long the create waited on the gate's read, in milliseconds, its rollback included, and read_stage the step the read was in when it answered or ended (connect, terms, keys, or score, which every answered read ends in), both null on a row written before they were recorded. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
     get: operations["getApiV1NearCopyChecks"];
     put?: never;
     post?: never;
@@ -2414,7 +2502,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. A comment its author edited carries edited_at, and one its author deleted keeps its row with deleted_at and deleted_by and an empty title. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
     get: operations["getApiV1PeopleByLoginNodes"];
     put?: never;
     post?: never;
@@ -2431,10 +2519,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the open issues in backlog or icebox whose own row names a live priority no issue above them carries (a child that only inherits a priority, or restates one an issue above it carries, is no such fault), each as a whole count, the same count by project or by each priority so named, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
     get: operations["getApiV1Priorities"];
     put?: never;
-    /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
+    /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT. id is the caller's; a body that names none takes the title written as a slug (lowercase ASCII letters and digits, each other run of characters one hyphen), and a slug over 200 characters is cut to its longest start of at most 200 characters that ends at the end of a word, or to its first 200 characters when its first word is longer, so a long title is written whole under a cut id. A title with no ASCII letter or digit, or one the cut leaves as none or any, takes the id priority- and the first 12 lower-case hex characters of the SHA-256 of the title's UTF-8 bytes instead, so every title gives an id. A given id that is no slug of lowercase letters, digits and single hyphens, a given id over 200 characters, and a given id of none or any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any) are each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
     post: operations["postApiV1Priorities"];
     delete?: never;
     options?: never;
@@ -2456,7 +2544,7 @@ export interface paths {
     delete: operations["deleteApiV1PrioritiesById"];
     options?: never;
     head?: never;
-    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?, expected?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. expected is {title?, description?}, the value the writer's edit of each started from, for the title and the description this same write writes; owner and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One that differs from the value the priority stores now (the title compared with the stored title exactly, which is stored trimmed, so a writer sends the title it read; the description exactly) is 409 PRIORITY_CHANGED, whose message names each attribute that differs and its value now, quoted and cut past 200 characters with a trailing …; that write writes nothing and appends no priority.updated. The compare and the write are one transaction holding the priority's row, so a write naming expected waits for any other write of the priority in flight and compares against what that one wrote. A body with no expected writes over whatever is stored. */
     patch: operations["patchApiV1PrioritiesById"];
     trace?: never;
   };
@@ -2846,7 +2934,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
     get: operations["getApiV1ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -2881,7 +2969,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
+    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is "", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
     get: operations["getApiV1ReferenceTargets"];
     put?: never;
     post?: never;
@@ -2983,7 +3071,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -3017,7 +3105,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
@@ -3188,7 +3276,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3236,6 +3324,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3671,6 +3762,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     ArtifactWithTrees: {
       approval?: components["schemas"]["ArtifactApprovalWithTrees"];
@@ -4196,6 +4288,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4258,6 +4353,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4289,6 +4387,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4311,7 +4412,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
-      scopes?: null | string[];
+      scopes?: null | ("person" | "approve" | "read")[];
     };
     CreateArtifactReviewInput: {
       reason?: null | string;
@@ -4953,6 +5054,7 @@ export interface components {
       token: string;
     };
     EditCommentInput: {
+      actor?: components["schemas"]["Actor"] | null;
       base_revision?: null | number;
       blocks?: components["schemas"]["CarriedBlock"][] | null;
       body: string;
@@ -4963,6 +5065,10 @@ export interface components {
       lost_ops?: number[];
       participants: components["schemas"]["Actor"][] | null;
       suggestion?: string;
+    };
+    EditMessageInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      body: string;
     };
     EditOp: {
       after?: string;
@@ -5031,6 +5137,7 @@ export interface components {
       duration_seconds: null | number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       failed_steps: number;
       issue: string;
       plan: components["schemas"]["PlanRecord"] | null;
@@ -5038,6 +5145,7 @@ export interface components {
       /** Format: date-time */
       started_at: null | string;
       title: string;
+      variant: null | string;
     };
     ForeignChildOpen: {
       key: string;
@@ -5098,7 +5206,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -5123,7 +5236,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -5443,10 +5561,12 @@ export interface components {
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
+      blocks?: string[];
       children: components["schemas"]["IssueChild"][] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
+      comment_count?: number;
       components: components["schemas"]["IssueComponents"];
       /** Format: date-time */
       created_at: string;
@@ -5738,6 +5858,65 @@ export interface components {
       /** Format: date-time */
       since: null | string;
     };
+    LegionIssueRead: {
+      /** Format: date-time */
+      at: string;
+      error: null | string;
+      ok: boolean;
+    };
+    LegionIssueResponse: {
+      configured: boolean;
+      issue: string;
+      project: string;
+      read: components["schemas"]["LegionIssueRead"] | null;
+      /** Format: int64 */
+      runs_revision: number;
+      state: components["schemas"]["LegionIssueState"] | null;
+    };
+    LegionIssueState: {
+      blocked_by: string[] | null;
+      phase: string;
+      /** Format: date-time */
+      phase_since: string;
+      phase_start_seen: boolean;
+      roles: components["schemas"]["LegionRoleClaim"][] | null;
+      slot: null | number;
+      waiting_line: components["schemas"]["LegionIssueWaitingLine"] | null;
+      waiting_on:
+        | ({
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            answeredAt?: string;
+            /** @description how the wait was answered, once it was, and not always by a person */
+            answeredBy?: string;
+            /** @description for a gate, the id of the document whose version no person has reviewed */
+            artifactId?: string;
+            /** @description for an ask, the id of the oldest question of the issue's tree still with a person */
+            ask?: string;
+            /** @description for a gate, the spec version no person has reviewed */
+            gateVersion?: number;
+            /** @description the kind of wait: ask, gate, or a kind a later daemon names */
+            kind: string;
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            since?: string;
+          } & {
+            [key: string]: unknown;
+          })
+        | null;
+    };
+    LegionIssueWaitingLine: {
+      length: number;
+      place: number;
+    };
+    LegionRoleClaim: {
+      role: string;
+      state: string;
+    };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
       project: string;
@@ -5766,6 +5945,24 @@ export interface components {
     };
     MarkdownRoundTripResponse: {
       markdown: string;
+    };
+    Message: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlock"] | null;
+      target: null | string;
     };
     MessageDelivery: {
       accepted_as: null | string;
@@ -5808,8 +6005,13 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
       duplicate?: boolean;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5828,7 +6030,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5857,6 +6064,11 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
     };
     MyAnswerRow: {
@@ -5899,6 +6111,9 @@ export interface components {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       first_line: string;
       id: string;
       kind: string;
@@ -5906,8 +6121,13 @@ export interface components {
     MyReplyRow: {
       anchor?: components["schemas"]["Anchor"];
       /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
       dismissed_at?: string;
       document?: components["schemas"]["OpenAskDocument"];
+      /** Format: date-time */
+      edited_at?: string;
       issue?: components["schemas"]["OpenAskIssue"];
       kind: string;
       priority?: number;
@@ -5944,6 +6164,9 @@ export interface components {
       outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
       parent: null | string;
       project: string;
+      read_ms: null | number;
+      /** @enum {null|string} */
+      read_stage: "connect" | "terms" | "keys" | "score" | null;
       /** @enum {null|string} */
       reason: "bound" | "failed" | "unrecorded" | null;
       /** Format: double */
@@ -6023,6 +6246,17 @@ export interface components {
       kind: string;
       to_id: string;
     };
+    ParentStatusConflictBody: {
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    ParentStatusConflictIssue: {
+      key: string;
+      relation: string;
+      status: string;
+      title: string;
+    };
     PassCounts: {
       graphql_points: number;
       graphql_queries: number;
@@ -6054,9 +6288,14 @@ export interface components {
       started_at: string;
       state: string;
     };
+    PatchPriorityExpected: {
+      description?: null | string;
+      title?: null | string;
+    };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
       description?: null | string;
+      expected?: components["schemas"]["PatchPriorityExpected"] | null;
       owner?: null | string;
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
@@ -6064,6 +6303,11 @@ export interface components {
     PersonNode: {
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       href: string;
       id: string;
       kind: string;
@@ -6128,6 +6372,18 @@ export interface components {
       id: string;
       steps: string[] | null;
     };
+    PostHistoryEntry: {
+      body: string;
+      /** Format: date-time */
+      edited_at: string;
+      edited_by: components["schemas"]["Actor"];
+    };
+    PostHistoryRead: {
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      entries: components["schemas"]["PostHistoryEntry"][] | null;
+    };
     Priorities: {
       empty?: string;
       priorities: components["schemas"]["PriorityRow"][] | null;
@@ -6142,6 +6398,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6182,6 +6440,8 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** @description Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is. */
+      description_tree_exact?: boolean;
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6339,6 +6599,11 @@ export interface components {
     };
     ReferenceTarget: {
       ambiguous?: boolean;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       gone: boolean;
       kind: string;
       name: string;
@@ -6410,6 +6675,11 @@ export interface components {
     };
     ReplyBlock: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6417,6 +6687,11 @@ export interface components {
     };
     ReplyBlockWithTrees: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6570,7 +6845,13 @@ export interface components {
     SearchResult: {
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
+      author?: components["schemas"]["Actor"];
       block_id?: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       href: string;
       id: string;
       issue?: components["schemas"]["SearchIssue"];
@@ -6591,6 +6872,9 @@ export interface components {
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       dispatch_words?: string;
       /** Format: date-time */
       edited_at?: string;
@@ -6634,6 +6918,60 @@ export interface components {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
     };
+    StatusChangeAnswer: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      issue: components["schemas"]["Issue"];
+    };
+    StatusChangeConflict: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    StatusChangeEntry: {
+      issue?: components["schemas"]["Issue"];
+      key: string;
+      parent: null | string;
+      previous_last_seq: number;
+      status: string;
+    };
+    StatusChangeInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      dry_run?: boolean;
+      expected_sequence?: null | number;
+      include_children?: boolean;
+      include_parent?: boolean;
+      status: string;
+      unlink_children?: boolean;
+    };
+    StatusChangeRefusal: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+    };
+    StepExperimentInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      experiment: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+      variant: null | string;
+    };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
@@ -6662,6 +7000,7 @@ export interface components {
       attempt: number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       /** Format: int64 */
       generation: number;
       id: string;
@@ -6682,6 +7021,7 @@ export interface components {
       step: number;
       task: string;
       type: string;
+      variant: null | string;
     };
     StepRecordInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6795,6 +7135,8 @@ export interface components {
       fields?: components["schemas"]["ToolField"][];
       item?: components["schemas"]["ToolField"];
       kind: string;
+      max?: number;
+      min?: number;
       name?: string;
       nullable?: boolean;
       required?: boolean;
@@ -6805,7 +7147,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
-      scopes: null | string[];
+      scopes: null | ("person" | "approve")[];
     };
     UpdateDeliverySessionGroupInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6880,8 +7222,10 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     WhoamiAgent: {
+      cut: null | string;
       /** @enum {string} */
       kind: "agent";
       owner: null | string;
@@ -6889,6 +7233,7 @@ export interface components {
       scopes: string[] | null;
       service: null | string;
       session: null | string;
+      sign_in_required: boolean;
     };
     WhoamiUser: {
       /** @enum {string} */
@@ -9117,6 +9462,44 @@ export interface operations {
       };
     };
   };
+  deleteApiV1CommentsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Comment"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   patchApiV1CommentsById: {
     parameters: {
       query?: {
@@ -9252,6 +9635,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentDelivery"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CommentsByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10281,6 +10699,7 @@ export interface operations {
         closed_before?: string;
         priority?: string[];
         advances?: string[];
+        own?: boolean;
         moved?: boolean;
         route_status?: string;
         open?: boolean;
@@ -10361,7 +10780,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["IssueDuplicateError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10479,7 +10899,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ForeignChildOpenError"]
-            | components["schemas"]["ErrorBody"];
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["ParentStatusConflictBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11357,6 +11778,40 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyLegion: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionIssueResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyMessages: {
     parameters: {
       query?: {
@@ -11730,6 +12185,67 @@ export interface operations {
       };
     };
   };
+  postApiV1IssuesByKeyStatusChange: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusChangeInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusChangeAnswer"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeConflict"]
+            | components["schemas"]["ErrorBody"]
+            | components["schemas"]["StatusChangeRefusal"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySteps: {
     parameters: {
       query?: {
@@ -11780,6 +12296,45 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyStepsByIdExperiment: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepExperimentInput"];
       };
     };
     responses: {
@@ -12819,6 +13374,82 @@ export interface operations {
       };
     };
   };
+  deleteApiV1MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EditMessageInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1MessagesByIdBlocks: {
     parameters: {
       query?: {
@@ -12917,6 +13548,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AcceptedMessageDelivery"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1MessagesByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15254,6 +15920,7 @@ export type EditAskInput = components["schemas"]["EditAskInput"];
 export type EditBlockPrecondition = components["schemas"]["EditBlockPrecondition"];
 export type EditCommentInput = components["schemas"]["EditCommentInput"];
 export type EditLostError = components["schemas"]["EditLostError"];
+export type EditMessageInput = components["schemas"]["EditMessageInput"];
 export type EditOp = components["schemas"]["EditOp"];
 export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
@@ -15331,6 +15998,11 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionIssueRead = components["schemas"]["LegionIssueRead"];
+export type LegionIssueResponse = components["schemas"]["LegionIssueResponse"];
+export type LegionIssueState = components["schemas"]["LegionIssueState"];
+export type LegionIssueWaitingLine = components["schemas"]["LegionIssueWaitingLine"];
+export type LegionRoleClaim = components["schemas"]["LegionRoleClaim"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveAskAttributes = components["schemas"]["LiveAskAttributes"];
@@ -15338,6 +16010,7 @@ export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
+export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
@@ -15364,9 +16037,12 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type ParentStatusConflictBody = components["schemas"]["ParentStatusConflictBody"];
+export type ParentStatusConflictIssue = components["schemas"]["ParentStatusConflictIssue"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PatchPriorityExpected = components["schemas"]["PatchPriorityExpected"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonNode = components["schemas"]["PersonNode"];
 export type PersonNodes = components["schemas"]["PersonNodes"];
@@ -15378,6 +16054,8 @@ export type PlanRecord = components["schemas"]["PlanRecord"];
 export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
 export type PlanTask = components["schemas"]["PlanTask"];
 export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
+export type PostHistoryEntry = components["schemas"]["PostHistoryEntry"];
+export type PostHistoryRead = components["schemas"]["PostHistoryRead"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];
@@ -15442,6 +16120,12 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StatusChangeAnswer = components["schemas"]["StatusChangeAnswer"];
+export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"];
+export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
+export type StatusChangeInput = components["schemas"]["StatusChangeInput"];
+export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
+export type StepExperimentInput = components["schemas"]["StepExperimentInput"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];

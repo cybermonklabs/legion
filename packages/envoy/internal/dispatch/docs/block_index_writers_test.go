@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -191,6 +192,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // no row of the store. The rebuild writes refs and marks work owed and writes no row of
 // document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
+	t.Parallel()
 	requireEveryPassReadsItsSource(t)
 	if t.Failed() {
 		// The source tree holds a pass nobody has said the input of, so whatever the
@@ -339,6 +341,9 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
+		// The holder is rolled back however the step ends: a wait below that fails the test leaves
+		// the tick queued behind it otherwise. A rollback after the step's own is a no-op.
+		testcleanup.Add(t, func() { _ = holder.Rollback(context.Background()) })
 		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
@@ -350,10 +355,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			}
 			close(ticked)
 		}()
-		if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-			holder.Rollback(ctx)
-			t.Fatalf("the tick never queued behind %s", step.name)
-		}
+		storetest.WaitForLockWaiters(t, holder, 1)
 		if running := waitingStatement(t, holder); !strings.Contains(running, step.wantStatement) {
 			t.Errorf("the tick waiting on %s is running %q, want the statement that takes it", step.name, running)
 		}
@@ -521,6 +523,25 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
 	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
+	// The comment's row and its node, and what it states under its comment.created, which the
+	// comment route and the comment an issue write leaves both queue: each reads the comment its
+	// caller writes, and its own artifacts' addresses (commentStored).
+	"api/comment_create.go#queueCommentRow":     "the comment its caller writes: the create request's own body, or the issue write's own words",
+	"api/comment_create.go#queueCommentCreated": "the facts the comment's row write stated and the comment.created event it appended",
+	// The orphaning of a comment's anchor, which the accept and the reject arms of commentAction
+	// and deleteComment queue when their document write finds the anchor's mark gone
+	// (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row
+	// holds and keeps every other key, the artifact_id its anchored_to tuple names among them, so
+	// it sets no column the store projects (censustest.ProjectedColumns' anchor) and reads no
+	// side of a projection to write the other.
+	"api/comment_actions.go#recordOrphanedCommentAnchor": "the comment its caller locked and the document write that found its anchor's mark gone",
+	// The clear a delete of a comment or a message makes: one update of the post's own row, with
+	// an empty body, no suggestion and the delete's mark - the transaction's now() its caller
+	// read and the caller the delete is recorded under - and, where an insert suggestion's quote
+	// is the comment's own words, that quote key emptied in the anchor the row holds, its other
+	// keys kept. No column it sets is one the store projects (censustest.ProjectedColumns), and
+	// it reads no side of a projection to write the other.
+	"api/post_history.go#clearDeletedPostBody": "the delete request and the post it deletes, which its caller locked",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -556,6 +577,7 @@ var indexPasses = map[string]string{
 	// that value's retraction once the block reads again. It reads the value each node holds only
 	// to state what moved, never a side of a projection to mend the other.
 	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	"docs/ask_blocks.go#claimCopies":         "the source asks settlement classified as copies of other documents' asks",
 	// The catch-up of a follow a process of the release before recorded: the follower rows that
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
@@ -591,8 +613,9 @@ var indexPasses = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
 	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
 	// before the batch writes its rows.
-	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
-	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
+	"cmd/dispatch-seed/write_core.go#writeIssues":    "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeAsks":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeMessages": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",

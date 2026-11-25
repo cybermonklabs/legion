@@ -57,8 +57,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 37 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(37);
+  test("names map both ways for all 42 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(42);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -134,6 +134,34 @@ describe("the dispatch command surface", () => {
       kind: "call",
       tool: "dispatch_project",
       args: { key: "SMOKE684", name: "Smoke" },
+      dryRun: false,
+    });
+  });
+
+  // --labels-add, repeated, is the call's labels_add, which adds labels and keeps the issue's
+  // others; --label stays labels, the whole set. A command line whose --labels-add were dropped
+  // would send an update naming no field.
+  test("dispatch issue-update --labels-add, repeated, is the call's labels_add", () => {
+    expect(commandFlags("dispatch_issue_update")).toEqual(
+      expect.arrayContaining(["--label", "--labels-add"])
+    );
+    expect(
+      parseCommand(
+        [
+          "issue-update",
+          "--issue",
+          "ACME-10",
+          "--labels-add",
+          "accessibility",
+          "--labels-add",
+          "api",
+        ],
+        noFiles
+      )
+    ).toEqual({
+      kind: "call",
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-10", labels_add: ["accessibility", "api"] },
       dryRun: false,
     });
   });

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,14 +16,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
 // the orders the issue's row allows, never in a mixture of them, and never in a deadlock.
-
-// raceDeadline bounds every request a race starts: a deadlock fails the test here instead of
-// hanging it.
-const raceDeadline = 10 * time.Second
 
 // A resolution of an open ask and the close of its issue, released together, serialise on the
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
@@ -438,11 +436,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	select {
-	case <-held:
-	case <-time.After(raceDeadline):
-		t.Fatal("the ask block's settlement never started")
-	}
+	testwait.Receive(t, "the ask block's settlement to start", held)
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
 		t.Fatalf("the ask block is ask %s while its settlement is held", id)
 	}
@@ -462,11 +456,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	default:
 	}
 	releaseSettlement()
-	select {
-	case <-closing:
-	case <-time.After(raceDeadline):
-		t.Fatalf("the close did not answer within %v of the settlement's release", raceDeadline)
-	}
+	testwait.Receive(t, "the close's answer once the settlement was released", closing)
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
@@ -571,8 +561,9 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	awaitSettled(t, database, spec)
 }
 
-// awaitRequests releases start, then waits up to raceDeadline for requests, failing the test
-// when they do not all answer: a deadlock between them.
+// awaitRequests releases start, then waits for requests to answer. Its one bound is the test
+// binary's deadline (testwait.Receive): a deadlock between them fails the test by name, and a pair
+// a loaded machine merely slows still answers.
 func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, what string) {
 	t.Helper()
 	answered := make(chan struct{})
@@ -581,11 +572,7 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		close(answered)
 	}()
 	close(start)
-	select {
-	case <-answered:
-	case <-time.After(raceDeadline):
-		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
-	}
+	testwait.Receive(t, what+" both to answer", answered)
 }
 
 // holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
@@ -626,30 +613,20 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 }
 
 // awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+// Its one bound is the test binary's deadline (testwait.UntilPolling): a request a loaded machine
+// runs late still ends the wait, and its failure prints the count last read.
 func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
 		waiting := lockWaiters(t, database)
-		if waiting >= count {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting >= count
+	})
 }
 
-// awaitAnswer waits up to 15 seconds for the answer of a request a test sent from a goroutine of
-// its own, and fails the test, naming the request by what, when none arrives.
+// awaitAnswer waits for the answer of the request what names on answered. Its one bound is the
+// test binary's deadline (testwait.Receive): a request a loaded machine answers late passes, and
+// one that never answers fails the test by name.
 func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
 	t.Helper()
-	select {
-	case response := <-answered:
-		return response
-	case <-time.After(15 * time.Second):
-		t.Fatalf("%s never answered", what)
-		return nil
-	}
+	return testwait.Receive(t, what+" to answer", answered)
 }

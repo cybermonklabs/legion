@@ -181,7 +181,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, supervise.Claim{
 		Token: token, Project: olderLauncherProject, Tree: olderLauncherIssue, Issue: olderLauncherIssue, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion, Session: olderLauncherSession,
+		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion(), Session: olderLauncherSession,
 		Budgets:          supervise.Budgets{LaunchFailures: failures},
 		TurnOutcomes:     []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true, Message: "overloaded"}},
 		ProviderErrorRun: 2,
@@ -217,7 +217,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		ClaimActivity:      st.ClaimActivity,
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: true,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		Worker:             store.ForConcurrentWorker,
@@ -271,7 +271,7 @@ func (r *olderLauncherRig) restart() {
 // agent the decision launches waits in the runtime (fake.Runtime.OnSpawn): that Spawn alone waits
 // for its context to end, as the Sandbox runtime's Spawn waits on a pod that is coming up, and then
 // answers that context's error, so the call is recorded and nothing is started. The launch is cut
-// short, and writes nothing after the write its try made before its start (launchNow).
+// short, and writes nothing after the write its try made before its start (launchTries).
 func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 	r.t.Helper()
 	waiting := make(chan struct{})
@@ -284,7 +284,7 @@ func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	ctx, stop := context.WithCancel(r.ctx)
+	ctx, stop := context.WithCancel(store.ForConcurrentWorker(r.ctx))
 	defer stop()
 	decided := make(chan error, 1)
 	go func() { decided <- r.machine.Handle(ctx, ev) }()
@@ -377,7 +377,8 @@ func resumedByAgent(call fake.Call) bool {
 //
 // The claim is stored queued at a generation above zero, so the boot restores it launch_uncertain
 // (supervise.Claim.ReleasedLaunch), and it is released to queued before the spawn, as the daemon's
-// own path for an unfinished launch does (launchUnfinishedClaim). That release keeps its session.
+// own path for an unfinished launch does (releaseUnfinishedClaim, launchUnfinished). That release
+// keeps its session.
 func (r *olderLauncherRig) startByAgentLookup() fake.Call {
 	r.t.Helper()
 	if r.claim().State == supervise.StateLaunchUncertain {
@@ -569,7 +570,7 @@ func (r *olderLauncherRig) wantForgotAtTheNextTry(from, failures int) {
 	r.awaitForgetTold()
 	r.wantToldOnce()
 
-	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion()); err != nil {
 		r.t.Fatalf("the fresh agent's registration as %s = %v; want it accepted", olderLauncherFresh, err)
 	}
 	if c := r.claim(); c.Session != olderLauncherFresh || c.SessionFile != olderLauncherFreshFile {
@@ -628,7 +629,7 @@ func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *test
 		t.Errorf("the prompt of the Resume with ResumeByAgent addresses the agent %q; want it to name %s and say the workspace %s",
 			addressing, olderLauncherSession, recreatedWords)
 	}
-	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("the registration as %s on %s = %v; want it accepted", olderLauncherSession, olderLauncherSessionFile, err)
 	}
 	if stored := r.stored(); stored.Session != olderLauncherSession || stored.SessionFile != olderLauncherSessionFile || stored.AgentResumeGeneration != 0 {
@@ -681,7 +682,7 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 			// The older launcher's pod carries the earlier release's plugin, so the registration
 			// speaks an older contract: the mark names this generation, which is what keeps the
 			// roll edge's rule from it.
-			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion-1); !errors.Is(err, claim.SameAgentRefusal) {
+			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion()-1); !errors.Is(err, claim.SameAgentRefusal) {
 				r.t.Fatalf("the registration as %s = %v; want the same-agent refusal, 409", olderLauncherOther, err)
 			}
 			r.gone()

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -30,9 +31,10 @@ type bootReads struct {
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
 // and the arm that name it, and the operator's file verbatim. Boot writes one copy per entry
-// under the state directory (config.WriteVariantInstructions), named and headed as the arm's
-// declaration says (config.Variant.MemoryBlock), and a launch's prompt ends with the copies of the
-// arms its unit was drawn into.
+// under the state directory (writeInstructionsCopies), named and headed as the arm's declaration
+// says (config.Variant.MemoryBlock), each launch reads the file again into that copy
+// (instructionsCopies.refresh), and a launch's prompt ends with the copies of the arms its unit was
+// drawn into.
 type variantInstructions struct {
 	experiment string
 	variant    config.Variant
@@ -45,12 +47,16 @@ type variantInstructions struct {
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
 // (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, and the runtime's own reads (readTmux, readSandbox).
+// file, or under dispatch_token_broker the transition token's file where the configuration names
+// one, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
-// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
-// refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copies and the Dispatch token file, read
-// provider keys from secretsd, and run the plugin gate or the image probe.
+// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
+// whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
+// the identity variables boot trades with and its first trade at the secrets broker are boot's
+// alone (dispatchCredential), so a check reads the file and needs no identity
+// (dispatch://INFRA-4425 R1). What boot does after it is not a check's to do: create the state
+// directory, write the instructions copies and the Dispatch token file, read provider keys from
+// secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
@@ -109,37 +115,40 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
 	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
 	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
-	// The block's own arm (config.Variant.MemoryBlock) is refused in the block's own words
-	// (config.ReadMemoryInstructions), which the documentation quotes, and every arm of the
-	// `experiments` key, `experiments.memory` included, in the experiments' words
-	// (config.ReadVariantInstructions).
 	for _, experiment := range cfg.ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
 			if variant.InstructionsPath == "" {
 				continue
 			}
-			var contents []byte
-			if variant.MemoryBlock {
-				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
-			} else {
-				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
-			}
+			contents, err := readArmInstructions(experiment.Name, variant)
 			if err != nil {
 				return bootReads{}, err
 			}
 			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
-	if cfg.DispatchURL != "" {
+	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
+	// beside the broker, so the broker reads no bearer file. A launch's Dispatch credential is the
+	// bearer, or under the broker the role's own trade and the shared token
+	// dispatch_token_transition_file holds ("" with no such file), which a launch into a pod built
+	// before the setting carries and the daemon's own calls never present.
+	credential := sandbox.DispatchCredential{Broker: cfg.DispatchTokenBroker}
+	switch {
+	case cfg.DispatchTokenBroker && cfg.DispatchTokenTransitionFile != "":
+		if credential.Transition, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
+			return bootReads{}, err
+		}
+	case cfg.DispatchURL != "" && !cfg.DispatchTokenBroker:
 		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return bootReads{}, err
 		}
+		credential.Bearer = r.dispatchToken
 	}
 	switch cfg.Runtime.Name {
 	case "tmux":
 		r.tmux, err = readTmux(cfg, lookup, getenv, hostOMP)
 	case "kubernetes":
-		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.paneNatsUser, lookup, log)
+		r.sandbox, err = readSandbox(cfg, r.project, credential, r.paneNatsUser, lookup, log)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}

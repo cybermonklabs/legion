@@ -325,7 +325,7 @@ func TestTheCatchUpStatesAWriteCommittedBetweenItsReadAndItsLock(t *testing.T) {
 
 	change := beginAsThePreviousBuild(t, database, issue)
 	done := startCatchUp(step)
-	if failed, answered := storetest.WaitForQueuedBehind(t, change, pid, done, lockstep.Wait); answered {
+	if failed, answered := storetest.WaitForQueuedBehind(t, change, pid, done); answered {
 		t.Fatalf("the pass answered (%v) without waiting on the issue the previous build's change holds", failed)
 	}
 	changed := commitAsThePreviousBuild(t, change, issue, previousBuildAnswer(ask, "Hold"))
@@ -624,7 +624,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 		t.Fatalf("a boot with phase 1 owed answered %v while another session held the step's lock, want it to wait for the lock", err)
 	case <-time.After(2 * time.Second):
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting != 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1); waiting != 1 {
 		t.Fatalf("%d backends wait behind the session that holds the step's lock, want the boot's", waiting)
 	}
 	var released bool

@@ -48,6 +48,9 @@ type settlementReconciliation struct {
 	// copied are the blocks this settlement wrote a copy's attributes into, as a copy of another
 	// document's ask (copiedAskSources), which it logs once it commits (logCopiedBlocks).
 	copied []copiedBlock
+	// copiedFrom records each ask block's classified source, empty for a block that is not a copy.
+	// Settlement states the relation after the block index plans the block nodes.
+	copiedFrom map[string]string
 	// indexedAskBlocks are the blocks this settlement indexed or found indexed, whose author the
 	// room forgets as it commits (consumeAskAuthorsLocked) and whose durable author its transaction
 	// deletes (deleteSettledAskAuthors). A copy is neither: its author is kept for the ask it opens
@@ -145,6 +148,56 @@ func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]
 		caused[index] = append(caused[index], &answer.held)
 	}
 	return caused, nil
+}
+
+// claimCopies states each ask block's copy source from settlement's classification, not from
+// browser attributes. An empty source retracts the current relation. The source document is
+// read through the source ask's own part_of, not stored as another fact.
+func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(*store.WriteBatch, int64) error, error) {
+	if len(r.copiedFrom) == 0 {
+		return nil, nil
+	}
+	var index refs.BlockIndex
+	var held bool
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		index, held = ledger.blockIndexes[artifactID]
+	}
+	if !held {
+		var err error
+		index, err = refs.ReadBlockIndex(ctx, tx, artifactID)
+		if err != nil {
+			return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+		}
+	}
+	address, err := addressOfDocument(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	var claims []graphstore.Claim
+	for _, blockID := range slices.Sorted(maps.Keys(r.copiedFrom)) {
+		if !index.HasNode(blockID) {
+			continue
+		}
+		claims = append(claims, graphstore.Claim{
+			FromKind: refs.BlockNodeKind, FromID: address.RefKey + "#" + blockID,
+			Kind: graphstore.TupleCopiedFrom, ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			At: at, Who: who,
+		})
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	return func(b *store.WriteBatch, cause int64) error {
+		for i := range claims {
+			claims[i].SourceEvent = cause
+		}
+		arms, params, err := graphstore.WriteArms(1, nil, nil, claims)
+		if err != nil {
+			return err
+		}
+		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		return nil
+	}, nil
 }
 
 // stateInvalidReasons plans what settlement writes on the node of each ask it read the
@@ -636,6 +689,8 @@ func (s *Service) reconcileAskBlocks(
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
 	twoBuilds := false
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
 			return settlementReconciliation{}, err
@@ -647,6 +702,7 @@ func (s *Service) reconcileAskBlocks(
 	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
+	// kept for one release: stored-ask-state
 	if !twoBuilds && len(rows)+len(sources) > 0 {
 		ids := make([]string, 0, len(rows)+len(sources))
 		for _, ask := range rows {
@@ -667,10 +723,14 @@ func (s *Service) reconcileAskBlocks(
 		return keptFromItsNode(ask, nodes)
 	}
 	reconciled := settlementReconciliation{}
+	if len(blocks)+len(invalidBlocks) != 0 {
+		reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
+	}
 	// unindexed are the authors of the new blocks a closed issue's settlement leaves with no row,
 	// where the durable record holds none yet, recorded once the blocks are reconciled.
 	var unindexed map[string]model.Actor
 	for _, invalid := range invalidBlocks {
+		reconciled.copiedFrom[invalid.id] = ""
 		reason := invalid.reason.Error()
 		ask, indexed := rows[invalid.id]
 		if indexed {
@@ -708,11 +768,13 @@ func (s *Service) reconcileAskBlocks(
 		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	for _, block := range blocks {
+		reconciled.copiedFrom[block.id] = ""
 		ask, exists := rows[block.id]
 		if !exists {
 			// A copy is read-only here: its source's state is written into the block, and
 			// nothing this settlement does writes the source's row.
 			if source, copied := sources[block.id]; copied {
+				reconciled.copiedFrom[block.id] = source.ask.ID
 				if reconciled.repairAskInStep(block.node, block.id, twoBuilds, shown(source.ask), source.document, nil) {
 					reconciled.copied = append(reconciled.copied, copiedBlock{blockID: block.id, source: source})
 				}
@@ -890,6 +952,7 @@ func (s *Service) reconcileAskBlocks(
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
 		kept := ask
+		// kept for one release: stored-ask-state
 		if !stated {
 			kept = shown(ask)
 		}

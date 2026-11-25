@@ -400,6 +400,26 @@ func ControllerNoticeRole(topic string) (string, bool) {
 	return contracts.ControllerRoleToken(project), true
 }
 
+// ControllerNoticeLane is ControllerNoticeRole read backwards: the notice lane whose holder role
+// is, and whether role is a Legion project's controller role at all. The project is read out of
+// role by the shape contracts.ControllerRoleToken gives it, taken from that func itself, and the
+// lane built from it must name role again, so a role token of any other shape names no lane.
+func ControllerNoticeLane(role string) (string, bool) {
+	prefix, suffix, _ := strings.Cut(contracts.ControllerRoleToken("\x00"), "\x00")
+	project, found := strings.CutPrefix(role, prefix)
+	if !found {
+		return "", false
+	}
+	if project, found = strings.CutSuffix(project, suffix); !found {
+		return "", false
+	}
+	lane := contracts.LegionNoticeTopicPrefix + project + contracts.ControllerNoticeSuffix
+	if named, isLane := ControllerNoticeRole(lane); !isLane || named != role {
+		return "", false
+	}
+	return lane, true
+}
+
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
 // (ControllerNoticeRole). It is the one question a caller asks before reading a controller role's
 // claim: that lane is the only private stream subject whose owner ReachesPrivateStreamSubject
@@ -429,7 +449,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
 // counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
-	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
+	if !OverlapsPrivateStreamSubject(topic) {
 		return false
 	}
 	if role, lane := ControllerNoticeRole(topic); lane {
@@ -438,6 +458,14 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	own := contracts.LegacyAgentSubject(sessionID)
 	twin, _ := contracts.LegacyTwin(topic)
 	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
+}
+
+// OverlapsPrivateStreamSubject reports whether topic overlaps a private stream subject
+// (privateStreamSubjects) under NATS wildcard rules, whoever's that subject is: the first question
+// ReachesPrivateStreamSubject asks, so a topic it answers false for reaches no session's private
+// subject, whatever session or roles a caller would weigh it for.
+func OverlapsPrivateStreamSubject(topic string) bool {
+	return slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) })
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
@@ -693,6 +721,16 @@ var roleLaneSubjects = []string{
 	ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">",
 }
 
+// RoleLane reports whether topic is a role lane or the exception lane of one (roleLaneSubjects),
+// read literally as a published topic is, as subjectsCapture reads it: notifications.role.> is a
+// role lane and so is every topic under it. The publish path sends such a topic over core NATS
+// (publishPathOf), and a session's consumer filter leaves it out (cmd/listener's
+// sessionConsumerFilter), since the stream never stores it and a role message reaches its holder
+// as a forward on the holder's agent subject.
+func RoleLane(topic string) bool {
+	return subjectsCapture(roleLaneSubjects, topic)
+}
+
 // subjectCapturesRoleLanes reports whether some role-lane subject would land in a stream carrying
 // subject.
 func subjectCapturesRoleLanes(subject string) bool {
@@ -756,6 +794,16 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
 	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// SubjectsOverlap reports whether some subject matches both patterns a and b (subjectsOverlap), for
+// a caller outside this package. No production code calls it: the listener weighs a session's
+// filters through SessionConsumerReduction, which records which topics fed each merge. The
+// listener's reduction test reads it to check that each of its rows overlaps as the case says
+// (cmd/listener's TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut), and it stays
+// exported because a test in another package cannot reach the unexported one.
+func SubjectsOverlap(a, b string) bool {
+	return subjectsOverlap(a, b)
 }
 
 // tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller

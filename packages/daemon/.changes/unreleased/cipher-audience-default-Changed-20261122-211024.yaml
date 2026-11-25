@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A `runtime.kubernetes.agent_secrets` block that names no `audience` now projects every pod's
+  broker token for Cipher's audience, `cipher`, in place of `agent-secrets`, and
+  `legion config reference` gives that default. Before you move to this release, name `audience`
+  in `legion.yaml` if your broker verifies another audience. A deployment that relies on the
+  default moves to `cipher`: its issue pods are replaced by their update round, and its controller
+  pod, which no round covers, is replaced at its next relaunch, which ends the turn it was in. The
+  Stage 4a live proof mints its login token and enrolls its pods for the audience the namespace's
+  daemons use, read from their `legion.yaml` ConfigMaps, or that default where none names one.
+time: 2026-11-22T21:10:24Z
+custom:
+    Issue: cipher-audience-default

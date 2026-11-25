@@ -18,7 +18,7 @@
 // job's own closure, or on none. Here it is the text-check job's to run by name
 // (ci_job_reads.py's TEXT_CHECK_TESTS, which also keeps it out of envoy-go's plain step), once
 // per run of the router, under a filter that names the whole module - the read
-// ci_job_reads.py's MODULE_SOURCES declares for this file.
+// this file's //ci:reads line below declares.
 //
 // What it holds is one of the two tests the Go half of dispatch://INFRA-1576's
 // c-one-expression-decides is written as: TestOneExpressionDecidesWhoWaitsInOneSpelling here,
@@ -31,6 +31,12 @@
 // test by name while the behaviour test runs with the package's Postgres-backed tests.
 
 package api
+
+// main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
+// the race job was the only one that ran it and the module walk under it was declared by
+// nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
+// and the line below is the declaration that holds that job's filter to what it reads.
+//ci:reads packages/envoy/**/*.go !**/*_test.go `packages/envoy/internal/dispatch/api/module_source_test.go#scanModuleSources` walks packages/envoy (infra, testdata and all) and parses every .go file it finds but the test files, for the tests that ask it for the module's sources: `packages/envoy/internal/dispatch/api/lock_level_test.go#TestNoForUpdateOnOwnerTables`, `packages/envoy/internal/dispatch/api/event_insert_guard_test.go#TestOnlyTheBrokerInsertsEvents`, `packages/envoy/internal/dispatch/api/review_order_guard_test.go#TestEveryReviewReadOrdersByReviewOrder`, `packages/envoy/internal/dispatch/api/review_write_guard_test.go#TestOnlyQueueReviewWritesReviews`, `packages/envoy/internal/dispatch/api/one_expression_guard_test.go#TestOneExpressionDecidesWhoWaitsInOneSpelling`, `packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go#TestOnlyTheIssuePatchWritesTheRoute`; that last also walks packages/envoy and reads every non-test file of it as text
 
 import (
 	"fmt"

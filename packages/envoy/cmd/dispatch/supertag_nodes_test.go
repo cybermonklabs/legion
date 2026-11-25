@@ -50,9 +50,11 @@ var typeMigrations = []string{
 // legion-envoy-v34.11.8, every release before legion-envoy-v34.12.0, which carries that migration,
 // holds 20261121060636_search_document_text as its newest migration and none after it, so a
 // deployment may have run the backfill over a store at this version. Those releases do not hold
-// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill). Every type
-// migration of typeMigrations is numbered below it; one numbered above it runs over graph_nodes
-// and graph_tuples the backfill may have filled.
+// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill), the backfill's
+// four indexes (20261119020700 to 20261119021000) among them, which came with a later release: the
+// runner applies every version it has not recorded, so this tree's MigrateThrough builds them here
+// too (openAtTheBackfill). Every type migration of typeMigrations is numbered below it; one
+// numbered above it runs over graph_nodes and graph_tuples the backfill may have filled.
 const backfillVersion = 20261121060636
 
 // unreleasedVersionsBelowTheBackfill is every version this tree numbers below backfillVersion that
@@ -64,17 +66,19 @@ const backfillVersion = 20261121060636
 // of those releases that ran the backfill meets each version listed here as pending over the
 // graph_nodes and graph_tuples the backfill filled, before the type migrations numbered above
 // backfillVersion (requireTheUnreleasedBelowTheBackfillAreTheFiles). Among them,
-// 20261116015042_graph_nodes_project adds two nullable columns to graph_nodes,
-// 20261116015056_graph_nodes_project_index builds an index of it concurrently, and
-// 20261116094058_asks_node adds two not valid foreign keys that reference its primary key. The
-// census counts none of the three as a change of graph_nodes for the bounded writes of a type
-// migration after them. Each
+// 20261116015042_graph_nodes_project adds two nullable columns to graph_nodes, and
+// 20261116015056_graph_nodes_project_index builds an index of it concurrently. The census counts
+// neither as a change of graph_nodes for the bounded writes of a type migration after them. Each
 // version listed here that writes rows of graph_nodes (writesGraphNodes) is a type migration such
 // a store meets after its backfill, and requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges
-// it as it judges the type migrations numbered above backfillVersion.
+// it as it judges the type migrations numbered above backfillVersion. A version a later release
+// holds is listed here too, as 20261110224508_post_corrections is, which legion-envoy-v34.22.0
+// first holds: a v34.11.x store meets it after its backfill all the same.
 var unreleasedVersionsBelowTheBackfill = []int{
-	20261116015042, 20261116015056, 20261116094058, 20261116094059, 20261116094100, 20261116094101,
-	20261118161237, 20261121034242,
+	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
+	20261116085957, 20261116232217, 20261118161237, 20261118181230, 20261119020700, 20261119020800,
+	20261119020900, 20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130,
+	20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -83,7 +87,9 @@ const releasedThroughTheBackfill = 290
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:
 // the store a deployment of those releases holds before it runs the backfill, and the store the type
-// migrations before the backfill left.
+// migrations before the backfill left, with the backfill's four indexes beside it. Those are
+// indexes alone, so they change no row this test writes or reads, and the backfill this test runs
+// is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {
@@ -128,6 +134,7 @@ var closedSupertags = []string{
 // store, fails here. A pointer is listed by its target's type as that type stands at each read,
 // and a pointer whose rows name its node by the targets its attribute node holds at that read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	pool := database.Pool
@@ -154,8 +161,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // a deployment of the releases that carry the backfill meets after it, as that deployment meets
 // it. The store is at backfillVersion (openAtTheBackfill); it holds an issue and comments written
 // as the releases before the graph store wrote them, which name no node, and backfill-graph-store's
-// own run (graphcensus.Backfill) states their nodes and tuples, as a deployment runs it once that
-// release serves. The store then forgets the versions below backfillVersion that no v34.11.x
+// own passes before the ask cutover (graphcensus.BackfillBeforeAskNodes) state their nodes and
+// tuples, as a deployment runs it once that release serves. The store then forgets the versions
+// below backfillVersion that no v34.11.x
 // release holds (unreleasedVersionsBelowTheBackfill), which such a deployment meets as pending
 // over the store its backfill filled, and the migration census of this binary's pending
 // migrations runs with its table limit at one byte (censusLimit), the store census tests' size
@@ -166,6 +174,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
 // node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
+	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
 	database := openAtTheBackfill(t)
 	ctx := context.Background()
@@ -225,7 +234,7 @@ func writeRowsBeforeTheStore(t *testing.T, ctx context.Context, pool *store.Pool
 func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	var out strings.Builder
-	report, err := graphcensus.Backfill(ctx, database, &out)
+	report, err := graphcensus.BackfillBeforeAskNodes(ctx, database, &out)
 	t.Logf("backfill-graph-store:\n%s", out.String())
 	if err != nil {
 		t.Fatalf("backfill-graph-store: %v", err)

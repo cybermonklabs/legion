@@ -53,6 +53,7 @@ import (
 // that drain, and this build's reconciliation must then state every parent, as its part_of tuple
 // and as the parent_block_id the seed's own indexing computed.
 func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -173,6 +174,7 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 // pass lists the document no more. Where the stand is at the version, the lower rule has nothing
 // to do, and a pass that listed the document would lose the fence and list it again every tick.
 func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -221,6 +223,7 @@ func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
 // version, indexes it at that version and clears the mark: the mark is of a rule its pass owes
 // everything of (R13).
 func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -254,6 +257,7 @@ func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
 // stands. Each statement is read as its writer runs it, and run over a document it marks: one
 // whose store stands below its version.
 func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	lowerRule := refs.BlockIndexMarkingRule
 	higherRule := lowerRule + 1
@@ -377,8 +381,20 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // It was re-recorded once more when the digest came to fold each statement's whitespace and to
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes.
+//
+// A change of words that keeps every statement's rows keeps the rule, and records its digest in
+// place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
+// #5491, and from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
+// before the hint below, whose statements also read the project columns above: the backfill's
+// block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
+// materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
+// and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot
+// walks a seed with the word and without it, under both plan-cache modes, and holds the two to the
+// same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
+// the other reads rule 1's cursors, horizons and marks as its own rightly.
 var markingStatementDigests = map[int]string{
-	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
+	1: "c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -387,6 +403,7 @@ var markingStatementDigests = map[int]string{
 // beside a build of the old ones, during a roll or after a rollback, would otherwise read each
 // other's cursors, horizons and marks as their own.
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
+	t.Parallel()
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
 		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))

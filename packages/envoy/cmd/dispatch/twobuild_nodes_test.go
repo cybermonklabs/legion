@@ -26,11 +26,11 @@ import (
 
 // A document's node is addressed by its ref_key. The test first reads, before this build starts,
 // which of two writers the previous build is (previousWritesDocumentNodes), and holds each order
-// to what that writer leaves. A build from before document nodes, as a release from before this
-// change is, writes no document node and states none gone. A build that writes them, such as this
-// tree built as the previous build in the merge group's dispatch-two-builds-same, writes a
-// document's node in the transaction that makes its row and states it gone in the one that
-// removes it.
+// to what that writer leaves. A build from before document nodes (#5491), such as the newest
+// release CI's dispatch-two-builds job pairs this tree with, writes no document node and states
+// none gone. A build that writes them, such as this tree built as the previous build in the merge
+// group's dispatch-two-builds-same, writes a document's node in the transaction that makes its row
+// and states it gone in the one that removes it.
 //
 // Beside a build that writes no node, the orders a roll can mix leave a node the census has to
 // name, each with its cure:
@@ -82,11 +82,11 @@ import (
 // Each order beside a build that writes no node has its control. The first and fourth orders' is
 // both of this build's passes taken out - the tick's object pass out of docs' ReconcileBlockIndex
 // and backfillObjectNodes out of graphcensus's BackfillAsks - after which the census names both
-// rows gone for as long as the test waits. The second's is this file run in the tree at the
-// branch's head before these classes and their cures, where this build's removal states nothing
-// gone and the census prints no orphaned field, so it fails at its first census. The third's is
-// the gone step taken out of this build's create (api's storeArtifact): the node then keeps the
-// removed row's live statement, and the census names the new row gone.
+// rows gone for as long as the test waits. The second's is this file run in main's tree before
+// #5491, where this build's removal states nothing gone and the census prints no orphaned field,
+// so it fails at its first census. The third's is the gone step taken out of this build's create
+// (api's storeArtifact): the node then keeps the removed row's live statement, and the census
+// names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -171,9 +171,13 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 
 	t.Run("the previous build stops and this build cures what it left", func(t *testing.T) {
 		// Beside a build that writes no node, the first and fourth orders each left a row for this
-		// build to cure.
-		if !writesNodes && len(forTheTick) != 2 {
-			t.Fatalf("the orders left %d row(s) for this build to cure, want 2", len(forTheTick))
+		// build to cure; beside one that writes them, none.
+		want := 2
+		if writesNodes {
+			want = 0
+		}
+		if len(forTheTick) != want {
+			t.Fatalf("the orders left %d row(s) for this build to cure, want %d", len(forTheTick), want)
 		}
 		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
 		var commits []string

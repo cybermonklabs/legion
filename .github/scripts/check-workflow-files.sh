@@ -16,8 +16,9 @@
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
 #   4. two keys of one mapping that are equal after upper-casing. GitHub's parsers refuse both a
-#      repeated key and a key differing only in case (actions/languageservices
-#      workflow-parser/src/templates/template-reader.ts:212 and :359, actions/runner
+#      repeated key and a key differing only in case (actions/languageservices'
+#      `is already defined` errors, https://github.com/actions/languageservices/blob/00d83b8521a6a179cc55ce9c93f5564035de0c5c/workflow-parser/src/templates/template-reader.ts#L212
+#      and #L359, actions/runner
 #      TemplateReader.cs with StringComparer.OrdinalIgnoreCase), while the YAML layer passes them
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
@@ -25,8 +26,9 @@
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 43 today, so 45 leaves room for two more
-#      calls and none for a surprise;
+#      repository's workflow as one call. ci.yaml calls 45 today, the limit, which keeps five
+#      below GitHub's cap for a surprise; a job split in two calls the file it was split from
+#      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
 #      `env:` sets STEP_TIMEOUT_MINUTES to anything but that step's own timeout-minutes.
@@ -43,6 +45,12 @@
 #      files aside; COMMAND_PLACE below says what counts as a run), or when its `uses:` is an
 #      action of .github/actions, at the checkout's root or under another checkout (`./base/`),
 #      whose steps' `run:` does. A path named in a comment or echoed is no reach.
+#   7. a job that runs a Postgres service (a `services:` entry whose key, or whose `image:`, holds
+#      `postgres` or `pgvector`) and has no step whose `run:` runs
+#      .github/scripts/pg-crash-safety-off.sh, in a place COMMAND_PLACE below counts as a run. A
+#      service with crash safety on makes its tests wait on the runner's disk at every commit and
+#      checkpoint; that script's header says what it costs. A service the check cannot tell is
+#      Postgres by its key or its image is not its business.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -57,7 +65,7 @@
 set -euo pipefail
 
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
-# check reads .github/ci-filters.yaml with runs, imported from beside this script's own file: a
+# check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Resolved
 # before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the
 # import from leaving a __pycache__ in the tree.
@@ -389,6 +397,41 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
                        f"its timeout-minutes is {scalar(own)} (line {own.start_mark.line + 1})")
 
 
+CRASH_SAFETY = "pg-crash-safety-off.sh"
+POSTGRES_WORDS = ("postgres", "pgvector")
+
+
+def check_postgres_services(path: Path, root: object) -> None:
+    """Rule 7 of the header: each job with a Postgres service runs CRASH_SAFETY in a step."""
+    jobs = mapping_get(root, "jobs")
+    if not isinstance(jobs, yaml.MappingNode):
+        return
+    for job_name, job in jobs.value:
+        services = mapping_get(job, "services")
+        if not isinstance(services, yaml.MappingNode):
+            continue
+        postgres = [
+            name for name, service in services.value
+            if any(word in (scalar(name) or "").lower() or word in (scalar(mapping_get(service, "image")) or "").lower()
+                   for word in POSTGRES_WORDS)
+        ]
+        if not postgres:
+            continue
+        steps = mapping_get(job, "steps")
+        runs = [scalar(mapping_get(step, "run")) or "" for step in steps.value] if isinstance(steps, yaml.SequenceNode) else []
+        if any(runs_any(run, {CRASH_SAFETY}) for run in runs):
+            continue
+        line = postgres[0].start_mark.line + 1
+        problem(
+            path,
+            f"{path}:{line}: job {scalar(job_name)} runs the Postgres service '{scalar(postgres[0])}' and no step "
+            f"of it runs .github/scripts/{CRASH_SAFETY}, so every commit and checkpoint of its tests waits for "
+            f"the runner's disk. Add the step every such job has, before its tests: "
+            f"`run: .github/scripts/{CRASH_SAFETY} \"${{{{ job.services.{scalar(postgres[0])}.id }}}}\"`.",
+            line=line,
+        )
+
+
 REACHERS = helper_reachers()
 
 
@@ -400,8 +443,8 @@ for path in targets:
             f"{path} is {size:,} bytes, above GitHub's own cap of {GITHUB_CAP:,} bytes (500 KB): "
             f"GitHub starts no run at all for a workflow file this size, and signals it only as a "
             f"run with no jobs in it. It is above this check's limit of {LIMIT:,} bytes as well. "
-            f"Move the filter data into .github/ci-filters.yaml, each longer shell body into a script "
-            f"under .github/scripts/ and each derivation into the workflow's notes file, as {RULE} says.",
+            f"Move each longer shell body into a script under .github/scripts/ and each derivation "
+            f"into the workflow's notes file, as {RULE} says.",
         )
     elif size > LIMIT:
         problem(
@@ -409,9 +452,9 @@ for path in targets:
             f"{path} is {size:,} bytes, above this check's limit of {LIMIT:,} bytes. GitHub starts "
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
-            f"far enough below the cap that no edit crosses it unseen. Move the filter data into "
-            f".github/ci-filters.yaml, each longer shell body into a script under .github/scripts/ "
-            f"and each derivation into the workflow's notes file, as {RULE} says.",
+            f"far enough below the cap that no edit crosses it unseen. Move each longer shell body "
+            f"into a script under .github/scripts/ and each derivation into the workflow's notes "
+            f"file, as {RULE} says.",
         )
 
     node, error = composed(path)
@@ -431,6 +474,7 @@ for path in targets:
 
     check_folded_keys(path, node)
     check_timeout_variables(path, node, REACHERS)
+    check_postgres_services(path, node)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -454,7 +498,8 @@ if problems:
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
-    f"at most {CALL_LIMIT} unique reusable workflows, and set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for"
+    f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and run {CRASH_SAFETY} in every "
+    f"job with a Postgres service"
 )
 PY

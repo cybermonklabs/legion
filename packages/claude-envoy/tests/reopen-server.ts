@@ -18,6 +18,7 @@ import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 import { socketOwner } from "./socket-owner"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -250,6 +251,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       // over several refusals.
       ENVOY_HEARTBEAT_MS: "200",
       XDG_RUNTIME_DIR: stateDirectory,
+      ...NO_TRANSPILER_CACHE,
       ...options.env(stateDirectory),
     },
     stdin: "pipe",
@@ -285,15 +287,32 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     return `this server is pid ${server.pid}; ${seen.join("; ")}`
   }
   try {
+    // The start's own fact, with no clock of its own: a start a loaded machine slows takes what it
+    // takes, a server that ends first is named with its end at once, and one that never starts is
+    // named at `PROCESS_WAIT_MS`. A fixed 30 s decided it before: a server writing Bun's transpiler
+    // cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s at a load
+    // near 1,000.
     await waitFor(
-      async () => stderr.length > 0 || deliveries.length > 0,
+      async () => {
+        if (stderr.length > 0 || deliveries.length > 0) return true
+        if (server.exitCode === null && server.signalCode === null) return false
+        await stderrEnded
+        if (stderr.length > 0) return true
+        throw new Error(`the server ended before its first stderr line: ${state()}`)
+      },
       "the server's first stderr line",
       state,
       PROCESS_WAIT_MS,
     )
     if (options.awaitRegistration !== false) {
+      // A server that printed its first line and then ended is named with its end at once too.
       await waitFor(
-        async () => deliveries.length > 0 && relaySubscriptions() === 1,
+        async () => {
+          if (deliveries.length > 0 && relaySubscriptions() === 1) return true
+          if (server.exitCode === null && server.signalCode === null) return false
+          await stderrEnded
+          throw new Error(`the server ended before its first registration: ${state()}`)
+        },
         "the session's first registration and its relay subscription",
         state,
         PROCESS_WAIT_MS,

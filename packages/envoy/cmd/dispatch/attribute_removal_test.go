@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest/newerversion"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -329,14 +330,24 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	}
 	stopProcess(t, previous)
 
-	// This head writes a third document holding a reading inside an answered ask.
+	// The current build creates and answers the ask. SQL stores the reading as a later build
+	// would, because this release cannot introduce reading blocks.
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	current.waitHealthy(t)
 	readingAsk := ":::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	third := uploadedID(t, uploadDocument(t, current, issue, "reading.md", "# Reading\n\n"+readingAsk))
 	answerAsk(t, current, blockAskOf(t, current, issue, "read-it"), "Yes", "Read it now.")
-	uploadDocument(t, current, issue, "reading.md", "# Reading\n\n::::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n\n"+
-		":::reading{#read-r1}\nThe agent reads it as reading now.\n:::\n::::\n")
+	settledDocument(t, ctx, current, database, third)
+	_, answeredMarkdown := latestMarkdown(t, current, third)
+	withReading := strings.Replace(answeredMarkdown, ":::ask{#read-it ", "::::ask{#read-it ", 1)
+	withReading = strings.TrimSuffix(withReading, ":::\n") + "\n:::reading{#read-r1}\nThe agent reads it as reading now.\n:::\n::::\n"
+	stopProcess(t, current)
+	newerversion.StoreNewerVersion(t, database, third, withReading)
+	current = startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
+	current.waitHealthy(t)
+	asAgentSession(t, current, http.MethodPost, "/api/v1/artifacts/"+third+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "replace", "find": "Reading", "with": "Reading notes"}},
+	}, http.StatusOK)
 	settledDocument(t, ctx, current, database, third)
 	thirdVersions, thirdText := latestMarkdown(t, current, third)
 	if !strings.Contains(thirdText, ":::reading{#read-r1}") {

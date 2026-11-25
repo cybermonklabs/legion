@@ -561,7 +561,7 @@ func (a edgesBlockArm) String() string {
 // edgesBlockArms is the list "The arms that can end at a block" of the plan of this change: the
 // arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs;
 // block_refs, whose typed pointer is listed only where block_ref_listed allows its target, over
-// the rows that name no node; the store's own arm over graph_tuples (migration 20261121034242),
+// the rows that name no node; the store's own arm over graph_tuples (migration 20261125163554),
 // which answers a document block's link once its block_refs row names its node, and only while
 // that row carries it, and an answered ask's shaped, which no writer of this build states yet;
 // comment_block_refs, message_block_refs and ask_block_refs, each joined to its source block, which

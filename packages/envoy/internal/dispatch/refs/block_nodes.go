@@ -784,7 +784,7 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
 				  and t.to_kind <> '`+graphstore.KindValue+`'
-				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`')`)+`
+				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`', '`+graphstore.TupleCopiedFrom+`')`)+`
 			) current
 			where current.asserted
 		) held on true

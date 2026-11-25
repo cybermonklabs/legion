@@ -42,6 +42,7 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // what an unacknowledged publish sent once the server answers again, and holds nothing of a
 // publish that waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -72,8 +73,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	})
 
 	t.Run("a write the stream refused is no ErrUnacknowledged", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		subject := bus.KeptRoleCursorSubject("unacknowledged-refused")
 		if _, err := client.PublishCursorAt(ctx, subject, []byte(`{"kept":1}`), 0); err != nil {
 			t.Fatalf("the first cursor write: %v", err)
@@ -110,9 +111,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
@@ -126,8 +127,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got answer
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the publish whose connection closed under it did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish whose connection closed under it did not return by the test's deadline")
 		}
 		if got.err != nil {
 			t.Fatalf("a publish sent again after its connection closed = %v, want it acknowledged", got.err)
@@ -159,9 +160,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
@@ -178,8 +179,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got answer
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the publish interrupted by reconnect did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish interrupted by reconnect did not return by the test's deadline")
 		}
 		if got.err != nil {
 			t.Fatalf("a publish sent again after reconnect = %v, want it acknowledged", got.err)
@@ -195,7 +196,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	// A cursor write under a precondition is sent again after a reconnect cuts its answer, and the
 	// stream refuses the resend because the first send already moved the cursor. That refusal is
 	// no ErrCursorMoved, which says the write stored nothing: the error wraps ErrUnacknowledged, so
-	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write.
+	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write. The
+	// refusal is read by the one test both conditional writes share (preconditionLost), so this row
+	// holds it for Client.WriteTakeoverRecordAt too.
 	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
 		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
 		proxy := testnats.StartProxy(t, uri)
@@ -207,9 +210,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		proxy.FreezeServerReplies()
 		body := []byte(`{"kept":7}`)
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
 			answered <- err
 		}()
@@ -222,8 +225,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got error
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the cursor write interrupted by reconnect did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the cursor write interrupted by reconnect did not return by the test's deadline")
 		}
 		if errors.Is(got, bus.ErrCursorMoved) {
 			t.Fatalf("a cursor write the stream stored before the reconnect = %v, want no ErrCursorMoved: the cursor holds this write", got)
@@ -240,6 +243,55 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 		if n := storedOn(t, subject); n != 1 {
 			t.Fatalf("the stream holds %d cursor writes on %s, want the one this call stored", n, subject)
+		}
+	})
+
+	// The claim route's write of a takeover record takes no precondition (WriteTakeoverRecord): it
+	// writes a subject of its own, a fresh attempt id's, which no other writer has. So the resend
+	// after a reconnect cut the first send's answer is stored too, and the write returns nil, as it
+	// must for a claim whose record stored. Under a precondition the stream would refuse that
+	// resend, which meets the first send's own copy, and the claim route would answer the claim as
+	// one whose record did not store.
+	t.Run("a takeover record stored before a reconnect cut its answer is written", func(t *testing.T) {
+		const role, previous = "unacknowledged-claim", "ses_unacknowledged_previous"
+		subject := bus.TakeoverSubject(role, previous, id.New())
+		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		proxy.FreezeServerReplies()
+		answered := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			answered <- reconnecting.WriteTakeoverRecord(ctx, subject, record)
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the takeover record to be stored before reconnecting",
+			func() bool { return storedOn(t, subject) == 1 })
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got error
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the takeover record write interrupted by reconnect did not return")
+		}
+		if got != nil {
+			t.Fatalf("a takeover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		records, err := client.TakeoverRecords(ctx, role)
+		if err != nil {
+			t.Fatalf("read %s's takeover records: %v", role, err)
+		}
+		if len(records) != 1 || records[0].Subject != subject || records[0].Record != record {
+			t.Fatalf("%s's takeover records read %+v, want this write's %+v on %s", role, records, record, subject)
 		}
 	})
 

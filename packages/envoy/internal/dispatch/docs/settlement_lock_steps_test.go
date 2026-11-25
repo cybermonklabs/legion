@@ -32,6 +32,8 @@ import (
 //     without it: the ask's row (asks.Settle, held for its event), the version's block index, the
 //     artifact.version and what the index stated under it, then the ask.resolved and the
 //     retraction's facts under it (causedByEvent);
+//   - a settlement that does not write a version states the copy's relation to its source ask
+//     after taking the document's owner lock and revision fence;
 //   - a settlement that versions an ask block whose question a person emptied: the block index, the
 //     artifact.version and what the index stated, the block.invalid that flags the block, and the
 //     reason on the ask's node under the version's event (stateInvalidReasons);
@@ -48,7 +50,7 @@ func TestEverySettlementWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	rig := &docsWriterRig{database: database, service: service}
-	for _, writer := range []docsWriter{rig.settledRetraction(), rig.settledInvalidAsk(), rig.settledCarry()} {
+	for _, writer := range []docsWriter{rig.settledRetraction(), rig.settledCopy(t, ctx), rig.settledInvalidAsk(), rig.settledCarry()} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheDocsOrderAdmits(t, writer)
 			requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
@@ -108,6 +110,47 @@ func (r *docsWriterRig) settledRetraction() docsWriter {
 					return err
 				}
 				return r.answerStateCaused(ctx, retracted, asks.StateResolved, "ask.resolved")
+			}}
+		},
+	}
+}
+
+// settledCopy holds the copy relation's write on a settlement that needs no new version.
+// Repeating the same claim must not append a second copied_from tuple.
+func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWriter {
+	const block = "lock-copied"
+	sourceDoc := r.settledDocument(t, ctx, "lock-steps-source", "# Source\n\n"+askBlockMarkdown(block))
+	source := blockAskOn(t, r.service, sourceDoc, block).ID
+	return docsWriter{
+		name: "claimCopies",
+		steps: []docsStep{
+			r.ownerStep(), settlementFenceStep(),
+			{
+				name: "the copy's claim", order: docsTupleStep, fenced: true,
+				hold: holdDocsTableWrites("graph_tuples"), at: "with graph_claims as (",
+				takes: []docsTableLock{{"graph_tuples", docsRowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) docsRun {
+			copied := r.settledDocument(t, ctx, r.fresh("lock-steps-copy"), "# Copy\n\n"+askBlockMarkdown(block))
+			r.editAsVersion(t, ctx, copied, model.Actor{Kind: "session", ID: r.fresh("lock-steps-copier")}, "A paragraph after the copy.\n")
+			r.awaitDurable(t, copied)
+			return docsRun{document: copied, write: func() error {
+				if err := r.settle(ctx, copied); err != nil {
+					return err
+				}
+				var claims int
+				if err := r.database.Pool.QueryRow(ctx, `
+					select count(*) from document_blocks d
+					join graph_tuples t on t.from_kind = d.node_kind and t.from_id = d.node_address
+					where d.artifact_id = $1 and d.block_id = $2 and t.kind = $3 and t.to_kind = $4 and t.to_id = $5 and t.asserted
+				`, copied, block, graphstore.TupleCopiedFrom, graphstore.KindAsk, source).Scan(&claims); err != nil {
+					return fmt.Errorf("read the copy's copied_from: %w", err)
+				}
+				if claims != 1 {
+					return fmt.Errorf("the copy's block node holds %d copied_from tuples to ask %s, want one", claims, source)
+				}
+				return nil
 			}}
 		},
 	}

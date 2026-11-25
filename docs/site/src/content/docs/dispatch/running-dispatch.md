@@ -573,7 +573,7 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 25 for the work it runs once across the servers, the
+to 64 connections for requests, up to 26 for the work it runs once across the servers, the
 delivery intakes' holds and the keyword fill's hold,
 up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
@@ -587,7 +587,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 116
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 117
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -644,6 +644,10 @@ What a reader sees while two servers are serving:
   leave this version's record of it out of step: `envoy-dispatch census --store` then names it
   `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
   `gone`; an `orphaned` line says `no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+- A comment that a server of the earlier version writes during the rollout, and a document block
+  it indexes then, can keep a record that names no project: `envoy-dispatch census --store` then
+  names it `unscoped`. Once every server runs this version, run
+  `envoy-dispatch backfill-graph-store` again, which gives it its project.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.

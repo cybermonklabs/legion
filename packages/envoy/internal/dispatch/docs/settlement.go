@@ -719,18 +719,28 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 	})
 }
 
-// stateReadability plans the readability of the asks whose blocks this settlement read
-// (stateInvalidReasons), in the name the version carries (versionActor) at at, and queues its
-// statements under cause as one step (write): the version's event, which the step follows right
-// after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that writes no
-// version.
-func (st *settlement) stateReadability(ctx context.Context, at time.Time, cause int64) error {
-	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, st.credit.versionActor(), at)
-	if err != nil || readability == nil {
+// stateCopiesAndReadability queues the copy relations and ask readability under the version's
+// event, after the block index has planned the nodes. A settlement without a version uses NoEvent.
+func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Time, cause int64) error {
+	who := st.credit.versionActor()
+	copies, err := st.reconciliation.claimCopies(ctx, st.tx, st.room, who, at)
+	if err != nil {
+		return err
+	}
+	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, who, at)
+	if err != nil || copies == nil && readability == nil {
 		return err
 	}
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		return readability(b, cause)
+		if copies != nil {
+			if err := copies(b, cause); err != nil {
+				return err
+			}
+		}
+		if readability != nil {
+			return readability(b, cause)
+		}
+		return nil
 	})
 }
 
@@ -859,8 +869,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// The readability of the asks whose blocks this settlement read is stated in the name the
-	// version itself carries (versionActor), at one time (stateReadability).
+	// Use the same author and time for the copy relations and the asks' readability.
 	at := time.Now().UTC()
 	if versioning {
 		var keptEditor *model.Actor
@@ -892,18 +901,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
-		// A person's version opens or moves on the document's edit notice, under the owner lock
-		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
-		// same order the notice a person's version opened before the close, due or held
-		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
-		// reopen, which would start from that row's from_version (openEditNotice), carries the
-		// edits this version saves.
-		if st.issueClosed {
-			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
-				return settleDone, st.abandon(err)
-			}
-		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// A person's version opens or moves on the document's edit notice, and a closed issue's
+		// deletes it (settledEditNotice).
+		if err := s.settledEditNotice(ctx, tx, room, st.issueClosed, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// A document body cites nodes whose rows carry a backlink count, so the version event
@@ -923,9 +923,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
-		// The readability, once the version's blocks are planned, under that same event, right
-		// after it.
-		if err := st.stateReadability(ctx, at, graphstore.LatestEvent); err != nil {
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.LatestEvent); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
@@ -939,9 +937,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.appendEvents(ctx, st.reconciliation.events, caused); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// A settlement that writes no version states the readability under no event.
+	// A settlement that writes no version states the copy relations and readability under no event.
 	if !versioning {
-		if err := st.stateReadability(ctx, at, graphstore.NoEvent); err != nil {
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.NoEvent); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
@@ -996,4 +994,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// settledEditNotice is what a settlement's version does to the document's edit notice, under the
+// owner lock the settlement took first: the sweep takes the two in that order too
+// (sendEditNotice). A person's version on an open issue opens or moves on the notice
+// (recordEditNotice). A closed issue's version opens none, and deletes in that same order the
+// notice a person's version opened before the close, due or held (holdEditNotice): neither a
+// reopen inside its quiet time nor the first notice after the reopen, which would start from that
+// row's from_version (openEditNotice), carries the edits this version saves. The version a joined
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
+func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
+	if closedIssue {
+		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
+	}
+	return s.recordEditNotice(ctx, tx, room, version, authors, latest)
 }

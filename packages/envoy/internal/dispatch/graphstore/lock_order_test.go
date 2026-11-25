@@ -752,7 +752,7 @@ func startStoreWrite(t *testing.T, ctx context.Context, f *lockOrderFixture, nod
 // claims about it was never put to the test.
 func requireQueued(t *testing.T, holder pgx.Tx, conn *pgxpool.Conn, done chan error, what string) {
 	t.Helper()
-	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done, lockWait)
+	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done)
 	if answered {
 		t.Fatalf("%s finished without waiting for the lock a holder has: %v%s", what, answer, deadlockNote(answer))
 	}

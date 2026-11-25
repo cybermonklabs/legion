@@ -118,7 +118,7 @@ type followResult struct {
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
 // and on a row a process of the release before wrote with none, which this follow makes the
 // store's. graph_edges' tuple arm answers a marked row from that relation, and its old arm answers
-// an unmarked one (20261116094101). A row is marked only where the ask's node is there to name -
+// an unmarked one (20261125163553). A row is marked only where the ask's node is there to name -
 // an ask a process of the release before created has none until the boot step's backfill writes it
 // - and the session is a node the store can key. A follow that marks the row states followed_by,
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked

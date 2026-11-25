@@ -35,6 +35,7 @@ const (
 // blocks, which names it. No version is written, and the closer is credited as no pending author:
 // the authors already pending stay, and no one else is added.
 func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -130,6 +131,7 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 // by its place in the document and names it under the id it repeats, which it leaves alone for
 // settlement to stamp.
 func TestWritingIssueAskStatesMarksABlockRepeatingAnAsksIDByItsPlace(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -205,6 +207,7 @@ func appendLiveBlock(t *testing.T, service *Service, artifactID, markdown string
 // when the session's edit wrote its own version, as POST /edits does, so that no one is pending.
 // An edit the same transaction made before the close's write is still the latest edit source.
 func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
+	t.Parallel()
 	session := model.Actor{Kind: "session", ID: "late-asking-session"}
 	closer := model.Actor{Kind: "user", ID: "carol"}
 	editor := model.Actor{Kind: "user", ID: "erin"}
@@ -272,6 +275,7 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 // own source through a load that starts before the close's flush takes that update, and that
 // source is the one the reopen restored (restoreLastActor), not the none the close left.
 func TestReopeningAnIssueRestoresTheLatestEditSourceOfARoomLoadedWhileClosed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// holdAppend leaves the record holding an append that has not landed, from before the
@@ -336,6 +340,7 @@ func TestReopeningAnIssueRestoresTheLatestEditSourceOfARoomLoadedWhileClosed(t *
 // and a version the settlement writes lists neither the closer nor the reopener and is the
 // session's.
 func TestASettlementAfterAReleasingCloseAndAReopenNamesTheLatestEditor(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		version ledgerWriteVersion
@@ -435,6 +440,7 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 // build serves, still reaches them, since its caller holds the issue's owner lock: a room flagged
 // closed that a reader loaded again, and a document no room holds, whose write the store keeps.
 func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
+	t.Parallel()
 	for _, resident := range []bool{true, false} {
 		name := "no resident room"
 		if resident {
@@ -485,6 +491,7 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 // settlement on the closed issue would have saved the blocks resolved, and the reopen's
 // settlement would then write a version with them open again.
 func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
+	t.Parallel()
 	service, original := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -539,6 +546,7 @@ func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 // An ask block written while the settle delay holds its settlement off is an ask, credited to its
 // writer, once SettleIssueDocuments returns: the settlement runs on the caller's goroutine.
 func TestSettlingAnIssuesDocumentsIndexesABlockWrittenWithinTheSettleDelay(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -566,6 +574,7 @@ func TestSettlingAnIssuesDocumentsIndexesABlockWrittenWithinTheSettleDelay(t *te
 // SettleIssueDocuments opens a transaction of its own for each settlement, so it refuses to run
 // inside one, and the block it would have indexed waits for its settlement.
 func TestSettlingAnIssuesDocumentsRefusesToRunInsideATransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
@@ -599,6 +608,7 @@ func TestSettlingAnIssuesDocumentsRefusesToRunInsideATransaction(t *testing.T) {
 
 // WriteIssueAskStates writes only inside a transaction a caller joined.
 func TestWritingIssueAskStatesNeedsAJoinedTransaction(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	if _, err := service.WriteIssueAskStates(context.Background(), "DOC-1", nil, model.Actor{Kind: "user", ID: "carol"}, true); !errors.Is(err, errUnjoined) {
 		t.Fatalf("an unjoined write = %v, want errUnjoined", err)

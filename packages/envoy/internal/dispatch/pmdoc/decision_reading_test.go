@@ -2,6 +2,7 @@ package pmdoc
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -33,17 +34,59 @@ func TestAnAskAttributeNamesOneAskOfAnIssue(t *testing.T) {
 	if err := validateAttributeValue(attr, true); err == nil {
 		t.Errorf("an ask attribute holding a bool is accepted")
 	}
+
+	doc, err := ParseRendering(":::decision{#d1 from_ask=\"" + ask + "\"}\nWe ship on Friday.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse a stored decision naming its ask: %v", err)
+	}
+	if got := doc.Children[0].Attrs["from_ask"]; got != ask {
+		t.Fatalf("the decision's from_ask = %#v, want %q", got, ask)
+	}
+	if rendered, err := Render(doc); err != nil || !strings.Contains(rendered, `from_ask="`+ask+`"`) {
+		t.Fatalf("the decision renders as %q (%v), want its from_ask written back", rendered, err)
+	}
+	_, err = ParseRendering(":::decision{#d1 from_ask=\"" + ask + "#b-q1\"}\nWe ship on Friday.\n:::\n")
+	if err == nil || !strings.Contains(err.Error(), "is a part of an ask") {
+		t.Fatalf("a decision naming a part of an ask = %v, want the part refused", err)
+	}
 }
 
 // An attribute whose `markdown` field is false lives on the block's node alone: the renderer
 // never writes it, and markdown that names it is read as if it did not. The rule is the field's,
 // not a name's: the renderer used to leave out `invalid` by its name.
 func TestAnAttributeMarkdownNeverCarriesIsNeitherWrittenNorRead(t *testing.T) {
-	parsed, err := ParseForWrite(":::ask{#a1 invalid=\"forged\"}\nWhich day?\n:::\n", nil)
+	never := []string{"decided_by", "kept_by", "kept_text_sum"}
+	decision, err := ParseRendering(":::decision{#d1 uncertainty=\"low\"}\nWe ship on Friday.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse a stored decision: %v", err)
+	}
+	for _, name := range never {
+		decision.Children[0].Attrs[name] = "user:alice"
+	}
+	renderedDecision, err := Render(decision)
+	if err != nil {
+		t.Fatalf("render a decision holding the attributes markdown never carries: %v", err)
+	}
+	for _, name := range never {
+		if strings.Contains(renderedDecision, name) {
+			t.Errorf("the decision renders as %q, which writes %s", renderedDecision, name)
+		}
+	}
+	if !strings.Contains(renderedDecision, `uncertainty="low"`) {
+		t.Errorf("the decision renders as %q, want its uncertainty written", renderedDecision)
+	}
+
+	parsed, err := ParseRendering(":::decision{#d1 decided_by=\"user:mallory\" kept_by=\"user:mallory\" kept_text_sum=\"forged\"}\nWe ship on Friday.\n:::\n\n" +
+		":::ask{#a1 invalid=\"forged\"}\nWhich day?\n:::\n")
 	if err != nil {
 		t.Fatalf("markdown naming attributes markdown never carries is refused: %v", err)
 	}
-	if value, held := parsed.Children[0].Attrs["invalid"]; held {
+	for _, name := range never {
+		if value, held := parsed.Children[0].Attrs[name]; held {
+			t.Errorf("markdown claiming %s gives the decision %s = %#v, want none", name, name, value)
+		}
+	}
+	if value, held := parsed.Children[1].Attrs["invalid"]; held {
 		t.Errorf("markdown claiming invalid gives the ask invalid = %#v, want none", value)
 	}
 
@@ -123,5 +166,130 @@ func TestALiveDecisionKeepsItsReadingWhateverOrderItsBlocksStandIn(t *testing.T)
 	}}}}
 	if err := callout.Validate(); err == nil || !strings.Contains(err.Error(), `typed block "reading" "r1" stands only`) {
 		t.Fatalf("a callout holding a reading = %v, want the reading refused", err)
+	}
+}
+
+func TestAReadingStandsOnlyAfterTheContentOfItsParent(t *testing.T) {
+	reading := ":::reading{#r1}\nThe agent reads it as Friday.\n:::\n"
+	inDecision := "::::decision{#d1}\nWe ship on Friday.\n\n" + reading + "::::\n"
+	held, err := ParseRendering(inDecision)
+	if err != nil {
+		t.Fatalf("after a decision's content: %v, want the reading admitted", err)
+	}
+	for name, markdown := range map[string]string{
+		"after a decision's content": inDecision,
+		"after an ask's question":    "::::ask{#a1}\nWhich day?\n\n" + reading + "::::\n",
+		"after an ask's options":     "::::ask{#a1}\nWhich day?\n\n- Friday\n- Monday\n\n" + reading + "::::\n",
+	} {
+		doc, err := ParseForWrite(markdown, held)
+		if err != nil {
+			t.Errorf("%s: %v, want the reading admitted", name, err)
+			continue
+		}
+		parent := doc.Children[0]
+		content, admitted := TypedContent(parent)
+		if len(admitted) != 1 || admitted[0].Type != "reading" || len(content) == 0 || slices.ContainsFunc(content, func(child *Node) bool { return child.Type == "reading" }) {
+			t.Errorf("%s: the %s holds content %v and admits %v, want its content and then the reading", name, parent.Type, BlockNames(content), BlockNames(admitted))
+		}
+		if err := AskContentError(doc); err != nil {
+			t.Errorf("%s: the ask's content rule refuses it: %v", name, err)
+		}
+		rendered, err := Render(doc)
+		if err != nil {
+			t.Errorf("%s: render: %v", name, err)
+			continue
+		}
+		if back, err := Parse(rendered); err != nil || !back.Equal(doc) {
+			t.Errorf("%s: the rendering %q reads back as %v (%v), want the document it was rendered from", name, rendered, back, err)
+		}
+	}
+	for name, markdown := range map[string]string{
+		"at the document's level":       reading,
+		"in a quote":                    "> " + strings.ReplaceAll(strings.TrimSuffix(reading, "\n"), "\n", "\n> ") + "\n",
+		"in a list item":                "- An item.\n\n  " + strings.ReplaceAll(strings.TrimSuffix(reading, "\n"), "\n", "\n  ") + "\n",
+		"in a callout":                  "::::callout{#c1}\nA note.\n\n" + reading + "::::\n",
+		"in a requirement":              "::::requirement{#q1}\nA requirement.\n\n" + reading + "::::\n",
+		"in a reading":                  ":::::decision{#d1}\nWe ship.\n\n::::reading{#r0}\nA reading.\n\n" + reading + "::::\n:::::\n",
+		"before the rest of a decision": "::::decision{#d1}\nWe ship on Friday.\n\n" + reading + "\nAnd say so.\n::::\n",
+	} {
+		if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), "reading") {
+			t.Errorf("%s: %v, want a schema refusal naming the reading", name, err)
+		}
+	}
+	midAsk, err := ParseForWrite("::::ask{#a1}\nWhich day?\n\n"+reading+"\n- Friday\n- Monday\n::::\n", held)
+	if err != nil {
+		t.Fatalf("an ask holding a reading before its options is not kept: %v", err)
+	}
+	if err := AskWrittenContentError(midAsk); err == nil || !strings.Contains(err.Error(), "holds a reading") {
+		t.Errorf("an ask holding a reading before its options = %v, want its content rule to refuse the reading", err)
+	}
+	_, err = ParseForWrite(reading, nil)
+	if want := `typed block "reading" "r1" stands only at the end of a decision or an ask, after that block's own content`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a reading at the document's level = %v, want %q", err, want)
+	}
+	if !IsTypedBlock("reading") || isBlockNodeType("reading") {
+		t.Errorf("want reading to be a typed block in no node group")
+	}
+}
+
+func TestADecisionHoldsAnyBlocksItsUncertaintyHasNoDefaultAndReplacedReadsFalse(t *testing.T) {
+	const mixed = "::::decision{#d1%s}\nWe chose Friday.\n\n- Bring notes\n- Leave time\n\n:::callout{#c1 kind=\"note\"}\nKeep this in view.\n:::\n::::\n"
+	held, err := ParseRendering(strings.Replace(mixed, "%s", ` uncertainty="low"`, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "low", "medium", "high", "unknown"} {
+		attr := ""
+		if value != "" {
+			attr = ` uncertainty="` + value + `"`
+		}
+		doc, err := ParseForWrite(strings.Replace(mixed, "%s", attr, 1), held)
+		if value == "unknown" {
+			if err == nil || !strings.Contains(err.Error(), "uncertainty") {
+				t.Errorf("uncertainty %q = %v, want a refusal naming uncertainty", value, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("write with uncertainty %q: %v", value, err)
+		}
+		decision := doc.Children[0]
+		if len(decision.Children) != 3 || decision.Children[0].Type != "paragraph" ||
+			decision.Children[1].Type != "bullet_list" || decision.Children[2].Type != "callout" {
+			got := BlockNames(decision.Children)
+			t.Errorf("decision content = %v, want the paragraph, list and callout", got)
+		}
+		if got, ok := decision.Attrs["uncertainty"]; ok != (value != "") || ok && got != value {
+			t.Errorf("uncertainty %q reads %v (present %t), want no default and each declared choice read back", value, got, ok)
+		}
+		// This build does not write the default of an attribute it cannot create yet.
+		// The declaration supplies the value when the stored block does not name it.
+		got, present := decision.Attrs["replaced"]
+		if !present {
+			attrs, _ := BlockTypeAttributes(decision.Type)
+			got = attrs.Get("replaced").Default
+		}
+		if got != false {
+			t.Errorf("replaced = %v, want false", got)
+		}
+	}
+}
+
+func TestTheShapedPointerOfAnAskIsReadAsABlockListAndAMalformedOneIsRefused(t *testing.T) {
+	const first = "dispatch://CORE-1/spec#b-r1"
+	const second = "dispatch://CORE-1/spec#b-r2"
+	read := func(pointer string) (*Node, error) {
+		return ParseRendering(":::ask{#a1 shaped=\"" + pointer + "\"}\nWhich change?\n:::\n")
+	}
+	doc, err := read(first + " " + second)
+	if err != nil {
+		t.Fatalf("read shaped on an ask: %v", err)
+	}
+	if got, _ := doc.Children[0].Attrs["shaped"].([]string); !slices.Equal(got, []string{first, second}) {
+		t.Fatalf("ask shaped = %v, want [%s %s] in that order", got, first, second)
+	}
+	_, err = read("not-a-block-address")
+	if !errors.Is(err, ErrBlockPointer) || !strings.Contains(err.Error(), `"shaped"`) {
+		t.Fatalf("read malformed shaped on an ask = %v, want ErrBlockPointer naming shaped", err)
 	}
 }

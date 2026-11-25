@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/ask-reply-recipients.json TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers os.ReadFile (askReplyRecipientsFixture, ../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares the copies the outbox published with the committed fixture, which writes under -update
+
 import (
 	"bytes"
 	"context"
@@ -29,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session whose list each test reads, and another session beside it.
@@ -201,7 +204,8 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 }
 
 // publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
-// what each topic was handed (recordingOutboxPublisher).
+// what each topic was handed (recordingOutboxPublisher). Its wait for the outbox to publish has one
+// bound, the test binary's deadline (testwait.UntilPolling).
 func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,8 +222,7 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the outbox to publish every event that can carry a person's words to a session (those still unpublished)", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -229,14 +232,8 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events unpublished", unpublished)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // destinations is the published_destinations of the one eventType event about id.
@@ -332,11 +329,14 @@ func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 
 	before := time.Now().UTC()
 	listed := f.list(t, answersSession, "")
+	after := time.Now().UTC()
 	if listed.SessionID != answersSession || listed.Total != 1 || len(listed.Items) != 1 {
 		t.Fatalf("answers = %+v, want one item for %s", listed, answersSession)
 	}
-	if window := before.Sub(listed.Since); window < 72*time.Hour-time.Minute || window > 72*time.Hour+time.Minute {
-		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, before)
+	// The server read its clock once, between before and after, and the window starts 72 hours
+	// before that reading, however long the read took.
+	if read := listed.Since.Add(72 * time.Hour); read.Before(before) || read.After(after) {
+		t.Fatalf("since = %s, want 72 hours before the read, which came between %s and %s", listed.Since, before, after)
 	}
 	item := listed.Items[0]
 	if item.Kind != model.SessionAnswerKindAnswer || item.Relation != model.SessionAnswerRelationAnsweredYourAsk || item.ID != askID {

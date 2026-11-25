@@ -180,6 +180,12 @@ func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*N
 	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
+// ParseFragmentHolding parses an insertion into live without carrying any of live's block IDs
+// into the fragment. Elements live already holds need not be creatable by this build.
+func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
+}
+
 // ParseFragmentInto parses markdown a caller writes inside a block of type parent, after that
 // block's last child, as ParseFragment parses one written between blocks: its blocks are read as
 // that block's children rather than a document's, so a block of a type whose parents name parent
@@ -200,6 +206,10 @@ func ParseFragmentInto(markdown, parent string, budget *WriteBudget) (*Node, err
 // type of the block whose children the markdown's blocks are, "" for a document's
 // (validateWithin).
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, within, budget)
+}
+
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
 	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
@@ -211,7 +221,7 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, within str
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
-	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return held }); err != nil {
 		return nil, err
 	}
 	carryBlockIDs(doc, live)
