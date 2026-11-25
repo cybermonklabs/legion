@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { copyFileSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -16,8 +16,13 @@ import { scriptFunctions } from "./script-functions";
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
-// perl: run starts every harness through ownGroup (lib/own-group.ts).
-const host = hostGate({ programs: ["bash", "sleep", "sh", "perl"] });
+// perl: run starts every harness through ownGroup (lib/own-group.ts). /proc: every row reads the
+// processes it starts there, the ps row's own shell among them, so a host without it (macOS) skips
+// the file outside CI rather than failing each row on a missing /proc entry.
+const host = hostGate({
+  programs: ["bash", "sleep", "sh", "perl"],
+  reason: existsSync("/proc/self/stat") ? "" : "This host has no /proc.",
+});
 const program = join(dir, "program");
 const literalPattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const other = join(dir, "other");
@@ -826,22 +831,40 @@ const ps = hostGate({ programs: ["ps"] });
 // start would reach no process; and the environment readers (env_of, env_has, env_length,
 // names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
 // variable at all, never 1, the answer of an environment that lacks the name.
+//
+// The row's zombie is a child of a bash that execs into sleep, which never reaps it. A child that
+// ends while its parent is still that bash can be reaped by it before the exec (bash's SIGCHLD
+// handler waits for any child that has ended), and is then gone, never a zombie; so the child ends
+// only once its parent's /proc comm reads sleep, after the exec. The bash pauses half a second
+// before its exec, which widens that window for a child that ends on its own: under the pause the
+// old child was gone, not a zombie, in every run tried. Merge-group job 138900897147's timeout
+// here is consistent with that race, on a runner busy with the test job's pooled harnesses.
 host.describe("proc_start and the environment readers", () => {
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
       const r = run(`
-bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+cat >"$scratch/zombie-child" <<'SH'
+i=0
+until read -r comm <"/proc/$PPID/comm" && [ "$comm" = sleep ]; do
+  i=$((i + 1))
+  [ "$i" -lt 2000 ] || exit 1
+  sleep 0.01
+done
+exec "$1" 0
+SH
+bash -c 'sleep 600 & sh "$1" "$0" </dev/null >/dev/null 2>&1 & echo $!; sleep 0.5; exec sleep 600' "$program" "$scratch/zombie-child" </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
 started+=("$parent")
 until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
 read -r zombie <"$scratch/zombie"
+[ "$(readlink "/proc/$parent/exe")" = "$(readlink -f "$(command -v sleep)")" ] && echo "parent: sleep" || echo "parent: $(readlink "/proc/$parent/exe")"
 echo "zombie: [$(proc_start "$zombie")]"
 echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
 `);
       expect(r.err).toBe("");
       const live = /^live: \[(\d+)\] \[(\d+)\]$/m.exec(r.out);
-      expect(r.out).toStartWith("zombie: []\n");
+      expect(r.out).toStartWith("parent: sleep\nzombie: []\n");
       expect(live?.[1]).toBe(live?.[2]);
     },
     slow
