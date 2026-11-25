@@ -276,6 +276,12 @@ on:
           go-cache-working-set.test.sh and what it tests.
         type: string
         required: false
+      go_work_sum:
+        description: >-
+          ci.yaml's needs.changes.outputs.go_work_sum:
+          go.work.sum, the workspace's module files and the check that holds them complete.
+        type: string
+        required: false
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -623,6 +629,11 @@ jobs:
       - name: Test the build cache prune of the cache fills
         if: inputs.changes-result != 'success' || inputs.go_cache_working_set_test == 'true'
         run: .github/scripts/go-cache-working-set.test.sh
+
+      # After setup-go, whose Go resolves the workspace graph this check lists.
+      - name: Check that every checksum a Go download needs is committed
+        if: inputs.changes-result != 'success' || inputs.go_work_sum == 'true'
+        run: .github/scripts/check-go-work-sum.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
