@@ -541,7 +541,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, return_to, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, coalesce(states_serial, 0), return_to, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -2209,7 +2209,7 @@ func (s *Postgres) CheckStatesSeqs(ctx context.Context, tx pgx.Tx, issues []stri
 	if len(issues) == 0 {
 		return cursors, nil
 	}
-	rows, err := tx.Query(ctx, `select key, check_states_seq from issues where key = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select key, coalesce(check_states_seq, 0) from issues where key = any($1)`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the check states cursors of %d issues: %w", len(issues), err)
 	}
@@ -2228,7 +2228,7 @@ func (s *Postgres) SetCheckStatesSeq(ctx context.Context, tx pgx.Tx, issue strin
 	if seq < 0 {
 		return fmt.Errorf("set the check states cursor of %s: sequence %d is negative", issue, seq)
 	}
-	if _, err := tx.Exec(ctx, `update issues set check_states_seq = greatest(check_states_seq, $2) where key = $1`, issue, seq); err != nil {
+	if _, err := tx.Exec(ctx, `update issues set check_states_seq = greatest(coalesce(check_states_seq, 0), $2) where key = $1`, issue, seq); err != nil {
 		return fmt.Errorf("set the check states cursor of %s at %d: %w", issue, seq, err)
 	}
 	return nil

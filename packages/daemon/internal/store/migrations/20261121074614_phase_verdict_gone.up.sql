@@ -17,7 +17,10 @@
 -- completion named (record.PhaseRow.StatesSerial), through which the move waits until the daemon
 -- holds every state event of the issue (record.Store.StatesFenceReached). Every row takes 0, which
 -- passes that fence at once, as a record written before Dispatch kept a serial does, and so does
--- each row the release before inserts, since it names the column in no statement.
+-- each row the release before inserts, since it names the column in no statement. The column is
+-- nullable, with 0 for its default and its check kept: a migration that a rolling release runs adds
+-- only tables, nullable columns and non-unique indexes. No statement of this release writes a null,
+-- and its read of a phase row takes one as 0 (record.Postgres.Phases).
 --
 -- A phase-finished notice the release before queued names the tester's verdict under the key
 -- verdict, which record.Notice no longer has. The update strips the key from every queued notice,
@@ -53,5 +56,5 @@
 -- delete from schema_version where version = 20261121074614;
 -- commit;
 alter table phases alter column verdict set default '';
-alter table phases add column states_serial bigint not null default 0 check (states_serial >= 0);
+alter table phases add column states_serial bigint default 0 check (states_serial >= 0);
 update outbox set payload = payload - 'verdict' where kind = 'notice' and payload ? 'verdict';

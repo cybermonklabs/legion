@@ -16,7 +16,11 @@
 -- issues.check_states_seq is the cursor of the boot's catch-up of state events: the sequence of the
 -- issue's Dispatch event log up to which the daemon has read them. Every row the table holds takes
 -- 0, so the first catch-up of each issue reads its log from the start, and a state event Dispatch
--- published while a release before this one ran, which took it as no fact, is held too.
+-- published while a release before this one ran, which took it as no fact, is held too. The column
+-- is nullable, with 0 for its default and its check kept: a migration that a rolling release runs
+-- adds only tables, nullable columns and non-unique indexes, so the release before still runs on
+-- the database this one migrated, during a roll or a rollback. No statement of this release writes
+-- a null, and its read of the cursor takes one as 0 (record.Postgres.CheckStatesSeqs).
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists. The release before this one names each column of issues it reads and
@@ -65,4 +69,4 @@ create table check_state_serials (
   issue text not null,
   serial bigint not null check (serial > 0),
   primary key (issue, serial));
-alter table issues add column check_states_seq bigint not null default 0 check (check_states_seq >= 0);
+alter table issues add column check_states_seq bigint default 0 check (check_states_seq >= 0);
