@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -478,7 +479,7 @@ func newFakeGitHub(t *testing.T, token, then string) fakeGitHub {
 		script += `if [ "$(cat ` + shellWord(github.stdin) + `)" != ` + shellWord("Authorization: Bearer "+token) + " ]; then\n" +
 			printsAnswer(forkReadFixture(t, "bad-credentials.http"), 0) + "fi\n"
 	}
-	if err := os.WriteFile(github.program, []byte(script+then), 0o700); err != nil {
+	if err := execfile.Write(github.program, []byte(script+then), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return github
@@ -519,7 +520,7 @@ func runGhGitCredentialHere(t *testing.T, stdin string) (code int, stdout, stder
 	t.Helper()
 	ran := filepath.Join(t.TempDir(), "ran")
 	gh := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho ran >> "+shellWord(ran)+"\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(gh, []byte("#!/bin/sh\necho ran >> "+shellWord(ran)+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", gh)

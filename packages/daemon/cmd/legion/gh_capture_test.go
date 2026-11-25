@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -93,11 +94,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	home := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The pane's `gh` wrapper, first on PATH, as the runtimes install it.
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	base := []string{
@@ -196,11 +197,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	if err := os.MkdirAll(extension, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch '"+ran+"-hello'\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch '"+ran+"-hello'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	drift := filepath.Join(home, "gh-drift")
-	if err := os.WriteFile(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  '"+gh+"' \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec '"+gh+"' \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  '"+gh+"' \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec '"+gh+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// Every command of the three reviews' reproductions, and controls: each either sends GitHub
@@ -365,7 +366,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
 	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
 	editor := filepath.Join(home, "editor.sh")
-	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := execfile.Write(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -390,7 +391,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// editor fails, so nothing it wrote is sent. Measured with the editor left to gh's own choice:
 	// nano ran in both, and discussion create posted what it wrote.
 	nano := t.TempDir()
-	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	editors := []string{"GH_EDITOR=" + editor, "EDITOR=" + editor, "VISUAL=" + editor, "PATH=" + nano + ":" + bin + ":" + filepath.Dir(git) + ":/usr/bin:/bin"}
@@ -793,7 +794,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gitRecord := filepath.Join(t.TempDir(), "git-record")
 	recorder := t.TempDir()
 	recordingGit := "#!/bin/sh\n{ printf '%s\\t' \"$*\"; env | grep '^GIT_CONFIG_' | sort | tr '\\n' ' '; echo; } >>'" + gitRecord + "'\nexec '" + git + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	repositoryInfo := `{"data":{"repository":{"id":"R_1","databaseId":1,"name":"widgets","owner":{"login":"acme"},"sshUrl":"git@github.com:acme/widgets.git","hasIssuesEnabled":true,"description":"","hasWikiEnabled":false,"viewerPermission":"WRITE","defaultBranchRef":{"name":"main"},"parent":null,"mergeCommitAllowed":true,"rebaseMergeAllowed":true,"squashMergeAllowed":true}}}`

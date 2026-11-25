@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/clitest"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -267,16 +268,16 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 			t.Fatal(err)
 		}
 		stub := filepath.Join(t.TempDir(), "gh")
-		if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
+		if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		wrappers, state := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		lsRemote := "#!/bin/sh\nfor a; do if [ \"$a\" = ls-remote ]; then printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "; exit 0; fi; done\n" +
 			"exec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
-		if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(lsRemote), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(lsRemote), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}
@@ -326,15 +327,15 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}

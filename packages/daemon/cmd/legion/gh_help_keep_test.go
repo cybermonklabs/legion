@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -32,7 +33,7 @@ func loggingGh(t *testing.T) (stub, log string) {
 	stub, log = filepath.Join(dir, "gh"), filepath.Join(dir, "processes.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'" + log + "'\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "echo 'gh ran'\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return stub, log
@@ -91,7 +92,7 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 	want, wantErr := ghTargetOf(argv, env, help, remotes, dirFor)
 	// The gh the keep is keyed on, which it never runs: help answers in its place.
 	gh := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	keepEnv := map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
@@ -247,14 +248,7 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 	}{
 		{"the binary's size", func(t *testing.T, stub string, _ map[string]string) {
 			info := stat(t, stub)
-			file, err := os.OpenFile(stub, os.O_APPEND|os.O_WRONLY, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := file.WriteString("# a later build\n"); err != nil {
-				t.Fatal(err)
-			}
-			if err := file.Close(); err != nil {
+			if err := execfile.Append(stub, []byte("# a later build\n")); err != nil {
 				t.Fatal(err)
 			}
 			chtimes(t, stub, info.ModTime())
@@ -269,7 +263,7 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 			}
 			info := stat(t, stub)
 			next := stub + ".next"
-			if err := os.WriteFile(next, content, 0o700); err != nil {
+			if err := execfile.Write(next, content, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			chtimes(t, next, info.ModTime())
@@ -389,12 +383,12 @@ func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(other, content, 0o700); err != nil {
+	if err := execfile.Write(other, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
 	current, mise := filepath.Join(bin, "current"), filepath.Join(bin, "mise")
-	if err := os.WriteFile(mise, []byte("#!/bin/sh\nexec \"$(cat '"+current+"')\" \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(mise, []byte("#!/bin/sh\nexec \"$(cat '"+current+"')\" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shim := filepath.Join(t.TempDir(), "gh")

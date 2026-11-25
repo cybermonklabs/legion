@@ -32,7 +32,7 @@ var captureGhHelpWalk = flag.Bool("capture-gh-help-walk", false, "save the help 
 //
 //	LEGION_GH_PATH=/path/to/gh go test -run '^TestCaptureGhHelpWalk$' ./cmd/legion/ -args -capture-gh-help-walk
 func TestCaptureGhHelpWalk(t *testing.T) {
-	t.Parallel()
+	// Not parallel: with -capture-gh-help-walk it removes and writes again the saved help under testdata/gh-help-walk, which parallel tests read.
 	if !*captureGhHelpWalk {
 		t.Skip("pass -capture-gh-help-walk, with LEGION_GH_PATH naming a gh, to save that release's help")
 	}

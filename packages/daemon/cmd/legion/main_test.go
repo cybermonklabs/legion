@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -185,7 +186,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("read %s: %v", sleep, err)
 	}
 	path := filepath.Join(t.TempDir(), "legion")
-	if err := os.WriteFile(path, body, 0o700); err != nil {
+	if err := execfile.Write(path, body, 0o700); err != nil {
 		t.Fatalf("write the probe: %v", err)
 	}
 
@@ -250,7 +251,7 @@ func healthzOn(t *testing.T, host string) int {
 // daemon is still serving, and a start that overwrote the entry and then failed to bind would
 // delete it on the way out — leaving the running daemon invisible to stop, status and legions.
 func TestStartRefusesWhileTheTeamsLegionIsRunning(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (legionState); it changes the whole process's signal handling (start); it runs `legion start` in this process, which replaces the process's default logger.
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	pid := runningLegion(t)
 	claim(t, legions, registry.Entry{
@@ -280,7 +281,7 @@ func TestStartRefusesWhileTheTeamsLegionIsRunning(t *testing.T) {
 // files, so `legion start` refuses the second while the first is live — naming both teams and the
 // directory, the three things the operator changes one of — and records nothing for it.
 func TestStartRefusesTheStateDirectoryAnotherTeamIsRunningOn(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (legionState); it changes the whole process's signal handling (start); it runs `legion start` in this process, which replaces the process's default logger.
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	config := legionConfig(t, "LEGION", 13370)
 	stateDir := filepath.Join(filepath.Dir(config), "state")
@@ -872,7 +873,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 // work it does with the file: the start below is refused for a team another legion holds, which
 // is read after the lines are logged, so both are in its log.
 func TestStartLogsEachConfigurationWarningOnceAsItBoots(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (legionState); it changes the whole process's signal handling (start); it runs `legion start` in this process, which replaces the process's default logger.
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	legions := legionState(t)
 	config := projectsConfig(t, twoProjectsWithDeploys)
 	claim(t, legions, registry.Entry{
@@ -1127,7 +1128,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			if err := os.MkdirAll(shims, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			fixtureenv.Unset(t, "LEGION_GH_PATH")

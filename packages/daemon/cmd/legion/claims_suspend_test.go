@@ -152,7 +152,7 @@ func TestClaimsSuspendStopsAtEveryOtherEnd(t *testing.T) {
 // A suspension still held when --wait runs out fails the command, naming the claim's state and why
 // a held suspension can outlast the stop timeout.
 func TestClaimsSuspendFailsWhenTheHeldSuspensionOutlastsTheWait(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its call has 1 s to be refused as still working, time the load of tests running beside it could use up, which ends the call as unanswered instead.
 	port, _ := heldSuspendDaemon(t, heldWorking)
 
 	code, out, errb := suspendAgainst(t, port, "1s")

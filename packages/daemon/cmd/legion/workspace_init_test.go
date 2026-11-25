@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
@@ -89,7 +90,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		}
 	}
 	for name, script := range map[string]string{"jj": fakeJJ, "git": fakeGit, "codegraph": fakeCodegraph} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
