@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { actionBar } from "./editor";
 import { listTrigger } from "./filters";
+import { nextFrames } from "./frames";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
@@ -4438,4 +4439,45 @@ test("on a priority's page Tab from Priorities reaches the title as a button tha
   await page.keyboard.press("Enter");
   await expect(box, step("Enter on the title opens its editor")).toBeFocused();
   await expect(box, step("the editor holds the title")).toHaveValue("Ship the daemon everywhere");
+});
+
+// The tester's red row of round 20 (InPlaceField.tsx:192-194: "nothing under it moves as it opens
+// and closes"; the architect's ruling of 2026-11-25T21:46Z). Below 1280 px, opening a priority's
+// title box must keep the heading's 22 px type and the header's height. At ef1769c3 styles.css's
+// unlayered `textarea { font-size: 1rem }` below 1280 px overrides InPlaceField's `text-[22px]`,
+// because the `revert-layer` exception covers only `[data-issue-page] [data-issue-header]`: the
+// type drops from 22 px to 16 px and the header shrinks from 144 px to 122 px. Measured in
+// Chromium, Firefox and WebKit.
+// @firefox: the phone-width `textarea` font-size rule against the heading's `text-[22px]`.
+test("on a 390 px phone opening a priority's title keeps its 22 px type and the header's height @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box at 390 px: ${text}`;
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await page.setViewportSize(PHONE);
+  await page.goto(`/priorities/${priority.id}`);
+  const header = page.getByTestId("priority-header");
+  const button = header.getByRole("heading", { level: 1 }).getByRole("button");
+  const box = page.getByRole("textbox", { name: "Title" });
+  await expect(button, step("the title is drawn")).toHaveText("Ship the daemon everywhere");
+  const titleTypeAndHeader = () =>
+    header.evaluate((node) => {
+      const control = node.querySelector("h1 button, h1 textarea");
+      return {
+        fontSize: control === null ? null : getComputedStyle(control).fontSize,
+        headerHeight: Math.round(node.getBoundingClientRect().height * 10) / 10,
+      };
+    });
+  const before = await titleTypeAndHeader();
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await expect(box, step("Enter opens the title box")).toBeFocused();
+  await nextFrames(page);
+  const open = await titleTypeAndHeader();
+  expect(open.fontSize, step("the open title box keeps the heading's 22px type")).toBe(
+    before.fontSize
+  );
+  expect(open.headerHeight, step("the open title box keeps the header's height")).toBe(
+    before.headerHeight
+  );
 });
