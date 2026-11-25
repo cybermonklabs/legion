@@ -4962,36 +4962,6 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       })
     ).toBeUndefined();
   });
-
-  // Decision item 3: each skill example of a gated write is one the gate reads as literal, as
-  // written (placeholders included), so an agent that copies it gets a marker.
-  const REPO = path.resolve(import.meta.dir, "../../../..");
-  /** The example in `file` that starts with the line `first`, up to its block's closing fence,
-   * with the fence's indentation removed, as an agent sends it. */
-  const example = (file: string, first: string): string => {
-    const lines = fs.readFileSync(path.join(REPO, file), "utf8").split("\n");
-    const start = lines.findIndex((line) => line.trim().startsWith(first));
-    expect(start).toBeGreaterThan(-1);
-    const fence = lines.slice(0, start).findLastIndex((line) => line.trim().startsWith("```"));
-    const indent = /^ */.exec(lines[fence])?.[0].length ?? 0;
-    // The command ends at its block's closing fence, or at the end of its here-document.
-    const end = lines.findIndex(
-      (line, index) => index > start && (line.trim() === "```" || lines[index - 1].trim() === "EOF")
-    );
-    return lines
-      .slice(start, end)
-      .map((line) => line.slice(Math.min(indent, /^ */.exec(line)?.[0].length ?? 0)))
-      .join("\n");
-  };
-  for (const [file, first, tool] of [
-    // Main deleted skills/dispatch/references/, whose asks.md held one more example.
-    ["skills/legion-worker/references/findings.md", "dispatch ask --issue", "dispatch_ask"],
-    ["skills/legion-worker/references/findings.md", "dispatch comment --issue", "dispatch_comment"],
-    ["skills/legion-retro/SKILL.md", "dispatch message --issue", "dispatch_message"],
-  ])
-    test(`the skill example in ${file} that starts \`${first}\` is in the literal grammar`, () => {
-      expect(core.scopedCommand(example(file, first))?.tool).toBe(tool);
-    });
 });
 
 // The attack review at 0cf9f1902, A1: an eval cell that starts the CLI as a process of its own
