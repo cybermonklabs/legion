@@ -5922,6 +5922,7 @@ Each item below names a path with its method and identity, then its purpose.
       A sentence is an instruction when it starts with a verb of the rule's list, with no comma after it, and then the first word of the verb's object.
       The list is `internal/dispatch/specform/instruction-verbs.txt`, reviewed data: a change of the list is a change of the rule, which a person reviews, and no test reads a skill or a procedure to write it.
       The first word of the object is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
+      So ``Run `go test` with the race detector`` is an instruction, which has at most 20 words outside the code font, as nothing in code font counts as a word.
       After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
       A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
       Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.

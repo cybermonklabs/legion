@@ -469,7 +469,7 @@ func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([
 	}
 	for _, sentence := range sentences {
 		bound, of := maxWords, "a sentence"
-		if kind == KindProcedure && isInstruction(sentence.words) {
+		if kind == KindProcedure && sentence.isInstruction(line) {
 			bound, of = maxProcedureWords, "an instruction"
 		}
 		if words := sentence.words; len(words) > bound {

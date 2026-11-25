@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -246,5 +247,47 @@ func TestADescriptionInAProcedureHasTwentyFiveWordsAndAnInstructionTwenty(t *tes
 	}
 	if words := len(strings.Fields(description)); words != 25 {
 		t.Fatalf("the description has %d words, want 25", words)
+	}
+}
+
+// A span in code font is the object of an instruction, as in "Run `go test` with the flag", for
+// the bound of 20 words as for the rule instructions: both rules read the sentence with each span
+// in code font as one word. Nothing in code font counts among the 20 words. So an instruction of 21
+// to 25 words outside code font breaks the bound, and one of 20 does not. The control: the same
+// sentence with its object in words, and a sentence that describes, which keeps 25.
+func TestAnInstructionWhoseObjectIsInCodeFontHasTwentyWordsAtMost(t *testing.T) {
+	tail := strings.Fields("with the flag that the team uses for each package of the module in the main tree of the repository on each work day")
+	// coded is an instruction of words words outside code font: "Run", the span, and the tail.
+	coded := func(words int) string { return "Run `go test` " + strings.Join(tail[:words-1], " ") + "." }
+	over := func(words int) string {
+		return fmt.Sprintf(`a sentence has %d words, and an instruction has at most 20: "Run with the flag that the team uses"`, words)
+	}
+	procedure := func(body string) Text { return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where} }
+	const probe = "Run `go test` with the flag that the team uses for each package of the module in the main tree of the repository today."
+	const words = "Run the tests with the flag that the team uses for each package of the module in the main tree of the repository today."
+	const describes = "The run of `go test` with the flag that the team uses for each package of the module in the main tree of the repository today."
+	rows := []struct {
+		name, body, want string
+	}{
+		{"the review's probe, 22 words outside code font", probe, over(22)},
+		{"the control: the object in words, 24 words", words, `a sentence has 24 words, and an instruction has at most 20: "Run the tests with the flag that the"`},
+		{"the control: a sentence that describes, 24 words outside code font", describes, ""},
+		{"the control: an instruction of 20 words outside code font", coded(20), ""},
+	}
+	for words := 21; words <= 25; words++ {
+		rows = append(rows, struct{ name, body, want string }{fmt.Sprintf("an instruction of %d words outside code font", words), coded(words), over(words)})
+	}
+	for _, test := range rows {
+		text := procedure(test.body)
+		var want []Finding
+		if test.want != "" {
+			want = []Finding{finding(text, ruleSentenceWords, test.want)}
+		}
+		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+			t.Errorf("%s: Check(%q) = %#v, want %#v", test.name, test.body, got, want)
+		}
+	}
+	if got := len(strings.Fields(strings.Replace(coded(25), "`go test` ", "", 1))); got != 25 {
+		t.Fatalf("the instruction of 25 words has %d words outside code font", got)
 	}
 }
