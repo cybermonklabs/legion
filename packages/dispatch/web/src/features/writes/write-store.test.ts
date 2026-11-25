@@ -1037,7 +1037,8 @@ test("another tab's sign-out out when the take-up ends holds the write pressed m
 // W48. This page's sign-out, pressed while the take-up waits for the kinds of write, goes out at
 // once, however long the kinds take: ending the session needs no kind of write, and only sending
 // a kept write waits for them. It holds every other write of its person in turn, so neither the
-// kept write nor the one pressed before it goes out, and its landing drops both, unsent.
+// kept write nor the one pressed before it goes out, and its landing drops both, unsent. It goes
+// out once: the end of the take-up does not send it again.
 test("this page's sign-out pressed while the take-up waits goes out at once, and its landing drops the other writes unsent", async () => {
   await onFakeClock(async () => {
     const taking = await pressedWhileTakingUp();
@@ -1069,6 +1070,7 @@ test("this page's sign-out pressed while the take-up waits goes out at once, and
       taking.writes.signedOut("alice");
       taking.kinds.resolve();
       await nothingLeft("this page's sign-out", taking);
+      expect(signOuts, "the sign-out went out again once the take-up ended").toBe(1);
       expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
     } finally {
       await taking.end();

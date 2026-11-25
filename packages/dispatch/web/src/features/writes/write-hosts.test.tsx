@@ -8,6 +8,7 @@ import { quietConsoleError } from "../../__tests__/act-warnings";
 import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, api } from "../../api/client";
+import { chunkLoadsOut } from "../shell/chunk-loads";
 import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
@@ -101,6 +102,61 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
 test("a take-up whose own ask failed ends with the writes host's fetch also when another load brought the kinds in before it began", async () => {
   await import("./kinds");
   await takeUpEndsWithTheHost();
+});
+
+// The sign-in page's kept list asks for the kinds of write again when the browser comes back
+// online, for a take-up of what a reload kept that still waits for them (`KeptWritesHost`): the
+// reader presses no write on that page, and a press is what asks again elsewhere (`Writes.run`).
+// In a unit run the host's own first ask cannot fail, because the kinds load from disk. So the
+// load that failed is the take-up's own ask, the row's loader. The take-up begins only after the
+// host's first ask has answered, so that answer cannot end it, and only a later ask of the host
+// can. The session lapses before the browser comes back online, as on the sign-in page, so the
+// take-up keeps the write it takes up for the sign-in that follows and sends nothing. No focus
+// event comes in this row, so the `online` event alone asks again. `kindsRegistered` in `finally`
+// ends a take-up that a failed run left waiting.
+test("the sign-in page's kept list asks for the kinds of write again when the browser comes back online, which ends a take-up whose own ask failed", async () => {
+  const kept = keyMinted(Date.now());
+  keepWrite(window.sessionStorage, kept);
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(client);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeptWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() =>
+      expect(chunkLoadsOut(), "the host's first ask for the kinds is still out").toBe(0)
+    );
+    let asked = 0;
+    const ask = Promise.withResolvers<never>();
+    act(() => {
+      writes.resume("alice", () => {
+        asked += 1;
+        return ask.promise;
+      });
+      writes.signedIn(undefined);
+    });
+    ask.reject(new TypeError("Failed to fetch dynamically imported module"));
+    // The store's handler of the failed ask was attached first, so it has run once this ends.
+    await ask.promise.catch(() => undefined);
+    expect(asked).toBe(1);
+    expect(writes.notTakenUp().map((record) => record.key)).toEqual([kept]);
+    expect(writes.rows()).toEqual([]);
+
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() =>
+      expect(writes.notTakenUp(), "the take-up still waits for the kinds of write").toEqual([])
+    );
+    expect(writes.rows().map((row) => row.key)).toEqual([kept]);
+    expect(asked, "the take-up's own load was not asked for again").toBe(1);
+  } finally {
+    view.unmount();
+    kindsRegistered();
+  }
 });
 
 /** A part a list draws in a write's row, in the place of the write's label, that throws: it
@@ -231,6 +287,51 @@ test("the sign-in page's kept list shows a write the reload kept as refused as n
     view.unmount();
   }
 });
+
+// Alice's write is out as her session lapses, and the sign-in page's kept list shows it by its
+// label alone, as a write still on its way: a lapse keeps every write, and the attempt in flight
+// still answers for it. Dispatch then refuses that attempt while the list is drawn. The row turns
+// to the refused form at once, with no reload: its label, "Not saved", and Discard, because only
+// alice can drop it. The list draws from the store's rows, so the refusal reaches it there.
+test("a write Dispatch refuses while the sign-in page's kept list is drawn turns there to not saved, with its Discard", async () => {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(client);
+  const answer = Promise.withResolvers<never>();
+  const pressed = writes
+    .run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 set to done",
+      method: "PATCH",
+      presentation: "indicator",
+      write: () => answer.promise,
+    })
+    .catch((error: unknown) => error);
+  writes.signedIn(undefined);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeptWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    const [write] = writes.rows();
+    const kept = screen.getByRole("region", { name: "Kept changes" });
+    const row = () => kept.querySelector(`[data-kept-write="${write?.key}"]`);
+    expect(row()).toHaveTextContent(/^CORE-1 set to done$/u);
+    expect(within(kept).queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      answer.reject(new ApiError(422, { code: "KEY_REUSED", error: "refused" }));
+      await pressed;
+    });
+    expect(row()).toHaveTextContent("CORE-1 set to done — Not saved");
+    expect(within(row() as HTMLElement).getByRole("button", { name: "Discard" })).toBeVisible();
+  } finally {
+    view.unmount();
+  }
+});
+
 // `KeptWrites` draws kept records that the store has not taken up beside the store's own rows, so
 // `KeptWritesHost`'s boundary reset covers both: once a faulty record leaves, the list draws the
 // remaining kept records again without waiting for a store row to change.
