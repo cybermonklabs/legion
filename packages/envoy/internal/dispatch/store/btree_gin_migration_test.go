@@ -2,29 +2,22 @@ package store
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // btreeGinVersion creates the extension btree_gin, whose operator classes a GIN index needs to hold
 // a btree column beside an array, and holds no other statement.
-const btreeGinVersion = 20261124002258
+const btreeGinVersion = 20261125125703
 
 // btreeGinExtversion answers the version pg_extension records for btree_gin in store's database,
 // and "" where the database has no btree_gin.
 func btreeGinExtversion(t *testing.T, store *Store) string {
 	t.Helper()
 	var version string
-	err := store.Pool.QueryRow(context.Background(), `select extversion from pg_extension where extname = 'btree_gin'`).Scan(&version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ""
-	}
-	if err != nil {
+	if err := store.Pool.QueryRow(context.Background(), `select coalesce((select extversion from pg_extension where extname = 'btree_gin'), '')`).Scan(&version); err != nil {
 		t.Fatalf("read btree_gin from pg_extension: %v", err)
 	}
 	return version
@@ -34,6 +27,7 @@ func btreeGinExtversion(t *testing.T, store *Store) string {
 // holds none before the migrations run; one that did would come from a template that carries the
 // extension, and on it this test could not tell whether a migration creates it.
 func TestEveryMigrationLeavesANewDatabaseHoldingBtreeGin(t *testing.T) {
+	t.Parallel()
 	if version := btreeGinExtversion(t, openEmptyTestStore(t)); version != "" {
 		t.Fatalf("a new database holds btree_gin %s before any migration runs: its template carries the extension, so this test cannot tell whether a migration creates it", version)
 	}
@@ -45,9 +39,10 @@ func TestEveryMigrationLeavesANewDatabaseHoldingBtreeGin(t *testing.T) {
 // A deployment where btree_gin was created by hand before the migrations ran keeps it as it was:
 // every migration runs without error, and the extension keeps its version. The extension is created
 // at 1.0, its first version, which is older than the version a create with no version clause
-// installs (1.3 from PostgreSQL 11 on), so a migration that updated the extension, or dropped it and
-// created it again, would change the version this test reads.
+// installs (1.3 on PostgreSQL 11 to 18, 1.4 from 19), so a migration that updated the extension,
+// or dropped it and created it again, would change the version this test reads.
 func TestTheMigrationsKeepTheVersionOfABtreeGinCreatedBeforeThem(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	if _, err := store.Pool.Exec(ctx, `create extension btree_gin version '1.0'`); err != nil {
@@ -76,16 +71,17 @@ func TestTheMigrationsKeepTheVersionOfABtreeGinCreatedBeforeThem(t *testing.T) {
 // which the pre-deploy census refuses above its limit
 // (TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize).
 func TestTheBtreeGinMigrationIsOneCreateExtensionStatement(t *testing.T) {
+	t.Parallel()
 	const want = "create extension if not exists btree_gin"
-	for _, migration := range shippedMigrations(t) {
-		if migration.Version != btreeGinVersion {
-			continue
-		}
-		statement := strings.TrimSuffix(strings.Join(strings.Fields(pgmigrate.WithoutComments(migration.SQL)), " "), ";")
-		if statement != want {
-			t.Fatalf("%s holds %q, comments and white space aside; want the one statement %q, with no version clause and no schema clause", migration.Name, statement, want)
-		}
-		return
+	text, err := MigrationText(btreeGinVersion)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("the shipped set has no migration of version %d", btreeGinVersion)
+	statements := pgmigrate.Statements(text)
+	for i, statement := range statements {
+		statements[i] = strings.Join(strings.Fields(statement), " ")
+	}
+	if len(statements) != 1 || statements[0] != want {
+		t.Fatalf("migration %d holds the statements %q, comments and white space aside; want the one statement %q, with no version clause and no schema clause", btreeGinVersion, statements, want)
+	}
 }

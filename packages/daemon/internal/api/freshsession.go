@@ -705,7 +705,7 @@ func relaunchWaits(view supervise.ClaimView) bool {
 // the suspended claim, the retry for a failed or retired one, which a resume is refused for
 // (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
-	return state == supervise.StateSuspended || failedOrRetired(state)
+	return state == supervise.StateSuspended || supervise.FailedOrRetired(state)
 }
 
 // agentRunning is whether a claim runs an agent that is in no turn: one registered, ready or

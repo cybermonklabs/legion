@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -122,12 +123,12 @@ func placeholderRows(t *testing.T, m *Machine, grantID string) map[string]string
 	return out
 }
 
-// wellFormed fails t unless placeholder is one: the prefix and 32 characters of the alphabet.
-func wellFormed(t *testing.T, what, placeholder string) {
+// wellFormed fails t unless got is a placeholder: the prefix and 32 characters of the alphabet.
+func wellFormed(t *testing.T, what, got string) {
 	t.Helper()
-	rest, ok := strings.CutPrefix(placeholder, PlaceholderPrefix)
-	if !ok || len(rest) != PlaceholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(PlaceholderAlphabet, r) }) {
-		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, PlaceholderLength, PlaceholderAlphabet)
+	rest, ok := strings.CutPrefix(got, placeholder.Prefix)
+	if !ok || len(rest) != placeholder.Length || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholder.Alphabet, r) }) {
+		t.Errorf("%s = %q; want %s and %d characters of %s", what, got, placeholder.Prefix, placeholder.Length, placeholder.Alphabet)
 	}
 }
 

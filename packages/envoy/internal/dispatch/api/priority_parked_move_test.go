@@ -1,9 +1,9 @@
-// priority_parked_move_test.go holds the read of each parked issue's move into `backlog` or
-// `icebox` (parkedMoveLateral) to what it reads and to what it answers, in the two statements that
-// splice it: the full parked fault of the priorities read (parkedQuery) and the listing with
+// priority_parked_move_test.go holds the read of each issue's move into `backlog` or `icebox`
+// (backlogMoveLateral) to what it reads and to what it answers, in the two statements that splice
+// it: the full second fault of the priorities read (backlogQuery) and the listing with
 // `?moved=true` (listIssuesQuery with $14 true, issueMovedJoin). The lateral reads the issue's
 // events newest first through the partial index events_parked_moves
-// (store/migrations/20261124005151_events_parked_moves.up.sql) and stops at the first event that
+// (store/migrations/20261125131100_events_parked_moves.up.sql) and stops at the first event that
 // matches. Both statements answer the rows that they answer with that index dropped, which is the
 // schema of main.
 package api
@@ -34,7 +34,10 @@ const parkedMoveIndex = "events_parked_moves"
 const parkedMoveProject = "PARK"
 
 // The two priorities of the corpus: one stated on a root whose children are parked, so the parked
-// work under it advances it by inheritance, and one stated on each parked issue of its own.
+// work under it advances it by inheritance, and one stated on each parked issue of its own. The
+// second fault lists an issue that states a priority no issue above it carries
+// (priorityBacklogQuery), so of the root's parked children it lists only the one that states the
+// second priority as well; the listing reads the move of every one of them.
 const (
 	parkedMoveFleetPriority = "park-the-fleet"
 	parkedMoveOwnPriority   = "park-on-its-own"
@@ -117,7 +120,7 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 	move := func(seq int, to string, mover bool, changed ...string) {
 		current = to
 		add(seq, "issue.updated", seededIssuePayload(t, to, changed...), mover)
-		if slices.Contains(priorityParkedStatuses, to) {
+		if slices.Contains(priorityBacklogStatuses, to) {
 			login := parkedMoveOtherLogin
 			if mover {
 				login = parkedMoveMoverLogin
@@ -183,7 +186,7 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 // parkedMoveCorpus is what seedParkedMoveCorpus wrote: the server that reads it, its store, the
 // live priorities it holds, the status each issue stands in, the newest move into backlog or
 // icebox each issue's events record (no entry for an issue whose events record none), the rows
-// of the parked fault, and the issue among them whose events record no move.
+// of the second fault, and the issue among them whose events record no move.
 type parkedMoveCorpus struct {
 	served     *server
 	database   *store.Store
@@ -207,14 +210,18 @@ type parkedMoveCorpus struct {
 //     with no event, so no event of it records a move into backlog or icebox, although its title
 //     edits after that name backlog as its status;
 //   - parkedMoveUnplacedCount issues parked by turns in icebox and backlog that advance no
-//     priority, which the listing reads the move of and the parked fault does not list;
+//     priority, which the listing reads the move of and the second fault does not list;
 //   - parkedMoveBystanders issues in triage, todo, in_progress and needs_review by turns that
 //     advance no priority and were never parked.
 //
 // Each issue's events start a day after the previous issue's, so no two moves have the same time
-// and the parked fault's order, newest move first, is one order. The random source has a fixed
-// seed, so every run writes the same rows. The parked fault lists 17 rows, fewer than the 50 it
-// cuts its list at, so it lists every parked row.
+// and the second fault's order, newest move first, is one order. The random source has a fixed
+// seed, so every run writes the same rows. The second fault lists 10 rows: the root's first
+// parked child, which states parkedMoveOwnPriority, which the root does not carry, the
+// parkedMoveOwnParked issues and the issue whose status was written with no event. The root's
+// other parked children only inherit parkedMoveFleetPriority, so the fault leaves them out, and
+// the listing reads their moves. That is fewer than the 50 the fault cuts its list at, so it lists
+// every row it counts.
 func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 	t.Helper()
 	_, database, deps := newTestServer(t, testServerOptions{})
@@ -247,15 +254,15 @@ func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 		}
 		return key
 	}
-	parkedStatus := func(index int) string { return priorityParkedStatuses[index%len(priorityParkedStatuses)] }
+	parkedStatus := func(index int) string { return priorityBacklogStatuses[index%len(priorityBacklogStatuses)] }
 
 	root := addIssue("todo", nil, parkedMoveHistory{events: 60, recorded: true}, parkedMoveFleetPriority)
 	for index := range parkedMoveFleetParked {
-		var priorities []string
 		if index == 0 {
-			priorities = []string{parkedMoveOwnPriority}
+			corpus.parked = append(corpus.parked, addIssue(parkedStatus(index), &root, parkedEvents(), parkedMoveOwnPriority))
+			continue
 		}
-		corpus.parked = append(corpus.parked, addIssue(parkedStatus(index), &root, parkedEvents(), priorities...))
+		addIssue(parkedStatus(index), &root, parkedEvents())
 	}
 	for _, status := range []string{"todo", "in_progress"} {
 		addIssue(status, &root, parkedEvents())
@@ -290,9 +297,9 @@ func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 		}
 	}
 	if _, moved := corpus.moves[corpus.unrecorded]; moved || recorded != len(corpus.parked)-1 {
-		t.Fatalf("the corpus records a move of %d of its %d parked rows, want every one but %s", recorded, len(corpus.parked), corpus.unrecorded)
+		t.Fatalf("the corpus records a move of %d of the second fault's %d rows, want every one but %s", recorded, len(corpus.parked), corpus.unrecorded)
 	}
-	t.Logf("the corpus holds %d issues and %d events; the parked fault lists %d of the issues, %d of them with a recorded move",
+	t.Logf("the corpus holds %d issues and %d events; the second fault lists %d of the issues, %d of them with a recorded move",
 		len(issues), len(eventRows), len(corpus.parked), recorded)
 	return corpus
 }
@@ -302,7 +309,7 @@ func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 func (c parkedMoveCorpus) standingParked() int {
 	listed := 0
 	for _, status := range c.statuses {
-		if slices.Contains(priorityParkedStatuses, status) {
+		if slices.Contains(priorityBacklogStatuses, status) {
 			listed++
 		}
 	}
@@ -310,13 +317,13 @@ func (c parkedMoveCorpus) standingParked() int {
 }
 
 // projectListingArguments are the arguments the listing route binds for
-// `?project=<project>&moved=<moved>` (listIssues): no filter but the project, and the gate of the
-// move read ($14) moved. The three times it names none of, updated_since and the closed window's
-// two ends, are typed nils: pgx sends one as null, as it sends an untyped nil, and
-// benchtime.PreparedArguments writes one as a timestamptz null.
+// `?project=<project>&moved=<moved>` (listIssues): no filter but the project, the gate of the
+// move read ($14) moved, and `own` ($15) false. The three times it names none of, updated_since
+// and the closed window's two ends, are typed nils: pgx sends one as null, as it sends an untyped
+// nil, and benchtime.PreparedArguments writes one as a timestamptz null.
 func projectListingArguments(project string, moved bool) []any {
 	return []any{project, []string{}, "", (*time.Time)(nil), []string{}, false, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved}
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved, false}
 }
 
 // parkedMoveSchemas are the index under the name events_parked_moves that each reading runs
@@ -339,11 +346,12 @@ var parkedMoveSchemas = []struct {
 	}, true},
 }
 
-// TestTheParkedMoveReadsTheNewestMoveThroughItsIndex holds the read of each parked issue's move
-// (parkedMoveLateral) to one walk back through events_parked_moves for each parked row, which
-// stops at the first event it reads (requireParkedMoveThroughItsIndex), in the full parked fault
-// and in the listing with `?moved=true`. The fault is read with the arguments readPriorities
-// binds: the relations of the live priorities as readPriorityRelations reads them, and no project.
+// TestTheParkedMoveReadsTheNewestMoveThroughItsIndex holds the read of each issue's move into
+// backlog or icebox (backlogMoveLateral) to one walk back through events_parked_moves for each
+// row it reads the move of, which stops at the first event it reads
+// (requireParkedMoveThroughItsIndex), in the full second fault and in the listing with
+// `?moved=true`. The fault is read with the arguments readPriorities binds: the relations of the
+// live priorities as readPriorityRelations reads them, and no project.
 // The listing is read with the arguments the route binds for `?project=PARK&moved=true`. Each is
 // read under four plans, each run and measured: the generic plan that a prepared statement
 // settles on (explaintest.AnalyzedGenericPlan) and a plan made for the values, both with
@@ -378,7 +386,7 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 		arguments []any
 		reads     int
 	}{
-		{"the parked fault", parkedQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.parked)},
+		{"the second fault", backlogQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.parked)},
 		{"the listing with ?moved=true", listIssuesQuery, projectListingArguments(parkedMoveProject, true), corpus.standingParked()},
 	}
 	for statementNumber, statement := range statements {
@@ -476,7 +484,7 @@ func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
 }
 
 // requireParkedMoveThroughItsIndex holds plan, an analyzed plan of a statement that splices
-// parkedMoveLateral, to reading, for each parked row, one walk back through parkedMoveIndex that
+// backlogMoveLateral, to reading, for each parked row, one walk back through parkedMoveIndex that
 // reads the issue's newest move and no other event. Every read of events is an Index Scan
 // Backward of parkedMoveIndex whose Index Cond names issue_key, the index's first key column
 // (IndexKeys.RequireIndexKeyed), and that runs right under the lateral's Limit, so it stops at the
@@ -522,7 +530,7 @@ func requireParkedMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys,
 	}
 }
 
-// parkedMoveAnswer is what the two statements answer over the corpus: the parked fault's count,
+// parkedMoveAnswer is what the two statements answer over the corpus: the second fault's count,
 // its counts by priority and its rows, as scanPriorityFault reads them, and the listing's rows as
 // the route resolves them (issueSummaryRow), each with its two cells of the move.
 type parkedMoveAnswer struct {
@@ -532,7 +540,7 @@ type parkedMoveAnswer struct {
 	Listing    []model.IssueSummary  `json:"listing"`
 }
 
-// parkedMoveAnswers runs the parked fault, with the arguments readPriorities binds, and the
+// parkedMoveAnswers runs the second fault, with the arguments readPriorities binds, and the
 // listing with `?project=PARK&moved=true`, in one transaction after setup, and rolls the
 // transaction back.
 func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, setup []string) parkedMoveAnswer {
@@ -549,14 +557,14 @@ func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, s
 		}
 	}
 	var answer parkedMoveAnswer
-	parked, err := tx.Query(ctx, parkedQuery, seedKeys, seedIDs, []string{})
+	parked, err := tx.Query(ctx, backlogQuery, seedKeys, seedIDs, []string{})
 	if err != nil {
-		t.Fatalf("run the parked fault: %v", err)
+		t.Fatalf("run the second fault: %v", err)
 	}
 	answer.Count, answer.ByPriority, answer.Parked, err = scanPriorityFault(parked, true)
 	parked.Close()
 	if err != nil {
-		t.Fatalf("read the parked fault: %v", err)
+		t.Fatalf("read the second fault: %v", err)
 	}
 	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(parkedMoveProject, true)...)
 	if err != nil {
@@ -599,17 +607,17 @@ func requireParkedMoveCells(t *testing.T, read, key string, want *parkedMove, at
 }
 
 // TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex holds the two statements that splice
-// parkedMoveLateral to the rows they answer on the schema of main, with events_parked_moves
+// backlogMoveLateral to the rows they answer on the schema of main, with events_parked_moves
 // dropped in a transaction that is rolled back. Over the corpus of seedParkedMoveCorpus, the full
-// parked fault answers the same count, the same counts by priority and the same rows, each with
+// second fault answers the same count, the same counts by priority and the same rows, each with
 // the time and the actor of its move and its `advances` entries, and the listing with
 // `?moved=true` answers the same rows with the same two cells of the move.
 //
 // Before the comparison, the answer read through the index is held to the corpus, so the
-// comparison is of answers that hold the moves: each parked row carries the newest move into
-// backlog or icebox that the corpus wrote of it, the issue whose events record no such move
-// carries neither cell, and in the listing a row that stands in neither status carries neither
-// cell, although most of those were moved through the parked statuses once.
+// comparison is of answers that hold the moves: each row of the second fault carries the newest
+// move into backlog or icebox that the corpus wrote of it, the issue whose events record no such
+// move carries neither cell, and in the listing a row that stands in neither status carries
+// neither cell, although most of those were moved through the parked statuses once.
 func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	t.Parallel()
 	corpus := seedParkedMoveCorpus(t)
@@ -619,7 +627,7 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	withoutIndex := parkedMoveAnswers(t, corpus.database, seedKeys, seedIDs, parkedMoveSchemas[1].setup)
 
 	if withIndex.Count != len(corpus.parked) || len(withIndex.Parked) != len(corpus.parked) {
-		t.Fatalf("the parked fault counts %d rows and lists %d, want all %d parked rows of the corpus listed",
+		t.Fatalf("the second fault counts %d rows and lists %d, want all %d of its rows of the corpus listed",
 			withIndex.Count, len(withIndex.Parked), len(corpus.parked))
 	}
 	movedParked := 0
@@ -628,7 +636,7 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 		if move, moved := corpus.moves[issue.Key]; moved {
 			want = &move
 		}
-		if requireParkedMoveCells(t, "the parked fault", issue.Key, want, issue.MovedAt, issue.MovedBy) {
+		if requireParkedMoveCells(t, "the second fault", issue.Key, want, issue.MovedAt, issue.MovedBy) {
 			movedParked++
 		}
 	}
@@ -638,7 +646,7 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	movedListed := 0
 	for _, issue := range withIndex.Listing {
 		var want *parkedMove
-		if move, moved := corpus.moves[issue.Key]; moved && slices.Contains(priorityParkedStatuses, issue.Status) {
+		if move, moved := corpus.moves[issue.Key]; moved && slices.Contains(priorityBacklogStatuses, issue.Status) {
 			want = &move
 		}
 		if requireParkedMoveCells(t, "the listing with ?moved=true", issue.Key, want, issue.MovedAt, issue.MovedBy) {
@@ -646,11 +654,11 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 		}
 	}
 	if movedParked != len(corpus.parked)-1 || movedListed != corpus.standingParked()-1 {
-		t.Fatalf("the parked fault answers a move for %d rows and the listing for %d, want %d and %d: every parked row but %s",
+		t.Fatalf("the second fault answers a move for %d rows and the listing for %d, want %d and %d: every row but %s",
 			movedParked, movedListed, len(corpus.parked)-1, corpus.standingParked()-1, corpus.unrecorded)
 	}
 
-	requireSameParkedMoveAnswer(t, "the parked fault",
+	requireSameParkedMoveAnswer(t, "the second fault",
 		parkedMoveAnswer{Count: withIndex.Count, ByPriority: withIndex.ByPriority, Parked: withIndex.Parked},
 		parkedMoveAnswer{Count: withoutIndex.Count, ByPriority: withoutIndex.ByPriority, Parked: withoutIndex.Parked})
 	requireSameParkedMoveAnswer(t, "the listing with ?moved=true",

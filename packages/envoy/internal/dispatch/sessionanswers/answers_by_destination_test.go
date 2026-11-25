@@ -71,10 +71,10 @@ func TestTheAnswersReadAnswersMainsRows(t *testing.T) {
 
 	requireMainsRows(t, f, "the fixture as written")
 
-	// The edits of the items, each a step held to main's rows once it is written. A message has
-	// no edit route (api/routes_table.go has no PATCH of a message), and a decline is never
-	// resolved again (api's transitionAskTx refuses an ask that is resolved), so neither has a
-	// step of its own.
+	// The edits of the items, each a step held to main's rows once it is written: an edit of each
+	// kind that has one, and a delete of a comment and of a message, whose rows main's read
+	// answers with the mark of the delete (deleted_at, deleted_by). A decline is never resolved
+	// again (api's transitionAskTx refuses an ask that is resolved), so it has no step of its own.
 	minutes := func(n int) time.Time { return f.now.Add(-time.Duration(n) * time.Minute) }
 	toReader := agentTopic(answersReader)
 	items := f.items
@@ -125,6 +125,26 @@ func TestTheAnswersReadAnswersMainsRows(t *testing.T) {
 			} {
 				if item := listed(carried.kind, carried.id); item.Ask == nil || item.Ask.Question != carried.ask.Question {
 					t.Errorf("the reader's list holds the %s %s with the ask %+v, want the question %q", carried.kind, carried.id, item.Ask, carried.ask.Question)
+				}
+			}
+		}},
+		{"a message on an issue edited", func() {
+			f.editMessage(items.onIssueMessage, "Ship it tomorrow.", minutes(4), toReader)
+		}, func(listed func(kind, id string) model.SessionAnswer) {
+			if item := listed(model.SessionAnswerKindMessage, items.onIssueMessage.ID); item.EditedAt == nil || item.Text != "Ship it tomorrow." {
+				t.Errorf("the reader's list holds the message as %+v, want its edit", item)
+			}
+		}},
+		{"a comment and a message deleted", func() {
+			f.deleteComment(items.inOpenThread, minutes(3), toReader)
+			f.deleteMessage(items.aimed, minutes(2))
+		}, func(listed func(kind, id string) model.SessionAnswer) {
+			for _, deleted := range []struct{ kind, id string }{
+				{model.SessionAnswerKindComment, items.inOpenThread.ID},
+				{model.SessionAnswerKindMessage, items.aimed.ID},
+			} {
+				if item := listed(deleted.kind, deleted.id); item.DeletedAt == nil || item.DeletedBy == nil || *item.DeletedBy != alice || item.Text != "" {
+					t.Errorf("the reader's list holds the %s %s as %+v, want it marked deleted by %+v with no text", deleted.kind, deleted.id, item, alice)
 				}
 			}
 		}},

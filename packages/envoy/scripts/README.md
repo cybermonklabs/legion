@@ -226,12 +226,16 @@ Four checks need more than the stack. `k1` scans the command's memory, and
 command may read its `/proc/<pid>/mem`: the scan is a small Python program
 (`scripts/airlock/memscan.py`) that starts `agent-secrets` itself and scans the
 descendant it started. `k6` and `k7` drive real clients and the real consumers:
-`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`, and the
-consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
-`scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
-`sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
-model with `lake`, prints its theorem statements and their axioms, runs the comparison
-fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
+`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`. `k6` signs
+`az` in as an admin `az` command does under its grant (`az login --service-principal`
+with the grant's federated token, in a throwaway `AZURE_CONFIG_DIR`). `k7` runs its
+GitHub admin and Google Workspace calls under `agent-secrets` itself, and `gcloud`
+with the operator's login as its access token file in a throwaway `CLOUDSDK_CONFIG`;
+these are the check's own steps. `k7` fetches `shims/gh`, the two scripts it runs and
+`gws/accounts.json`, whose read tier it reports, from `sjawhar/dotfiles` at main with
+`gh api`. `k15` needs no stack: it builds the Lean model with `lake`, prints its
+theorem statements and their axioms, runs the comparison fuzz test for ten minutes,
+and runs the six mutants through `airlock-mutants.sh`.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
 error (exit 2), reported before setup starts, and so is a broker name that is not
@@ -239,7 +243,7 @@ uppercase letters, digits and single underscores starting with a letter, the one
 the broker reads:
 
 - `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
-  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+  `gcloud` step reads, for example `GCLOUD_OPERATOR`.
 - `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
   read login, for example `GWS_OPERATOR_READ_OAUTH`.
 - `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
@@ -251,10 +255,13 @@ The check uses fake login values in its local store, each stored under the name 
 broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
 identify the consumer's existing broker names and account; they do not rename the
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
-fixture and Google consumer boundary directly under fakes. It checks required inputs,
-fake broker rules, store names and consumer results without starting a stack, k8a's
-broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
-looks az up on PATH again must reach the real az, not the wrapper).
+fixture, GitHub admin and Google consumer boundary directly under fakes. It checks
+required inputs, fake broker rules, store names, the name and reason each nested
+`agent-secrets` call asks with, and consumer results without starting a stack, k8a's
+broker start on its own, k6's login steps (the login, the command's exit status and
+the removal of their directory, after a TERM too), and k6's az wrapper with an az shim
+first on PATH (a shim that looks az up on PATH again must reach the real az, not the
+wrapper).
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -289,18 +296,20 @@ stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
 `k6` approves its own human-tier grant the way a person does: a pod session has no
 operator, so the run signs in at the stack's issuer, which signs the approver in with
 no page to fill, reads the request's page and posts the decision back with an `Origin`
-header. `k9` runs each broker with `GOMAXPROCS=1` by exporting it into the environment
-it starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
+header and each profile fingerprint the page printed, without which the broker refuses
+the approval as one whose profile changed. `k9` runs each broker with `GOMAXPROCS=1`
+by exporting it into the environment it starts the stack with, since `dev-airlock.sh`
+has no option for it, and reads each
 broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak memory
 from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports as
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
-need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
+`gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
 `agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
-script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
-from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k7`'s consumer files come from
+`sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -500,8 +509,7 @@ cannot stand in for a new test's.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
-step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
-`.github/scripts/ci_job_reads.py`).
+step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.py`).
 
 ## database-skips.sh
 
@@ -531,8 +539,11 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
-and refuses the four options that shape a run.
+run nor counted as a skip. `--module-except PATTERN` adds to that one go test every other
+package of the module that `go list ./... | grep -Ev PATTERN` keeps; their skips are not
+counted and they are not held to showing a run, but a failure of theirs fails go test and so the
+count. `--report` reads a `go test -json` report instead and runs nothing, and refuses the five
+options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -552,21 +563,24 @@ under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary'
 dump and a data race report among them), the build output and, for a run of its own, go test's
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
-`ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
-`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
-(`backend-count.sh`, above), and a step limit of its own
-(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
-Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
+`ci.yaml`'s `envoy-go` job runs the module through it as "Unit test envoy Go package", with
+`--timeout 20m`, `--skip` of the web display fixture's two tests and of the five the job's
+"Count the store-form rows on each backend" runs (`backend-count.sh`, above), `--module-except`
+of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
+time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
+of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
+`envoy-go-race-api` runs the Dispatch API through it as the second line above.
+`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
 package spelled other than canonically is counted;
-`--timeout 1s` ends a package's binary; and a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
-a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+`--timeout 1s` ends a package's binary; a copy with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and a skip
+planted in a package `--module-except` adds is not counted, where a failure planted there fails
+the count. It needs a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and
+`DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 
@@ -1008,9 +1022,14 @@ and `lib/daemon-release-gate-read-developer-box.sh`, which the gate sources.
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh`, a fake `docker` that
 answers a single image and an index the way the real one does and runs an image's files, and a
 fake `npm`. Its fakes, fixture builders and assertion helpers are in
-`lib/daemon-release-gate-harness.sh`, and its scenarios of the VM hub, the images' clients, the
-developer box, its versions and a project's fields in `lib/daemon-release-gate-cases-*.sh`, which
-it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
+`lib/daemon-release-gate-harness.sh`, and its scenarios of the daemon leg, the listener pins, the
+VM hub, the images' clients, the developer box, its versions, a project's fields and the reads
+that come back short in `lib/daemon-release-gate-cases-<group>.sh`, one file a group. The test
+runs each group in a process of its own (`lib/daemon-release-gate-group.sh`), up to one group per
+core at a time, and prints the groups in reading order once they have all ended, each with the
+seconds it took; `GATE_TEST_GROUP_SLOTS=1` runs them one at a time, to read a group's output as it
+runs, and `bash lib/daemon-release-gate-group.sh <group> /dev/null` runs one group alone. CI runs
+the test in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
@@ -1480,7 +1499,8 @@ reason names one other issue that covers it: `Duplicate of`, `Duplicate:`, `Fold
 The close reason is the issue's last top-level message posted at or before its close, the message
 `dispatch issue-update --status done --reason` posts just before the close; the `issue.closed`
 event carries no reason. A reason naming only a pull request, several issues or the issue itself
-is not a pair. Two closes naming the same two issues make one pair, by the first close.
+is not a pair. A reason its author deleted since has no words left and is counted as deleted,
+never as no reason. Two closes naming the same two issues make one pair, by the first close.
 
 Each pair's query is its later-filed issue as filed: its first title and first spec version. That
 is the closed issue when the issue its reason names came first (forward), and the named issue
@@ -1488,9 +1508,10 @@ when that came later (reversed). The target, the issue the check should list, is
 its title and spec as of the query's filing. Pairs naming another project's issue, or one that
 does not exist, are counted and left out. It reads with the caller's own token, sends only
 `GET`s, one at a time, and prints counts only: done issues read, close reasons with a wording,
-those that are not a pair by what they name (`no_reference` is a wording followed by no issue or
-pull request), pairs found and kept per wording with forward and reversed, pairs left out by
-reason, chains (a pair's named issue itself closed into another), and issues copied.
+close reasons deleted since, those that are not a pair by what they name (`no_reference` is a
+wording followed by no issue or pull request), pairs found and kept per wording with forward and
+reversed, pairs left out by reason, chains (a pair's named issue itself closed into another), and
+issues copied.
 
 ```bash
 DISPATCH_URL=<server> DISPATCH_TOKEN_FILE=<token file> \
@@ -1551,9 +1572,11 @@ which has no statement pair: it times one whole pass of the release before this 
 pass of this build with no change, and eleven rounds each preceded by a hundred item writes
 outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
 database it measures and leaves them there, so run it after the statement timings.
+Its verdict is the wall time of those passes, which a loaded machine moves as much as the code
+does, so it also needs `DISPATCH_BENCH_TIMING` set, and it skips without it.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> DISPATCH_BENCH_TIMING=1 \
   go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
 ```
 

@@ -27,7 +27,7 @@
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 250000",
+    "test": "bun test --timeout 250000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

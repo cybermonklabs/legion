@@ -30,11 +30,11 @@ import (
 )
 
 // mainPriorityNewestEventQuery is the whole text that priorityNewestEventQuery sent at commit
-// 8c63a4c5af6059fe96bd8e4b0e5629202fe1cc14, before the statement read the event of last_seq of
-// each member, with priorityMemberTerms, parentDepthCapSQL and priorityProjectFilter written out
-// as they were at that commit. It is the oracle of the tests below, held letter for letter. A
-// text built from the package's own constants would move with them, and the two sides would then
-// agree however the read changed.
+// cdb2baa0c3f9f6392aa3fb1aeb8cbb9c812af5b1, before the statement read the event of last_seq of
+// each member, with priorityMemberTerms (its seed priorityRelationSeed), parentDepthCapSQL and
+// priorityProjectFilter written out as they were at that commit. It is the oracle of the tests
+// below, held letter for letter. A text built from the package's own constants would move with
+// them, and the two sides would then agree however the read changed.
 const mainPriorityNewestEventQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)

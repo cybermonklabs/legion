@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -79,6 +81,47 @@ func compareRuns(left, right Step) int {
 		}
 	}
 	return cmp.Compare(left.ID, right.ID)
+}
+
+// IssueRunsRevision answers the revision of one issue's runs: the count of the workflow_tuples rows
+// of every run a `part_of` tuple ties to the issue, 0 for an issue Legion never ran. Nothing updates
+// a tuple and nothing deletes one, and every write that moves a run appends one or more (putNode),
+// so the count rises with each commit of such a write and never falls. The live view of the issue's
+// Legion state carries it, and moves on RunsChannel, which the same writes signal.
+//
+// It is a count and not the newest seq of those tuples, which would miss a run: two writes of one
+// issue's runs hold the issue's owner lock shared (api/steps.go's lockRecordedIssue), so neither
+// waits for the other, and seq is a bigserial drawn before the commit, so the write that drew the
+// earlier seq can commit after the one that drew the later. A read between the two commits sees
+// the later seq, and the newest seq then stays where it was when the other write lands.
+//
+// It reads the `part_of` tuples into the issue through workflow_tuples_inbound, as IssueSteps
+// does, and each run's own tuples through the two partial indexes that key a node's tuples by the
+// node: workflow_tuples_values its attributes and workflow_tuples_current its relations, the
+// literal to_kind of each half implying its index's predicate. A join that named no to_kind would
+// imply neither predicate and read the whole table. So it costs the issue's own runs' tuples and
+// nothing else.
+func IssueRunsRevision(ctx context.Context, q Queryer, issue string) (int64, error) {
+	rows, err := q.Query(ctx, `
+		select count(*)
+		from workflow_tuples t, lateral (
+			select 1 from workflow_tuples v
+			where v.from_kind = t.from_kind and v.from_id = t.from_id and v.to_kind = '`+KindValue+`'
+			union all
+			select 1 from workflow_tuples r
+			where r.from_kind = t.from_kind and r.from_id = t.from_id and r.to_kind <> '`+KindValue+`'
+		) tuples
+		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindStep+`' and t.asserted
+	`, issue)
+	if err != nil {
+		return 0, fmt.Errorf("read the runs' revision of %s: %w", issue, err)
+	}
+	revision, err := pgx.CollectExactlyOneRow(rows, pgx.RowTo[int64])
+	if err != nil {
+		return 0, fmt.Errorf("read the runs' revision of %s: %w", issue, err)
+	}
+	return revision, nil
 }
 
 // ProjectPlans answers each finished issue of project, an issue whose status is done and whose

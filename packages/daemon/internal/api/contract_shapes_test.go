@@ -363,12 +363,16 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // where populatedState's pause waits on an implementer alone. Its repositories block names five
 // live repositories, both role Apps installed on each, whose caches stand in the five states a
 // cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
-// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates).
+// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's
+// open give-ups list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every
+// word, where populatedState's three records carry three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
 // that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's.
+// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
+// configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
+// setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -402,6 +406,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
 		record.ArchitectSlowBeforeGate}
 	cacheWords := []string{"cloning", "failing", "ready", "refused", "starting"}
+	reasonWords := []record.IntakeGiveUpReason{record.GiveUpBound, record.GiveUpDidNotEnd, record.GiveUpRetention,
+		record.GiveUpUndecodable, record.GiveUpConsumerMovedPast}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
 	// list and whose held task was queued for taskPhase: every key of a failure and of a held
@@ -484,6 +490,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
+	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
 	for _, state := range cacheWords {
@@ -491,6 +499,16 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		live = append(live, LiveRepositoryView{Repo: repo, Apps: &both, Cache: &CacheView{
 			Repo: repo, Sandbox: "legion-values-cache-acme-" + state, State: state,
 		}})
+	}
+	// One record of each reason, newest first as the projection lists them, all of one consumer.
+	const valuesConsumer = "legion-go-VALUES-dispatch"
+	giveUps := IntakeGiveUpsView{Consumers: []IntakeGiveUpCountView{
+		{Name: valuesConsumer, Open: len(reasonWords), NewestSeq: uint64(900 + len(reasonWords))}}}
+	for i, reason := range reasonWords {
+		seq := uint64(900 + len(reasonWords) - i)
+		giveUps.Newest = append(giveUps.Newest, IntakeGiveUpView{ID: int64(seq), Consumer: valuesConsumer,
+			Subject: fmt.Sprintf("notifications.dispatch.issue.VALUES-%d.issue.updated", i+1), StreamSeq: seq, StoredAt: at,
+			Deliveries: 21, GaveUpAt: at, Reason: reason, LastError: "the handler failed"})
 	}
 	return State{
 		Daemon: DaemonInfo{
@@ -504,10 +522,11 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Issues:       issues,
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Settings:     SettingsOf(settings),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
-		Paused: pausedViewOf(goldenPause(false), stops, nil),
+		Paused:        pausedViewOf(goldenPause(false), stops, nil),
+		IntakeGiveUps: giveUps,
 	}
 }
 
@@ -629,9 +648,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Compacted: false, Reason: "Nothing to compact (session too small)",
 		}}},
 		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
-		// answer always writes, neither of them omitempty.
+		// answer always writes, neither of them omitempty, so `failed` is written false.
 		AnswerTurnOutcome: {roots: typesOf(claim.TurnOutcomeResponse{}), bodies: []any{claim.TurnOutcomeResponse{
-			RefusedRun: 3, Failed: true,
+			RefusedRun: 3,
 		}}},
 		// Richer than the golden, which releases one child that started nothing: the record
 		// describes the two lists a release fills and the keys of a held child.
@@ -698,6 +717,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Version:    4,
 			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
 		})}}},
+		// The replay golden's own value (goldenIntakeReplay, TestIntakeReplayAnswerGolden).
+		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
+		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
+		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 	}
 }
 

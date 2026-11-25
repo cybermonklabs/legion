@@ -36,6 +36,12 @@ readonly legion_project="deployment-legion"
 readonly envoy_project="deployment-envoy"
 readonly cluster_project="deployment-envoy-cluster"
 readonly dispatch_project="deployment-dispatch"
+# The listener pins the --listeners scenarios share: one per stack the gate reads, each of them a
+# pin of this repository's own envoy image.
+readonly envoy_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e001"
+readonly cluster_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e002"
+readonly server_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e003"
+readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 
 # The fake gh. It takes the endpoint (the argument that starts `repos/`) with any `?ref=` query
 # dropped, and answers:

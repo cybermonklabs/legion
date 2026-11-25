@@ -1,6 +1,6 @@
 package sessionanswers
 
-// mainQuery is the whole text that query sent at commit 8c63a4c5af6059fe96bd8e4b0e5629202fe1cc14,
+// mainQuery is the whole text that query sent at commit cdb2baa0c3f9f6392aa3fb1aeb8cbb9c812af5b1,
 // before the read found the session's events through the index of their destinations, with
 // ownsAsk, declinedResolution and model.DeliveryTakenStatesSQL written out as they were at that
 // commit. It is the oracle of the tests that hold the read to main's rows, held letter for letter.
@@ -54,8 +54,8 @@ const mainQuery = `
 		  and md.created_at >= $2 - interval '1 hour'
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
-	       null::timestamptz as edited_at, null::jsonb as author, null::text as body,
-	       null::text as dispatch_words, a.answer,
+	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
+	       null::jsonb as author, null::text as body, null::text as dispatch_words, a.answer,
 	       (select count(distinct ae.answer->>'at') from answer_events ae
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
@@ -70,7 +70,7 @@ const mainQuery = `
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
 	union all
-	select 'comment', c.id::text, c.created_at, c.edited_at, c.author, c.body, null, null, false,
+	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, null, false,
 	       a.id::text, a.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
@@ -86,7 +86,7 @@ const mainQuery = `
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
 	union all
-	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, null, false,
+	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
 	       false, false, false,
@@ -101,7 +101,7 @@ const mainQuery = `
 	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
 	-- that time, not the event's, is what the window holds it to: the event is written moments
 	-- after the resolution it carries.
-	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null,
+	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null, null, null,
 	       x.resolution->'actor', x.resolution->>'reason', x.resolution->>'dispatch_words',
 	       null, false,
 	       a.id::text, a.question,

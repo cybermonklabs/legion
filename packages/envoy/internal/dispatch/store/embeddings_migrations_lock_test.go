@@ -20,6 +20,7 @@ import (
 // so need ACCESS EXCLUSIVE, conflicting with a reader) - a no-op UPDATE matching no row still
 // takes the table-level lock its statement needs.
 func TestEmbeddingsMigrationsLockOneTableAtATime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 72)
 	holder, err := store.Pool.Begin(ctx)

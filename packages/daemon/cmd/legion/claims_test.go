@@ -48,6 +48,8 @@ func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, ti
 
 func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
 
+func (stillTime) At(time.Time, func()) supervise.Cancel { return neverFires{} }
+
 func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type neverFires struct{}
@@ -198,20 +200,64 @@ type seenRequest struct {
 	answer                                   []byte
 }
 
+// recordingDaemon is a daemon's HTTP handler served on a loopback port, with every request that
+// reached it recorded beside what the handler answered (serveRecorded).
+type recordingDaemon struct {
+	url  string
+	port int
+
+	mu   sync.Mutex
+	seen []seenRequest
+}
+
+// serveRecorded serves handler on a loopback port until the test ends, recording each request
+// and the handler's answer before the answer is written back.
+func serveRecorded(t *testing.T, handler http.Handler) *recordingDaemon {
+	t.Helper()
+	d := &recordingDaemon{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read the request body: %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		d.mu.Lock()
+		d.seen = append(d.seen, seenRequest{
+			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
+			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
+		})
+		d.mu.Unlock()
+		for name, values := range recorder.Header() {
+			w.Header()[name] = values
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(recorder.Body.Bytes())
+	}))
+	t.Cleanup(server.Close)
+	d.url = server.URL
+	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	return d
+}
+
+// requests is every request that reached the daemon, in order.
+func (d *recordingDaemon) requests() []seenRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.seen)
+}
+
 // operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
 // api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
 // request that reached it recorded.
 type operatorDaemon struct {
+	*recordingDaemon
 	t               *testing.T
 	runtime         *fake.Runtime
 	conns           *fake.Conns
 	claimSupervisor *memoryClaims
-	url             string
-	port            int
 	tokenFile       string
-
-	mu   sync.Mutex
-	seen []seenRequest
 }
 
 func newOperatorDaemon(t *testing.T) *operatorDaemon {
@@ -237,29 +283,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read the request body: %v", err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, r)
-		d.mu.Lock()
-		d.seen = append(d.seen, seenRequest{
-			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
-		})
-		d.mu.Unlock()
-		for name, values := range recorder.Header() {
-			w.Header()[name] = values
-		}
-		w.WriteHeader(recorder.Code)
-		_, _ = w.Write(recorder.Body.Bytes())
-	}))
-	t.Cleanup(server.Close)
-	d.url = server.URL
-	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	d.recordingDaemon = serveRecorded(t, handler)
 	return d
 }
 
