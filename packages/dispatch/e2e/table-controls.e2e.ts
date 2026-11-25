@@ -6511,9 +6511,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): twenty-six lists on nine pages, each list opened three times at each of two widths.
+// SLOW(>=2s): twenty-five lists on nine pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// The row covers the twenty-six single picks of the shared list (`components/MultiSelect.tsx`),
+// The row covers the twenty-five single picks of the shared list (`components/MultiSelect.tsx`),
 // the lists whose options grow with the project among them: the search bar's Project and Status,
 // the List's Move to epic and Rows per page (`Pager`), an epic's Merge into another epic, the
 // priority of a List row, a Board card and an Inbox question (`PriorityControl`), the Inbox's
