@@ -27,6 +27,8 @@ the recipe that runs it as CI does, GOROOT unset.
 from __future__ import annotations
 
 import atexit
+import bisect
+import functools
 import hashlib
 import itertools
 import json
@@ -387,7 +389,7 @@ def workflow_documents(problems: list[Annotation]) -> dict:
 # ---------------------------------------------------------------- go list
 GO_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?(?:test|vet|build|run|list|install|generate)\b")
 FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedPatterns,"
-          "TestEmbedPatterns,XTestEmbedPatterns,Error")
+          "TestEmbedPatterns,XTestEmbedPatterns,Error,Match")
 
 
 @dataclass
@@ -397,9 +399,9 @@ class Session:
     cold runner. A third-party package then fails to load, which loses nothing first-party
     (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
     hold: `toolchain()` resolves it first, under the machine's own cache and proxy, with a `go env
-    GOROOT` that writes nothing. The go commands of go_build_tags.py, which ci_job_reads.py and
-    rule 20 run outside a Session, have no such environment and can write checksums into the
-    go.work.sum of their workspace; check-ci-filters.sh fails a run that changes one, naming it."""
+    GOROOT` that writes nothing. GOGC=400: a listing's heap lives only as long as its command, and
+    collecting it a quarter as often takes a sixth off the generation's processor time (48 to 40
+    s on 4 processors) for a peak of about 230 MB in the largest listing, against 95."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
@@ -433,7 +435,7 @@ class Session:
 
     def go(self, run_: Run, args: list) -> str:
         env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="",
-                   GOWORK="", GOTOOLCHAIN="local")
+                   GOWORK="", GOTOOLCHAIN="local", GOGC="400")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo
@@ -455,21 +457,30 @@ class Session:
             path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
-    def listing(self, run_: Run, deps: bool) -> list:
-        key = ("list", run_.workdir, run_.pkgs, run_.tags, run_.mode, run_.race, run_.env, run_.overlay, deps)
+    def listing(self, run_: Run) -> list:
+        """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
+        by the command it runs, so Runs that differ only in a mode that asks the same listing (a
+        test and a vet, a build and a run) share one."""
+        args = ["list", "-e", f"-json={FIELDS}", "-deps"]
+        if run_.mode in ("test", "vet"):
+            args.append("-test")
+        if run_.tags:
+            args += ["-tags", run_.tags]
+        if run_.race:
+            args.append("-race")
+        args += self.overlay_args(run_) + list(run_.pkgs)
+        key = ("list", run_.workdir, run_.env, tuple(args))
         if key not in self.cache:
-            args = ["list", "-e", f"-json={FIELDS}"]
-            if deps:
-                args.append("-deps")
-                if run_.mode in ("test", "vet"):
-                    args.append("-test")
-            if run_.tags:
-                args += ["-tags", run_.tags]
-            if run_.race:
-                args.append("-race")
-            args += self.overlay_args(run_)
-            self.cache[key] = decode_stream(self.go(run_, args + list(run_.pkgs)))
+            self.cache[key] = decode_stream(self.go(run_, args))
         return self.cache[key]
+
+    def named(self, run_: Run) -> list:
+        """The packages the run's command names, out of its listing: each entry go list matched to
+        one of its patterns (Match), but the test variants -test adds of them (ForTest). These are
+        the ones whose test files a test or vet compiles; a package reached only as a dependency
+        matches no pattern. The same entries a `go list` without -deps prints, field for field,
+        since every field read of them comes from the package's directory and build context."""
+        return [pkg for pkg in self.listing(run_) if pkg.get("Match") and not pkg.get("ForTest")]
 
     def module_files(self, run_: Run) -> list:
         """go.work, go.work.sum and each bound module's go.mod and go.sum, or the one module's."""
@@ -501,9 +512,7 @@ class Session:
         jobs = int(os.environ.get("CI_FILTERS_JOBS") or min(8, os.cpu_count() or 1))
         tasks = []
         for r in dict.fromkeys(runs):
-            tasks.append(lambda r=r: self.listing(r, True))
-            if r.mode in ("test", "vet"):
-                tasks.append(lambda r=r: self.listing(r, False))
+            tasks.append(lambda r=r: self.listing(r))
             tasks.append(lambda r=r: self.module_files(r))
         for r in dict.fromkeys(runs):
             self.toolchain(r.workdir)  # resolved once per directory, before any thread asks
@@ -521,10 +530,19 @@ class Session:
 
 
 def rel(path: str) -> str | None:
-    try:
-        return Path(path).resolve().relative_to(REPO).as_posix()
-    except ValueError:
-        return None
+    """A path as repository-relative text, or None outside the repository. The walk asks this of
+    a few hundred package directories tens of thousands of times, so each answer is kept, keyed by
+    the repository and, for a relative path, the directory it is read from: the tree does not
+    change during a run (check-ci-filters.sh fails one that does)."""
+    return resolved_rel(REPO, "" if os.path.isabs(path) else os.getcwd(), path)
+
+
+@functools.lru_cache(maxsize=None)
+def resolved_rel(repo: Path, cwd: str, path: str) -> str | None:
+    real, root = os.path.realpath(os.path.join(cwd, path)), str(repo)
+    if real == root:
+        return "."
+    return real[len(root) + 1:] if real.startswith(root + "/") else None
 
 
 def embed_reads(dir_rel: str, patterns, why: str) -> list:
@@ -687,12 +705,20 @@ def directory_reads(dir_rel: str, tests: set, why: str) -> list:
     the 97 test files under a build constraint here would hold their unconstrained siblings in
     the gate filters that way, 4,566 generated patterns where the check today writes a few
     hundred, the number it prints on each run."""
-    names = sorted(os.listdir(REPO / dir_rel))
+    names, files = directory_entries(REPO / dir_rel)
     left_out = {name for name in names if name in tests or name.endswith(TEST_SUFFIX)}
     if not left_out:
         return [Read(f"{dir_rel}/*", why)]
-    return [Read(f"{dir_rel}/{name}", why) for name in names
-            if name not in left_out and (REPO / dir_rel / name).is_file()]
+    return [Read(f"{dir_rel}/{name}", why) for name in names if name not in left_out and name in files]
+
+
+@functools.lru_cache(maxsize=None)
+def directory_entries(directory: Path) -> tuple:
+    """(the sorted names in a directory, those of them that are files), kept per directory: the
+    walk reads one package directory once for each run that holds it, and the tree does not
+    change during a run."""
+    names = sorted(os.listdir(directory))
+    return names, frozenset(name for name in names if (directory / name).is_file())
 
 
 def pattern_dirs(run_: Run, tests: dict) -> list:
@@ -705,14 +731,23 @@ def pattern_dirs(run_: Run, tests: dict) -> list:
         if not pattern.endswith("..."):
             continue
         root = (REPO / run_.workdir / pattern.removesuffix("...").rstrip("/")).resolve()
-        for current, subdirs, names in os.walk(root):
-            here = Path(current)
-            subdirs[:] = [s for s in subdirs if not go_skips_dir(here, s)]
-            if any(n.endswith(".go") for n in names):
-                d = rel(current)
-                reads += directory_reads(d, tests[d],
-                                         f"{run_.why} (the pattern {pattern} reads the directory's .go files)")
+        for d in go_directories(root):
+            reads += directory_reads(d, tests[d], f"{run_.why} (the pattern {pattern} reads the directory's .go files)")
     return reads
+
+
+@functools.lru_cache(maxsize=None)
+def go_directories(root: Path) -> tuple:
+    """The directories a `<root>/...` pattern reads, repository-relative: each under root that
+    holds a .go file, but those go_skips_dir passes over. Kept per root, as directory_entries is."""
+    found = []
+    for current, subdirs, names in os.walk(root):
+        here = Path(current)
+        subdirs[:] = [s for s in subdirs if not go_skips_dir(here, s)]
+        if any(n.endswith(".go") for n in names):
+            found.append(rel(current))
+    return tuple(found)
+
 
 
 def closure(session: Session, rules: dict, run_: Run, seen: set) -> list:
@@ -729,7 +764,7 @@ def closure(session: Session, rules: dict, run_: Run, seen: set) -> list:
     if run_ in seen:
         return []
     seen.add(run_)
-    listed = session.listing(run_, deps=True)
+    listed = session.listing(run_)
     tests = test_build_files(listed)
     reads = list(session.module_files(run_)) + pattern_dirs(run_, tests)
     reads += [Read(b, f"{run_.why} (the overlay's replacement for {a})") for a, b in run_.overlay]
@@ -753,8 +788,8 @@ def closure(session: Session, rules: dict, run_: Run, seen: set) -> list:
                 reads += apply_rules(session, rules, f"{d}/{name}", seen)
     if run_.mode in ("test", "vet"):
         # The packages the command names, which are the ones whose test files it compiles: a
-        # package reached only as a dependency is in the listing above and not in this one.
-        for pkg in session.listing(run_, deps=False):
+        # package reached only as a dependency is in the listing above and not among these.
+        for pkg in session.named(run_):
             d = rel(pkg["Dir"]) if pkg.get("Dir") else None
             if d is None:
                 continue
@@ -828,6 +863,10 @@ class Expander:
         self.by_parent = defaultdict(list)
         for f in files:
             self.by_parent[os.path.dirname(f)].append(f)
+        # A glob's every match starts with its text before the first `*`, `?` or `[`, which
+        # glob_regex reads as itself, and the files that start with it are one run of these.
+        self.ordered = sorted(files)
+        self.position = {f: i for i, f in enumerate(files)}
         self.expanded: dict = {}
 
     def expand(self, glob: str) -> list:
@@ -837,14 +876,19 @@ class Expander:
         return found
 
     def sweep(self, glob: str) -> list:
-        if glob.endswith("/**") and not any(c in glob[:-3] for c in "*?["):
-            return [f for f in self.files if f.startswith(glob[:-2])]
         if glob.endswith("/*") and not any(c in glob[:-2] for c in "*?["):
             return list(self.by_parent.get(glob[:-2], []))
         if not any(c in glob for c in "*?["):
             return [glob] if glob in self.known else []
-        regex = glob_regex(glob)
-        return [f for f in self.files if regex.fullmatch(f)]
+        regex, prefix = glob_regex(glob), re.split(r"[*?\[]", glob, maxsplit=1)[0]
+        found = []
+        for index in range(bisect.bisect_left(self.ordered, prefix), len(self.ordered)):
+            f = self.ordered[index]
+            if not f.startswith(prefix):
+                break
+            if regex.fullmatch(f):
+                found.append(f)
+        return sorted(found, key=self.position.__getitem__)
 
 
 class Selection:
@@ -3620,22 +3664,29 @@ def check() -> int:
     # Run claims, or a pin its step no longer holds, leaves what its job reads unknown.
     unreduced = check_table(documents, data, set(files), problems)
     session = Session()
-    gate_files, report = gate_read_sets(session, data, files, expander, unreduced)
-    problems += session.problems
-    session.problems = []
-    # A branch made before the filters were computed keeps the committed filters file when it
-    # merges main; nothing reads it, so what the branch added there selects nothing.
-    if (REPO / ".github/ci-filters.yaml").exists():
-        problems.append(error(".github/ci-filters.yaml", "no job reads this file any more: the changes job computes "
-                                                         "the filters. Run .github/scripts/ci-reads-convert, which "
-                                                         "moves what a branch added here into its gates and deletes it"))
     # The listed blocks need the workspace's node_modules and Bun, which the changes job installs
     # and the ci-filters job does not: only the generation lists them. No rule of the check reads
-    # them, and rule 8's docs filter holds none.
-    listed = {}
-    if mode == "generate":
-        import ci_ts_listing
-        listed = ci_ts_listing.listed_files(gate_files, problems)
+    # them, and rule 8's docs filter holds none. Which blocks it lists depends on no read the walk
+    # below finds, only on which filters a gate is on, so tsc and Bun list them while the walk's go
+    # commands run, rather than after them.
+    listed, listed_problems = {}, []
+    with ThreadPoolExecutor(max_workers=1) as beside:
+        if mode == "generate":
+            import ci_ts_listing
+            listing = beside.submit(ci_ts_listing.listed_files, {g.filter for g in data.GATES}, listed_problems)
+        gate_files, report = gate_read_sets(session, data, files, expander, unreduced)
+        problems += session.problems
+        session.problems = []
+        # A branch made before the filters were computed keeps the committed filters file when it
+        # merges main; nothing reads it, so what the branch added there selects nothing.
+        if (REPO / ".github/ci-filters.yaml").exists():
+            problems.append(error(".github/ci-filters.yaml", "no job reads this file any more: the changes job "
+                                                             "computes the filters. Run .github/scripts/ci-reads-convert, "
+                                                             "which moves what a branch added here into its gates and "
+                                                             "deletes it"))
+        if mode == "generate":
+            listed = listing.result()
+            problems += listed_problems
     excluded = {name: list(kept.patterns) for name, kept in data.EXCLUDED.items()}
     selection = Selection(excluded, {name: quantifier or "some-with-excludes" for name in excluded}, files)
     try:

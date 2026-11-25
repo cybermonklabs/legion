@@ -5718,12 +5718,12 @@ for spelling in ./pkg pkg/ "$root/pkg"; do
 done
 
 # A run of any mode may change no file of the tree it checks but those its mode writes, and fails
-# naming each other file it changed. The go commands of go_build_tags.py run under the
-# machine's own GOPROXY and module cache, so in a workspace one can record a checksum the
-# committed go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
-# repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
-# Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
-# engine has listed the repository's files and before its first go list; writing on `go list`
+# naming each other file it changed. A go command that fetches a module records its checksum in
+# the go.work.sum of its workspace, as go_build_tags.py's go list did under the machine's own
+# GOPROXY before it ran with GOPROXY=off, which the cases plant: a go first on PATH that appends
+# the line this repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the
+# real go. Writing on every command, it writes at the engine's `go env GOROOT`, which comes after
+# the engine has listed the repository's files and before its first go list; writing on `go list`
 # alone, it writes only at go_build_tags.py's go list, which a table can run as it is imported.
 # The controls that a clean run and a write of a push workflow's paths alone still pass are the
 # green and push-paths-extra cases above, and the ones below that change nothing.
