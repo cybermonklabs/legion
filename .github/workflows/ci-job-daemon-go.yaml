@@ -24,9 +24,10 @@ name: CI job daemon-go
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
 #
 # Everything here is what those steps need and nothing else, each job taking its own part:
-#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store; and,
-#     in daemon-go, BROKER_TEST_DATABASE_URL and LEGION_E2E_PG_DSN, the broker rig its cipher
-#     contract tests drive and Stage 1's;
+#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store, and for
+#     BROKER_TEST_DATABASE_URL, the broker rig of internal/cipher's and internal/dispatch's contract
+#     tests in daemon-go and of internal/daemon's broker tests in daemon-go-race; and, in
+#     daemon-go, LEGION_E2E_PG_DSN, Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED in both, read by the testcontainers-backed NATS tests;
 #     LEGION_RUN_FUZZ_ITERS in daemon-go, read by classify's fuzz tests; and
 #     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race, read by internal/daemon's keptPropertyEnv;
@@ -241,8 +242,8 @@ jobs:
   # The race step, in a job of its own beside daemon-go.
   # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
   # Its setup is daemon-go's, less what only the plain step and Stage 1 read: no uv
-  # (internal/runtime/sandbox's), no BROKER_TEST_DATABASE_URL (internal/cipher's), no
-  # LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS (internal/classify's). The comment
+  # (internal/runtime/sandbox's), no LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS
+  # (internal/classify's). The comment
   # on each step of daemon-go's says why it is there; the ones below say what of the five
   # packages reads it.
   daemon-go-race:
@@ -270,6 +271,10 @@ jobs:
       JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
+      # ciphertest's broker rig on this same service, and fail rather than skip on GitHub Actions
+      # without it.
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       TESTCONTAINERS_RYUK_DISABLED: "true"
       # internal/daemon's kept-decision property count follows the lane, as daemon-go's fuzz count
       # does and for the same reason: a pull-request run takes 8 seeds, every other lane the
