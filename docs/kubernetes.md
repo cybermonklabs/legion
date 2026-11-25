@@ -572,8 +572,6 @@ The Envoy plugin ships these skills in its `dist/skills`:
 
 - `plain-words`
 
-- `reviewing-documents`
-
 - the reviewer's pair, `thermonuclear-code-quality` and `thermonuclear-deep-review`, which both
   harnesses install
 

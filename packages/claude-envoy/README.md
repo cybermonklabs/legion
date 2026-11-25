@@ -352,10 +352,10 @@ stand-in model; it skips without one, and nothing in CI installs Codex.
 
 ## Skills
 
-The plugin ships twelve skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,
+The plugin ships eleven skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,
 `claude-envoy:dispatch-first`, `claude-envoy:dispatch-writing-specs`, `claude-envoy:asd-ste100`,
 `claude-envoy:outside-message`, `claude-envoy:plain-words`, `claude-envoy:agent-secrets`,
-`claude-envoy:approval-review`, `claude-envoy:reviewing-documents` and the reviewer's pair,
+`claude-envoy:approval-review` and the reviewer's pair,
 `claude-envoy:thermonuclear-code-quality` and `claude-envoy:thermonuclear-deep-review`.
 The first four teach the Envoy tools, the `dispatch` command and how to write a spec; `asd-ste100` gives the
 ASD-STE100 rules for text a person reads; `outside-message` holds the steps and the approval before text
@@ -365,9 +365,6 @@ in that command's environment, so no value reaches your shell or your transcript
 `approval-review` is read by no other session than one judging an approval request: what such a
 request asks, what an agent never decides and hands back, and how to retrieve the nearest past
 decisions.
-`reviewing-documents` reviews a requirements document, plan or spec before the work it guides: it runs
-each review lens as a generic subagent, judges their findings itself, applies the corrections the
-author already authorized and asks the author about the rest.
 `skills/` holds one relative symlink per skill into the repository-root `skills/`, which
 stays their only source; the pack resolves each link into the skill's own files, since a published
 package carries no link of this kind (`package.json`'s `prepack`, `scripts/pack-skills.sh`). With
@@ -376,7 +373,7 @@ on every `SessionStart` (startup, resume, clear, compact, fork) and `SubagentSta
 `hooks/hooks.json` bullet above describes; it sends a spec, or an ask, comment or message a person
 reads, to `dispatch-writing-specs`, which the session loads by name.
 
-`envoy`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `asd-ste100`, `outside-message`, `plain-words` and `agent-secrets` are the eight a standalone Claude Code session uses, `approval-review` the ninth, which only a session judging an approval request reads, `reviewing-documents` the tenth, which a session reviewing a document reads, and the
+`envoy`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `asd-ste100`, `outside-message`, `plain-words` and `agent-secrets` are the eight a standalone Claude Code session uses, `approval-review` the ninth, which only a session judging an approval request reads, and the
 reviewer's pair, `thermonuclear-code-quality` and `thermonuclear-deep-review`, ships here too, so
 one copy of each rubric reaches both harnesses. The other root skills
 stay out of this plugin: they belong to Legion's roles (the architect, controller, oracle and retro

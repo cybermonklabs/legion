@@ -348,7 +348,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-oracle/SKILL.md",
       "skills/legion-retro/SKILL.md",
       "skills/legion-worker/references/merge-gate.md",
-      "skills/reviewing-documents/SKILL.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
