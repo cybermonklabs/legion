@@ -3,6 +3,7 @@
 ## What it is
 
 `ci_check` names the GitHub check run that proves the check at the head, as GitHub writes it: Dispatch matches the name exactly, and a job of a called workflow writes its check run as `<caller> / <job>` (on cybermonklabs/legion, `test / test` or `dispatch-browser-pr / merge`).
+Such a check has no `run`, its `when` is `before_merge`, and it names its `negative_control`.
 
 ## No role runs it
 
