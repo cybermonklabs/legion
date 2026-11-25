@@ -10109,3 +10109,189 @@ test("the shared list keeps the option it marks active wholly inside its box whe
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): twenty labelled issues and fifteen repositories' pull requests seeded, and at each of
+// two widths a value of the project List's Labels filter ticked and one of the Delivery page's
+// Repository list ticked and unticked, each by Enter, with the list redrawn after each.
+// INFRA-3135, round 26 (the tester's, measured in builds Jobs infra-3135-p-hc-pmzhr and
+// infra-3135-p-hfw-wx7zj at 8e7e463a and infra-3135-p-bc-td6pm and infra-3135-p-bfw-4tfm7 at
+// 34dc6a07, and this row in infra-3135-p-red-7lb7z and infra-3135-p-red2-p8kpf at 8e7e463a): the
+// reader walks a shared multi-select with ArrowDown until the option it marks active stands at the
+// bottom of its box, and presses Enter. In the project List's Labels filter, with nothing ticked
+// before, the tick draws the list's Clear foot, 61 px tall and stuck to the box's bottom, over that
+// option: lab-07 stands wholly under it, and so does the ticked option of the Inbox Filter panel's
+// Project list and of the Delivery page's Author list, in Chromium, Firefox and WebKit at 1440x900
+// and 390x664. The Delivery page lists the picked repositories first, so the tick moves acme/r06 to
+// the top of its Repository list, where the box, still scrolled 83 px, shows it nothing in Chromium
+// and WebKit, and the untick moves it back to its own place, below what the box shows in Chromium
+// (scrolled 39 px) and Firefox (scrolled back to its top at the tick). At 34dc6a07 the arrows
+// scrolled the box nothing, so the active option stood below the box before the Enter already. The
+// cause: Enter ticks or unticks the active option (components/MultiSelect.tsx:574-581, :349-353),
+// the first tick draws the Clear foot (:805-821) and the Delivery page orders the picked values
+// first (features/delivery/DeliveryPage.tsx:411), and nothing shows the active option again once
+// the list has redrawn: only the arrows and a single pick's open scroll the box to it
+// (`showOption`). The rule (the architect's ruling of 2026-11-24 08:07Z on round 25's Status row):
+// the shared list shows the option it marks active, on every list it draws.
+test("Enter on a value of the shared multi-select keeps the option the list marks active wholly inside its box once the list has redrawn, in the project List's Labels filter and the Delivery page's Repository list, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with a Labels tick and a Repository tick and untick.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  for (let label = 1; label <= 20; label += 1) {
+    const labelled = await createIssue({ project: "CORE", title: `Labelled ${label}` });
+    await patchIssue(labelled.key, { labels: [`lab-${String(label).padStart(2, "0")}`] });
+  }
+  await seedDeliveryFixture();
+  // Fourteen repositories more in the fixture's window, a pull request of the population's each,
+  // so the Repository list holds fifteen.
+  const pullRequests = Array.from({ length: 14 }, (_, index) => {
+    const repo = `acme/r${String(index + 1).padStart(2, "0")}`;
+    const number = 100 + index;
+    return `('${repo}', ${number}, 'feat: a change in ${repo}', 'https://github.com/${repo}/pull/${number}', 'octocat', '2024-06-01T04:00:00Z', '2024-06-01T05:00:00Z', 1, 1, false, null, ARRAY[]::text[], false)`;
+  });
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     ) VALUES ${pullRequests.join(", ")}`
+  );
+  /** Where the option the open list marks active (its text box's `aria-activedescendant`) stands
+   *  in the list's scroll box, in that box's content: the option's id, top and bottom, and the
+   *  part of the content the box shows - below what it draws stuck to its top (the text box),
+   *  above what it draws stuck to its bottom (the Clear foot), and cut to the window - with the
+   *  box's scrollTop and height. `inside` is whether the option stands wholly in that part. */
+  const activeOptionSight = () =>
+    page.evaluate(() => {
+      const id = document.activeElement?.getAttribute("aria-activedescendant") ?? "";
+      const option = id === "" ? null : document.getElementById(id);
+      const none = {
+        bottom: 0,
+        height: 0,
+        id,
+        inside: false,
+        name: "no option",
+        scrollTop: 0,
+        shownBottom: 0,
+        shownTop: 0,
+        top: 0,
+      };
+      if (option === null) return none;
+      const spoken = option.getAttribute("aria-label") ?? option.textContent ?? "";
+      const name = `"${spoken.replace("✓", "").replace(/\s+/g, " ").trim()}"`;
+      let found = option.parentElement;
+      while (found !== null && !/(auto|scroll)/.test(getComputedStyle(found).overflowY)) {
+        found = found.parentElement;
+      }
+      if (found === null) return { ...none, name };
+      const box = found;
+      const boxTop = box.getBoundingClientRect().top + box.clientTop;
+      let shownTop = Math.max(boxTop, 0);
+      let shownBottom = Math.min(boxTop + box.clientHeight, window.innerHeight);
+      for (const child of box.children) {
+        if (getComputedStyle(child).position !== "sticky") continue;
+        const stuck = child.getBoundingClientRect();
+        if (stuck.top <= boxTop + 1) shownTop = Math.max(shownTop, stuck.bottom);
+        else if (stuck.bottom >= boxTop + box.clientHeight - 1) {
+          shownBottom = Math.min(shownBottom, stuck.top);
+        }
+      }
+      const own = option.getBoundingClientRect();
+      const content = (y: number) => Math.round(y - boxTop + box.scrollTop);
+      return {
+        bottom: content(own.bottom),
+        height: box.clientHeight,
+        id,
+        inside: own.top >= shownTop - 1 && own.bottom <= shownBottom + 1,
+        name,
+        scrollTop: Math.round(box.scrollTop),
+        shownBottom: content(shownBottom),
+        shownTop: content(shownTop),
+        top: content(own.top),
+      };
+    });
+  // Each list: how it is reached, its options, its Clear foot, the count its options carry once
+  // the rows they count have answered, and the Enters pressed on the option six ArrowDown mark
+  // active, which stands at the bottom of the box (its box shows five options).
+  const lists = [
+    {
+      name: "the project List's Labels filter",
+      listbox: "Labels options",
+      options: 20,
+      clear: "Clear labels",
+      counted: /, \d+ issues?$/,
+      enters: [{ change: "ticks it, the first value ticked", selected: "true", foot: 1 }],
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "List");
+        await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+        return filterPicker(page, "Labels");
+      },
+    },
+    {
+      name: "the Delivery page's Repository list",
+      listbox: "Repository options",
+      options: 15,
+      clear: "Clear repository",
+      counted: /, \d+ PRs?$/,
+      enters: [
+        { change: "ticks it, which lists it first", selected: "true", foot: 1 },
+        { change: "unticks it, which lists it at its own place", selected: "false", foot: 0 },
+      ],
+      reach: async () => {
+        await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
+        await expect(page.locator("[data-pr-row]").first()).toBeVisible();
+        const panel = await openFilterPanel(page);
+        return panel.getByRole("button", { name: /^Repository:/ });
+      },
+    },
+  ];
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const list of lists) {
+      const where = `${list.name} at ${size.width}x${size.height}`;
+      const trigger = await list.reach();
+      await expect(trigger).toBeVisible();
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      const listbox = page.getByRole("listbox", { name: list.listbox });
+      await expect(listbox.getByRole("option")).toHaveCount(list.options);
+      for (let step = 0; step < 6; step += 1) {
+        await page.keyboard.press("ArrowDown");
+        await nextFrames(page);
+      }
+      // The Enter below is pressed on an option that stands whole at the bottom of the box.
+      await expect
+        .poll(
+          () =>
+            activeOptionSight().then((sight) => Math.abs(sight.shownBottom - sight.bottom) <= 1),
+          { message: `${where}: six ArrowDown left the active option off the bottom of its box` }
+        )
+        .toBe(true);
+      const marked = await activeOptionSight();
+      const option = page.locator(`[id="${marked.id}"]`);
+      const foot = listbox.locator("xpath=..").getByRole("button", { name: list.clear });
+      for (const enter of list.enters) {
+        await page.keyboard.press("Enter");
+        // Redrawn: the option says what the Enter made of it, the foot stands or has gone, and
+        // the option carries the count of the rows the new narrowing lists.
+        await expect(option).toHaveAttribute("aria-selected", enter.selected);
+        await expect(foot).toHaveCount(enter.foot);
+        await expect(option).toHaveAttribute("aria-label", list.counted);
+        await nextFrames(page);
+        // One read is the answer: the list has redrawn, and nothing else scrolls the box.
+        const sight = await activeOptionSight();
+        if (!sight.inside) {
+          wrong.push(
+            `${where}: after ArrowDown to ${marked.name} and Enter that ${enter.change}, the list marks ${sight.name} active at ${sight.top}-${sight.bottom} px of its content, and its box shows ${sight.shownTop}-${sight.shownBottom} px of it (scrollTop ${sight.scrollTop}, height ${sight.height}): the active option is out of sight`
+          );
+        }
+      }
+      await page.keyboard.press("Escape");
+      await expect(listbox).toHaveCount(0);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
