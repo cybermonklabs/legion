@@ -1401,6 +1401,69 @@ test("a live update that takes away, above the row in hand, a row an earlier act
   expect(rowTop(kept)).toBe(seen);
 });
 
+// The List's own case of the selection bar's row under a list's sticky head
+// (`SelectionBar.test.tsx`). The reader marks a row by its checkbox. Then the table's box scrolls
+// until that row stands at the box's top, where the table's sticky head covers the top 60 px of
+// the checkbox. Clear selection empties the selection, and the bar goes while it holds the focus.
+// The issue marked last is still listed, so its checkbox takes the focus (`useLastMarkedPlace`)
+// with no scroll of the engine's own. The engine does not see the head, so its own scroll to the
+// nearest edge would move nothing. The table's box scrolls up by the least distance, the 60 px,
+// and the checkbox stands whole below the head.
+test("Clear selection hands the focus to the checkbox of the issue marked last under the List's sticky head, and the table's box scrolls it out from under the head by the least distance", async () => {
+  const user = userEvent.setup();
+  // Drawn in the shell's main content, as the app draws it: Clear selection is a press of the
+  // reader's, so the bar hands its focus on.
+  table(
+    Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  // The reader marks the sixth row the table draws.
+  const marked = drawnRows()[5]?.getAttribute("data-issue-row") ?? "";
+  const mark = screen.getByRole("checkbox", { name: `Select ${marked}` });
+  await user.click(mark);
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no scroll box");
+  const boxRect = spyOn(box, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 600));
+  restores.push(() => boxRect.mockRestore());
+  // The checkbox is at the top of the scrolled box, behind the sticky header.
+  let markTop = 0;
+  const markRect = spyOn(mark, "getBoundingClientRect").mockImplementation(
+    () => new DOMRect(12, markTop, 14, 14)
+  );
+  restores.push(() => markRect.mockRestore());
+  // The box clips what overflows it, as its `overflow-auto` makes it do in a browser. happy-dom
+  // applies no utility class and does not expand the `overflow` shorthand, so the case sets the
+  // two values the browser computes.
+  box.style.overflowX = "auto";
+  box.style.overflowY = "auto";
+  // The head's cells stick to the box's top, and the first of them is the Select column's. It is
+  // 60 px tall and stays at the box's top however far the box scrolls. happy-dom lays out no
+  // sticky element, so the case gives the cell its box.
+  const selectAll = screen.getByRole("checkbox", { name: "Select every row on this page" });
+  const cell = selectAll.closest("th");
+  if (cell === null) throw new Error("The List drew no header cell for its Select column");
+  const cellBox = spyOn(cell, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 44, 60));
+  restores.push(() => cellBox.mockRestore());
+  // Model only the checkbox's movement. Other rows need no layout in this case.
+  const scrolled = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+    if (typeof by === "object") markTop -= by.top ?? 0;
+  });
+  restores.push(() => scrolled.mockRestore());
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  const moves = watchMoves();
+  restores.push(moves.restore);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(mark).toHaveFocus());
+  expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+  expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -60 }]]);
+  // The rows moved down 60 px, and the head stayed: the checkbox's top meets the head's bottom.
+  expect(mark.getBoundingClientRect().top).toBe(cell.getBoundingClientRect().bottom);
+  expect(moves.scrolled).toEqual([]);
+});
+
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
 // in the commit that lets its controls go. Take out of epic with no Epic filter leaves the two
 // issues listed, so the bar's hand-off puts the focus on the checkbox of the issue marked last.
