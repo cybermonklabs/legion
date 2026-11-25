@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The `legion` tool's `register_plan` hands the architect the act each running task stands at,
   with the role whose agent works it. It says that a later version can change the text of a running task
-  alone. The plugin speaks daemon API contract 296. The architect skill puts a decision for an
+  alone. The architect skill puts a decision for an
   agent into the text of its task's block, in a later version of `plan.md`. A phase worker's first
   step reads the issue, its task and the earlier handoffs. It takes decisions from no other
   document, and reads no list for its work. A task block names its parent, and Legion carries out

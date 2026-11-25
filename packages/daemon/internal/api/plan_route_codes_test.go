@@ -34,7 +34,8 @@ const (
 var historyEntry = regexp.MustCompile(`(?m)^// \d+: `)
 
 // Every refusal code register_plan and stop_task answer of their own is named in an entry of the
-// daemon API contract history (version.go), which is where a plugin's author reads what a route
+// daemon API contract history: a numbered entry of version.go, or the text of a contract entry's
+// file (`contract_<id>_<slug>.go`, contracts.go), which is where a plugin's author reads what a route
 // answers. The codes are read from the type-checked source, not copied: each code a function of
 // plan.go reachable from the two routes writes, and each code of a refusal that the workflow's
 // planGiven or taskStopped, or a function of the workflow or of intake they reach, answers the fact
@@ -58,13 +59,24 @@ func TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory(t *testing.T) {
 		t.Fatal("version.go holds no `// <n>: ` entry: the contract history could not be read")
 	}
 	history := string(source[first[0]:])
+	entries, err := filepath.Glob("contract_[0-9]*_*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		text, err := os.ReadFile(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		history += "\n" + string(text)
+	}
 	codes := slices.Compact(slices.Sorted(slices.Values(append(route, workflow...))))
 	for _, code := range codes {
 		if !regexp.MustCompile(`\b` + code + `\b`).MatchString(history) {
-			t.Errorf("register_plan or stop_task can answer %s, and no entry of version.go's contract history names it", code)
+			t.Errorf("register_plan or stop_task can answer %s, and no entry of the contract history (version.go or a contract_<id>_<slug>.go) names it", code)
 		}
 	}
-	t.Logf("codes the two routes answer of their own, each held to the history: %v", codes)
+	t.Logf("codes the two routes answer of their own, each held to the history of version.go and %d entry files: %v", len(entries), codes)
 }
 
 // codeCensus is the type-checked source of this package, the workflow and intake: each function

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -120,6 +121,14 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
+	// consumerGrant answers whether this listener's NATS user holds the session consumers' calls,
+	// which decides whether it runs takeover passes (passRecords). It is required, but it is refused
+	// only when first asked, not when a handler is built: a configuration without it panics at its
+	// first claim handover or sweep pass (holdsConsumerGrant). main.go makes it inside this
+	// configuration's literal and sets its answer to its session delivery's holdsConsumerGrant once
+	// that is open, so every copy of the configuration reads that one answer. A test rig sets an
+	// answer of its own, and may set it again over an earlier one.
+	consumerGrant *consumerGrantAnswer
 	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
 	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
@@ -175,6 +184,39 @@ type listenerDeliveryHandlerConfig struct {
 func wireRoleForwarder(cfg listenerDeliveryHandlerConfig) listenerDeliveryHandlerConfig {
 	cfg.roleForwards = newRoleForwarder(cfg)
 	return cfg
+}
+
+// holdsConsumerGrant is cfg.consumerGrant's answer (passRecords). A configuration without one is
+// refused, since no answer a listener makes up for itself is the one main.go wires.
+func (cfg listenerDeliveryHandlerConfig) holdsConsumerGrant(ctx context.Context) bool {
+	if cfg.consumerGrant == nil {
+		panic("listener configuration without its consumer-grant answer (consumerGrant)")
+	}
+	return cfg.consumerGrant.holds(ctx)
+}
+
+// consumerGrantAnswer is where every copy of a listener's configuration reads whether its NATS
+// user holds the session consumers' calls (listenerDeliveryHandlerConfig.consumerGrant). main.go
+// makes it inside the configuration's literal, which its role forwarder copies at once, and sets
+// the answer once the session delivery it reads from is open, before /v1 opens and before the
+// sweep starts, which are the two callers (passRecords). A later set replaces the answer for every
+// copy; a test rig uses that to put its own session delivery's answer over the harness's.
+type consumerGrantAnswer struct {
+	answer atomic.Pointer[func(context.Context) bool]
+}
+
+// set makes holds the answer.
+func (a *consumerGrantAnswer) set(holds func(context.Context) bool) { a.answer.Store(&holds) }
+
+// holds is the answer. One asked before any is set is refused: a listener that answered no would
+// run no takeover pass anywhere and say nothing, and one that answered yes would run passes its
+// user may be refused, so a lost set in main.go fails at the first claim or sweep that asks.
+func (a *consumerGrantAnswer) holds(ctx context.Context) bool {
+	holds := a.answer.Load()
+	if holds == nil {
+		panic("listener consumer-grant answer asked before main.go set it (consumerGrantAnswer.set)")
+	}
+	return (*holds)(ctx)
 }
 
 type deliveryMode uint8
