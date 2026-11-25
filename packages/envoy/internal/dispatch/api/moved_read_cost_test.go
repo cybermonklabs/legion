@@ -167,8 +167,8 @@ func movedCostNeverRan(projects []string) string {
 
 // movedCostBeside is the condition, on an issue i, that it is one of the finished issues Legion
 // never ran that the corpus writes beside production's issues: those of the two other projects.
-// The first project's stand among production's issues. The shape and the events count the issues
-// beside them apart.
+// The first project's stand among production's issues. The shape counts the issues beside them
+// apart, and the events hold them at none: they load only the plans read, which reads no events.
 var movedCostBeside = movedCostNeverRan(movedCostProjects[1:])
 
 // movedCostShapeQuery reads the corpus's shape as production's figures count it, over every issue
@@ -237,9 +237,10 @@ const movedCostNeverRanName = "finished issues Legion never ran in "
 // first issues left out, in two rows: first those of production's shape, then the finished issues
 // Legion never ran beside them (movedCostBeside), each row led by whether it is theirs. Of each:
 // how many events there are and over how many issues, each issue's count of them in nearest-rank
-// percentiles, the issues whose events run seq 1 to their last_seq, and, of the issues parked in
-// backlog or icebox, how many there are, those that hold the issue.updated that moved them there
-// as the parked read finds it (parkedMoveLateral), and those whose move is not their newest event.
+// percentiles, the issues whose events run seq 1 to their last_seq (an issue beside production's
+// holds none and a last_seq of 0), and, of the issues parked in backlog or icebox, how many there
+// are, those that hold the issue.updated that moved them there as the parked read
+// (parkedMoveLateral) finds it, and those whose move is not their newest event.
 var movedCostEventsQuery = `with written as (
 		select i.key, i.status, i.last_seq, ` + movedCostBeside + ` as beside
 		from issues i
@@ -257,7 +258,7 @@ var movedCostEventsQuery = `with written as (
 	       coalesce(percentile_disc(0.9) within group (order by events), 0),
 	       coalesce(percentile_disc(0.99) within group (order by events), 0),
 	       coalesce(max(events), 0),
-	       count(*) filter (where events = last_seq and low = 1 and high = last_seq),
+	       count(*) filter (where events = last_seq and (low = 1 and high = last_seq or beside and events = 0)),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `)),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved is not null),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq)
@@ -416,7 +417,8 @@ func seedMovedCostTemplates(t *testing.T, s *readCostServer) {
 // wrote before anything is measured: the workflow side and the corpus's own writes to the counts
 // they fix, the issues of production's shape to it (movedCostProduction), each count printed
 // beside production's figure at the run's scale, the finished issues Legion never ran beside them
-// apart, and the events of both to production's events per issue (holdMovedCostEvents).
+// apart, and the events to production's events per issue, those beside production's issues held at
+// none (holdMovedCostEvents).
 func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 	t.Helper()
 	ctx := context.Background()
@@ -591,11 +593,11 @@ func holdMovedCostShape(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 }
 
 // holdMovedCostEvents holds the events of the issues the corpus writes (movedCostEventsQuery) to
-// production's events per issue (movedCostEventsShape): those of production's shape, and apart
-// from them those of the finished issues Legion never ran beside them, each drawn from it on its
-// own. Every issue of both holds its events seq 1 to its last_seq, and every issue of production's
-// shape in backlog or icebox the issue.updated that moved it there, some but not all of them
-// before their newest event.
+// production's events per issue (movedCostEventsShape) over the issues of production's shape, and
+// holds the finished issues Legion never ran beside them at none: they load only the plans read,
+// which reads no events. Every issue of production's shape holds its events seq 1 to its last_seq,
+// and every one in backlog or icebox the issue.updated that moved it there, some but not all of
+// them before their newest event; every issue beside them holds no event and a last_seq of 0.
 func holdMovedCostEvents(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 	t.Helper()
 	rows, err := conn.Query(context.Background(), movedCostEventsQuery, append(slices.Clone(movedCostProjects), movedCostAdvancesProject))
@@ -619,32 +621,33 @@ func holdMovedCostEvents(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 	near := func(read, production float64) bool {
 		return math.Abs(read-production) <= movedCostShapeSlack*production
 	}
-	for _, group := range []struct {
-		what   string
-		beside bool
-		issues int
-	}{
-		{"issues of production's shape", false, corpus.issues},
-		{"finished issues Legion never ran beside them", true, (len(movedCostProjects) - 1) * corpus.unran},
-	} {
-		read := groups[group.beside]
-		t.Logf("c-moved-read-cost: the corpus holds %d events over %d %s, by issue mean %.1f, p50 %d, p90 %d, p99 %d and max %d "+
-			"(production: mean %.0f, p50 %.0f, p90 %.0f, p99 %.0f and max %.0f); %d of them hold events seq 1 to their last_seq "+
-			"(the corpus at scale %v writes %d such issues)", read.events, read.issues, group.what, read.mean, read.p50, read.p90,
-			read.p99, read.most, shape.mean, shape.p50, shape.p90, shape.p99, shape.most, read.whole, corpus.scale, group.issues)
-		if read.issues != int64(group.issues) || read.whole != read.issues {
-			t.Errorf("%d of the corpus's %d %s hold events seq 1 to their last_seq, where the corpus at scale %v writes %d such issues, "+
-				"each with its events", read.whole, read.issues, group.what, corpus.scale, group.issues)
-		}
-		if !near(read.mean, shape.mean) || !near(float64(read.p50), shape.p50) || !near(float64(read.p90), shape.p90) ||
-			!near(float64(read.p99), shape.p99) || float64(read.most) > shape.most || float64(read.most) <= movedCostEventsTail*shape.most {
-			t.Errorf("the events by issue of the corpus's %s, mean %.1f, p50 %d, p90 %d, p99 %d and max %d, are not production's: mean "+
-				"%.0f, p50 %.0f, p90 %.0f and p99 %.0f within %.0f%%, and max at most %.0f and above %.0f", group.what, read.mean,
-				read.p50, read.p90, read.p99, read.most, shape.mean, shape.p50, shape.p90, shape.p99, 100*movedCostShapeSlack, shape.most,
-				movedCostEventsTail*shape.most)
-		}
-	}
 	production := groups[false]
+	t.Logf("c-moved-read-cost: the corpus holds %d events over %d issues of production's shape, by issue mean %.1f, p50 %d, "+
+		"p90 %d, p99 %d and max %d (production: mean %.0f, p50 %.0f, p90 %.0f, p99 %.0f and max %.0f); %d of them hold events "+
+		"seq 1 to their last_seq (the corpus at scale %v writes %d such issues)", production.events, production.issues,
+		production.mean, production.p50, production.p90, production.p99, production.most, shape.mean, shape.p50, shape.p90,
+		shape.p99, shape.most, production.whole, corpus.scale, corpus.issues)
+	if production.issues != int64(corpus.issues) || production.whole != production.issues {
+		t.Errorf("%d of the corpus's %d issues of production's shape hold events seq 1 to their last_seq, where the corpus at scale %v "+
+			"writes %d such issues, each with its events", production.whole, production.issues, corpus.scale, corpus.issues)
+	}
+	if !near(production.mean, shape.mean) || !near(float64(production.p50), shape.p50) || !near(float64(production.p90), shape.p90) ||
+		!near(float64(production.p99), shape.p99) || float64(production.most) > shape.most || float64(production.most) <= movedCostEventsTail*shape.most {
+		t.Errorf("the events by issue of the corpus's issues of production's shape, mean %.1f, p50 %d, p90 %d, p99 %d and max %d, are "+
+			"not production's: mean %.0f, p50 %.0f, p90 %.0f and p99 %.0f within %.0f%%, and max at most %.0f and above %.0f",
+			production.mean, production.p50, production.p90, production.p99, production.most, shape.mean, shape.p50, shape.p90,
+			shape.p99, 100*movedCostShapeSlack, shape.most, movedCostEventsTail*shape.most)
+	}
+	beside := groups[true]
+	besideIssues := (len(movedCostProjects) - 1) * corpus.unran
+	t.Logf("c-moved-read-cost: the corpus holds %d events over %d finished issues Legion never ran beside them, held at none, and %d of "+
+		"them hold no event and a last_seq of 0 (the corpus at scale %v writes %d such issues); %d events in all", beside.events,
+		beside.issues, beside.whole, corpus.scale, besideIssues, production.events+beside.events)
+	if beside.issues != int64(besideIssues) || beside.events != 0 || beside.whole != beside.issues {
+		t.Errorf("the corpus holds %d events over its %d finished issues Legion never ran beside production's issues, and %d of them hold "+
+			"no event and a last_seq of 0, where the corpus at scale %v writes %d such issues, none with an event", beside.events,
+			beside.issues, beside.whole, corpus.scale, besideIssues)
+	}
 	t.Logf("c-moved-read-cost: %d of the corpus's %d issues of production's shape in backlog or icebox hold the issue.updated that moved "+
 		"them there, %d of them before their newest event", production.moved, production.shelved, production.movedBefore)
 	if production.shelved == 0 || production.moved != production.shelved || production.movedBefore == 0 || production.movedBefore == production.moved {
@@ -659,8 +662,8 @@ func holdMovedCostEvents(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 // The owed wait: every count is read every readCostOwedPoll, as c-read-cost reads them, printed
 // every movedCostOwedPrint while one stands above zero, and the run fails once one has stayed
 // above zero for movedCostOwedWait. At scale 1 the release before's roll alone reads the corpus's
-// events, about 680,000 of the issues of production's shape and 290,000 of the finished issues
-// beside them, 1,000 a tick, a tick every 2 s, about 32 minutes.
+// events, about 680,000, all of the issues of production's shape, 1,000 a tick, a tick every 2 s,
+// about 23 minutes.
 const (
 	movedCostOwedWait  = 60 * time.Minute
 	movedCostOwedPrint = 30 * time.Second
