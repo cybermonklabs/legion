@@ -3882,6 +3882,54 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/internal/cipher/approval/public_url_words_internal_test.go"],
         "capture": "approval.public-url/refused"
+      },
+      {
+        "row": "dispatch-agentsecrets-answer-echo-ok-pending",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/cipher/answer_echo_ok_test.go"],
+        "capture": "dispatch-agentsecrets.answer-echo-ok/pending"
+      },
+      {
+        "row": "dispatch-agentsecrets-answer-echo-ok-approve",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/cipher/answer_echo_ok_test.go"],
+        "capture": "dispatch-agentsecrets.answer-echo-ok/approve"
+      },
+      {
+        "row": "dispatch-agentsecrets-broker-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/cipher/broker_url_join_test.go"],
+        "capture": "dispatch-agentsecrets.broker-url/unparsed"
+      },
+      {
+        "row": "legion-daemon-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/legion/daemon_url_join_test.go"],
+        "capture": "legion.daemon-url/unparsed"
+      },
+      {
+        "row": "embed-entra-authority-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/embed/authority_url_join_test.go"],
+        "capture": "embed.entra-authority/unparsed"
+      },
+      {
+        "row": "api-going-base-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/api/going_catalogue_url_join_test.go"],
+        "capture": "api.going-base-url/unparsed"
+      },
+      {
+        "row": "githubapi-answer-tokens-relayed-data",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/githubapi/proxy_answer_ok_test.go"],
+        "capture": "githubapi.answer-tokens/relayed-data"
+      },
+      {
+        "row": "githubapi-answer-tokens-workflow-runs",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/dispatch/githubapi/proxy_answer_ok_test.go"],
+        "capture": "githubapi.answer-tokens/workflow-runs"
       }
     ],
     "boundary_fields": {
@@ -4428,13 +4476,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
       "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest (Unsubscribe): a listener URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\" (redact.Masked)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
       "capture": "envoy.build-unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
-        "replacement": "\"%w: build %s request: %v\", ErrUnavailable, route, err"
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "fmt.Errorf(\"%w: %s\", err, c.baseURL)"
       }
     },
     {
@@ -4456,13 +4504,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
       "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest (get): a listener URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\" (redact.Masked)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
       "capture": "envoy.build-get",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
-        "replacement": "\"%w: build GET %s request: %v\", ErrUnavailable, route, err"
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "fmt.Errorf(\"%w: %s\", err, c.baseURL)"
       }
     },
     {
@@ -4491,13 +4539,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
       "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest (Send): a listener URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\" (redact.Masked)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
       "capture": "envoy.build-send",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "send request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
-        "replacement": "send request: %v\", ErrUnavailable, err"
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "fmt.Errorf(\"%w: %s\", err, c.baseURL)"
       }
     },
     {
@@ -14904,6 +14952,370 @@
       "package": "./internal/redact",
       "test": "TestUnmarshalNamesABodyThatDoesNotDecodeWithoutQuotingIt",
       "production": "redact Unmarshal: a body that is not the JSON the destination holds is DecodeError's fixed text, naming the member at fault and no value of the body"
+    },
+    {
+      "id": "dispatch-agentsecrets-answer-echo-ok-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARelayedAnswerCarriesNoTokenItsAnswerEchoes/twin",
+      "production": "the probe of the 2xx relay rows: the stand-in's 200, read as it came, holds the account token the call carried"
+    },
+    {
+      "id": "dispatch-agentsecrets-answer-echo-ok-pending",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARelayedAnswerCarriesNoTokenItsAnswerEchoes/pending",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do: a 2xx relayed to the page holds no run of Dispatch's account token (redact.Tokens over the token alone)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.answer-echo-ok/pending",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "json.RawMessage(redact.Tokens(raw.String(), -1, token))",
+        "replacement": "json.RawMessage(raw.String() + redact.Tokens(\"\", -1, token))"
+      }
+    },
+    {
+      "id": "dispatch-agentsecrets-answer-echo-ok-approve",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARelayedAnswerCarriesNoTokenItsAnswerEchoes/approve",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do: a decision's 2xx relayed to the page holds no run of Dispatch's account token",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.answer-echo-ok/approve",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "json.RawMessage(redact.Tokens(raw.String(), -1, token))",
+        "replacement": "json.RawMessage(raw.String() + redact.Tokens(\"\", -1, token))"
+      }
+    },
+    {
+      "id": "dispatch-agentsecrets-list-words-kept",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARelayedListKeepsTheWordsItsCallSent",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do: a 2xx keeps the words the call sent that the broker's data names back (a row's state and approver); only the account token is redacted, not the whole carried record"
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/query",
+      "production": "dispatch/cipher Client.do: a broker URL with a path and a query (http://host/broker?sig=...) calls that path joined with each route, the URL's query ahead of the call's own (urljoin.Join: /broker/v1/pending?sig=...&approver=...), where the route appended to the URL's text sat inside the query and the broker was asked /broker"
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/no-query",
+      "production": "dispatch/cipher Client.do: a broker URL with a path and no query calls /broker/v1/..., as before the join"
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed broker-URL row: http.NewRequest's error for that URL quotes its user information and its access token"
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "dispatch/cipher Client.do: a broker URL url.Parse refuses fails the call as \"not a valid URL\" (redact.Masked), never url.Parse's error, which do returned and ServesDeviceGrant logged, and which quotes the URL whole",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.broker-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "fmt.Errorf(\"%w: %s\", err, c.URL)"
+      }
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed broker-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "dispatch-agentsecrets-broker-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "dispatch/cipher Client.do: a broker URL whose joined URL url.Parse refuses (an IPv6 zone escape) fails the call as \"not a valid URL\", never http.NewRequest's error",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.broker-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "legion-daemon-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/query",
+      "production": "dispatch/legion Client.State: a daemon URL with a path and a query (http://host/daemon?sig=...) reads /daemon/legion/v1/state?sig=... (urljoin.Join), where the route appended to the URL's text sat inside the query and the daemon was asked /daemon"
+    },
+    {
+      "id": "legion-daemon-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/no-query",
+      "production": "dispatch/legion Client.State: a daemon URL with a path and no query reads /daemon/legion/v1/state, as before the join"
+    },
+    {
+      "id": "legion-daemon-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed daemon-URL row: http.NewRequest's error for that URL quotes its user information and its access token"
+    },
+    {
+      "id": "legion-daemon-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "dispatch/legion Client.State: a daemon URL url.Parse refuses is a failed read named \"not a valid URL\" (redact.Masked), never url.Parse's error, which legion_reads and the board's header showed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/legion.Client).State",
+      "capture": "legion.daemon-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/legion/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "fmt.Errorf(\"%w: %s\", err, c.baseURL)"
+      }
+    },
+    {
+      "id": "legion-daemon-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed daemon-URL row: http.NewRequest's error for the joined URL quotes its user information and its access token"
+    },
+    {
+      "id": "legion-daemon-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "dispatch/legion Client.State: a daemon URL whose joined URL url.Parse refuses is a failed read named \"not a valid URL\", never http.NewRequest's error",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/legion.Client).State",
+      "capture": "legion.daemon-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/legion/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "embed-entra-authority-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraExchangeGoesToTheTokenPathJoinedOntoTheAuthority/query",
+      "production": "embed NewEntraTokenSource: an authority with a path and a query (http://host/entra?sig=...) exchanges at /entra/<tenant>/oauth2/v2.0/token?sig=... (urljoin.Join), where the path appended to the authority's text sat inside the query"
+    },
+    {
+      "id": "embed-entra-authority-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraExchangeGoesToTheTokenPathJoinedOntoTheAuthority/no-query",
+      "production": "embed NewEntraTokenSource: an authority with a path and no query exchanges at /entra/<tenant>/oauth2/v2.0/token, as before the join"
+    },
+    {
+      "id": "embed-entra-authority-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraAuthorityThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed authority row: url.Parse's error for that authority quotes its user information and its access token"
+    },
+    {
+      "id": "embed-entra-authority-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraAuthorityThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "embed NewEntraTokenSource: an authority url.Parse refuses is refused in fixed words, never url.Parse's error, which it printed and which quotes the authority whole",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/embed.NewEntraTokenSource",
+      "capture": "embed.entra-authority/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azuretoken.go",
+        "preimage": "errors.New(\"embed: entra authority must be an absolute URL with a host (it is not printed)\")",
+        "replacement": "fmt.Errorf(\"embed: entra authority %s must be an absolute URL with a host\", cfg.Authority)"
+      }
+    },
+    {
+      "id": "embed-entra-authority-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraAuthorityThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed authority row: http.NewRequest's error for the token URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "embed-entra-authority-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEntraAuthorityThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "embed EntraTokenSource.exchange: a token URL url.Parse refuses fails the exchange as \"not a valid URL\" (redact.Masked), never http.NewRequest's error",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange",
+      "capture": "embed.entra-authority/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azuretoken.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "api-going-base-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingActionGoesToTheRowJoinedOntoTheBaseURL/query",
+      "production": "api GoingCaller.Do: a BaseURL with a path and a query (http://host/dispatch?sig=...) performs each row at /dispatch/<row path>?sig=... (urljoin.Join), where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "api-going-base-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingActionGoesToTheRowJoinedOntoTheBaseURL/no-query",
+      "production": "api GoingCaller.Do: a BaseURL with a path and no query performs each row at /dispatch/<row path>, as before the join"
+    },
+    {
+      "id": "api-going-base-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingBaseURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed BaseURL row: http.NewRequest's error for that URL quotes its user information and its access token"
+    },
+    {
+      "id": "api-going-base-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingBaseURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "api GoingCaller.Do: a BaseURL url.Parse refuses fails the action as \"not a valid URL\" (redact.Masked) and sends nothing, never url.Parse's error, which Do returned as it came",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/api.GoingCaller).Do",
+      "capture": "api.going-base-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/going_catalogue.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "func() error { _ = redact.Masked; return fmt.Errorf(\"%w: %s\", err, c.BaseURL) }()"
+      }
+    },
+    {
+      "id": "api-going-base-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingBaseURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed BaseURL row: http.NewRequest's error for the joined URL quotes its user information and its access token"
+    },
+    {
+      "id": "api-going-base-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestAGoingBaseURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "api GoingCaller.Do: a BaseURL whose joined URL url.Parse refuses fails the action as \"not a valid URL\", never http.NewRequest's error",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/api.GoingCaller).Do",
+      "capture": "api.going-base-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/api/going_catalogue.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "func() error { _ = redact.Masked; return err }()"
+      }
+    },
+    {
+      "id": "envoy-listener-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL/query",
+      "production": "dispatch/envoy Client.newRequest: a listener URL with a path and a query (http://host/listener?sig=...) calls /listener/<route>?sig=...&<the call's selector> for reads and writes (urljoin.Join), where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "envoy-listener-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL/no-query",
+      "production": "dispatch/envoy Client.newRequest: a listener URL with a path and no query calls /listener/<route>, as before the join"
+    },
+    {
+      "id": "envoy-build-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestWhoseJoinedURLDoesNotParseNamesNoCredential/twin",
+      "production": "the probe of the reparsed listener-URL rows: http.NewRequest's error for the joined URL quotes its user information and its access token"
+    },
+    {
+      "id": "envoy-build-reparsed-get",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestWhoseJoinedURLDoesNotParseNamesNoCredential/get",
+      "production": "dispatch/envoy Client.newRequest (get): a joined URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\", never http.NewRequest's error",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
+      "capture": "envoy.build-reparsed-get",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "envoy-build-reparsed-unsubscribe",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestWhoseJoinedURLDoesNotParseNamesNoCredential/unsubscribe",
+      "production": "dispatch/envoy Client.newRequest (Unsubscribe): a joined URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\"",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
+      "capture": "envoy.build-reparsed-unsubscribe",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "envoy-build-reparsed-send",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestWhoseJoinedURLDoesNotParseNamesNoCredential/send",
+      "production": "dispatch/envoy Client.newRequest (Send): a joined URL url.Parse refuses is ErrUnavailable naming the call and \"not a valid URL\"",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).newRequest",
+      "capture": "envoy.build-reparsed-send",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redact.Masked(err, redact.ClassNotAURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "githubapi-answer-tokens-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapi",
+      "test": "TestTheProxysRelayOfADataAnswerHoldsNoTokenItsReadCarried/twin",
+      "production": "the probe of the proxy's 2xx relay rows: GitHub's place's 200, read as it came, holds the installation token the read carried"
+    },
+    {
+      "id": "githubapi-answer-tokens-relayed-data",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapi",
+      "test": "TestTheProxysRelayOfADataAnswerHoldsNoTokenItsReadCarried/relayed-data",
+      "production": "githubapi ProxyREST: a 2xx forwarded whole to the page holds no run of the installation token (redact.Tokens over that token alone)",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapi.ProxyREST",
+      "capture": "githubapi.answer-tokens/relayed-data",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapi/proxy.go",
+        "preimage": "_, _ = io.WriteString(w, redact.Tokens(data.String(), -1, token))",
+        "replacement": "_, _ = io.WriteString(w, data.String()+redact.Tokens(\"\", -1, token))"
+      }
+    },
+    {
+      "id": "githubapi-answer-tokens-workflow-runs",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapi",
+      "test": "TestTheProxysRelayOfADataAnswerHoldsNoTokenItsReadCarried/workflow-runs",
+      "production": "githubapi ProxyREST: the trimmed workflow runs' event and name hold no run of the installation token (redact.Tokens)",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapi.ProxyREST",
+      "capture": "githubapi.answer-tokens/workflow-runs",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapi/proxy.go",
+        "preimage": "redact.Tokens(run.Event, -1, token), redact.Tokens(run.Name, -1, token)",
+        "replacement": "run.Event+redact.Tokens(\"\", -1, token), run.Name"
+      }
     }
   ],
   "bun": [
@@ -17988,6 +18400,41 @@
       "site": "packages/envoy/internal/redact/decode_error.go Unmarshal",
       "source": "the round-8 quality review",
       "guard": "redact-unmarshal-answer-data"
+    },
+    {
+      "site": "internal/dispatch/cipher/client.go (*Client).do: a 2xx relayed to the Dispatch page as it came (R3-F1)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-agentsecrets-answer-echo-ok-pending"
+    },
+    {
+      "site": "internal/dispatch/githubapi/proxy.go ProxyREST: a 2xx and the trimmed workflow runs relayed to the page as they came (R3-F1's sibling)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "githubapi-answer-tokens-relayed-data"
+    },
+    {
+      "site": "internal/dispatch/cipher/client.go:85, :131 (c.URL + path)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-agentsecrets-broker-url-query"
+    },
+    {
+      "site": "internal/dispatch/legion/client.go:121 (c.baseURL + StatePath)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-daemon-url-query"
+    },
+    {
+      "site": "internal/dispatch/embed/azuretoken.go:94 (TrimRight(authority) + tenant path)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "embed-entra-authority-query"
+    },
+    {
+      "site": "internal/dispatch/api/going_catalogue.go:538 (c.BaseURL + path)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-going-base-url-query"
+    },
+    {
+      "site": "internal/dispatch/envoy/client.go:395, :589, :847, :936 of the report (c.baseURL + route + query)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "envoy-listener-url-query"
     }
   ]
 }
