@@ -45,7 +45,7 @@ import (
 
 // repoRenameLockNamespace is the first key of the transaction advisory lock each line of the pass
 // takes ("RNAM"), with 0 as its second key. Two processes that boot at once take turns on each
-// line, and the second finds nothing left to write. It is the two-key form, which Postgres keeps
+// line, and the second finds no field left to write. It is the two-key form, which Postgres keeps
 // apart from the single-key locks. The other first keys of the two-key space are the copy locks'
 // (docs.copiedAsksLockNamespace), the owner locks' (OwnerLockNamespace), the owner lock gate's
 // (OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks' (the api
@@ -458,23 +458,27 @@ func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep 
 }
 
 // markRenamedCuts marks stale (eval_figure_cuts_stale) the stored eval figures' cut of the old name
-// and the cut of the new name of each project that publishes the new name as its default
-// (eval_days_defaults), which the line's write before it gave every project that published the old
-// name, or that holds stored figures of a cut of the old name (eval_range_figures,
-// eval_day_figures), each name matched in any case: the old name's cut under each spelling the
-// stored figures hold it in, and, of a published default, under the old name.
-// It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every eval
-// (evals null): a cut no mark holds at generation 1, and one a mark holds at its next generation,
-// its first paint owed and its refold to begin again from the cut's last end day (ready_through and
-// next_day null), for every eval whatever the standing mark named. It takes the cuts in the byte
-// order of their keys, the order every writer of the marks takes them in. The boot folds the first
-// paint of each mark after this pass and before it serves (evals.FoldFirstPaintsAtBoot).
+// and the cut of the new name of each project whose published default (eval_days_defaults) the
+// line's write after it moves from the old name, or that holds stored figures of a cut of the old
+// name (eval_range_figures, eval_day_figures), each name matched in any case: the old name's cut
+// under each spelling the stored figures hold it in, and, of a published default, under the old
+// name. It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every
+// eval (evals null): a cut no mark holds at generation 1, and one a mark holds at its next
+// generation, its first paint owed and its refold to begin again from the cut's last end day
+// (ready_through and next_day null), for every eval whatever the standing mark named. It takes the
+// cuts in the byte order of their keys, the order every writer of the marks takes them in. The boot
+// folds the first paint of each mark after this pass and before it serves
+// (evals.FoldFirstPaintsAtBoot).
 //
-// It runs after the line writes eval_days_defaults, as evals.publishDefaults writes the defaults
-// and then the marks in one transaction, so a refresher of another process that publishes a move
-// beside the pass takes the rows in the same order and waits for the line rather than deadlocking
-// with it. A project that published the new name before the rename has its two cuts marked too,
-// which costs their refold and leaves each of their figures the fold of the rows that stand.
+// It runs just before the line writes eval_days_defaults, and reads the default rows that write
+// moves for update, so it holds their locks before it writes a mark: the order evals.publishDefaults
+// takes them in, the defaults and then the marks in one transaction, so a refresher of another
+// process that publishes a move beside the pass waits for the line rather than deadlocking with
+// it. A later run finds no default left on the old name, so it marks no cut through a default and
+// leaves the mark of such a cut, and its refold, as the run before it left them; it marks again
+// only the cuts of a project that still holds stored figures of the old name, which the refold of
+// the old name's cut deletes. A project that published the new name before the rename has no cut
+// marked for its default.
 //
 // Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
 // names the old name until the refresher's refold clears it, so the count of the rows left reads no
@@ -484,8 +488,10 @@ func markRenamedCuts(r repoRename) repoRenameStep {
 	return repoRenameStep{
 		table: "eval_figure_cuts_stale",
 		where: "false",
-		sql: `with old as (
-				select project_key, ` + r.from() + ` as repo from eval_days_defaults where lower(repo) = ` + r.to() + `
+		sql: `with moved as (
+				select project_key from eval_days_defaults where ` + named + ` for update
+			), old as (
+				select project_key, ` + r.from() + ` as repo from moved
 				union select project_key, repo from eval_range_figures where ` + named + `
 				union select project_key, repo from eval_day_figures where ` + named + `
 			)
@@ -532,12 +538,12 @@ var repoRenameLines = []repoRenameLine{
 	// legionfacts.DefaultRepo (':default'), never under a name, and a read folds them into the
 	// cut of the default the project publishes: no row of them moves, and no change the pass's
 	// writes log names them, so their stored figures stay in the old name's cut and the new
-	// name's holds none of them. So the line, once it has written the defaults, marks both cuts
-	// of each such project stale, every eval of them (markRenamedCuts), in the order
-	// evals.publishDefaults takes them (defaults, then marks), so a refresher of another process
-	// publishing beside it waits rather than deadlocks. The refresher's next pass folds every
-	// marked cut again (evals.refoldStaleCuts, which every pass runs), and a read of a marked cut
-	// folds the day rows until then.
+	// name's holds none of them. So the line, just before it writes the defaults, marks both cuts
+	// of each project whose default it moves stale, every eval of them (markRenamedCuts), with
+	// those default rows locked first, the order evals.publishDefaults takes them in (defaults,
+	// then marks), so a refresher of another process publishing beside it waits rather than
+	// deadlocks. The refresher's next pass folds every marked cut again (evals.refoldStaleCuts,
+	// which every pass runs), and a read of a marked cut folds the day rows until then.
 	{
 		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
 		steps: func(r repoRename) []repoRenameStep {
@@ -564,8 +570,8 @@ var repoRenameLines = []repoRenameLine{
 					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
 						` where ` + ownerNamed(r, "owner"),
 				},
-				nameWrite(r, "eval_days_defaults", "repo"),
-				markRenamedCuts(r))
+				markRenamedCuts(r),
+				nameWrite(r, "eval_days_defaults", "repo"))
 		},
 	},
 	nameLine("check_results", "commit_repo"),

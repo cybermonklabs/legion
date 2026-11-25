@@ -133,10 +133,10 @@ var renamedRepositoriesAfter = map[string]string{
 	`select string_agg(cursor_repository, ' ' order by cursor_repository) from ci_reconcile_passes`:     "cybermonklabs/legion sjawhar/dotfiles",
 	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from eval_days_defaults`:   "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
 	// The cut of the old name, in each spelling a row holds it in, and of the new name, of each
-	// project that published the old name, and publishes the new one once the pass has written the
-	// defaults, or holds stored figures of the old name: at generation 1, or at the next where a
-	// mark stands, for every eval, its first paint and its refold to begin. The pass writes no
-	// stored figure, which the refresher folds again.
+	// project whose published default the pass moves from the old name, or that holds stored
+	// figures of the old name: at generation 1, or at the next where a mark stands, for every eval,
+	// its first paint and its refold to begin. The pass writes no stored figure, which the
+	// refresher folds again.
 	`select string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(ready_through::text, '-') || ' ' || coalesce(next_day::text, '-') || ' ' ||
 		coalesce(evals::text, 'every'), ' | ' order by project_key, repo collate "C") from eval_figure_cuts_stale`: "INFRA cybermonklabs/legion 3 - - every | " +
 		"INFRA sjawhar/legion 1 - - every | SMOKE SJawhar/Legion 1 - - every | SMOKE cybermonklabs/legion 1 - - every | SMOKE sjawhar/legion 1 - - every | " +
@@ -348,6 +348,58 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 	}
 	if failed := named(logs(), failedLine); len(failed) != 0 {
 		t.Fatalf("a second pass ran a line: %v", failed)
+	}
+}
+
+// renamedDefaultSeed holds the rename pair sjawhar/legion to cybermonklabs/legion, INFRA, which
+// publishes the old name as its default, and CYBER, which published the new name before the
+// rename. Neither holds a stored eval figure or a stale mark.
+const renamedDefaultSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
+		('CYBER', 'Cyber', 'alice', 'cybermonklabs/legion');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'INFRA', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into eval_days_defaults (project_key, repo) values ('INFRA', 'sjawhar/legion'), ('CYBER', 'cybermonklabs/legion');
+`
+
+// A run of the pass after one that committed, which runs its lines because a row a build before
+// this one wrote during a roll names the old name, marks no cut through a default the run before
+// it moved: every mark stands as that run and the refold since left it, the old name's cut, whose
+// refold is done, unmarked, and the new name's at its generation, its first paint folded and its
+// refold begun. Neither run marks a cut of CYBER, which published the new name before the rename
+// and holds no stored figure of the old name. Red where the line marks the cuts of every project
+// that publishes the new name once it has written the defaults: the first run then marks CYBER's
+// two cuts, and the second marks both cuts of each project again, at the next generation, with
+// their first paints owed and their refolds to begin again.
+func TestARenamePassAfterOneThatCommittedLeavesTheMarksItMade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedDefaultSeed)
+	const marks = `select coalesce(string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(ready_through::text, '-') || ' ' ||
+		coalesce(next_day::text, '-') || ' ' || coalesce(evals::text, 'every'), ' | ' order by project_key, repo collate "C"), 'none') from eval_figure_cuts_stale`
+	if first := RewriteRenamedRepositories(ctx, store.Pool, pairs); first.Failures != 0 || first.Left != noneLeft {
+		t.Fatalf("the first pass = %+v, want no failure and nothing left", first)
+	}
+	if got, want := readText(t, store, marks), "INFRA cybermonklabs/legion 1 - - every | INFRA sjawhar/legion 1 - - every"; got != want {
+		t.Errorf("the first pass left the marks %s, want %s", got, want)
+	}
+	if _, err := store.Pool.Exec(ctx, `
+		delete from eval_figure_cuts_stale where project_key = 'INFRA' and repo = 'sjawhar/legion';
+		update eval_figure_cuts_stale set ready_through = '2026-01-03', next_day = '2026-01-01' where project_key = 'INFRA' and repo = 'cybermonklabs/legion';
+		insert into issues (key, project_key, number, title, created_by, rank, repo, updated_at) values
+			('INFRA-1', 'INFRA', 1, 'One', '{"kind":"user","id":"alice"}', 'U1', 'sjawhar/legion', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("fold the marked cuts and write an issue under the old name: %v", err)
+	}
+	folded := readText(t, store, marks)
+
+	again := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if again != (RepoRenamePass{Pairs: 1, Rows: 1, Left: noneLeft}) {
+		t.Fatalf("the second pass = %+v, want the one issue written and nothing left", again)
+	}
+	if got := readText(t, store, marks); got != folded {
+		t.Errorf("the second pass left the marks %s, want them as the first pass and the refold left them: %s", got, folded)
 	}
 }
 
