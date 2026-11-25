@@ -856,7 +856,12 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. Read what the pacing still holds before you act on anything below:
+twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+claim launching with no process, go back into the pacing in the order their tasks were queued, the
+oldest first, so among those a claim that waited before the restart goes ahead of work owed after
+it; the stale-plugin pass and the relaunches of processes found dead take their turns as they
+reach the gate, and while the project is paused the unfinished launches wait for the resume
+instead. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -873,9 +878,10 @@ An empty array says the wave has
 gone out; the last `dueAt` in it says when the last of the wave goes.
 A claim on that list needs
 nothing from you: its wake is reserved and it runs at the moment named.
-Your own requests are what
-drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
-back, so nothing you ask for waits for a turn.
+To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
+process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
+a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
+their turns.
 
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
@@ -1788,8 +1794,13 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
   grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it, and nothing else
-  changes.
+  oldest message is `unavailable` on each consumer while messages wait on it. The same get
+  confirms the Dispatch consumer idle; when it does not answer within its bound, from a missing
+  grant or a loaded NATS server, a reconcile reads the consumer as not idle and holds the roots its
+  listing shows behind their log, and the hold poller releases them on the consumer's own count
+  (WARN lines `the Dispatch consumer's next stored message could not be read` say which, naming
+  both causes). That count can miss a message the server has stored and not yet counted, so a held
+  root can be released a moment early.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request

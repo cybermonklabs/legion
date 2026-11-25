@@ -856,7 +856,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// entry within the gone horizon is not gone to this route while the known-session store
 		// holds its record, which it answers from memory: only a session neither store knows is
 		// the 404 a sender routes around the pane on.
-		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendSessionReadTimeout, notGone)
+		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendSessionReadTimeout, notGone, d.sessions.Refresh)
 		// At the edge a target is one only while the token that registered it lists one of the
 		// sender's projects and the stream's leader confirms that record is a writer's
 		// (edgeScope.showsConfirmed). Any other target, and one no entry stands for, whose record
@@ -1334,10 +1334,11 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
-		// (recipientCounts), so taking them here costs the publish below no JetStream request.
-		// Only this branch counts: a role send names its holder, and a refused topic reaches
-		// nobody.
-		recipients, connected := recipientCounts(d, item.Topic, item.SourceSession)
+		// for every topic but a controller notice lane, whose role claim they read once
+		// (recipientCounts), so taking them here costs any other publish below no JetStream
+		// request. Only this branch counts: a role send names its holder, and a refused topic
+		// reaches nobody.
+		recipients, connected := recipientCounts(r.Context(), d, item.Topic, item.SourceSession)
 		// The sender stamp's read and the publish take this one deadline, derived from the
 		// caller's own context, so this route too answers a bus it cannot reach rather than
 		// spending the caller's attempt.
@@ -1613,12 +1614,12 @@ const sessionRegistrationView = "registration"
 // the full answer reads both (sessionInfoFor) and so turns a claims view that is still refilling
 // into a 503 and a record this build cannot decode into a 500.
 //
-// The entry is read from the session bucket itself and never from this listener's cache
-// (bucketSessionEntry), for the reason that function's own comment gives: a cached entry can
-// carry a client instance id the session has since replaced, or none where the bucket has one,
-// and the one caller of this view decides a delete on that id. A replaced id would have the
-// listener keep the stop as another client instance's, which is the symptom this view is here to
-// end.
+// The entry is read from the session bucket stream's leader and never from this listener's cache
+// or a copy of the bucket (bucketSessionEntry), for the reason that function's own comment gives:
+// a cached entry can carry a client instance id the session has since replaced, or none where the
+// bucket has one, and the one caller of this view decides a delete on that id. A replaced id would
+// have the listener keep the stop as another client instance's, which is the symptom this view is
+// here to end.
 //
 // No state filter applies: every entry the bucket holds is answered 200 with the state its own
 // record puts it in, gone included, so include=unresponsive decides nothing under this view. The
@@ -1627,7 +1628,7 @@ const sessionRegistrationView = "registration"
 // owed for.
 //
 // A key NATS refuses (bus.ErrRefused) is tested first, as the full view tests it first and for
-// the same reason: Refresh reports a refused key as a missing one too, and an id NATS will never
+// the same reason: the read reports a refused key as a missing one too, and an id NATS will never
 // hold is the caller's own input, answered as the 413 or 400 writeBusUnavailable gives it. The
 // bucket's word that it holds no record is the 404 the full view writes (noLiveSession), with
 // session.Gone as the state a session with no record is in. Every other error is a read that did
@@ -1787,7 +1788,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout, accept)
+		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout, accept, d.sessions.Refresh)
 		// At the edge a session of none of the token's projects is answered as one no listener
 		// has heard of, and a shown session's roles and topics are those projects' alone.
 		scope := edgeScopeOf(r, d.repositories)
@@ -2041,6 +2042,23 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // none of it. A try whose takeover record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded).
 //
+// A claim that landed over another session's claim of a Legion controller role narrows that
+// session before it is answered (narrowFormerHolder), as an unsubscribe does: its known-session
+// record is written from its stored row, which the claim took the role's topic off, and its
+// consumer is filtered on that row again, which drops the role's controller notice lane now that
+// the claim, read from the role bucket stream's leader, names the claimant (storedRowFilter). A
+// notice published once the claim is answered reaches the new holder alone. What stays open: a
+// notice published between the claim's write and that filter write still reaches the former
+// holder. Everything after the claim's write - the claimant's topic merged again, the old holder's
+// topic taken off its row, the record write, the wait for the former holder's session lock (which
+// a registration holds across its consumer call and its writes) and the fenced filter write - runs
+// inside this route's budget (sendRequestBudget), so that window ends, at the latest, 3.5 s after
+// the request arrived. A narrowing that did not land by then is logged at WARN naming the role,
+// the lane and both sessions, and the lane stays on the former holder's consumer until its next
+// registration (a heartbeat, at most 90 s) or its relay's restart. A stopped former holder has no
+// entry, so its record keeps the lane, which the publish count judges by the claim
+// (recipientCounts).
+//
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
 // before it registers, and once the refresh has written the entry, its registration reads the
@@ -2251,6 +2269,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", writeErr), http.StatusServiceUnavailable)
 			return
 		}
+		// At the edge the claim just recorded the session's admission, which resumes its relay there (resumeHeld).
+		d.consumers.resumeHeld(r, body.SessionID)
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.
 		// At the edge a claimant is handed the kept lanes of its token's projects' roles alone
@@ -2414,7 +2434,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					ifClaimRevision = &decidedRevision
 				}
 			}
-			tries := takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
+			tries := &takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
 			item, err := d.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 				SessionID:         body.SessionID,
 				MachineID:         machineID,
@@ -2505,6 +2525,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			}
 			landed = true
 			go runTakenRoleDrain(*d.delivery, body.Role)
+			// A claim that took a controller role from another session narrows that session
+			// before it is answered, within this route's budget (narrowFormerHolder), so a notice
+			// published once this claim is answered reaches the new holder alone.
+			if tries.replaced != "" {
+				narrowFormerHolder(ctx, d, logger, body.Role, body.SessionID, tries.replaced)
+			}
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}

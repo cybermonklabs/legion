@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
@@ -94,5 +95,39 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 	}
 	if len(keys) != 3 {
 		t.Errorf("the answer carries %d fields: %s; want expires_at, values and airlock", len(keys), body)
+	}
+}
+
+// TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease: a session's release of a stored secret
+// whose proxy block is of kind dpop - a capability the broker mints and holds, never a stored
+// secret's release (requests.ErrMintedOnly) - is answered 403 MINTED_ONLY naming the rule,
+// with nothing of the value in it, and the broker writes no ERROR line of its own fault for it,
+// as it does for a 500. Control: the same grant under a proxy block of no kind is released as
+// the airlock, 200 (TestTheValuesAnswerCarriesTheAirlock).
+func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
+	logged := policytest.CaptureLog(t)
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "WORKER_TOKEN", Hosts: []string{"api.example.com"}, Kind: proxyrules.KindDPoP}}}
+		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = "http://127.0.0.1:13381", "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
+	})
+	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "read the worker token", "WORKER_TOKEN"), "session_id": nil})
+	created := decode[wireCreateRequestResponse](t, body)
+	if created.GrantID == nil {
+		t.Fatalf("POST /v1/requests = %s, want an automatic grant", body)
+	}
+	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
+	reply := decode[wireError](t, body)
+	if status != http.StatusForbidden || reply.Code != "MINTED_ONLY" || !strings.Contains(reply.Error, "never a stored secret's release") {
+		t.Fatalf("POST values of a stored secret under a dpop block = %d %s; want 403 MINTED_ONLY naming the rule", status, body)
+	}
+	if strings.Contains(string(body), "worker-v1") {
+		t.Errorf("the refusal carries WORKER_TOKEN's real value: %s", body)
+	}
+	for l := range strings.Lines(logged.String()) {
+		if strings.Contains(l, "ERROR") && strings.Contains(l, "read grant values") {
+			t.Errorf("the broker logs the refusal as its own fault: %q", l)
+		}
 	}
 }

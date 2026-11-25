@@ -199,17 +199,20 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them.
+	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
+	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
+	// to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
-	repositories      *repositories
-	installs          appauth.Installations
-	recoveringMu      sync.Mutex
-	recovering        map[string]bool
-	silenced          map[string]map[string]bool
-	releaseWaits      map[string]map[string]releaseWait
-	recoveryHeldSince time.Time
-	recheckAfter      func(time.Duration) <-chan time.Time
+	repositories         *repositories
+	installs             appauth.Installations
+	recoveringMu         sync.Mutex
+	recovering           map[string]bool
+	silenced             map[string]map[string]bool
+	releaseWaits         map[string]map[string]releaseWait
+	recoveryHeldSince    time.Time
+	recoveryBoundChecked bool
+	recheckAfter         func(time.Duration) <-chan time.Time
 	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
 	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
 	// clock), a repository left unread or answered again (its third, recoverRepositories), a
@@ -1484,7 +1487,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	if err != nil {
 		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}

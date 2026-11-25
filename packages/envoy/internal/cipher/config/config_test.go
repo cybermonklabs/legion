@@ -748,59 +748,26 @@ func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
 	}
 }
 
-// TestTheResolveSettingMayNameThePortItsDialReaches: an entry of BROKER_AIRLOCK_TEST_RESOLVE may
-// name a port beside its address, which the proxy dials in place of the CONNECT's own: a stand-in
-// on loopback needs no privileged port 443, as a test of the real broker's airlock does. An entry
-// with no port leaves the CONNECT's. An address given two ports, or the port 0, is refused, naming
-// it: a dial to the address could not tell which port it means.
-func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
-	e := validEnv()
-	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.2:8443 t.airlock.test=[::1]:9443 u.airlock.test=127.0.0.3"
-	cfg, err := Load(env(e))
-	if err != nil {
-		t.Fatalf("Load with ports in BROKER_AIRLOCK_TEST_RESOLVE: %v", err)
-	}
-	wantHosts := map[string]netip.Addr{
-		"s.airlock.test": netip.MustParseAddr("127.0.0.2"),
-		"t.airlock.test": netip.MustParseAddr("::1"),
-		"u.airlock.test": netip.MustParseAddr("127.0.0.3"),
-	}
-	if !maps.Equal(cfg.AirlockTestResolve, wantHosts) {
-		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, wantHosts)
-	}
-	wantPorts := map[netip.Addr]uint16{netip.MustParseAddr("127.0.0.2"): 8443, netip.MustParseAddr("::1"): 9443}
-	if !maps.Equal(cfg.AirlockTestDialPorts, wantPorts) {
-		t.Errorf("the dial ports read %v; want %v, and none for an entry that names no port", cfg.AirlockTestDialPorts, wantPorts)
-	}
-	for value, want := range map[string]string{
-		"s.airlock.test=127.0.0.2:8443 t.airlock.test=127.0.0.2:9443": "127.0.0.2",
-		"s.airlock.test=127.0.0.2:0":                                  "127.0.0.2:0",
-	} {
-		e := validEnv()
-		e["BROKER_AIRLOCK_TEST_RESOLVE"] = value
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_TEST_RESOLVE") || !strings.Contains(err.Error(), want) {
-			t.Errorf("Load(BROKER_AIRLOCK_TEST_RESOLVE=%q) = %v; want a refusal naming the setting and %s", value, err, want)
-		}
-	}
-}
-
-// TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne: BROKER_AIRLOCK_PRIVATE_UPSTREAM is one
-// <host>=<url> entry, read as that host and that URL, and unset is none. Two entries, the setting
-// with no profiles file, an entry not of that form, a host that is not one lower-case host name, and a
-// URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
-// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost
-// or a name under .localhost, with or without the root's trailing dot; a loopback, link-local,
-// unspecified, multicast or the IPv4 broadcast address; a cloud metadata server's IPv6 address; an
-// address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse
-// the start, naming the setting and the fault. No refusal quotes the URL's user, path, query or
-// fragment, where a credential can sit, nor a URL written with no <host>= before it, whose user
-// and path then sit before the first =. A private address, one in 100.64.0.0/10, one inside the
-// cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with
-// its port, the local stack's stand-in of Dispatch, are read: each is an address the dial opens.
-func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
-	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
-	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
-		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.AirlockPrivateUpstream, err)
+// TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne: each entry of BROKER_PROXY_PRIVATE_UPSTREAM
+// is one <host>=<url> entry, read as that host and that URL. An entry not of that form, a host
+// that is not one lower-case host name, and a URL that does not parse, is not http or https, names
+// no host or a port outside 1 to 65535, carries a user, a path, a query or a fragment, or names a
+// host every dial of the proxy refuses (localhost or a name under .localhost, with or without the
+// root's trailing dot; a loopback, link-local, unspecified, multicast or the IPv4 broadcast
+// address, or one of 0.0.0.0/8; a cloud metadata server's IPv6 address; an IPv6 address that
+// carries an IPv4 address, in each form, whatever it carries, and even inside the cluster ranges;
+// an address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each
+// refuse the start, naming the setting and the fault. No refusal quotes the URL's user, path,
+// query or fragment, where a credential can sit, nor a URL written with no <host>= before it,
+// whose user and path then sit before the first =. A private address, one in 100.64.0.0/10, one
+// inside the cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW
+// names with its port, the local stack's stand-in of Dispatch, are read: each is an address the
+// dial opens. (TestAPrivateUpstreamSettingIsRefusedUnlessEachEntryIsOne holds the list: entries
+// in order, and a host named twice.)
+func TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.ProxyPrivateUpstreams != nil {
+		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.ProxyPrivateUpstreams, err)
 	}
 	for _, row := range []struct{ value, dialAllow, ranges, wantURL string }{
 		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
@@ -822,7 +789,7 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", setting, row.value, row.dialAllow, row.ranges, err)
 		}
-		if got := cfg.AirlockPrivateUpstream; got.Host != "dispatch.test" || got.URL == nil || got.URL.String() != row.wantURL {
+		if got := cfg.ProxyPrivateUpstreams; len(got) != 1 || got[0].Host != "dispatch.test" || got[0].URL == nil || got[0].URL.String() != row.wantURL {
 			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
 		}
 	}
@@ -831,9 +798,8 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	// no <host>= before it puts its user, and its path up to a query's =, before the first =.
 	const userWord = "secret-word"
 	for _, row := range []struct{ name, value, dialAllow, want string }{
-		{"two entries", "dispatch.test=http://10.0.0.5:8766 other.test=http://10.0.0.6:8766", "", "names 2 entries"},
-		{"an entry with no =", "dispatch.test", "", "must be one <host>=<url> entry"},
-		{"an entry with no URL", "dispatch.test=", "", "must be one <host>=<url> entry"},
+		{"an entry with no =", "dispatch.test", "", "must be <host>=<url> entries"},
+		{"an entry with no URL", "dispatch.test=", "", "must be <host>=<url> entries"},
 		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
 		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
 		{"a URL that does not parse", "dispatch.test=http://u:" + userWord + "@[10.0.0.5", "", "does not parse"},
@@ -864,6 +830,14 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
 		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
 		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
+		{"an address of 0.0.0.0/8", "dispatch.test=http://0.0.0.1:8766", "", "an address of 0.0.0.0/8"},
+		{"the NAT64 form of the IPv4 metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "carries an IPv4 address"},
+		{"the NAT64 form of a loopback address", "dispatch.test=http://[64:ff9b::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"the NAT64 form of a private address", "dispatch.test=http://[64:ff9b::a00:5]:8766", "", "carries an IPv4 address"},
+		{"the 6to4 form of the IPv4 metadata server", "dispatch.test=http://[2002:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"the IPv4-compatible form of a loopback address", "dispatch.test=http://[::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"a Teredo address whose server is the IPv4 metadata server", "dispatch.test=http://[2001:0:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"an address of the local-use translation prefix", "dispatch.test=http://[64:ff9b:1::a9fe:a9fe]", "", "a local-use translation IPv6 address"},
 		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
 	} {
 		e := airlockEnv()
@@ -893,6 +867,75 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
 		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
 	}
+	// The cluster ranges widen the private ranges and nothing else: a range that holds an IPv6
+	// form carrying the metadata server's address does not make that form a destination.
+	carried := airlockEnv()
+	carried["BROKER_AIRLOCK_CLUSTER_RANGES"] = "64:ff9b::/96"
+	carried[setting] = "dispatch.test=http://[64:ff9b::a9fe:a9fe]"
+	if _, err := Load(env(carried)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "carries an IPv4 address") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=64:ff9b::/96) = %v; want a refusal naming the setting and the form", setting, carried[setting], err)
+	}
+}
+
+// TestTheCheckOfADestinationsAddressIsTheStartsRule: PrivateUpstreamAddressRules, the address
+// check `profiles check --private-upstream` makes, is the start's own. Given the cluster ranges
+// (`--cluster-ranges`, read by ParseAirlockClusterRanges), it answers what Load answers for that
+// destination and those ranges, in the same words, and no unjudged address, for each ranges below:
+// none, the Service range, an IPv6 range that holds the NAT64 forms, and every address. Without
+// them it is the start's rule for every cluster ranges a broker can have: where it refuses, the
+// start refuses in the same words with no ranges and with ranges that hold every address; where it
+// takes a destination and judges it, the start takes it with both; and where it answers the
+// address unjudged, the start refuses that address with no ranges and takes it with ranges that
+// hold it, so that answer is exactly the part that needs the ranges.
+func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	everything := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	for _, url := range []string{
+		"http://127.0.0.1:8766", "http://[::1]:8766", "http://localhost:8766", "http://dispatch.localhost.:8766",
+		"http://169.254.169.254", "http://[fe80::1]", "http://[fd20:ce::254]", "http://[fd00:ec2::254]",
+		"http://255.255.255.255:8766", "http://0.0.0.0:8766", "http://0.0.0.1:8766", "http://224.0.0.1",
+		"http://[64:ff9b::a9fe:a9fe]", "http://[2002:a9fe:a9fe::1]", "http://[::7f00:1]:8766", "http://[2001:0:a9fe:a9fe::1]",
+		"http://[64:ff9b:1::a9fe:a9fe]", "http://[64:ff9b::a00:5]:8766",
+		"http://8.8.8.8:8766", "http://203.0.113.5:8766", "http://34.118.224.10:8766", "http://34.118.240.1:8766", "http://[2001:4860:4860::8888]",
+		"http://10.0.0.5:8766", "https://10.0.0.5", "http://100.64.1.1:8766", "http://[fd12:3456::5]:8766",
+		"http://dispatch.dispatch.svc.cluster.local:8766",
+	} {
+		upstreams, err := ParsePrivateUpstreams("dispatch.test=" + url)
+		if err != nil || len(upstreams) != 1 {
+			t.Fatalf("ParsePrivateUpstreams(%s) = %v, %v; want one entry", url, upstreams, err)
+		}
+		upstream := upstreams[0]
+		unjudged, checked := PrivateUpstreamAddressRules(upstream, nil, false)
+		bare, wide := PrivateUpstreamDialable(upstream, nil, nil), PrivateUpstreamDialable(upstream, nil, everything)
+		switch {
+		case checked != nil:
+			if unjudged.IsValid() || bare == nil || wide == nil || bare.Error() != checked.Error() || wide.Error() != checked.Error() {
+				t.Errorf("%s: the check refuses it (%v, unjudged %v); the start, with no ranges and with every address as a range, answers %v and %v; want the same refusal", url, checked, unjudged, bare, wide)
+			}
+		case unjudged.IsValid():
+			if bare == nil || !strings.Contains(bare.Error(), " names "+unjudged.String()+", ") || wide != nil {
+				t.Errorf("%s: the check answers %s unjudged; the start answers %v with no ranges and %v with every address as a range; want a refusal of that address and none", url, unjudged, bare, wide)
+			}
+		default:
+			if bare != nil || wide != nil {
+				t.Errorf("%s: the check takes it and judges it; the start answers %v and %v; want it taken with any ranges", url, bare, wide)
+			}
+		}
+		for _, text := range []string{"", "34.118.224.0/20", "64:ff9b::/96", "0.0.0.0/0, ::/0"} {
+			ranges, err := ParseAirlockClusterRanges(text)
+			if err != nil {
+				t.Fatalf("ParseAirlockClusterRanges(%q): %v", text, err)
+			}
+			unjudged, checked := PrivateUpstreamAddressRules(upstream, ranges, true)
+			e := airlockEnv()
+			e[setting] = "dispatch.test=" + url
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = text
+			_, started := Load(env(e))
+			if unjudged.IsValid() || (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
+				t.Errorf("%s with the ranges %q: the check answers %v (unjudged %v); Load answers %v; want Load's answer and no unjudged address", url, text, checked, unjudged, started)
+			}
+		}
+	}
 }
 
 // privateEntry is the proxy block the private destination's host is bound by: the profile
@@ -903,32 +946,33 @@ func privateEntry() proxyrules.SecretRule {
 	return entry
 }
 
-// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes the profiles' proxy blocks
-// when the one block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's,
-// bound to that host alone, of kind dpop, with a non-empty allow list, carried in Authorization
-// alone (a block naming no headers carries the default, Authorization). No profile for the host, a
-// second profile over it (proxyrules.HostBound, so a "*." block over the host binds it too, and the
-// refusal names that host), a profile of no kind, no allow list, an empty one and another header
-// are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and what is wrong.
-// With no destination, no result entries and no dpop block, any profiles are taken.
+// TestAPrivateUpstreamNeedsOneBindingEntry: the start check of the results capability
+// (resultsStart: ResultsEntryRules and ProxyMintedRules) takes the profiles' proxy blocks when the
+// block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's, bound to that
+// host alone, of kind dpop, with a non-empty allow list, carried in Authorization alone (a block
+// naming no headers carries the default, Authorization). A profile bound to another host, a second
+// profile of another kind over it (proxyrules.HostBound, so a "*." block over the host binds it
+// too, and the refusal names that host), a profile of no kind, no allow list, an empty one and
+// another header are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and
+// what is wrong. With no destination, no result entries and no dpop block, any profiles are taken.
 func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
-	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
 	e := airlockEnv()
 	e[setting] = "dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766"
 	cfg, err := Load(env(e))
 	if err != nil {
 		t.Fatalf("Load(%s): %v", setting, err)
 	}
-	upstream := cfg.AirlockPrivateUpstream
-	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}, upstream, false); err != nil {
+	upstreams := cfg.ProxyPrivateUpstreams
+	if err := resultsStart(proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}, upstreams, false); err != nil {
 		t.Fatalf("the one entry: %v", err)
 	}
 	defaultHeader := privateEntry()
 	defaultHeader.Headers = nil
-	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, upstream, false); err != nil {
+	if err := resultsStart(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, upstreams, false); err != nil {
 		t.Fatalf("the entry with the default header: %v", err)
 	}
-	if err := AirlockResultRules(proxyrules.Rules{}, PrivateUpstream{}, false); err != nil {
+	if err := resultsStart(proxyrules.Rules{}, nil, false); err != nil {
 		t.Fatalf("no destination and no rules: %v", err)
 	}
 	pattern := proxyrules.SecretRule{Name: "WILDCARD_TOKEN", Hosts: []string{"*.test"}}
@@ -936,8 +980,8 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"no profile for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
-		{"a second profile *.test", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
+		{"a profile bound to another host", "binds other.test, which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
+		{"a second profile *.test", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds dispatch.test", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
 		{"a profile of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
 		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = nil }},
 		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = []proxyrules.Allow{} }},
@@ -945,7 +989,7 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 	} {
 		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}
 		c.spoil(&rules)
-		err := AirlockResultRules(rules, upstream, false)
+		err := resultsStart(rules, upstreams, false)
 		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
 			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
 			continue

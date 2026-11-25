@@ -45,13 +45,14 @@ import (
 )
 
 // apiTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel. Every test of the package calls t.Parallel but those that change or measure
-// something the whole process shares (the default logger, the environment, a package variable,
-// heap statistics), which stay serial and run before the rest. Alone, a test spends most of its
-// time waiting on Postgres, not on a core, so go test's default of GOMAXPROCS (four on CI's arm
-// runner) leaves the runner idle, and on a dev box with hundreds of cores it would open more
-// connections than the test server allows: each test has a database and pools of its own
-// (storetest.Open), and testlimits.ServerConnections sizes the server for a few at once.
+// no -parallel. Most tests of the package call t.Parallel; those that change or measure something
+// the whole process shares (the default logger, the environment, a package variable, heap
+// statistics, the xid rig's GOMAXPROCS and collector) or hold a wall-clock bound stay serial and
+// run before the rest. Alone, a database-backed test spends most of its time waiting on Postgres,
+// not on a core, so go test's default of GOMAXPROCS (four on CI's arm runner) leaves the runner
+// idle, and on a dev box with hundreds of cores it would open more connections than the test
+// server allows: each test has a database and pools of its own (storetest.Open), and
+// testlimits.ServerConnections sizes the server for a few at once.
 //
 // Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
 // test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a

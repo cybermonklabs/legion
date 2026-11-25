@@ -167,19 +167,20 @@ type Options struct {
 	DialAllow []string
 	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
 	// node ranges. Such a range can be global unicast - a GKE Service range such as
-	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
-	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
-	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
-	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
-	// cluster.
+	// 34.118.224.0/20 is - so none of netaddr.DialRefusal's fixed rules refuses an address in
+	// it, and a tunnel there reaches a ClusterIP of the cluster the broker runs in. An address
+	// inside any of them is refused as a private one is, after those fixed rules; DialAllow
+	// still opens one it names. Nil refuses nothing beyond the fixed rules, which is a broker
+	// outside a cluster.
 	ClusterRanges []netip.Prefix
-	// PrivateUpstream is BROKER_AIRLOCK_PRIVATE_UPSTREAM: the one bound host whose requests go to
-	// an address inside the broker's own cluster, in place of the host's own address. A CONNECT to
-	// that host is checked against the destination's addresses (upstreamAddresses) when the
-	// grant's names bind it, and each request on it goes out on a transport of its own to the URL's
-	// scheme and host, keeping the host as its Host header. The zero value, or one with no URL, is
-	// no destination: every bound host's request goes to that host's own address.
-	PrivateUpstream PrivateUpstream
+	// PrivateUpstreams is BROKER_PROXY_PRIVATE_UPSTREAM: the bound hosts whose requests go to an
+	// address inside the broker's own cluster, in place of the host's own address, one entry per
+	// host. A CONNECT to such a host is checked against its own destination's addresses
+	// (upstreamAddresses) when the grant's names bind it, and each request on it goes out on its
+	// destination's own transport to that URL's scheme and host, keeping the host as its Host
+	// header. Nil, or an entry with no URL, is no destination: every other bound host's request
+	// goes to that host's own address.
+	PrivateUpstreams []PrivateUpstream
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
@@ -200,9 +201,9 @@ type Options struct {
 	// whose token authority is a stand-in.
 	AzureAuthority string
 	// DPoPKey is the pod's own key, which the proxy signs the DPoP proof of each request to a
-	// host whose entry is of kind dpop with (resultTransport): made at the broker's start, held
-	// in this process alone, and the key every results token this pod mints is bound to. Nil
-	// refuses every request to such a host, since no proof can be made for it.
+	// host whose entry is of kind dpop with (mintedTransport): made at the broker's start, held
+	// in this process alone, and the key every token this pod mints for a minted capability's
+	// grant is bound to. Nil refuses every request to such a host, since no proof can be made.
 	DPoPKey *ecdsa.PrivateKey
 }
 
@@ -226,13 +227,12 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
-	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
-	// refuses after its fixed rules.
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which
+	// netaddr.DialRefusal refuses after its fixed rules and netaddr.DestinationRefusal takes.
 	clusterRanges []netip.Prefix
-	// privateUpstream is Options.PrivateUpstream, and private the transport every request to its
-	// host goes out on: nil, and the zero destination, for a proxy given none (toDestination).
-	privateUpstream PrivateUpstream
-	private         *http.Transport
+	// destinations are Options.PrivateUpstreams by bound host, each with the transport every
+	// request to its host goes out on: nil for a proxy given none (destinationOf).
+	destinations map[string]*destination
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -408,8 +408,8 @@ func New(o Options) *Server {
 		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
 		Protocols:         &forwardProtocols,
 	}
-	// The private destination's own transport, for a proxy given one (setPrivateUpstream).
-	s.setPrivateUpstream(o.PrivateUpstream)
+	// Each private destination's own transport, for a proxy given any (setPrivateUpstreams).
+	s.setPrivateUpstreams(o.PrivateUpstreams)
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
@@ -613,6 +613,7 @@ const (
 	codeTargetRefused      = "TARGET_REFUSED"
 	codeTargetRepositories = "TARGET_REPOSITORIES_REFUSED"
 	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
+	codeMintedOnly         = "MINTED_ONLY"
 	codeGrantRefused       = "GRANT_REFUSED"
 	codeGrantUnreadable    = "GRANT_UNREADABLE"
 )
@@ -635,11 +636,12 @@ const (
 //     secret the store no longer holds, a mint the secret's own minter refused, a profile's scope
 //     that minter refused (secrets.ErrMintNarrowingRefused, which the release hands over as it
 //     is), a target the live profile does not hold, a value whose shape the airlock cannot take
-//     apart - is 403 in those words. No retry clears one of them, so telling a command to make
-//     the call again would be untrue, and none of them carries anything of the store the read
-//     went to. Which errors those are is the read's own package to say (requests.IsRefusal),
-//     since a sentinel added there would be missed by a list kept here; the seven named here have
-//     a code of their own, and any other is GRANT_REFUSED.
+//     apart, a stored secret under a dpop block - is 403 in those words. No retry clears one of
+//     them, so telling a command to make the call again would be untrue, and none of them
+//     carries anything of the store the read went to. Which errors those are is the read's own
+//     package to say (requests.IsRefusal), since a sentinel added there would be missed by a
+//     list kept here; the eight named here have a code of their own, and any other is
+//     GRANT_REFUSED.
 //   - A release the broker refused because it could not learn whether Dispatch calls the
 //     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
 //     own fixed words under the code the API port answers it with: nothing is released while
@@ -683,6 +685,8 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 		return http.StatusForbidden, codeTargetRefused, err.Error()
 	case errors.Is(err, requests.ErrAirlockValueShape):
 		return http.StatusForbidden, codeValueShape, err.Error()
+	case errors.Is(err, requests.ErrMintedOnly):
+		return http.StatusForbidden, codeMintedOnly, err.Error()
 	case requests.IsRefusal(err):
 		return http.StatusForbidden, codeGrantRefused, err.Error()
 	}
@@ -710,9 +714,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		return
 	}
 	port = strconv.FormatUint(uint64(number), 10)
-	// A result grant's plain request is refused here whatever its host: to a host its grant
-	// does not bind by resultHostOnly, and to its bound host as every grant's is, below.
-	if s.resultHostOnly(w, r, grant, host, number) {
+	// A minted capability's plain request is refused here whatever its host: to a host its grant
+	// does not bind by mintedHostOnly, and to its bound host as every grant's is, below.
+	if s.mintedHostOnly(w, r, grant, host, number) {
 		return
 	}
 	// The authority the transport dials, in the one spelling every check and line here reads:

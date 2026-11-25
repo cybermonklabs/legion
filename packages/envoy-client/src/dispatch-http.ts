@@ -1047,18 +1047,18 @@ export class DispatchEmptyPathError extends Error {
  * call. A CI job's result write goes out through that proxy (`airlockCredential`), and such an
  * answer is not Dispatch's. An answer the proxy carried from Dispatch says `true`.
  */
-const AIRLOCK_FORWARDED_HEADER = "Airlock-Forwarded";
+const AIRLOCK_FORWARDED_HEADER = "Cipher-Proxy-Forwarded";
 
 /** The header that carries the code of the airlock proxy's own answer, such as `NO_PLACEHOLDER`. */
-const AIRLOCK_CODE_HEADER = "Airlock-Code";
+const AIRLOCK_CODE_HEADER = "Cipher-Proxy-Code";
 
 /** The airlock proxy's code for a grant it could not read this moment (its 503), which a later
  *  attempt may find readable: the one answer of its own a write asks again after. */
 const AIRLOCK_GRANT_UNREADABLE = "GRANT_UNREADABLE";
 
-/** What the airlock proxy's `Airlock-Forwarded` says of `response`: `false`, its own answer, which
- *  reached no service; `unknown`, its own answer after the write may have landed; undefined for an
- *  answer it carried, or one no airlock wrote. */
+/** What the airlock proxy's `Cipher-Proxy-Forwarded` says of `response`: `false`, its own answer,
+ *  which reached no service; `unknown`, its own answer after the write may have landed; undefined
+ *  for an answer it carried, or one no airlock wrote. */
 function airlockAnswer(response: Response): "false" | "unknown" | undefined {
   const said = response.headers.get(AIRLOCK_FORWARDED_HEADER)?.trim().toLowerCase();
   return said === "false" || said === "unknown" ? said : undefined;
@@ -1105,14 +1105,14 @@ function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
 }
 
 /**
- * An answer the airlock proxy gave itself inside a connection that was open (`Airlock-Forwarded:
- * false`): a refusal of the request, a grant it could not read, or a dial to Dispatch that failed,
- * each before any byte of the request left it, so the request reached no service and stored
- * nothing. `code` is its `Airlock-Code`, or `HTTP_<status>` where it names none, and `body` its
- * text, each copy of the credential redacted whole. It is no `DispatchServiceError`, which a caller
- * reads as a refusal Dispatch decided, and no rule reads it as a write whose outcome is unknown
- * (`writeOutcomeUnknown`). The proxy's answer after the write may have left it is
- * `AirlockOutcomeUnknownError`.
+ * An answer the airlock proxy gave itself inside a connection that was open
+ * (`Cipher-Proxy-Forwarded: false`): a refusal of the request, a grant it could not read, or a dial
+ * to Dispatch that failed, each before any byte of the request left it, so the request reached no
+ * service and stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names
+ * none, and `body` its text, each copy of the credential redacted whole. It is no
+ * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and no rule reads it
+ * as a write whose outcome is unknown (`writeOutcomeUnknown`). The proxy's answer after the write
+ * may have left it is `AirlockOutcomeUnknownError`.
  */
 export class AirlockRefusedError extends Error {
   override readonly name = "AirlockRefusedError";
@@ -1128,11 +1128,12 @@ export class AirlockRefusedError extends Error {
 
 /**
  * An answer the airlock proxy gave itself after the write may have reached Dispatch
- * (`Airlock-Forwarded: unknown`): its connection to Dispatch broke after the write was sent, or
- * the write's grant ended while Dispatch held the call. Dispatch may have stored it, so the write
- * asks again under its key, as after a reset, and ends unsettled (`DispatchWriteUnsettledError`)
- * when nothing settles it. `code` is its `Airlock-Code`, or `HTTP_<status>` where it names none,
- * and `body` its text, each copy of the credential redacted whole.
+ * (`Cipher-Proxy-Forwarded: unknown`): its connection to Dispatch broke after the write was sent,
+ * or the write's grant ended while Dispatch held the call. Dispatch may have stored it, so the
+ * write asks again under its key, as after a reset, and ends unsettled
+ * (`DispatchWriteUnsettledError`) when nothing settles it. `code` is its `Cipher-Proxy-Code`, or
+ * `HTTP_<status>` where it names none, and `body` its text, each copy of the credential redacted
+ * whole.
  */
 class AirlockOutcomeUnknownError extends Error {
   override readonly name = "AirlockOutcomeUnknownError";

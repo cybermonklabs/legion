@@ -494,7 +494,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
-        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts imports three of its modules, tests/agent-stream-reply-grant.test.ts imports modules of it, envoy-channel-server.test.ts imports keyedLayer from keyed-layer.ts, and tsc puts those files of that directory in the claude-envoy program"),
+        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts and tests/agent-stream-reply-grant.test.ts import modules of that directory, envoy-channel-server.test.ts imports keyedLayer from keyed-layer.ts, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "packages/claude-envoy/tests/legion-tool.test.ts:9 imports @legion/pi-shared/test/image-manifest"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:44-45, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:14-15"),
         (f"{FIX}/envelope-without-role.json", "packages/claude-envoy/tests/envelope-role-field.test.ts:5"),
@@ -3189,10 +3189,12 @@ GATES = [
         ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path, and "
                                                         f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
-        ("packages/envoy-client/test/route-answers.ts", f"scripts/dispatch/__tests__/moved-approval-production-check.test.ts:4 imports it by "
-                                                        f"path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} compiles that test"),
-        ("packages/envoy-client/test/keyed-layer.ts", f"scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 imports it by "
-                                                      f"path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} compiles that test"),
+        ("packages/envoy-client/test/keyed-layer.ts", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 "
+                                                      f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                      "compiles that test"),
+        ("packages/envoy-client/test/route-answers.ts", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:4 "
+                                                        f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                        "compiles that test"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
         (".github/actions/install-changie/**", at(TOOLING_JOB, "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "
@@ -3373,7 +3375,7 @@ GATES = [
         ("packages/pi-shared/test/**", "packages/pi-envoy/extensions/dispatch-first-omp.test.ts:4-14, src/skills-guard.test.ts:9-23, scripts/prepack.test.ts:6"),
         (TEST_FIXTURES_SRC, "packages/pi-envoy's extensions and src tests import @legion/test-fixtures"),
         # envoy-client's sources, and cipher-client's with them, are the shared read below.
-        ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts imports its modules, keyed-layer, route-answers and nats-server among them, and extensions/askgate/decision-record.test.ts its fake-dispatch"),
+        ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts imports modules of that directory, keyed-layer, route-answers and nats-server among them, and extensions/askgate/decision-record.test.ts its fake-dispatch"),
         ("packages/contracts/schemas/dispatch-openapi.json", "packages/pi-envoy/extensions/envoy.test.ts imports @legion/envoy-client/test/route-answers, whose `document` reads it"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:26 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:26; scripts/pi-plugin-prepack.sh:96"),

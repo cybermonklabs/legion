@@ -204,13 +204,13 @@
       "types": "./test/relay-socket-stand-in.ts",
       "bun": "./test/relay-socket-stand-in.ts"
     },
-    "./test/route-answers": {
-      "types": "./test/route-answers.ts",
-      "bun": "./test/route-answers.ts"
-    },
     "./test/replay-grant-scenario": {
       "types": "./test/replay-grant-scenario.ts",
       "bun": "./test/replay-grant-scenario.ts"
+    },
+    "./test/route-answers": {
+      "types": "./test/route-answers.ts",
+      "bun": "./test/route-answers.ts"
     },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",

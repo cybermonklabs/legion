@@ -1628,6 +1628,13 @@ const heldTree, heldParent, heldChild = "LEGION-1900", "LEGION-1901", "LEGION-19
 // or reader's when one is given.
 func newHeldRecovery(t *testing.T, backoff, bound time.Duration, reader ...positionReader) *heldRecovery {
 	t.Helper()
+	return newHeldRecoveryWith(t, backoff, bound, nil, reader...)
+}
+
+// newHeldRecoveryWith is newHeldRecovery with opts applied to the runtime as repositoryRigWith
+// applies them, before its refresher starts.
+func newHeldRecoveryWith(t *testing.T, backoff, bound time.Duration, opts []func(*workflowRuntime), reader ...positionReader) *heldRecovery {
+	t.Helper()
 	quickInstallReads(t)
 	installReadRetry.Initial, installReadRetry.Max = backoff, backoff
 	was := recoveryHoldBound
@@ -1635,7 +1642,7 @@ func newHeldRecovery(t *testing.T, backoff, bound time.Duration, reader ...posit
 	t.Cleanup(func() { recoveryHoldBound = was })
 	h := &heldRecovery{installs: &installations{}}
 	h.installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	h.w, h.client, h.installs, _, h.js = repositoryRigJS(t, h.installs)
+	h.w, h.client, h.installs, _, h.js = repositoryRigJS(t, h.installs, opts...)
 	_, h.admission = rigHandlers(h.w)
 	h.w.records = noticeFailingStore{Store: h.w.records, fail: &h.failNotice}
 	h.w.bootID, h.w.holdPollInterval = "held-clock-boot", 10*time.Millisecond
@@ -1706,6 +1713,139 @@ func TestARecoveryHeldWithReleaseWaitsIsToldAtItsBoundNotItsBackoff(t *testing.T
 	}
 	if n := h.notices(t) - before; n != 1 {
 		t.Fatalf("notices = %d, want one", n)
+	}
+}
+
+// A bound that passes while another job of the refresher runs is checked as soon as that job
+// ends, not at the backoff: the refresher cut its wait to the bound before the job began, the job's
+// wake took the loop away from that wait, and the loop that comes back finds no time left. Here
+// every wait the refresher asks for before the bound has passed never fires (recheckAfter), which
+// is what a job running across the bound does to the cut wait; once the bound has passed, a read of
+// the live records (liveWake) brings the loop back, and the next wait it asks for must be none, not
+// the rest of the backoff. The notice then comes. The backoff is 30 s, so the rest of it is far
+// from none however long setup takes; nothing waits on it, since the zero cut runs the recovery.
+// Without the fix, no time left meant no cut and the notice waited for the backoff: the slow mode
+// of TestARecoveryHeldWithReleaseWaitsIsToldAtItsBoundNotItsBackoff under load, which failed it
+// once in 20 race-soak runs.
+func TestARecoveryBoundThatPassesWhileAnotherJobRunsIsCheckedWhenTheJobEnds(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (newHeldRecoveryWith); it writes the package variable recoveryHoldBound (newHeldRecoveryWith).
+	var mu sync.Mutex
+	var waits []time.Duration
+	passed := false
+	h := newHeldRecoveryWith(t, 30*time.Second, 300*time.Millisecond, []func(*workflowRuntime){func(w *workflowRuntime) {
+		w.recheckAfter = func(d time.Duration) <-chan time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			waits = append(waits, d)
+			if !passed {
+				return nil
+			}
+			return time.After(d)
+		}
+	}})
+	before := h.notices(t)
+	h.behind(t, "LEGION-1951")
+	h.serve()
+	testwait.Eventually(t, "the recovery's listing held", func() bool { return recordsOn(h.w, "zeta/tools") && h.admission.Held() })
+	testwait.Eventually(t, "the hold's bound passed", func() bool {
+		h.w.recoveringMu.Lock()
+		defer h.w.recoveringMu.Unlock()
+		return !h.w.recoveryHeldSince.IsZero() && time.Since(h.w.recoveryHeldSince) > recoveryHoldBound
+	})
+	if got := h.notices(t) - before; got != 0 {
+		t.Fatalf("notices before any wait fired = %d, want none", got)
+	}
+	mu.Lock()
+	passed, asked := true, len(waits)
+	mu.Unlock()
+	wake(h.w.liveWake)
+	testwait.Eventually(t, "a wait asked for after the read of the live records", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(waits) > asked
+	})
+	mu.Lock()
+	next := waits[asked]
+	mu.Unlock()
+	if next > 50*time.Millisecond {
+		t.Fatalf("the wait asked for once the bound had passed during another job = %s, want none: the bound is due, not the backoff", next)
+	}
+	testwait.Eventually(t, "the notice of the held recovery", func() bool { return h.notices(t) > before })
+}
+
+// The run the bound was due for counts as its check whatever it meets: here the recovery's Dispatch
+// listing fails from before the bound passes, so no run ever finds the listing held past the bound,
+// and the refresher still waits its backoff after the one due run rather than running again at
+// once. As above, no wait fires before the bound has passed (recheckAfter); then a read of the live
+// records brings the loop back, the due run lists and fails, and the wait the refresher asks for
+// next must be its 2 s backoff, at least half of it, not none. Control: with the bound marked
+// checked only by a run that finds the listing held past it (heldPastBound), #5252's first
+// version, the refresher asked for no wait and re-ran the failing listing at once without end.
+func TestARecoveryRunDueAtTheBoundWhoseListingFailsWaitsTheBackoff(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (newHeldRecoveryWith); it writes the package variable recoveryHoldBound (newHeldRecoveryWith).
+	const backoff = 2 * time.Second
+	type asked struct {
+		wait     time.Duration
+		listings int
+	}
+	var mu sync.Mutex
+	var waits []asked
+	var listings func() int
+	passed := false
+	h := newHeldRecoveryWith(t, backoff, 300*time.Millisecond, []func(*workflowRuntime){func(w *workflowRuntime) {
+		w.recheckAfter = func(d time.Duration) <-chan time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			listed := -1
+			if listings != nil {
+				listed = listings()
+			}
+			waits = append(waits, asked{wait: d, listings: listed})
+			if !passed {
+				return nil
+			}
+			return time.After(d)
+		}
+	}})
+	mu.Lock()
+	listings = h.client.listingCount
+	mu.Unlock()
+	h.behind(t, "LEGION-1952")
+	h.serve()
+	// The fault starts once a run has found the listing held (recoveryHeldSince), which starts the
+	// bound's clock; a fault set before that run kept every run from finding it held, and the
+	// bound never started.
+	heldSince := func() time.Time {
+		h.w.recoveringMu.Lock()
+		defer h.w.recoveringMu.Unlock()
+		return h.w.recoveryHeldSince
+	}
+	testwait.Eventually(t, "a run that found the recovery's listing held", func() bool {
+		return recordsOn(h.w, "zeta/tools") && h.admission.Held() && !heldSince().IsZero()
+	})
+	h.client.mu.Lock()
+	h.client.listFailures = 1 << 30
+	h.client.mu.Unlock()
+	testwait.Eventually(t, "the hold's bound passed", func() bool { return time.Since(heldSince()) > recoveryHoldBound })
+	mu.Lock()
+	passed, before := true, h.client.listingCount()
+	mu.Unlock()
+	wake(h.w.liveWake)
+	// The first wait asked once a listing has come after before is the one the loop asks as it
+	// comes back from the due run, whose listing failed.
+	afterTheDueRun := func() (asked, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, a := range waits {
+			if a.listings > before {
+				return a, true
+			}
+		}
+		return asked{}, false
+	}
+	testwait.Eventually(t, "a wait asked after the due run's listing failed", func() bool { _, ok := afterTheDueRun(); return ok })
+	if next, _ := afterTheDueRun(); next.wait < backoff/2 {
+		t.Fatalf("the wait asked for after the due run's listing failed = %s, want the %s backoff: a run that began past the bound counts as its check", next.wait, backoff)
 	}
 }
 

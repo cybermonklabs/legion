@@ -981,8 +981,8 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		rig.wantPodKept("the answers")
 
 		// The member that holds the ask is launched as the boot launches an unfinished launch
-		// (launchUnfinishedClaim): its release, then the spawn, which resumes its session into the
-		// pod a process of the issue runs in now.
+		// (releaseUnfinishedClaim, launchUnfinished): its release, then the spawn, which resumes
+		// its session into the pod a process of the issue runs in now.
 		if m, ok := rig.sup.Machine(rig.tokens[holder]); !ok {
 			t.Fatalf("the %s is not supervised", holder)
 		} else if _, err := m.ReleaseUncertainLaunch(rig.ctx); err != nil {

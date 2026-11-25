@@ -503,9 +503,10 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 // launch with no process recorded (supervisor.restore). Its orphan reconciliation fails, so it does
 // not launch the claim again (reconcileBootOrphans). The sweeps before the bound keep the pod. The
 // next reconciliation succeeds, and the daemon releases the launch to queued, the first of the two
-// steps of its relaunch (launchUnfinishedClaim). The sweeps still keep the pod. The second step,
-// the spawn, waits in the wake pacing until the let-out. At the let-out the launch comes up in the
-// round's pod with one launch, and the hook's reason names the launch that the pause owes.
+// steps of its relaunch (releaseUnfinishedClaim, launchUnfinished). The sweeps still keep the pod.
+// The second step, the spawn, waits in the wake pacing until the let-out. At the let-out the launch
+// comes up in the round's pod with one launch, and the hook's reason names the launch that the
+// pause owes.
 //
 // Where the keep is read of a launching claim alone (review round 4), the claim restored
 // launch_uncertain is no launch the pause owes, and the first sweep after the restart replaces the

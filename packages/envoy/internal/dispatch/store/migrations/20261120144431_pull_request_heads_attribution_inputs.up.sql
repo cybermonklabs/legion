@@ -1,3 +1,4 @@
+-- replaces: 20261120144431_pull_request_heads_attribution_inputs.up.sql sha256:8ec836f82050a623e4731e2e8067428a99144c17b4c2a391fc97d40df241da60
 -- 20261120144431_pull_request_heads_attribution_inputs.up.sql
 --
 -- What a pull request's issue was judged from, stored on its pull_request_heads row, so that a

@@ -2,9 +2,7 @@ package requests
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,24 +10,30 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
-// podThumbprint stands for the pod key's RFC 7638 thumbprint, which Machine.ResultKey holds.
+// podThumbprint stands for the pod key's RFC 7638 thumbprint, which Machine.MintedKey holds.
 const podThumbprint = "the-pods-key-thumbprint"
 
-// mintedTokens is a Machine.ResultTokens that mints a token naming the grant and the key it was
+// The minted kind these tests serve: its airlock name, its word and the digest of the entry this
+// broker serves it under.
+const (
+	testMintedName   = "TEST_MINTED_TOKEN"
+	testMintedWord   = "testkind"
+	testEntryDigest  = "1111111111111111111111111111111111111111111111111111111111111111"
+	otherEntryDigest = "2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// mintedTokens is a Machine.MintedTokens that mints a token naming the grant and the key it was
 // asked for, and counts its mints.
 type mintedTokens struct {
 	mu    sync.Mutex
 	mints []string
 }
 
-func (m *mintedTokens) MintResultToken(_ context.Context, grant oauthstore.ResultGrant, jkt string) (string, error) {
+func (m *mintedTokens) MintGrantToken(_ context.Context, grant oauthstore.MintedGrant, jkt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	token := "minted:" + grant.ID + ":" + jkt
@@ -37,186 +41,210 @@ func (m *mintedTokens) MintResultToken(_ context.Context, grant oauthstore.Resul
 	return token, nil
 }
 
-// resultGrant writes a CI run's result grant for check run checkRunID that ends at expires, on
-// the fixture's database, and answers its placeholder and the grant.
-func resultGrant(t *testing.T, m *Machine, checkRunID string, expires time.Time) (string, oauthstore.ResultGrant) {
+func (m *mintedTokens) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.mints)
+}
+
+// memoryGrants is a MintedGrants that holds its grants in memory, keyed by the placeholder's hash,
+// and answers a grant past its end as not live, as a kind's table does by the database's clock.
+type memoryGrants struct {
+	mu     sync.Mutex
+	grants map[string]oauthstore.MintedGrant
+}
+
+func (g *memoryGrants) live(match func(oauthstore.MintedGrant) bool) (oauthstore.MintedGrant, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, grant := range g.grants {
+		if match(grant) && grant.ExpiresAt.After(time.Now()) {
+			return grant, nil
+		}
+	}
+	return oauthstore.MintedGrant{}, oauthstore.ErrMintedGrantNotLive
+}
+
+func (g *memoryGrants) MintedByPlaceholder(_ context.Context, sha256Hex string) (oauthstore.MintedGrant, error) {
+	return g.live(func(grant oauthstore.MintedGrant) bool { return grant.PlaceholderSHA256 == sha256Hex })
+}
+
+func (g *memoryGrants) MintedByID(_ context.Context, id string) (oauthstore.MintedGrant, error) {
+	return g.live(func(grant oauthstore.MintedGrant) bool { return grant.ID == id })
+}
+
+// grant writes one grant of the test kind, made under digest, that ends at expires, and answers
+// its placeholder and the grant.
+func (g *memoryGrants) grant(t *testing.T, digest string, expires time.Time) (string, oauthstore.MintedGrant) {
 	t.Helper()
-	held, err := placeholder.Mint(placeholder.ResultPrefix)
+	held, err := placeholder.Mint(placeholder.MintedPrefix(testMintedWord))
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant := oauthstore.ResultGrant{
+	grant := oauthstore.MintedGrant{
 		ID: uuid.NewString(), PlaceholderSHA256: placeholder.Hash(held),
-		Subject: "ci-results@example-org/example-repo", Session: "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
-		Principal: "ci-results@example-org/example-repo", Scopes: []string{oauthwire.ScopeResults},
-		Extra:     map[string]any{"ci": oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: checkRunID}},
-		ExpiresAt: expires.UTC().Truncate(time.Microsecond), EntryDigest: resultEntryDigest,
+		Subject: "ada@example.com", Session: "ses_minted_test", Principal: "ada@example.com",
+		Scopes: []string{"test-scope"}, Extra: map[string]any{"person": "ada@example.com"},
+		ExpiresAt: expires.UTC().Truncate(time.Microsecond), EntryDigest: digest,
 	}
-	if err := oauthstore.New(m.Store.Pool).CreateResultGrant(t.Context(), grant); err != nil {
-		t.Fatal(err)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.grants == nil {
+		g.grants = map[string]oauthstore.MintedGrant{}
 	}
+	g.grants[grant.PlaceholderSHA256] = grant
 	return held, grant
 }
 
-// withResultGrants is m answering result placeholders from the broker's result_grants table on
-// its own database, minting through tokens with the pod key podThumbprint names.
-func withResultGrants(m *Machine, tokens *mintedTokens) *Machine {
-	m.ResultGrants, m.ResultTokens, m.ResultKey, m.ResultEntryDigest = oauthstore.New(m.Store.Pool), tokens, podThumbprint, resultEntryDigest
+// withMintedKind is m serving the test kind from grants under the entry digest testEntryDigest,
+// minting through tokens with the pod key podThumbprint names.
+func withMintedKind(m *Machine, grants *memoryGrants, tokens *mintedTokens) *Machine {
+	m.Minted = []MintedKind{{Name: testMintedName, Word: testMintedWord, Grants: grants, EntryDigest: testEntryDigest}}
+	m.MintedTokens, m.MintedKey = tokens, podThumbprint
 	return m
 }
 
-// resultsProfiles is a profiles file of the results capability alone: the profile
-// oauthwire.AirlockResultsName, a name and a proxy block of kind dpop, as a deployment writes it.
-var resultsProfiles = policytest.ProfilesFile(`{"name": "` + oauthwire.AirlockResultsName + `", "proxy": {"hosts": ["dispatch.example.test"],
-  "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}}`)
-
-// withAirlock is m with the airlock in force under rules: the rules, the proxy's URL and its
-// certificate, as the boot sets them from the profiles file's proxy blocks.
-func withAirlock(m *Machine, rules proxyrules.Rules) *Machine {
-	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
-	return m
-}
-
-// TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose airlock entry is of kind
-// dpop - the kind of a CI run's results capability, which the broker mints and holds - is never
-// released, to the session or to the proxy, even where the policy serves it and a grant of it is
-// made: the release is refused ErrAirlockMintedOnly, no placeholder row is written for it, and
-// the answer holds nothing of its value. Two policies serve such a name:
-//
-//   - a profile of no kind serves AUTO_TOKEN while the airlock's entry of that name is of kind
-//     dpop, so the release, and not the policy, is what stops it;
-//   - the results profile, a name and a dpop block, is served when a stored secret of its name
-//     exists, since its source is that secret and it passes every rule of the policy load; a
-//     grant of it is made, and the airlock's entry, the profile's own block, holds the release.
+// TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose rules entry is of kind
+// dpop - the kind of a capability the broker mints and holds - is never released, to the session
+// or to the proxy: the release is refused ErrMintedOnly, no placeholder row is written for
+// it, and the answer holds nothing of its value. The policy serves the name under a block of no
+// kind, so the grant is made, and the airlock's rules then hold it under a dpop entry, which is
+// the case a stored secret of a minted kind's name is.
 func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
-	for _, row := range []struct {
-		name, secret, value string
-		// fixture builds the Machine and the session that asks for secret.
-		fixture func(t *testing.T) (*Machine, string, *ecdsa.PrivateKey)
-	}{
-		{"a profile of no kind under a dpop entry", "AUTO_TOKEN", "auto-v1", func(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
-			m, enr, key := newAirlockFixture(t, proxied("api.example.com", "AUTO_TOKEN"))
-			withAirlock(m, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", proxyrules.KindDPoP)}})
-			return m, enr, key
-		}},
-		{"a stored secret of the results profile's name", oauthwire.AirlockResultsName, "stored-results-v1", func(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
-			m, enr, key := newAirlockFixture(t, resultsProfiles)
-			withAirlock(m, policytest.Profiles(t, resultsProfiles, fixtureService).ProxyRules())
-			retag(t, m, policytest.Secret(oauthwire.AirlockResultsName, fixtureOperator, policy.TierAgent, "stored-results-v1"))
-			set := m.Policy.Get()
-			if served, ok := set.Secrets[oauthwire.AirlockResultsName]; !ok || served.Profile == nil || served.Profile.Name != oauthwire.AirlockResultsName {
-				t.Fatalf("the policy serves %s as %+v (%t), refused %+v; want it served as the results profile, whose source the stored secret is",
-					oauthwire.AirlockResultsName, served, ok, set.Refused["profile:"+oauthwire.AirlockResultsName])
-			}
-			if entry := m.Airlock.Lookup(oauthwire.AirlockResultsName); entry == nil || entry.Kind != proxyrules.KindDPoP {
-				t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s", oauthwire.AirlockResultsName, entry, proxyrules.KindDPoP)
-			}
-			return m, enr, key
-		}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			m, enr, key := row.fixture(t)
-			_, grantID := grantOf(t, m, enr, key, "read it", row.secret)
-			release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
-			if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) {
-				t.Fatalf("the session's release of %s, a stored secret under a dpop entry = %v; want ErrAirlockMintedOnly, a refusal", row.secret, err)
-			}
-			holdsNothingOf(t, release, row.value)
-			if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
-				t.Fatalf("the refused release wrote placeholder rows %v; want none", rows)
-			}
-			values, _, err := m.AirlockValues(t.Context(), grantID)
-			if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) || values != nil {
-				t.Fatalf("the proxy's release of %s = %v, %v; want ErrAirlockMintedOnly, a refusal, and no values", row.secret, values, err)
-			}
-			if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
-				t.Fatalf("the proxy's refused release wrote placeholder rows %v; want none", rows)
-			}
-		})
-	}
-}
-
-// TestARequestForTheResultsCapabilityIsRefusedBeforeAnyGrant is the deployment's case: no stored
-// secret is named DISPATCH_RESULTS_TOKEN, since the broker mints that credential for a CI run's
-// result grant from no stored secret. The policy load refuses the results profile as a profile
-// whose source is no stored secret (profile-source-missing, its source absent), so a session's
-// request for the name is refused ErrProfileRefused before anything is written: no grant row and
-// no airlock_placeholders row. (Where such a stored secret exists the policy serves the profile,
-// and the release is refused instead: TestAStoredSecretUnderADPoPEntryIsNeverReleased.)
-func TestARequestForTheResultsCapabilityIsRefusedBeforeAnyGrant(t *testing.T) {
-	m, enr, key := newAirlockFixture(t, resultsProfiles)
-	withAirlock(m, policytest.Profiles(t, resultsProfiles, fixtureService).ProxyRules())
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "write the results", oauthwire.AirlockResultsName), "")
-	if !errors.Is(err, policy.ErrProfileRefused) || request.GrantID != nil {
-		t.Fatalf("Create(%s) = %+v, %v; want policy.ErrProfileRefused and no grant", oauthwire.AirlockResultsName, request, err)
-	}
-	for _, want := range []string{policy.ReasonProfileSourceMissing, "source " + oauthwire.AirlockResultsName + ": " + policy.ReasonAbsent} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Create(%s)'s refusal %q does not say %q", oauthwire.AirlockResultsName, err, want)
-		}
-	}
-	var grants, placeholders int
-	if err := m.Store.Pool.QueryRow(t.Context(), `select (select count(*) from grants), (select count(*) from airlock_placeholders)`).Scan(&grants, &placeholders); err != nil {
-		t.Fatal(err)
-	}
-	if grants != 0 || placeholders != 0 {
-		t.Fatalf("the refused request left %d grant rows and %d airlock_placeholders rows; want none", grants, placeholders)
-	}
-}
-
-// TestAnEndedResultPlaceholderIsNeverReadAsASecretPlaceholder: a result placeholder is answered
-// from result_grants alone. Once its grant has ended it opens nothing, even where a row of
-// airlock_placeholders holds the same hash for a live secret grant: the connection read never
-// falls through to the secret store's placeholders.
-func TestAnEndedResultPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
-	withResultGrants(m, &mintedTokens{})
+	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", proxyrules.KindDPoP)}}
+	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	if !errors.Is(err, ErrMintedOnly) || !IsRefusal(err) {
+		t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrMintedOnly, a refusal", err)
+	}
+	holdsNothingOf(t, release, "auto-v1")
+	if rows := placeholderRows(t, m, grantID); len(rows) != 0 {
+		t.Fatalf("the refused release wrote placeholder rows %v; want none", rows)
+	}
+	values, _, err := m.AirlockValues(t.Context(), grantID)
+	if !errors.Is(err, ErrMintedOnly) || values != nil {
+		t.Fatalf("the proxy's release of it = %v, %v; want ErrMintedOnly and no values", values, err)
+	}
+}
+
+// TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder: a minted kind's placeholder is
+// answered from its kind's grants alone. Once its grant has ended it opens nothing, even where a
+// row of airlock_placeholders holds the same hash for a live secret grant: the connection read
+// never falls through to the secret store's placeholders.
+func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	grants := &memoryGrants{}
+	withMintedKind(m, grants, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatal(err)
 	}
-	held, _ := resultGrant(t, m, "97", time.Now().Add(-time.Second))
+	held, _ := grants.grant(t, testEntryDigest, time.Now().Add(-time.Second))
 	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholder.Hash(held), grantID); err != nil {
 		t.Fatal(err)
 	}
 	if conn, err := m.AirlockConnection(t.Context(), held); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
-		t.Fatalf("AirlockConnection(an ended grant's result placeholder) = %+v, %v; want ErrGrantNotLive and no grant, never the secret grant %s", conn, err, grantID)
+		t.Fatalf("AirlockConnection(an ended grant's minted placeholder) = %+v, %v; want ErrGrantNotLive and no grant, never the secret grant %s", conn, err, grantID)
 	}
 }
 
-// TestAResultPlaceholderIsAnsweredFromItsGrant: a live result grant's placeholder opens a
-// connection of that grant - its id, its session and the check run of its job, no enrollment, and
-// DISPATCH_RESULTS_TOKEN's one slot - and the proxy's read of its values mints the run's token for
-// the pod's key, with no end of its own, since the grant's end is the connection read's. A grant
-// that is no secret's is answered no access-token placeholder.
-func TestAResultPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
+// TestAPlaceholderOfNoMintedKindOpensNothing: a placeholder that holds a kind's word and hyphen is
+// a minted grant's, so one whose word no kind of this broker serves opens nothing and is never
+// read as a secret grant's placeholder, even where airlock_placeholders holds its hash.
+func TestAPlaceholderOfNoMintedKindOpensNothing(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	withMintedKind(m, &memoryGrants{}, &mintedTokens{})
+	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
+		t.Fatal(err)
+	}
+	held, err := placeholder.Mint(placeholder.MintedPrefix("otherkind"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store.Pool.Exec(t.Context(), `update airlock_placeholders set placeholder_sha256 = $1 where grant_id = $2`, placeholder.Hash(held), grantID); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := m.AirlockConnection(t.Context(), held); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
+		t.Fatalf("AirlockConnection(a placeholder of a kind no one serves) = %+v, %v; want ErrGrantNotLive and no grant", conn, err)
+	}
+	if _, _, err := m.AirlockValues(t.Context(), "otherkind:"+uuid.NewString()); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("AirlockValues(a grant id of a kind no one serves) = %v; want ErrGrantNotLive", err)
+	}
+}
+
+// TestAMintedPlaceholderIsAnsweredFromItsGrant: a live minted grant's placeholder opens a
+// connection of that grant - its kind's word and its id, its session, no enrollment, marked
+// minted, and the kind's one name with its one slot - and the proxy's read of its values mints
+// the grant's token for the pod's key, with no end of its own, since the grant's end is the
+// connection read's. A minted grant is answered no access-token placeholder.
+func TestAMintedPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
-	tokens := &mintedTokens{}
-	withResultGrants(m, tokens)
-	held, grant := resultGrant(t, m, "97", time.Now().Add(15*time.Minute))
+	grants, tokens := &memoryGrants{}, &mintedTokens{}
+	withMintedKind(m, grants, tokens)
+	held, grant := grants.grant(t, testEntryDigest, time.Now().Add(15*time.Minute))
 	conn, err := m.AirlockConnection(t.Context(), held)
 	if err != nil {
-		t.Fatalf("AirlockConnection(a live grant's result placeholder) = %v", err)
+		t.Fatalf("AirlockConnection(a live grant's minted placeholder) = %v", err)
 	}
-	id := oauthwire.ResultGrantIDPrefix + grant.ID
-	slots := conn.Names[oauthwire.AirlockResultsName].Slots
-	if conn.GrantID != id || conn.SessionID != grant.Session || conn.CheckRunID != "97" || conn.EnrollmentID != "" ||
+	id := testMintedWord + ":" + grant.ID
+	slots := conn.Names[testMintedName].Slots
+	if conn.GrantID != id || conn.SessionID != grant.Session || !conn.Minted || conn.EnrollmentID != "" ||
 		conn.Expires == nil || !conn.Expires.Equal(grant.ExpiresAt) || len(conn.Names) != 1 || len(slots) != 1 || slots[SlotValue] != held {
-		t.Fatalf("the result connection = %+v; want grant %s, session %s, check run 97, no enrollment, its end and %s's value slot alone", conn, id, grant.Session, oauthwire.AirlockResultsName)
+		t.Fatalf("the minted connection = %+v; want grant %s, session %s, minted, no enrollment, its end and %s's value slot alone", conn, id, grant.Session, testMintedName)
 	}
 	values, version, err := m.AirlockValues(t.Context(), id)
 	if err != nil || version == "" {
 		t.Fatalf("AirlockValues(%s) = %v, %q, %v", id, values, version, err)
 	}
 	want := "minted:" + grant.ID + ":" + podThumbprint
-	got := values[oauthwire.AirlockResultsName]
-	if len(values) != 1 || got.Slots[SlotValue] != want || !got.Expires.IsZero() || len(tokens.mints) != 1 {
-		t.Fatalf("the result values = %+v after %d mints; want the token minted for the grant and the pod key, %q, with no end, minted once", values, len(tokens.mints), want)
+	got := values[testMintedName]
+	if len(values) != 1 || got.Slots[SlotValue] != want || !got.Expires.IsZero() || tokens.count() != 1 {
+		t.Fatalf("the minted values = %+v after %d mints; want the token minted for the grant and the pod key, %q, with no end, minted once", values, tokens.count(), want)
 	}
-	if _, err := m.AirlockAccessPlaceholder(t.Context(), id, oauthwire.AirlockResultsName, SlotAzureAccessPrefix+"scope"); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.AirlockAccessPlaceholder(t.Context(), id, testMintedName, SlotAzureAccessPrefix+"scope"); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockAccessPlaceholder(%s) = %v; want ErrGrantNotLive", id, err)
 	}
-	if _, _, err := m.AirlockValues(t.Context(), oauthwire.ResultGrantIDPrefix+uuid.NewString()); !errors.Is(err, ErrGrantNotLive) {
+	if _, _, err := m.AirlockValues(t.Context(), testMintedWord+":"+uuid.NewString()); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockValues(a grant no row holds) = %v; want ErrGrantNotLive", err)
+	}
+}
+
+// TestAMintedGrantOfAnotherEntryIsNotLive: a grant made under another entry or private
+// destination than this broker's (its EntryDigest is not the kind's) opens no connection and has
+// no values, and no token is minted for it; nor does any grant on a broker whose kind serves under
+// no digest at all.
+func TestAMintedGrantOfAnotherEntryIsNotLive(t *testing.T) {
+	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
+	grants, tokens := &memoryGrants{}, &mintedTokens{}
+	withMintedKind(m, grants, tokens)
+	held, grant := grants.grant(t, otherEntryDigest, time.Now().Add(15*time.Minute))
+	id := testMintedWord + ":" + grant.ID
+	if conn, err := m.AirlockConnection(t.Context(), held); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
+		t.Fatalf("AirlockConnection(a grant of another entry) = %+v, %v; want ErrGrantNotLive and no grant", conn, err)
+	}
+	if values, _, err := m.AirlockValues(t.Context(), id); !errors.Is(err, ErrGrantNotLive) || values != nil {
+		t.Fatalf("AirlockValues(a grant of another entry) = %v, %v; want ErrGrantNotLive and no values", values, err)
+	}
+	ownHeld, own := grants.grant(t, testEntryDigest, time.Now().Add(15*time.Minute))
+	m.Minted[0].EntryDigest = ""
+	if conn, err := m.AirlockConnection(t.Context(), ownHeld); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
+		t.Fatalf("AirlockConnection on a broker that serves the kind under no digest = %+v, %v; want ErrGrantNotLive", conn, err)
+	}
+	if _, _, err := m.AirlockValues(t.Context(), testMintedWord+":"+own.ID); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("AirlockValues on a broker that serves the kind under no digest = %v; want ErrGrantNotLive", err)
+	}
+	// A grant whose own digest is empty too: a broker with no digest for the kind serves none of
+	// its grants, whatever the row says, so an empty digest never matches an empty one.
+	blankHeld, blank := grants.grant(t, "", time.Now().Add(15*time.Minute))
+	if conn, err := m.AirlockConnection(t.Context(), blankHeld); !errors.Is(err, ErrGrantNotLive) || conn.GrantID != "" {
+		t.Fatalf("AirlockConnection of a grant of no digest on a broker of no digest = %+v, %v; want ErrGrantNotLive", conn, err)
+	}
+	if _, _, err := m.AirlockValues(t.Context(), testMintedWord+":"+blank.ID); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("AirlockValues of a grant of no digest on a broker of no digest = %v; want ErrGrantNotLive", err)
+	}
+	if n := tokens.count(); n != 0 {
+		t.Fatalf("%d tokens were minted for grants this broker does not serve; want none", n)
 	}
 }

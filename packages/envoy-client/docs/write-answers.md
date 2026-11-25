@@ -70,7 +70,7 @@ Its message says that the proxy refused the connection and that nothing was sent
 A 503 is a connection that never opened, so the write asks again on its schedule, and ends with that error when the schedule runs out.
 Every other status ends the write at once, a 407 for a grant that ended among them.
 
-An answer that the proxy gives itself inside an open connection, before any byte of the request left it, carries `Airlock-Forwarded: false` and an `Airlock-Code`.
+An answer that the proxy gives itself inside an open connection, before any byte of the request left it, carries `Cipher-Proxy-Forwarded: false` and a `Cipher-Proxy-Code`.
 It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, each copy of the credential in them redacted.
 The redaction is of whole copies, because the proxy's words name the placeholder by that word, which the placeholder's own prefix spells.
 The write asks again only after its `503 GRANT_UNREADABLE`, a grant that the proxy could not read at that moment.
@@ -78,7 +78,7 @@ The write asks again only after its `503 GRANT_UNREADABLE`, a grant that the pro
 Neither error is a `DispatchServiceError`, and `writeOutcomeUnknown` is false for both.
 Where an earlier attempt of the same write may have reached Dispatch, the write ends as a `DispatchWriteUnsettledError`, as for any answer that proves nothing of that attempt.
 
-An answer that the proxy gives itself after the request may have reached Dispatch carries `Airlock-Forwarded: unknown` and an `Airlock-Code`: the proxy's connection to Dispatch broke after the write was sent (`502 UPSTREAM_UNREACHABLE`), or the write's grant ended while Dispatch held the call (`407 GRANT_NOT_LIVE`).
+An answer that the proxy gives itself after the request may have reached Dispatch carries `Cipher-Proxy-Forwarded: unknown` and a `Cipher-Proxy-Code`: the proxy's connection to Dispatch broke after the write was sent (`502 UPSTREAM_UNREACHABLE`), or the write's grant ended while Dispatch held the call (`407 GRANT_NOT_LIVE`).
 The write loop reads it as a reset after the write went out (`AirlockOutcomeUnknownError`, with the status, the code and the redacted words): the write may have landed, so it asks again under its key, and ends as a `DispatchWriteUnsettledError` when no answer settles it.
 
 ## A path value that names nothing

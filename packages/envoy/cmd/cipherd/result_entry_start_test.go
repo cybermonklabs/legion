@@ -1,7 +1,8 @@
 // result_entry_start_test.go drives the REAL compiled broker's start check of the results profile
-// DISPATCH_RESULTS_TOKEN (config.AirlockResultRules) on a broker with no result entries of its own:
-// such a broker still serves every result grant of the database it shares, so it is held to the
-// same profile as one with result entries. The helpers are result_write_test.go's and main_test.go's.
+// DISPATCH_RESULTS_TOKEN (config.ResultsEntryRules, beside config.ProxyMintedRules, the check of
+// every dpop block) on a broker with no result entries of its own: such a broker still serves
+// every result grant of the database it shares, so it is held to the same profile as one with
+// result entries. The helpers are result_write_test.go's and main_test.go's.
 package main
 
 import (
@@ -45,13 +46,14 @@ func resultsProfilesBinding(hosts string, extra ...string) string {
 // database of broker A, which has a result entry and has granted run 7 a placeholder, starts with
 // no result entry of its own. With a profile DISPATCH_RESULTS_TOKEN whose proxy block binds
 // *.ci-results.test, or resultsBoundHost and evil.ci-results.test, or resultsBoundHost with no
-// private destination or a destination of evil.ci-results.test, or with a second profile of kind
-// dpop beside it, B refuses to start, naming BROKER_PROFILES_FILE and the setting or profile at
-// fault, and not BROKER_EXCHANGE_RESULT_WORKFLOWS or the removed BROKER_AIRLOCK_RULES_FILE, and the
-// stand-in of evil.ci-results.test, which B could resolve and dial, receives nothing. Control: B
-// with A's own profile, whose proxy block binds resultsBoundHost, and the destination of that host
-// starts, takes A's run placeholder (a grant serves only on a broker of its own results entry), and
-// its write reaches the stand-in of Dispatch, stored.
+// private destination or with a destination of evil.ci-results.test alone, or with a second
+// profile of kind dpop beside it whose host evil.ci-results.test no destination names, B refuses
+// to start, naming BROKER_PROFILES_FILE and the profile at fault, and not
+// BROKER_EXCHANGE_RESULT_WORKFLOWS or the removed BROKER_AIRLOCK_RULES_FILE, and the stand-in of
+// evil.ci-results.test, which B could resolve and dial, receives nothing. Control: B with A's own
+// profile, whose proxy block binds resultsBoundHost, and the destination of that host starts,
+// takes A's run placeholder (a grant serves only on a broker of its own results entry), and its
+// write reaches the stand-in of Dispatch, stored.
 func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(t *testing.T) {
 	e := newResultsEnvironment(t)
 	// The stand-in listens on 127.0.0.2: BROKER_AIRLOCK_TEST_RESOLVE refuses one address given two
@@ -74,24 +76,24 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 	g := e.grant(t, a, "7")
 	binary := buildBroker(t)
 	base := append(withoutSettings(e.env, "BROKER_PROFILES_FILE", "BROKER_AIRLOCK_TEST_RESOLVE", "BROKER_AIRLOCK_TEST_DIAL_ALLOW",
-		"BROKER_EXCHANGE_RESULT_WORKFLOWS", "BROKER_AIRLOCK_PRIVATE_UPSTREAM"), routing...)
-	otherUpstream := "BROKER_AIRLOCK_PRIVATE_UPSTREAM=" + otherResultsHost + "=https://" + otherResultsHost
-	secondDPoP := `{"name": "OTHER_TOKEN", "proxy": {"hosts": ["` + otherResultsHost + `"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/"}], "kind": "dpop"}}`
+		"BROKER_EXCHANGE_RESULT_WORKFLOWS", "BROKER_PROXY_PRIVATE_UPSTREAM"), routing...)
+	otherUpstream := "BROKER_PROXY_PRIVATE_UPSTREAM=" + otherResultsHost + "=https://" + otherResultsHost
+	secondDPoP := `{"name": "OTHER_TOKEN", "proxy": {"hosts": ["` + otherResultsHost + `"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/"}], "kind": "dpop"}}`
 	for _, c := range []struct {
-		name, profiles, says string
-		upstream             []string
+		name, profiles, profile, says string
+		upstream                      []string
 	}{
-		{"a wildcard profile", resultsProfilesBinding(`"*.ci-results.test"`), "one exact host", []string{resultsUpstream}},
-		{"a two-host profile", resultsProfilesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "one exact host", []string{resultsUpstream}},
-		{"no private destination", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", nil},
-		{"a destination of another host", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "names the host " + otherResultsHost, []string{otherUpstream}},
-		{"a second dpop profile", resultsProfilesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN of kind dpop", []string{resultsUpstream}},
+		{"a wildcard profile", resultsProfilesBinding(`"*.ci-results.test"`), "DISPATCH_RESULTS_TOKEN", "one exact host", []string{resultsUpstream}},
+		{"a two-host profile", resultsProfilesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "DISPATCH_RESULTS_TOKEN", "one exact host", []string{resultsUpstream}},
+		{"no private destination", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "DISPATCH_RESULTS_TOKEN", "BROKER_PROXY_PRIVATE_UPSTREAM is unset", nil},
+		{"a destination of another host", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "DISPATCH_RESULTS_TOKEN", "which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", []string{otherUpstream}},
+		{"a second dpop profile of a host no destination names", resultsProfilesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN", "binds " + otherResultsHost + ", which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", []string{resultsUpstream}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			env := append(append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, c.profiles)), c.upstream...)
 			out := refusedWithin(t, binary, append([]string{metricsListenEnv}, env...))
-			if !strings.Contains(out, "DISPATCH_RESULTS_TOKEN") || !strings.Contains(out, c.says) {
-				t.Fatalf("B with %s was refused, but its output does not name DISPATCH_RESULTS_TOKEN and %q: %s", c.name, c.says, out)
+			if !strings.Contains(out, c.profile) || !strings.Contains(out, c.says) {
+				t.Fatalf("B with %s was refused, but its output does not name %s and %q: %s", c.name, c.profile, c.says, out)
 			}
 			if strings.Contains(out, "BROKER_EXCHANGE_RESULT_WORKFLOWS") {
 				t.Errorf("B's refusal names BROKER_EXCHANGE_RESULT_WORKFLOWS, which it was not given: %s", out)

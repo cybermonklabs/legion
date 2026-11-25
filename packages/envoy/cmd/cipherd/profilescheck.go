@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -25,7 +25,7 @@ const (
 
 // profilesCheckForm is the subcommand as a person writes it, which its usage line and every
 // message that points at it name.
-const profilesCheckForm = profilesCommand + " " + profilesCheckCommand + " <file> [--against <old file>] [--private-upstream <host>=<url>]"
+const profilesCheckForm = profilesCommand + " " + profilesCheckCommand + " <file> [--against <old file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]"
 
 // profilesCheckUsage is the one line every usage error of the subcommand prints, in the form the
 // end-sessions usage line takes.
@@ -34,9 +34,14 @@ const profilesCheckUsage = "broker: usage: broker " + profilesCheckForm + ", one
 // profilesCheckName opens every line the subcommand writes.
 const profilesCheckName = profilesCommand + " " + profilesCheckCommand
 
-// privateUpstreamFlag is the flag that gives the subcommand the private destination, the value
-// BROKER_AIRLOCK_PRIVATE_UPSTREAM gives the broker.
+// privateUpstreamFlag is the flag that gives the subcommand the private destinations, the value
+// BROKER_PROXY_PRIVATE_UPSTREAM gives the broker.
 const privateUpstreamFlag = "private-upstream"
+
+// clusterRangesFlag is the flag that gives the subcommand the broker's cluster ranges, the value
+// BROKER_AIRLOCK_CLUSTER_RANGES gives the broker, against which each private destination's address
+// is judged.
+const clusterRangesFlag = "cluster-ranges"
 
 // removedAirlockCheckCommand is the subcommand that checked the airlock's rules file, which the
 // profiles file's proxy blocks replaced: it is refused naming `profiles check`, so a deployment's
@@ -45,23 +50,37 @@ const removedAirlockCheckCommand = "airlock-check"
 
 // runProfilesCheck reads the profiles file args names and says whether the broker would serve it,
 // with the broker's own reader and no second reader of the format: policy.ParseProfiles, which the
-// boot runs too, and then the boot's own check of the results profile, DISPATCH_RESULTS_TOKEN
-// (config.ResultsEntryRules), so that what this agrees to is exactly what the boot agrees to but
+// boot runs too, and then the boot's own checks of the dpop blocks - the results profile's
+// (config.ResultsEntryRules) and every rule of a dpop block the file alone decides
+// (config.MintedEntryRules) - so that what this agrees to is exactly what the boot agrees to but
 // for the reads it has no setting for: each requester service against the deployment's registered
-// services (readProfiles), and the results profile's one host against the private destination
-// (config.AirlockResultRules), which it checks only when --private-upstream gives it that
-// destination. A pull request that changes the deployment's profiles.json runs it, so the file a
-// reviewer is asked to read is one the broker has already agreed to serve.
+// services (readProfiles), each dpop block's host against the private destinations
+// (config.ProxyMintedRules), which it checks only when --private-upstream gives it the
+// destinations, and each destination's address against the broker's cluster ranges, which it
+// checks only when --cluster-ranges gives it them too. A pull request that changes the
+// deployment's profiles.json runs it, so the file a reviewer is asked to read is one the broker has
+// already agreed to serve.
 //
-// --private-upstream takes the value BROKER_AIRLOCK_PRIVATE_UPSTREAM gives the broker, one
-// <host>=<url> entry read by the parser config.Load reads the setting with
-// (config.ParsePrivateUpstream), and holds the file to config.AirlockResultRules with that
-// destination and no result entries, the check the boot of a broker with that destination makes:
-// the results profile, where the file holds it, binds the destination's host, and a destination
-// needs that profile. Given empty, it is a broker given no destination. Without it, a file that
-// holds the results profile is still valid, and the report says, in one line after the line that
-// says so, which host the profile binds and that its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not
-// checked, since this run did not see the destination.
+// --private-upstream takes the value BROKER_PROXY_PRIVATE_UPSTREAM gives the broker, <host>=<url>
+// entries read by the parser config.Load reads the setting with (config.ParsePrivateUpstreams),
+// and holds the file to config.ProxyMintedRules with those destinations, the check the boot of a
+// broker with them makes: each dpop block binds a destination's host, and each destination needs a
+// dpop block. It holds each destination to the boot's address rule too
+// (config.PrivateUpstreamAddressRules, netaddr.DestinationRefusal): localhost and an address a
+// destination is on no broker - loopback, link-local, the metadata servers, an IPv6 form that
+// carries an IPv4 address and the rest of netaddr.DestinationNever - are refused as the boot
+// refuses them. --cluster-ranges takes the value BROKER_AIRLOCK_CLUSTER_RANGES gives the broker,
+// read by the parser config.Load reads that setting with (config.ParseAirlockClusterRanges), and
+// with it the rule is the boot's whole one: an address outside the private ranges and outside
+// every range given is refused, and one inside a range given is valid. Without it, such an
+// address, which only a broker's BROKER_AIRLOCK_CLUSTER_RANGES admit, is valid with one line, per
+// destination, that says it was not judged against the cluster ranges (no --cluster-ranges); a
+// private address and a name need no range and get no such line. --cluster-ranges given empty is
+// a broker given no ranges, and without a --private-upstream that names a destination it is a
+// usage error, since the ranges judge nothing else here. Without --private-upstream, or with it
+// blank, a file that holds dpop blocks is still valid, and the report says, in one line for each
+// block after the line that says so, which host the block binds and that its tie to
+// BROKER_PROXY_PRIVATE_UPSTREAM was not checked, since this run did not see the destinations.
 //
 // On a file it would serve it exits 0 and writes the report on stdout: what the file adds and
 // removes against the file --against names, or against an empty profiles file when that flag is
@@ -78,10 +97,12 @@ const removedAirlockCheckCommand = "airlock-check"
 //
 // On a file it would not serve it exits 1 with one line on stderr naming the file and what the
 // refusal says: the profile and the field, or the parse position for a file that is not JSON. A
-// usage error is exit 2 and the usage line; a --private-upstream value the destination's parser
-// refuses is one, with the parser's refusal, which quotes no part of the URL a credential can sit
-// in. It reads no configuration, opens no database and binds nothing: the file, the --against file
-// and the arguments are all it reads.
+// usage error is exit 2 and the usage line, and so is a --private-upstream value that is not one
+// BROKER_PROXY_PRIVATE_UPSTREAM takes - one its parser refuses, or a destination whose address the
+// boot refuses - and a --cluster-ranges value its parser refuses, each with the refusal, which
+// quotes no part of a URL a credential can sit in and no element of the ranges. It reads no
+// configuration, opens no database and binds nothing: the file, the --against file and the flags
+// are all it reads.
 //
 // The --against file is decoded and never held to the file's rules (policy.DecodeProfiles): the
 // profiles in force may be a file this broker would refuse, and what changed is the point of the
@@ -91,7 +112,8 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprintln(stderr, profilesCheckUsage) }
 	against := flags.String("against", "", "the profiles file in force now, the one the report is made against")
-	privateUpstream := flags.String(privateUpstreamFlag, "", "the value BROKER_AIRLOCK_PRIVATE_UPSTREAM gives the broker, <host>=<url>, which the results profile's one host is checked against")
+	upstreamFlag := flags.String(privateUpstreamFlag, "", "the <host>=<url> entries the broker's BROKER_PROXY_PRIVATE_UPSTREAM holds, against which the dpop blocks' hosts and each destination's address are checked")
+	clusterRanges := flags.String(clusterRangesFlag, "", "the value BROKER_AIRLOCK_CLUSTER_RANGES gives the broker, comma-separated CIDR prefixes, against which each destination's address is checked")
 	// The subcommand's form puts the file first and the flag after it, and flag.Parse stops at
 	// the first argument that is not a flag, so the files are taken out one at a time and what
 	// follows each is parsed again. A flag then works wherever it is written, and a second file
@@ -114,20 +136,56 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	path := strings.TrimSpace(files[0])
-	// The destination is read here and not by a flag.Value, whose refusal the flag package writes
-	// with the value quoted whole: config.ParsePrivateUpstream, the parser config.Load reads the
-	// setting with, refuses quoting no part of the URL a credential can sit in. A flag given empty
-	// is a broker given no destination, which the boot refuses beside a results profile, and not a
-	// run that saw no destination.
-	upstreamGiven := false
-	flags.Visit(func(f *flag.Flag) { upstreamGiven = upstreamGiven || f.Name == privateUpstreamFlag })
-	var upstream config.PrivateUpstream
+	// The destinations are read here and not by a flag.Value, whose refusal the flag package
+	// writes with the value quoted whole: config.ParsePrivateUpstreams, the parser config.Load
+	// reads the setting with, refuses quoting no part of a URL a credential can sit in. A flag
+	// given blank names no destination, as the setting does.
+	rangesGiven := false
+	flags.Visit(func(f *flag.Flag) { rangesGiven = rangesGiven || f.Name == clusterRangesFlag })
+	text := strings.TrimSpace(*upstreamFlag)
+	upstreamGiven := text != ""
+	var upstreams []config.PrivateUpstream
 	if upstreamGiven {
 		var err error
-		if upstream, err = config.ParsePrivateUpstream(*privateUpstream); err != nil {
+		if upstreams, err = config.ParsePrivateUpstreams(text); err != nil {
 			fmt.Fprintf(stderr, "%s: --%s: %v\n", profilesCheckName, privateUpstreamFlag, err)
 			flags.Usage()
 			return 2
+		}
+	}
+	// The cluster ranges are read the same way, by the parser config.Load reads the setting with,
+	// which names an element's position and never the element. They judge the destinations'
+	// addresses and nothing else here, so without a destination they are a usage error rather than
+	// a flag that checks nothing; given empty, they are a broker given no ranges.
+	var ranges []netip.Prefix
+	if rangesGiven {
+		if !upstreamGiven {
+			fmt.Fprintf(stderr, "%s: --%s judges the address of each destination --%s gives, and was given without one\n", profilesCheckName, clusterRangesFlag, privateUpstreamFlag)
+			flags.Usage()
+			return 2
+		}
+		var err error
+		if ranges, err = config.ParseAirlockClusterRanges(*clusterRanges); err != nil {
+			fmt.Fprintf(stderr, "%s: --%s: %v\n", profilesCheckName, clusterRangesFlag, err)
+			flags.Usage()
+			return 2
+		}
+	}
+	// Each destination's address, held as the boot holds it: given the cluster ranges, the boot's
+	// whole rule; without them, an address a destination is on no broker is refused, and one only
+	// the cluster ranges could admit is said not to be judged against them. A destination whose
+	// address the boot refuses is no value BROKER_PROXY_PRIVATE_UPSTREAM takes, so its refusal is
+	// a usage error, as the parser's is.
+	var unjudged []netip.Addr
+	for _, upstream := range upstreams {
+		addr, err := config.PrivateUpstreamAddressRules(upstream, ranges, rangesGiven)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: --%s: %v\n", profilesCheckName, privateUpstreamFlag, err)
+			flags.Usage()
+			return 2
+		}
+		if addr.IsValid() {
+			unjudged = append(unjudged, addr)
 		}
 	}
 	now, err := readProfilesFile(path, policy.ParseProfiles)
@@ -135,14 +193,19 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", profilesCheckName, err)
 		return 1
 	}
-	// The results profile, held as the boot holds it: the rules the file alone decides, and,
-	// given the destination, the boot's whole check of it with that destination and no result
-	// entries, of which those rules are the first part.
+	// The dpop blocks, held as the boot holds them: the results profile's own rules
+	// (config.ResultsEntryRules, with no result entries) and every rule the file alone decides
+	// (config.MintedEntryRules), and, given the destinations, the boot's whole check of the blocks
+	// against them (config.ProxyMintedRules), of which those rules are the first part.
 	rules := now.ProxyRules()
+	if err := config.ResultsEntryRules(rules, false); err != nil {
+		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
+		return 1
+	}
 	if upstreamGiven {
-		err = config.AirlockResultRules(rules, upstream, false)
+		err = config.ProxyMintedRules(rules, upstreams)
 	} else {
-		err = config.ResultsEntryRules(rules)
+		err = config.MintedEntryRules(rules)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
@@ -158,9 +221,16 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		oldName = name
 	}
 	fmt.Fprintf(stdout, "%s: %s is valid: %s\n", profilesCheckName, path, profileCount(len(now.Names())))
-	if results := rules.Lookup(oauthwire.AirlockResultsName); results != nil && !upstreamGiven {
-		fmt.Fprintf(stdout, "%s: %s binds %s; its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not checked (no --%s)\n",
-			profilesCheckName, oauthwire.AirlockResultsName, results.Hosts[0], privateUpstreamFlag)
+	if !upstreamGiven {
+		for _, entry := range rules.Secrets {
+			if entry.Kind == proxyrules.KindDPoP {
+				fmt.Fprintf(stdout, "%s: %s binds %s; its tie to BROKER_PROXY_PRIVATE_UPSTREAM was not checked (no --%s)\n", profilesCheckName, entry.Name, strings.Join(entry.Hosts, " "), privateUpstreamFlag)
+			}
+		}
+	}
+	for _, addr := range unjudged {
+		fmt.Fprintf(stdout, "%s: BROKER_PROXY_PRIVATE_UPSTREAM names %s, an address outside the private ranges, which a broker takes as a destination only inside its BROKER_AIRLOCK_CLUSTER_RANGES; it was not judged against the cluster ranges (no --%s)\n",
+			profilesCheckName, addr, clusterRangesFlag)
 	}
 	fmt.Fprintf(stdout, "%s: compared against %s\n", profilesCheckName, oldName)
 	writeProfilesChanges(stdout, old, now)

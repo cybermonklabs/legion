@@ -1950,10 +1950,10 @@ export const dispatchToolSpecs = [
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
       "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
       "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself before " +
-      "the write left it (Airlock-Forwarded: false) prints its code and its words; each says " +
-      "nothing reached Dispatch and exits 1, and only a 503 is asked again. An answer the proxy " +
-      "gives itself after the write may have left it (Airlock-Forwarded: unknown) is asked again " +
-      "under the same key and, if no answer settles it, prints " +
+      "the write left it (Cipher-Proxy-Forwarded: false) prints its code and its words; each " +
+      "says nothing reached Dispatch and exits 1, and only a 503 is asked again. An answer the " +
+      "proxy gives itself after the write may have left it (Cipher-Proxy-Forwarded: unknown) is " +
+      "asked again under the same key and, if no answer settles it, prints " +
       '{"write_outcome_unknown":"<code>"} and exits 1. A call that Dispatch\'s check of the ' +
       "run's token (429 " +
       "BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +

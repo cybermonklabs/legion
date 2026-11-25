@@ -452,7 +452,7 @@ func TestDialAllowOpensTheAddressesItNamesAndNoOthers(t *testing.T) {
 }
 
 // serviceRange is GKE's default Service range, which a cluster's ClusterIPs are drawn from. It is
-// global unicast, so none of localRule's fixed rules refuses an address in it: only
+// global unicast, so none of netaddr.DialRefusal's fixed rules refuses an address in it: only
 // Options.ClusterRanges does.
 var serviceRange = netip.MustParsePrefix("34.118.224.0/20")
 
@@ -608,7 +608,7 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		// ClusterIP: the destination takes its own host's requests and no other host's, so this
 		// request goes out on the proxy's own transport and is refused at its dial as before.
 		withDestination := options
-		withDestination.PrivateUpstream = privateDestination()
+		withDestination.PrivateUpstreams = []PrivateUpstream{privateDestination()}
 		r := newRig(t, withDestination)
 		r.addresses[privateName] = []netip.Addr{clusterIP}
 		r.answers[boundHost] = [][]netip.Addr{{netip.MustParseAddr("93.184.216.34")}, {clusterIP}}
@@ -629,13 +629,13 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 	})
 
 	t.Run("the private destination's bound host is sent its allowed request at a ClusterIP", func(t *testing.T) {
-		// BROKER_AIRLOCK_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
+		// BROKER_PROXY_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
 		// to a ClusterIP inside them, and the allowed write to its bound host reaches the service
 		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused: by a
 		// secret grant, which may tunnel to a host its names do not bind, naming the ranges, and by
-		// the result grant, which reaches its bound host alone, by that rule.
+		// the minted grant, which reaches its bound host alone, by that rule.
 		r, standIn := newPrivateRig(t, clusterIP, options.ClusterRanges)
-		answer, body, err := r.writeResult()
+		answer, body, err := r.writeMinted()
 		if err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
 			t.Fatalf("the allowed write answered %v %v and the service received %+v; want 201 and one write", answer, err, standIn.writes())
 		}
@@ -646,8 +646,8 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 			if _, refusal := connectRefused(t, r, target, workerPlaceholder); !strings.Contains(refusal, clusterRangeRule) {
 				t.Errorf("the refusal of a secret grant's CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
 			}
-			if code, refusal := connectRefused(t, r, target, resultsPlaceholder); code != codeResultHostOnly {
-				t.Errorf("the result grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeResultHostOnly)
+			if code, refusal := connectRefused(t, r, target, mintedPlaceholder); code != codeMintedHostOnly {
+				t.Errorf("the minted grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeMintedHostOnly)
 			}
 		}
 	})
@@ -1060,6 +1060,9 @@ func TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy(t *testing.T) {
 	}{
 		{"a target outside the live profile", fmt.Errorf("%w: PROOFS_READ: the target ada/site is outside the profile, which names the account ada and the repositories ada/lean", requests.ErrTargetRefused), "TARGET_REFUSED", "ada/site"},
 		{"a scope the minter refuses", fmt.Errorf("%w: github app 42: GitHub answered HTTP 422 to the profile's token for ada: likely a repository it names (missing) that the installation does not reach", secrets.ErrMintNarrowingRefused), "PROFILE_MINT_REFUSED", "(missing)"},
+		// A stored secret under a dpop block: the API port answers its release MINTED_ONLY, and
+		// so does this port, under the same code.
+		{"a stored secret under a dpop block", fmt.Errorf("release %s behind the airlock: %w", workerName, requests.ErrMintedOnly), "MINTED_ONLY", "never a stored secret's release"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRig(t, Options{})

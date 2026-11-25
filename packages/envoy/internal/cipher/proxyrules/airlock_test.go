@@ -181,13 +181,13 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestValidateTakesTheDPoPKind: an entry of kind dpop, the capability the broker mints for a CI
-// run and holds, is a valid file, and a kind that is only near it is refused. The kind is
+// TestValidateTakesTheDPoPKind: an entry of kind dpop, a capability the broker mints for a grant
+// of its own and holds, is a valid file, and a kind that is only near it is refused. The kind is
 // compared as it is written, as the other three are, so "DPoP" is no kind; each refusal names
 // the kind the file wrote and the four kinds there are, so its reader sees what to write.
 func TestValidateTakesTheDPoPKind(t *testing.T) {
 	entry := func(kind string) Rules {
-		return Rules{Secrets: []SecretRule{{Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
+		return Rules{Secrets: []SecretRule{{Name: "TEST_MINTED_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
 			Allow: []Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: kind}}}
 	}
 	if err := Validate(entry("dpop")); err != nil {
@@ -199,7 +199,7 @@ func TestValidateTakesTheDPoPKind(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Validate of an entry of kind %q: no error", kind)
 			}
-			for _, want := range []string{`secrets[0]`, `"DISPATCH_RESULTS_TOKEN"`, fmt.Sprintf("kind %q", kind), `"", "aws", "azure" or "dpop"`} {
+			for _, want := range []string{`secrets[0]`, `"TEST_MINTED_TOKEN"`, fmt.Sprintf("kind %q", kind), `"", "aws", "azure" or "dpop"`} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not name %s", err, want)
 				}

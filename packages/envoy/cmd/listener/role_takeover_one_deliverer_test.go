@@ -552,10 +552,23 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		}
 		// Each copy the walk forwards is stored on the holder's own subject, and the holder's
 		// relay reads the role's claim before it sends that frame. The holder has received
-		// every copy before row 4 counts claim reads, so none of those reads falls in its count.
+		// every copy, the role message stored after them and the message to itself below, before
+		// row 4 counts claim reads, so none of those reads falls in its count.
 		if !heardHolder.awaitMarks(30*time.Second, frames...) {
 			t.Errorf("the holder %s did not receive every role message from role %s's kept lane within 30s: it received %v", holder, role, heardHolder.allMarks())
 		}
+		// A copy forwarded twice can reach the holder after the first copy of every frame has,
+		// so the holder's counts below are read once it received a role message stored after
+		// the frames, which takes their path behind them (laterRoleMessage) and so reaches it
+		// after any such copy the relay or the walk made before that message's, and then a
+		// message to itself stored once the handover ended, which reaches it after any the
+		// handover made later (awaitHandoverReceived).
+		later := laterRoleMessage(t, role)
+		rig.storeFrames(t, sessionID, []markedFrame{later})
+		if !heardHolder.awaitMarks(30*time.Second, later) {
+			t.Errorf("the holder %s did not receive %q, stored after the frames, within 30s: it received %v", holder, later, heardHolder.allMarks())
+		}
+		rig.awaitHandoverReceived(t, role, holder, heardHolder)
 		// The message to the session came after the role messages in stream order, so the relay
 		// had judged each of them when the session received it.
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
@@ -567,7 +580,8 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 				// The holder answers each frame done at once, so its consumer sends a frame again
 				// only after its ack wait (bus.SessionConsumerAckWait, 60s) passes with no
 				// acknowledgement: a second frame here is a second copy forwarded, which the
-				// copy's message id rules out.
+				// copy's message id rules out, and it would have reached the holder before the
+				// role message stored after the frames did.
 				if n := heardHolder.countMark(frame.mark); n != 1 {
 					t.Errorf("the holder %s received %q %d times, want once: it received %v", holder, frame, n, heardHolder.allMarks())
 				}

@@ -712,11 +712,12 @@ name uses is served only through its profiles, and a `github-app` secret no prof
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
 (`github-installations-no-profile`), so every GitHub token the broker hands over is a profile's.
 The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
-nothing else, is served by a CI run's result grant and has no stored secret as its source: with
-none of its name, the policy refuses it as `profile-source-missing`, and a stored secret of its
-name is never released, as a value or as a placeholder. The profiles file is refused when that
-profile has no proxy block, or when a profile of kind `dpop` sets a `source`, `tier`,
-`requesters`, `maxGrant`, `github` or `google`.
+nothing else, is served by a CI run's result grant and has no stored secret as its source: the
+policy serves it as nothing, as every dpop profile, with or without a stored secret of its name
+(`profile-minted`, no refusal), and a stored secret of its name is never released, as a value or
+as a placeholder: a session's release of it is answered `403 MINTED_ONLY`. The profiles file is
+refused when that profile has no proxy block, or when a
+profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -1514,8 +1515,29 @@ placeholder of each slot of the value, and the hosts the entry binds. A placehol
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
 brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream
-<host>=<url>]` says whether a broker would serve a file, and what that file adds and removes
-against the one in force.
+'<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]` says whether a broker would serve a file,
+and what that file adds and removes against the one in force. Given the broker's values of
+`BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`, it also holds each dpop block
+to those destinations and each destination's address to the rule the broker holds it to at start;
+without `--cluster-ranges` it says which address it did not judge against the ranges.
+
+A proxy block may be of kind `dpop`: a capability the broker mints for a grant of its own and
+holds, from no stored secret. Such a profile is a name and its proxy block alone. Its grant is
+answered a placeholder that opens with `agent-secrets-placeholder-`, the kind's word and a hyphen;
+on the block's host the proxy takes a request only with that placeholder as its one
+`Authorization` header, `DPoP <placeholder>`, swaps in a token it mints for the grant bound to its
+pod's own key, adds a DPoP proof of that key, and sends the request without the command's
+forwarding headers. The placeholder opens no tunnel anywhere else. Every dpop block binds one exact
+host with an `allow` list none of whose entries is every path (`""` or `/`), in `Authorization` alone, and that host is a private destination's:
+`BROKER_PROXY_PRIVATE_UPSTREAM`, `<host>=<url>` entries, one per bound host, sends each host's allowed
+requests to its own address inside the broker's own cluster rather than wherever its name resolves. No block of another
+kind may bind it. A stored secret under a dpop block is never released (`403 MINTED_ONLY`).
+Each grant records a digest of its block and the destination, and a broker whose own digest differs
+serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
+and a stored secret of its name is not served through it, so nothing of it can be requested or
+approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
+itself, for a kind it names in code: the results capability, `DISPATCH_RESULTS_TOKEN`, whose
+grant a CI run of a result entry is answered.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
@@ -1614,10 +1636,15 @@ What the airlock does not stop is as much of the design as what it does:
   broker whose profiles file gives any profile a proxy block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
-  The one exception is `BROKER_AIRLOCK_PRIVATE_UPSTREAM` (`<host>=<url>`): the allowed requests
-  of the profile `DISPATCH_RESULTS_TOKEN`, whose proxy block binds that host alone, go to the URL,
-  at an address the proxy refuses to every other request and never at a loopback, link-local or
-  metadata server's address, and a tunnel or plain-HTTP request to that address stays refused.
+  The one exception is `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound
+  host): the allowed requests of the dpop blocks that bind a host, such as the profile
+  `DISPATCH_RESULTS_TOKEN`, go to that host's URL.
+  The proxy dials it only at an address in a range a destination may be in — private,
+  `100.64.0.0/10`, or inside `BROKER_AIRLOCK_CLUSTER_RANGES` — and never at a loopback,
+  link-local, unspecified, multicast or IPv4 broadcast address, one in `0.0.0.0/8`, a cloud
+  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo,
+  IPv4-compatible, IPv4-translated and ISATAP forms); a tunnel or plain-HTTP request to that
+  address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

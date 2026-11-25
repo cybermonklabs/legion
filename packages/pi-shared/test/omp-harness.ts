@@ -70,15 +70,20 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL. The server
- * answers behind Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
+ * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
+ * request up. Returns the recorded requests and the server's base URL. The server answers behind
+ * Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
  * `Idempotency-Key` names that key back, as Dispatch's own answers do: the client takes no 2xx
  * that names no key as its write's answer, so a stand-in of a keyed write (a delivery's accept,
  * a reply) whose answer left it out would never be accepted.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    request: globalThis.Request
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
@@ -93,7 +98,7 @@ export function serveStandin(
       const { body, refusal } = await readStandinBody(request);
       if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request);
     }),
   });
   cleanup.push(async () => {
@@ -388,6 +393,9 @@ export interface Rpc {
    * exited, so a case that expects it alive races it against its own clock.
    */
   readonly exited: Promise<number>;
+  /** The process id of the omp it started: the one process whose own steps a timer record a
+   *  case hands it through the environment is read for. */
+  readonly pid: number;
 }
 
 /**
@@ -456,6 +464,7 @@ export function spawnRpc(
     },
     closed,
     exited: child.exited,
+    pid: child.pid,
   };
 }
 

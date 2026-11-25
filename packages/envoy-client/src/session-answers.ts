@@ -8,6 +8,7 @@ import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
+import { jsonLineRecord } from "./json-line-record";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 /**
@@ -451,6 +452,16 @@ export interface SessionAnswersRead {
   readonly notice?: string;
 }
 
+/** Tests only: the file each wait below appends `{ armedMs, endedBy }` to, one JSON line each, so
+ *  a test across the process boundary reads the deadline a request's read was given and what
+ *  ended it rather than timing the request. Unset, as every deployment runs, nothing is written. */
+export const ANSWERS_WAIT_RECORD_FILE = "ENVOY_ANSWERS_WAIT_RECORD_FILE";
+
+const recordWait = jsonLineRecord<{
+  readonly armedMs: number;
+  readonly endedBy: "deadline" | "aborted" | "answered";
+}>(process.env, ANSWERS_WAIT_RECORD_FILE);
+
 /** `promise`'s value, or which came first of `ms` passing and `signal` aborting. */
 async function settleWithin<T>(
   promise: Promise<T>,
@@ -466,7 +477,12 @@ async function settleWithin<T>(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([promise, stop]);
+    const outcome = await Promise.race([promise, stop]);
+    recordWait?.({
+      armedMs: ms,
+      endedBy: outcome === "deadline" ? "deadline" : outcome === "aborted" ? "aborted" : "answered",
+    });
+    return outcome;
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);

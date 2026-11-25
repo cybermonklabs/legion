@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: its prefix and 32
@@ -57,7 +58,10 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 // it, and an entry that is missing sends a request the proxy refuses (a private address) or
 // cannot reach (the broker itself) through it. An entry with a trailing dot is the same name
 // fully qualified, which Bun's fetch, the runtime `dispatch result` writes with, reads as covering
-// the bound host, so it is held to the bound hosts as the name without it is.
+// the bound host, so it is held to the bound hosts as the name without it is. Bun also splits the
+// list on white space, so a bound host that a space, a tab or a line feed joins to another entry
+// is dropped as one between commas is, the other entry is kept, and the child's list holds no
+// white space in any row.
 func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com", "dispatch.example.test"}, map[string]string{"value": testAirlockPlaceholder})
 	for _, row := range []struct {
@@ -159,6 +163,24 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 			wantEntries: []string{"secrets.example.test.", "broker.internal.example"},
 		},
 		{
+			name:        "an inherited bound host a space joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test dispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test dispatch.example.test"},
+		},
+		{
+			name:        "an inherited bound host a tab joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test\tdispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test\tdispatch.example.test"},
+		},
+		{
+			name:        "a list of commas, spaces, tabs and a line feed, with bound hosts among it",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=intranet.example.org, other.test\tapi.example.com ,\nx.example.net  .cdn.example.com"},
+			wantEntries: []string{"intranet.example.org", "other.test", "x.example.net", "broker.internal.example"},
+			wantGone:    []string{"api.example.com", ".cdn.example.com"},
+		},
+		{
 			name:        "control: a sibling broker host stays",
 			environ:     []string{"AGENT_SECRETS_URL=https://secrets.example.com"},
 			wantEntries: []string{"secrets.example.com"},
@@ -166,6 +188,9 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := airlockNoProxy(row.environ, release)
+			if strings.ContainsFunc(got, unicode.IsSpace) {
+				t.Errorf("NO_PROXY = %q, want no white space in it", got)
+			}
 			entries := strings.Split(got, ",")
 			has := func(want string) bool {
 				for _, e := range entries {

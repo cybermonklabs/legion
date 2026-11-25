@@ -99,14 +99,18 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 		t.Fatal(err)
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1")
-	args = append(append(args, env...), self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	args = append(args, env...)
+	// The helper's -test.timeout ends helperDeadlineGap before this test's deadline, not reentry's
+	// reentryMargin: this test's own cleanups after a helper that gave up need that gap. The
+	// arguments are reentryUntil's, as every re-entry's are.
+	var end time.Time
 	if deadline, ok := t.Deadline(); ok {
-		left := time.Until(deadline) - helperDeadlineGap
-		if left < helperLeastTime {
+		end = deadline.Add(-helperDeadlineGap)
+		if left := time.Until(end); left < helperLeastTime {
 			t.Fatalf("%s as PID 1 would have %s before its own deadline, %s before this test's, less than the %s it needs: what ran before it took the rest of the test binary's -timeout", helper, left.Round(time.Millisecond), helperDeadlineGap, helperLeastTime)
 		}
-		args = append(args, "-test.timeout="+left.String())
 	}
+	args = append(append(append(args, self), reentryUntil(end, helper)...), "-test.v", "-test.count=1")
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
 	defer cancel()
 	command := exec.CommandContext(ctx, "sudo", args...)
@@ -152,7 +156,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
 		t.Fatal(err)
 	}
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
@@ -162,7 +166,8 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
 		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self, "-test.run=^TestLauncherPIDOneHelper$")
+		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self)
+	args = append(args, reentry(t, "TestLauncherPIDOneHelper")...)
 	command := exec.Command("sudo", args...)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -180,15 +185,12 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	}()
 	t.Cleanup(func() {
 		g.cancel()
-		select {
-		case err, ok := <-g.result:
-			if ok && err != nil {
-				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
-			}
-		case <-time.After(10 * time.Second):
-			_ = command.Process.Kill()
-			<-g.result
-			t.Error("PID 1 launcher did not stop after its context ended")
+		// No bound of the case's own on the launcher's end (reentry): one that does not stop after
+		// its context ended is ended by its own -test.timeout, with its alarm's goroutine dump in
+		// its output, and its namespace with it. A case that took the launcher's return itself
+		// leaves the channel closed (rig.result), with nothing left to read here.
+		if err, ok := <-g.result; ok && err != nil {
+			t.Errorf("PID 1 launcher exited: %v (one that did not stop after its context ended ends at its own deadline, its panic below)\n%s", err, output.String())
 		}
 	})
 	g.accept()

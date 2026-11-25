@@ -45,7 +45,7 @@ import {
 // public URL, https://dispatch.ci-results.test, through the proxy front. Whichever broker takes
 // the tunnel reads the grant from the database, mints the run's results token bound to its own
 // key, signs a DPoP proof for that public URL and sends the write to Dispatch's own loopback port,
-// the one private destination of its settings (BROKER_AIRLOCK_PRIVATE_UPSTREAM). No resolver
+// the one private destination of its settings (BROKER_PROXY_PRIVATE_UPSTREAM). No resolver
 // answers the public name: a write that goes around the proxy opens no connection at all.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
@@ -109,7 +109,7 @@ export const PROBE_CHECK = "probe-passes";
 export const OTHER_JOBS_CHECK = "second-probe-passes";
 
 /** The line each broker logs once at start, naming the thumbprint of its pod's DPoP key. */
-const DPOP_KEY_LINE = "broker: the airlock's DPoP key";
+const DPOP_KEY_LINE = "broker: the proxy's DPoP key";
 /** The message of the line Dispatch writes for each request it served (cmd/dispatch's README,
  *  "Access log"). */
 const ACCESS_LINE = 'msg="dispatch: request"';
@@ -454,9 +454,10 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const stands = path.join(bin, "dev-proxy-stands");
 
     // The cluster's issuer: Dispatch's own token at the brokers, rewritten before it lapses, and
-    // the brokers' sign-in client, which a broker requires and nothing here signs in at. The issuer
-    // takes a code-flow client with its registered callback (#5185); this is the one dev-broker.sh
-    // and run-broker.sh register.
+    // the brokers' sign-in client, which a broker requires and nothing here signs in at. Its one
+    // registered callback is the broker's approval page on loopback, at any port, as
+    // scripts/dev-broker.sh registers it (dev-oidc-issuer's --code-flow takes the callback since
+    // main's #5185).
     const accountToken = path.join(work, "dispatch-account-token");
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
@@ -595,7 +596,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_AIRLOCK_CA_KEY_FILE: authority.ca_key_file,
       // Dispatch's own loopback port is the destination of the bound host's allowed writes, and
       // the one loopback address and port the proxies may dial.
-      BROKER_AIRLOCK_PRIVATE_UPSTREAM: `${DISPATCH_HOST}=http://${dispatchAddress}`,
+      BROKER_PROXY_PRIVATE_UPSTREAM: `${DISPATCH_HOST}=http://${dispatchAddress}`,
       BROKER_AIRLOCK_TEST_DIAL_ALLOW: dispatchAddress,
       BROKER_AIRLOCK_CLUSTER_RANGES: CLUSTER_RANGES,
       BROKER_K8S_OIDC_ISSUER: issuerUrl,

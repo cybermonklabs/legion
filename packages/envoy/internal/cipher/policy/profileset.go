@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // profileKeyPrefix opens the key a refused profile has in Set.Refused (profileKey). No secret's
@@ -60,6 +62,12 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 			}
 			continue
 		}
+		if refusal.Reason == ReasonProfileMinted {
+			// A dpop profile is proxy configuration and no secret: it is served as nothing, a
+			// stored secret of its name with it (deleted above), and it is no refusal either, so
+			// it writes no refused line and counts in no broker_unservable_secrets series.
+			continue
+		}
 		refused[profileKey(profile.Name)] = refusal
 		byName[profile.Name] = refusal
 		if stored, taken := set.Secrets[profile.Name]; taken && refusal.Reason == ReasonProfileNameTaken {
@@ -103,13 +111,20 @@ func servesAnApp(set *Set) bool {
 }
 
 // serve checks the profile at index i against its source among set's stored secrets and answers
-// the Secret it is served as, or the refusal of the first rule it fails, in R2's order: its source
-// is no stored secret set serves; its name is another stored secret's; its github or google block
-// does not fit the source; the tag rules (TagRules) refuse its tags, the profile's own over its
+// the Secret it is served as, or the refusal of the first rule it fails, in R2's order, after the
+// one rule that reads no source: a profile of kind dpop is never served. Then: its source is no
+// stored secret set serves; its name is another stored secret's; its github or google block does
+// not fit the source; the tag rules (TagRules) refuse its tags, the profile's own over its
 // source's, so a profile of an admin source is held to the admin rules; it is looser than its
 // source; or it has no proxy block on a source whose credential only the proxy can scope.
 func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	profile := &p.list[i]
+	if profile.Proxy != nil && profile.Proxy.Kind == proxyrules.KindDPoP {
+		// Proxy configuration for a capability the broker mints for a grant of its own and holds:
+		// no stored secret is ever its value, so a stored secret of its name is not served
+		// through it, and nothing of it can be requested or approved.
+		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + proxyrules.KindDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
+	}
 	source, ok := set.Secrets[profile.Source]
 	if !ok {
 		return Secret{}, p.sourceMissing(profile, set, prefix)

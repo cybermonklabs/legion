@@ -153,6 +153,25 @@ func (s *Store) MigrateThrough(ctx context.Context, version int) error {
 	return s.migrateThrough(ctx, migrationFiles, version)
 }
 
+// MigrationText is the whole text of the embedded forward migration numbered version, comments
+// included, as the runner applies it. It refuses a version no embedded forward migration carries,
+// and one that two carry. A caller that names an operator's remedy reads a migration's statement
+// here rather than keeping a second copy of it (graphcensus' refusal without its indexes).
+func MigrationText(version int) (string, error) {
+	names, err := fs.Glob(migrationFiles, fmt.Sprintf("migrations/%d_*.up.sql", version))
+	if err != nil {
+		return "", fmt.Errorf("find migration %d: %w", version, err)
+	}
+	if len(names) != 1 {
+		return "", fmt.Errorf("find migration %d: %d embedded forward migrations carry it, want one", version, len(names))
+	}
+	text, err := migrationFiles.ReadFile(names[0])
+	if err != nil {
+		return "", fmt.Errorf("read migration %d: %w", version, err)
+	}
+	return string(text), nil
+}
+
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 

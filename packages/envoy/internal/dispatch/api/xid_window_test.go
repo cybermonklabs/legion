@@ -220,7 +220,8 @@ func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 // first, then the versions of the spec, then the approval request and its hand-back, and the
 // claim last.
 func TestXidWindowsOnTheLargeSpec(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process
+	// (XidTracer.Measure fails in a parallel test).
 	runXidSteps(t, newXidFixture(t, testServerOptions{}, ""), false, []xidStep{
 		{"comment create anchored", xidWindowCommentCreateAnchored},
 		{"comment create reply on anchored thread", xidWindowCommentCreateReplyOnAnchoredThread},
@@ -295,7 +296,7 @@ func newBlockAskFixture(t *testing.T) (*xidFixture, string) {
 }
 
 func TestXidWindowAskAnswerBlock(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f, askID := newBlockAskFixture(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
@@ -305,7 +306,7 @@ func TestXidWindowAskAnswerBlock(t *testing.T) {
 }
 
 func TestXidWindowAskResolveBlock(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f, askID := newBlockAskFixture(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
@@ -319,7 +320,7 @@ func TestXidWindowAskResolveBlock(t *testing.T) {
 // issue's anchored asks: the edit's version settles before the close is measured, as the block
 // ask's own opening did before the edit.
 func TestXidWindowAskBlockEditThenIssueClose(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f, askID := newBlockAskFixture(t)
 	runXidSteps(t, f, true, []xidStep{
 		{"ask edit block text", func(t *testing.T, f *xidFixture) { xidWindowAskEditBlockText(t, f, askID) }},
@@ -440,7 +441,7 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 // and the review - is queued with the route's own writes, so the window is that one batch and the
 // commit ending it.
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{}, "")
 	approval := reviewDocument(t, f.handler, f.specID, "alice", "approved", "")
 	approved := versionMarkdown(t, f.handler, f.specID, approval.Version)
@@ -486,7 +487,7 @@ func xidWindowNamedVersion(t *testing.T, f *xidFixture) {
 // load a history that does not decode (invalidLoadOnceStore), and the rebuild writes the supplied
 // markdown as the document's next version.
 func TestXidWindowDocumentRebuild(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	var broken *invalidLoadOnceStore
 	f := newXidFixture(t, testServerOptions{
 		persistence: func(database *store.Store) docs.VersionedStore {
@@ -569,7 +570,7 @@ func (f *xidFixture) approvalRequestOverTwoDocuments(t *testing.T) (string, stri
 // batch: the ask's answer and its answered row, its parts' index, ask.answered, and one review row
 // with its artifact.approved per named document.
 func TestXidWindowApprovalAnswerOverTwoDocuments(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{}, "")
 	askID, verificationID := f.approvalRequestOverTwoDocuments(t)
 	f.measureBatched(t, http.StatusOK, func(h http.Handler) *httptest.ResponseRecorder {
@@ -795,7 +796,7 @@ func newXidDeliveryFixture(t *testing.T) *xidFixture {
 // delivery of its own: a mention's reply, a targeted message's reply, a direct message's accept
 // and a targeted message's retry.
 func TestXidWindowDeliveries(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	runXidSteps(t, newXidDeliveryFixture(t), false, []xidStep{
 		{"comment delivery reply", xidWindowCommentDeliveryReply},
 		{"message delivery reply", xidWindowMessageDeliveryReply},

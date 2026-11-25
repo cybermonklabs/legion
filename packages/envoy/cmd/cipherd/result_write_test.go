@@ -39,10 +39,6 @@ import (
 // resultWritePath is the results route a run's write is sent to.
 const resultWritePath = "/api/v1/projects/" + project + "/results"
 
-// dpopKeyLine is the line a broker with an airlock logs once at start, naming its pod key's
-// thumbprint.
-const dpopKeyLine = "broker: the airlock's DPoP key"
-
 // resultsDispatch is the TLS stand-in for Dispatch's public host, which records every request
 // the proxy sends it and answers each 201.
 type resultsDispatch struct {
@@ -151,7 +147,7 @@ func (e *resultsEnvironment) grant(t *testing.T, b *resultsBroker, run string) r
 	grantID, _ := body[oauthwire.ExtraGrantID].(string)
 	airlock, _ := body[oauthwire.ExtraAirlock].(map[string]any)
 	caPEM, _ := airlock["ca_certificate"].(string)
-	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.ResultPrefix) || grantID == "" || caPEM == "" {
+	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || grantID == "" || caPEM == "" {
 		t.Fatalf("run %s's placeholder exchange = %d %v, want 200 with a result placeholder, its grant and the airlock's certificate", run, status, body)
 	}
 	return resultGrant{placeholder: held, grantID: grantID, caPEM: caPEM}
@@ -199,8 +195,8 @@ func (g resultGrant) write(t *testing.T, client *http.Client) (*http.Response, s
 // stored fails t unless the write reached the stand-in and its answer came back as Dispatch's.
 func stored(t *testing.T, what string, answer *http.Response, body string) {
 	t.Helper()
-	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Airlock-Forwarded") != "true" {
-		t.Fatalf("%s = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want the stand-in's 201, forwarded", what, answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body)
+	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Cipher-Proxy-Forwarded") != "true" {
+		t.Fatalf("%s = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want the stand-in's 201, forwarded", what, answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body)
 	}
 }
 
@@ -381,12 +377,12 @@ func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
 	token := e.dispatch.tokens(t)[0]
 	time.Sleep(3 * time.Second)
 	connect := rawConnect(t, b, g.placeholder)
-	if connect.StatusCode != http.StatusProxyAuthRequired || connect.Header.Get("Airlock-Forwarded") != "false" || connect.Header.Get("Airlock-Code") != "GRANT_NOT_LIVE" {
-		t.Errorf("a CONNECT after the grant ended = %d, Airlock-Forwarded %q, Airlock-Code %q; want 407, false, GRANT_NOT_LIVE", connect.StatusCode, connect.Header.Get("Airlock-Forwarded"), connect.Header.Get("Airlock-Code"))
+	if connect.StatusCode != http.StatusProxyAuthRequired || connect.Header.Get("Cipher-Proxy-Forwarded") != "false" || connect.Header.Get("Cipher-Proxy-Code") != "GRANT_NOT_LIVE" {
+		t.Errorf("a CONNECT after the grant ended = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q; want 407, false, GRANT_NOT_LIVE", connect.StatusCode, connect.Header.Get("Cipher-Proxy-Forwarded"), connect.Header.Get("Cipher-Proxy-Code"))
 	}
 	answer, body = g.write(t, client)
-	if answer.StatusCode != http.StatusProxyAuthRequired || answer.Header.Get("Airlock-Forwarded") != "false" || answer.Header.Get("Airlock-Code") != "GRANT_NOT_LIVE" {
-		t.Errorf("a write on the open connection after the grant ended = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 407, false, GRANT_NOT_LIVE", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body)
+	if answer.StatusCode != http.StatusProxyAuthRequired || answer.Header.Get("Cipher-Proxy-Forwarded") != "false" || answer.Header.Get("Cipher-Proxy-Code") != "GRANT_NOT_LIVE" {
+		t.Errorf("a write on the open connection after the grant ended = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 407, false, GRANT_NOT_LIVE", answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body)
 	}
 	if received := len(e.dispatch.service.Requests()); received != 1 {
 		t.Errorf("the stand-in for Dispatch received %d writes, want the one inside the grant", received)

@@ -311,8 +311,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
-	// access token (azure.go); "dpop" a CI run's results token the broker minted, which the swap
-	// puts in and resultTransport signs a DPoP proof of the pod's key for (dpop.go). Validate
+	// access token (azure.go); "dpop" a token the broker minted for a minted capability's grant,
+	// which the swap puts in and mintedTransport signs a DPoP proof of the pod's key for (dpop.go). Validate
 	// allows no other kind, so an entry this reads nothing for is a header swap. It is the kind
 	// candidates already read for this name, carried on the pair rather than looked up again.
 	kind := chosen.kind
@@ -321,15 +321,15 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// the plain header swap below, and the federated token's refusal below holds as it does
 		// under every kind. It is the negative control of the check those two kinds belong to,
 		// and is refused on a production start. A dpop entry keeps its kind: read as none, it
-		// would send the run's token on with no proof and with the command's forwarding headers.
+		// would send the grant's token on with no proof and with the command's forwarding headers.
 		kind = ""
 	}
 	if kind == proxyrules.KindDPoP {
-		// A CI run's results capability (requests.Machine.AirlockConnection for a result grant):
+		// A minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder):
 		// two rules hold every request to its host, each refused before any value is minted or
 		// any dial is made. An upgrade is refused, since the bytes after its answer are no request
 		// the airlock reads; and the request carries the grant's placeholder as its one
-		// Authorization header, which the swap below replaces with the run's token, so nothing
+		// Authorization header, which the swap below replaces with the grant's token, so nothing
 		// else a command sends there - its own token, a second header beside the placeholder -
 		// goes on to the service.
 		if len(r.Header.Values("Upgrade")) != 0 {
@@ -529,23 +529,23 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
 	refusedByCut := false
 	// Where the request goes: the CONNECT target over TLS on the proxy's own transport, which
-	// checks and dials the target's addresses (dialChecked); or, for the private destination's
-	// bound host, the destination URL's scheme and host on the destination's own transport, which
-	// checks and dials the destination's addresses (dialUpstream). Every other host keeps the
-	// proxy's own transport, so the destination takes the requests of its one host and no other.
+	// checks and dials the target's addresses (dialChecked); or, for a private destination's
+	// bound host, that destination URL's scheme and host on that destination's own transport,
+	// which checks and dials its addresses (dialUpstream). Every other host keeps the proxy's own
+	// transport, so each destination takes the requests of its one host and no other.
 	var transport http.RoundTripper = s.upstream
 	scheme, upstreamHost := "https", info.target
-	if s.toDestination(info.host) {
-		transport, scheme, upstreamHost = s.private, s.privateUpstream.URL.Scheme, s.privateUpstream.URL.Host
+	if d := s.destinationOf(info.host); d != nil {
+		transport, scheme, upstreamHost = d.transport, d.upstream.URL.Scheme, d.upstream.URL.Host
 		// A call the destination did not answer is answered without the transport's error,
 		// which names the destination's in-cluster address (destinationUnreachable).
 		upstreamFailed = s.destinationUnreachable(info.host, r.URL.Path)
 	}
 	if kind == proxyrules.KindDPoP {
-		// The swap put the run's token in; resultTransport signs its proof with the pod's key,
+		// The swap put the grant's token in; mintedTransport signs its proof with the pod's key,
 		// for the bound host's origin whatever address the request is sent to, and hands it to
 		// the transport above.
-		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: transport}
+		transport = &mintedTransport{key: s.dpopKey, origin: "https://" + info.host, base: transport}
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
@@ -569,8 +569,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// to its public name, which a dpop entry's proof names too.
 			pr.Out.Host = hostHeaderOf(info.target)
 			if kind == proxyrules.KindDPoP {
-				// A results write goes on without any forwarding header the command sent, so
-				// Dispatch reads the broker's address and never one the command wrote:
+				// A minted capability's request goes on without any forwarding header the command
+				// sent, so Dispatch reads the broker's address and never one the command wrote:
 				// ReverseProxy has dropped Forwarded and X-Forwarded-*, which are not set back
 				// here, and dpopDroppedHeaders are the two it leaves.
 				for _, name := range dpopDroppedHeaders {
@@ -596,7 +596,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// decompressed, because this design changes no answer from an API service - what it
 		// guards is what leaves, not what comes back. The one change is the two headers that
 		// say the answer is the service's and not the proxy's own (ownAnswer): the service's own
-		// Airlock-Code goes, so a service cannot pass for the proxy.
+		// Cipher-Proxy-Code goes, so a service cannot pass for the proxy.
 		ModifyResponse: func(answer *http.Response) error {
 			if !toCommand.start() {
 				// The watcher ended the call between the service's answer and here, so
@@ -620,7 +620,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// that would read as a service out of reach. Its record is the call's one line, as
 			// every refusal's is. The call may have reached the service before the cut - it can
 			// hold a whole write and not have answered, or have answered on the way back - so the
-			// answer says Airlock-Forwarded: unknown once the transport held a connection for it
+			// answer says Cipher-Proxy-Forwarded: unknown once the transport held a connection for it
 			// (leaving, ownAnswer).
 			refusedByCut = true
 			s.refuse(w, r, info.callFor(chosen), why.status, why.code, why.why)
@@ -715,8 +715,8 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // dpopDroppedHeaders are the forwarding headers ReverseProxy leaves on a request, which a request
 // to a host whose entry is of kind dpop loses in Rewrite: with the four ReverseProxy drops and
 // serveBound does not set back for that kind, they are the six that Dispatch reads a caller's
-// address from (internal/dispatch/routes's forwardingHeaders), so a results write reaches Dispatch
-// with the broker's address and none the command wrote.
+// address from (internal/dispatch/routes's forwardingHeaders), so a minted capability's request
+// reaches Dispatch with the broker's address and none the command wrote.
 var dpopDroppedHeaders = []string{"X-Real-IP", "Via"}
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the
@@ -895,7 +895,7 @@ func (info connInfo) callFor(chosen pair) call {
 // refusals, refuseCredential's 407 among them. The answer is written here, on the connection the
 // proxy opened, and nothing more of the request reaches the service: every caller but one refuses
 // before it hands the request to a transport, and the one that refuses after, serveBound's
-// ErrorHandler for a call its grant watcher cut, answers with Airlock-Forwarded: unknown when the
+// ErrorHandler for a call its grant watcher cut, answers with Cipher-Proxy-Forwarded: unknown when the
 // request may already have reached the service (ownAnswer). c is what is known of the call, code
 // names the refusal, and reason is the broker's own words for it.
 //
@@ -1122,7 +1122,7 @@ func headerOf(headers [][2]string) http.Header {
 // An informational answer (1xx, but 101, which ends the exchange) is not the status the call
 // ended with, and goes to the command without the two headers that say whose answer it is
 // (ownAnswer): ReverseProxy copies a 1xx answer's headers to the command as the service sent
-// them, and ModifyResponse, which sets Airlock-Forwarded and removes the service's Airlock-Code,
+// them, and ModifyResponse, which sets Cipher-Proxy-Forwarded and removes the service's Cipher-Proxy-Code,
 // sees only the final answer, so a service could otherwise pass for the proxy in a 1xx.
 type statusWriter struct {
 	http.ResponseWriter
