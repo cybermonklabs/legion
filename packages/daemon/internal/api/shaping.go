@@ -4,8 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it; server.go routes the requests and calls writeAnswer and writeAnswerFrom for every body it
-// answers, and reads lowestPluginContract for the number the state carries.
+// it. server.go routes the requests, and its handlers and state_route.go's call writeAnswer and
+// writeAnswerFrom for every body they answer. state_route.go reads lowestPluginContract for the
+// number the state carries.
 
 import (
 	"encoding/json"
