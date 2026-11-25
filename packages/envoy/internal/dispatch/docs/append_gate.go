@@ -211,16 +211,17 @@ func (g *appendGate) result() (appendGateRead, error) {
 }
 
 // observedBeforeClose is whether a browser update the room's observer took age ago, on this
-// process's monotonic clock, was taken no later than closeMargin after its issue's close
-// committed, closedFor ago on the database's clock (closed_at, which the close stamps after its
-// last document write and just before its events and its commit). Both are measured at the
-// gate's read, so the two clocks need not agree, only run at about the same rate. Such an update
-// was made while the issue was open, or before its room could have heard of the close, and is
-// stored as it would have been had its append reached the store just ahead of the close: the
-// document owes a settlement for it, which runs whether or not the issue is closed
-// (settleRoomWithin). An update with no observed time is not taken as one.
-func observedBeforeClose(observed time.Time, age, closedFor time.Duration) bool {
-	return !observed.IsZero() && age+closeMargin >= closedFor
+// process's monotonic clock, was taken no later than margin after its issue's close committed,
+// closedFor ago on the database's clock (closed_at, which the close stamps after its last
+// document write and just before its events and its commit). margin is the store's
+// (PgVersioned.closeMargin): closeMargin, unless a test gave its service another
+// (Deps.CloseMargin). Both are measured at the gate's read, so the two clocks need not agree, only
+// run at about the same rate. Such an update was made while the issue was open, or before its
+// room could have heard of the close, and is stored as it would have been had its append reached
+// the store just ahead of the close: the document owes a settlement for it, which runs whether or
+// not the issue is closed (settleRoomWithin). An update with no observed time is not taken as one.
+func observedBeforeClose(observed time.Time, age, closedFor, margin time.Duration) bool {
+	return !observed.IsZero() && age+margin >= closedFor
 }
 
 // updateAge is how long ago the room's observer took an update, measured at the gate's read as the
@@ -238,7 +239,7 @@ func updateAge(observed time.Time) time.Duration {
 // latest+1), how many of the run are admitted, ErrIssueClosed or ErrRoomBehindHead. The run comes
 // from a room instance whose cursor holds every version through through, ruled by kind, each
 // update carrying when the room's observer took it (BrowserUpdate.Observed, zero for a derived
-// write or an append with no class).
+// write or an append with no class), and margin the store's close margin (observedBeforeClose).
 //
 // An appendBrowser run is cut at the first update the document's closed issue no longer admits
 // (observedBeforeClose): the admitted updates are a prefix, because the run ascends in the order
@@ -259,7 +260,7 @@ func updateAge(observed time.Time) time.Duration {
 // and reloaded at the head (Service.closeRoomOnReplacedHistory), rather than taking every later
 // update of its browsers down this path, a decode of the whole stored document under the
 // document's lock each.
-func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int) (latest int64, admitted int, replaced bool, err error) {
+func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int, margin time.Duration) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")
 	}
@@ -267,7 +268,7 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 	if kind == appendBrowser && read.closedFor != nil {
 		for admitted = 0; admitted < len(updates); admitted++ {
 			observed := updates[admitted].Observed
-			if !observedBeforeClose(observed, updateAge(observed), *read.closedFor) {
+			if !observedBeforeClose(observed, updateAge(observed), *read.closedFor, margin) {
 				break
 			}
 		}
