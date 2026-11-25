@@ -17,13 +17,14 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe, useAskAssign } from "./AssignToMe";
-import { askIssueKey, controlName } from "./ask-name";
+import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
+import { useControlName } from "./useControlName";
 
 /** What names an issue document in an address: its slug, and whether it is the issue's primary
  *  document, which opens as its spec. Each document field of an ask row carries both. */
@@ -152,7 +153,7 @@ export function ReadingPaneHead({
   // issue out of `isUnassigned` at the press, so the head draws the control while that write is
   // out or refused as well: `Assigning…`, and a refusal with its Retry.
   const assign = useAskAssign(ask.id);
-  const name = controlName(ask, undefined);
+  const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
   const approval = ask.kind === "approval" ? ask.approval : undefined;
@@ -180,6 +181,7 @@ export function ReadingPaneHead({
       ) : null}
       {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
           goes when the reader moves the selection (`useAskSnoozeWrites`). */}
+      {reads}
       <SnoozeControl
         askId={ask.id}
         label={name}

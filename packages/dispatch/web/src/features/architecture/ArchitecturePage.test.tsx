@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -21,9 +22,14 @@ import type {
   ArchitectureTreeIssue,
   ArchitectureTreeSource,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { ArchitecturePage } from "./ArchitecturePage";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function component(
   overrides: Partial<ArchitectureTreeComponent> & { id: string }
@@ -764,7 +770,9 @@ test("Not architectural lists each reason, names the ancestor of an inherited ro
   const pane = renderPane(fixture(), "?view=none");
   try {
     const list = await screen.findByTestId("not-architectural-list");
-    expect(within(list).getAllByText("hiring, not code")).toHaveLength(2);
+    // Each reason draws through the one renderer, whose engine loads on the first body of the
+    // page, so the words may arrive a commit after the list.
+    expect(await within(list).findAllByText("hiring, not code")).toHaveLength(2);
     const inherited = within(list).getByTestId("attachment-CORE-9");
     expect(within(inherited).getByRole("link", { name: "CORE-8" })).toHaveAttribute(
       "href",
@@ -784,6 +792,37 @@ test("Not architectural lists each reason, names the ancestor of an inherited ro
         keyedAttempt
       )
     );
+  } finally {
+    pane.restore();
+  }
+});
+
+// A row's reason is a stored text its writer typed in a box with the reference picker, and the
+// architecture read sends the reading the server made of it (`reason_tree`): the row draws that
+// tree rather than a parse of the markdown. The tree reads differently from the markdown beside
+// it, so a row drawn from a parse would read `hiring, not code` alone.
+test("a Not architectural row's reason is drawn from the tree the architecture read sends", async () => {
+  const pane = renderPane(
+    fixture({
+      not_architectural: [
+        {
+          inherited_from: null,
+          key: "CORE-8",
+          reason: "hiring, **not** code",
+          reason_tree: displayTree("hiring, **not** code, for now"),
+          status: "todo",
+          title: "Hire",
+        },
+      ],
+    }),
+    "?view=none"
+  );
+  try {
+    const row = within(await screen.findByTestId("not-architectural-list")).getByTestId(
+      "attachment-CORE-8"
+    );
+    await waitFor(() => expect(row).toHaveTextContent("hiring, not code, for now"));
+    expect(within(row).getByText("not").tagName).toBe("STRONG");
   } finally {
     pane.restore();
   }

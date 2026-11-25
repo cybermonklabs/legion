@@ -290,6 +290,9 @@ function DeliverySettingsFields({
           <div className="grid gap-1">
             <label className={settingsFieldLabel} htmlFor={`${id}-production-jobs`}>
               Production jobs
+              {/* One setting per line rather than prose, so this box takes neither the
+                  reference picker nor the renderer: `delivery-production-jobs` in
+                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
                 {...heldField(held)}
                 aria-describedby={`${id}-production-jobs-hint`}
@@ -365,6 +368,8 @@ function DeliverySettingsFields({
           <div className="grid gap-1">
             <label className={settingsFieldLabel} htmlFor={`${id}-population-authors`}>
               Population authors
+              {/* One setting per line rather than prose: `delivery-population-authors` in
+                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
                 {...heldField(held)}
                 aria-describedby={`${id}-population-authors-hint`}
@@ -386,6 +391,8 @@ function DeliverySettingsFields({
           <div className="grid gap-1">
             <label className={settingsFieldLabel} htmlFor={`${id}-excluded-repos`}>
               Excluded repositories
+              {/* One setting per line rather than prose: `delivery-excluded-repos` in
+                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
                 {...heldField(held)}
                 aria-describedby={`${id}-excluded-repos-hint`}

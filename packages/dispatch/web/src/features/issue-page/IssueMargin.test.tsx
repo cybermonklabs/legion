@@ -21,6 +21,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { holdNotifications } from "../../__tests__/commits";
+import { displayTree } from "../../__tests__/display-trees";
 import { realClock } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -62,7 +63,9 @@ import {
   IssuePriorityLine,
   priorityTriggerName,
 } from "../priorities/IssuePriorityLine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -106,6 +109,7 @@ import {
   NODE_TYPE_NAMES,
   STATE_LINES,
 } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
@@ -216,11 +220,12 @@ function detailsQueryClient(): QueryClient {
 
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
- *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
- *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
- *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
- *  opens or closes does. `queryClient` is the client every read goes through, by default a new
- *  `detailsQueryClient()`. */
+ *  is what the panel draws next. `beside` is drawn above it, over writes of its own. It is drawn
+ *  under the names store, as the app draws the margin's slot (`app.tsx`), which nothing
+ *  publishes to unless `beside` does. `drawer` is the Details drawer it is drawn in; with none,
+ *  Details makes none of the reads it makes only while open. `redraw` draws the same Details in
+ *  the drawer it is handed, as a drawer that opens or closes does. `queryClient` is the client
+ *  every read goes through, by default a new `detailsQueryClient()`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
@@ -230,18 +235,20 @@ function renderDetails(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <MarginSlotProvider drawer={inDrawer}>
-            <NoTooltips>
-              <CachedIssue>
-                {(details, state) => (
-                  <>
-                    {beside?.(details)}
-                    <Details issue={details} state={state} />
-                  </>
-                )}
-              </CachedIssue>
-            </NoTooltips>
-          </MarginSlotProvider>
+          <ReferenceNamesProvider>
+            <MarginSlotProvider drawer={inDrawer}>
+              <NoTooltips>
+                <CachedIssue>
+                  {(details, state) => (
+                    <>
+                      {beside?.(details)}
+                      <Details issue={details} state={state} />
+                    </>
+                  )}
+                </CachedIssue>
+              </NoTooltips>
+            </MarginSlotProvider>
+          </ReferenceNamesProvider>
         </MarginProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -7112,6 +7119,36 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
   }
 });
 
+// R5 and R8 over a pin: its line is its record's one line as the outline draws a node's
+// (`useNodeLine`), so a bare address in the record reads as its target's name - the name the
+// page published for it, an issue's key and then its title - and never as the address. Drawn
+// from the words of the record's reading alone, the line spelled the address out.
+test("a pin's line reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const id = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
+  const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
+  const body = `Wait on ${address} first. Then ship.`;
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
+  pinReads.comments.mockResolvedValue([commentOf(id, body, displayTree(body))]);
+  const published = publishedNames(new Map([[address, "Ship the release"]]));
+  const { unmount } = renderDetails(() => <Publisher published={published} />);
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await waitFor(() =>
+      expect(
+        within(pins).getByRole("link").textContent,
+        "the pin does not read its reference as its target's name"
+      ).toBe("Wait on CORE-2 Ship the release first.")
+    );
+    expect(within(pins).getByRole("link").textContent).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 /** When the pinned posts below were edited, and when deleted. */
 const PIN_EDITED_AT = "2026-09-09T01:00:00Z";
 const PIN_DELETED_AT = "2026-09-09T02:00:00Z";
@@ -7132,8 +7169,8 @@ function pinLink(id: string): HTMLElement {
 }
 
 // R2 of dispatch://INFRA-1523: a pinned comment or message its author edited is drawn by its first
-// line, then ` · edited`, inside its link, as a parent line in the outline says it (`NodeRow.tsx`'s
-// `ParentLink`). The mark is the page's own word, marked as its chrome.
+// line, then ` · edited`, inside its link, as a parent line in the outline says it
+// (`node-line.tsx`'s `ParentLink`). The mark is the page's own word, marked as its chrome.
 test("a pinned comment and a pinned message their authors edited say edited after their lines", async () => {
   const comment = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
   const message = "7b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e";

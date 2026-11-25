@@ -1,11 +1,11 @@
-import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
-import { heldField, heldPress } from "../../components/held-press";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -15,7 +15,6 @@ import {
   card,
   cardHoverBorder,
   dangerText,
-  inputClasses,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -25,6 +24,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import type { AskPress } from "./ask-writes";
@@ -36,6 +36,7 @@ import {
   useOwnAnswerWrite,
 } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 
 /**
  * What a refused decline says: the server's own words where it gave any - the note is too long,
@@ -54,19 +55,25 @@ export function declineRefusal(error: Error): string {
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
- * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) and adds the
+ * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) - the shared
+ * field and the picker in it, so a note names a party as every other box does - and adds the
  * count of what they may still write, in the UTF-16 units the server counts
- * (`DISPATCH_EVENT_BODY_MAX`). The field stops at that bound, which is where the count reaches
- * zero, so a long note meets the bound here rather than as a refusal from the server. While the
- * decline is out the note and both controls are held (`held-press.ts`), never disabled: the one
- * the reader pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never
- * leaves the open dialog, and a press of either control does nothing.
+ * (`DISPATCH_EVENT_BODY_MAX`), which the field names as its own description so a reader who
+ * cannot see it is told it too. Typing stops at that bound, where the count reaches zero. A
+ * pick writes into the box without typing, so a reference taken near the bound can pass it:
+ * the count then reads below zero and **Decline to answer** is disabled until the note is shorter,
+ * so the bound is met here rather than as a refusal from the server. While the decline is out
+ * the note and both controls are held (`held-press.ts`), never disabled: the one the reader
+ * pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never leaves the
+ * open dialog, and a press of either control does nothing.
  */
 function DeclineDialog({
   error,
   initialNote,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last decline with, or null while none was refused. */
@@ -74,13 +81,19 @@ function DeclineDialog({
   /** The note the dialog opens with: the refused decline's, so pressing Decline to answer again
    *  sends the same decline. */
   initialNote: string;
+  /** The issue the question was asked on, where it has one: the picker offers that issue's
+   *  people. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (note: string) => void;
+  /** The project of the document the question hangs from, whose components the picker offers. */
+  project?: string;
   saving: boolean;
 }): ReactNode {
   const [note, setNote] = useState(initialNote);
-  const noteId = useId();
-  const countId = `${noteId}-left`;
+  const countId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop. While
   // the decline is out it closes nothing, as the held Cancel button refuses to: the dialog shows
@@ -95,6 +108,9 @@ function DeclineDialog({
     open: true,
   });
   const left = DISPATCH_EVENT_BODY_MAX - note.length;
+  // One answer for both ways out of this box, the button and Ctrl/Cmd+Enter: a decline is sent
+  // while none is out and the note is within the bound a pick may have carried it past.
+  const canSend = !saving && left >= 0;
 
   return (
     <>
@@ -112,26 +128,28 @@ function DeclineDialog({
             The question closes with no answer. Dispatch tells the agent that asked to decide
             without one.
           </p>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`} htmlFor={noteId}>
-            Note (optional)
-            <textarea
-              aria-describedby={countId}
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              {...heldField(saving)}
-              id={noteId}
-              maxLength={DISPATCH_EVENT_BODY_MAX}
-              onChange={(event) => setNote(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (!saving) onSubmit(note.trim());
-                  },
-                })
-              }
-              ref={textareaRef}
-              value={note}
-            />
-          </label>
+          <MentionField
+            body={note}
+            className="text-sm"
+            describedBy={[countId]}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            held={saving}
+            issueKey={issueKey}
+            label="Note (optional)"
+            maxLength={DISPATCH_EVENT_BODY_MAX}
+            onChange={(change) => setNote(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (canSend) onSubmit(note.trim());
+                },
+              })
+            }
+            project={project}
+            writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
+          />
           <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
             {left} {left === 1 ? "character" : "characters"} left
           </p>
@@ -151,6 +169,7 @@ function DeclineDialog({
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
               {...heldPress(saving, () => onSubmit(note.trim()))}
+              disabled={left < 0}
               type="button"
             >
               {saving ? "Declining…" : "Decline to answer"}
@@ -162,9 +181,11 @@ function DeclineDialog({
   );
 }
 
-/** One press of the decline: the ask it is of (`AskPress`) and what it sends. */
+/** One press of the decline: the ask it is of (`AskPress`), what it sends, and its question as
+ *  the label names it (`questionWords`). */
 interface DeclinePress extends AskPress {
   readonly input: DeclineAskInput;
+  readonly questionWords: string;
 }
 
 /**
@@ -202,9 +223,11 @@ export function DeclineControl({
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
   // the shell's indicator carries it only while it is out. Each press carries the ask it
   // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
-  // card is drawn for by then.
+  // card is drawn for by then. Its label holds the question's plain-text projection, the words
+  // the card draws: the reading list's `write-label` (`DISPATCH_READING_SURFACES`) says why. The
+  // press carries that line as it reads at the press, so it names its own ask's question too.
   const options: OutstandingAnswerWriteOptions<Ask, DeclinePress> = {
-    label: (press) => `Decline of “${press.ask.question}”`,
+    label: (press) => `Decline of “${press.questionWords}”`,
     method: "POST",
     write: (press, bounds) => decline(press.ask.id, press.input, bounds),
     onSettled: () => submitGuard.release(),
@@ -260,8 +283,12 @@ function DeclineButton({
   submitGuard,
   write,
 }: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
+  // The words the card draws for the question, which the press carries as its label reads it
+  // (`questionWords`): this is the component that draws them, so it reads them.
+  const question = useQuestionLabel(ask);
   return (
     <div className="mt-3">
+      {question.reads}
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
         {...heldPress(write.isPending, () => setOpen(true))}
@@ -280,13 +307,21 @@ function DeclineButton({
         <DeclineDialog
           error={write.isError ? write.error : null}
           initialNote={write.error === null ? "" : (write.variables?.input.note ?? "")}
+          issueKey={ask.issue_key ?? undefined}
           onClose={() => {
             write.reset();
             setOpen(false);
           }}
           onSubmit={(note) =>
-            submitGuard.guard(() => write.mutate({ ask, input: note === "" ? {} : { note } }))
+            submitGuard.guard(() =>
+              write.mutate({
+                ask,
+                input: note === "" ? {} : { note },
+                questionWords: question.line(),
+              })
+            )
           }
+          project={ask.anchor_artifact?.project}
           saving={write.isPending}
         />
       ) : null}

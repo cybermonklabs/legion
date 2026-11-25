@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -51,6 +51,7 @@ import type {
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
@@ -67,6 +68,12 @@ import {
 } from "./inbox-fixture";
 import type { InboxRoute } from "./inbox-route";
 import { SnoozeControl } from "./SnoozeControl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const mocks = installInboxApiMocks();
 
@@ -1347,7 +1354,9 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
     await user.click(draft);
     await user.paste("Ship what, exactly?");
     const askBack = within(card).getByRole("button", { name: "Ask back" });
-    askBack.focus();
+    act(() => {
+      askBack.focus();
+    });
     await user.click(askBack);
 
     // The reply lands in the card's thread and the card says whose turn it is; Ask back, its
@@ -2040,14 +2049,18 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     await user.click(field);
     await user.paste("JSON");
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => {
+      answer.focus();
+    });
     await user.click(answer);
     // The optimistic removal does not take the row from under the reader: it stays, and the
     // failure shows on it.
     await waitFor(() => expect(within(card).getByRole("alert")).toBeTruthy());
     expect(answerAsk).toHaveBeenCalledTimes(1);
     expect(within(card).getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe("JSON");
-    field.focus();
+    act(() => {
+      field.focus();
+    });
 
     // Bob answers it meanwhile: the reader is still in the row, so it stays.
     threadB = {
@@ -5264,12 +5277,13 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     // The pane is the column to the right of the list: one row, the list first.
     expect(list.parentElement).toBe(pane.parentElement?.parentElement ?? null);
     expect(list.compareDocumentPosition(pane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The card is the pane's, never the row's; the row is the question's first line, its kind
-    // and its age.
+    // The card is the pane's, never the row's; the row is the question drawn by the one
+    // renderer on one line - the heading's words and the detail after them, clamped by CSS,
+    // with no syntax left and no stripper of its own - beside its kind and its age.
     expect(within(list).queryByTestId("ask-ask-a")).not.toBeInTheDocument();
     expect(within(pane).getByTestId("ask-ask-a")).toBeTruthy();
     const row = shortRow("ask-a");
-    expect(within(row).getByText("Which approach?")).toBeTruthy();
+    expect(within(row).getByText("Which approach? The detail.")).toBeTruthy();
     expect(within(row).getByRole("img", { name: "Question" })).toBeTruthy();
     expect(within(row).getByText("CORE-1")).toBeTruthy();
     expect(row.querySelector("time")?.getAttribute("datetime")).toBe(first.created_at);

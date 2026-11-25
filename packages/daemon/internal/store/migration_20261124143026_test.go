@@ -35,6 +35,7 @@ const releaseTeardownVersion = 20261124143026
 // the index is the migration without them: the write of another word, or a second record of one
 // mark, then succeeds, and this test fails.
 func TestAReleaseMarkNotesItsTeardownWith20261124143026(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, releaseTeardownVersion-1)

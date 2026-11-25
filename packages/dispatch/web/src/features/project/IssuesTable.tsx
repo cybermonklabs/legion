@@ -589,6 +589,7 @@ export function IssuesTable({
               role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
               className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
             >
+              {/* The table's own notice of what a table action did. */}
               {notice?.text}
             </p>
             {interrupted ? (

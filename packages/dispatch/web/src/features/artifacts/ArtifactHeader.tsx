@@ -67,6 +67,7 @@ export function formatArtifactBytes(bytes: number | undefined): string {
 }
 
 export function versionLabel(version: Version): string {
+  // A version's summary, as its writer gave it: the reading list's `artifact-version-summary`.
   return `Version ${version.number}${version.summary === null ? "" : ` — ${version.summary}`}`;
 }
 
@@ -154,7 +155,7 @@ export function ArtifactHeader({
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
-        data-highlighted={highlighted || undefined}
+        data-highlighted={highlighted ? "" : undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">

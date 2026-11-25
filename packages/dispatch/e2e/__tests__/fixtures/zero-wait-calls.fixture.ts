@@ -22,8 +22,8 @@ export async function plantedCalls(menu: Locator): Promise<void> {
   if (((await menu.textContent()) ?? "").includes("B")) await menu.click();
 
   const shown = await menu.isVisible();
-  if (Boolean(shown)) await menu.click();
-  if (Boolean(await menu.isVisible())) await menu.click();
+  if (shown) await menu.click();
+  if (await menu.isVisible()) await menu.click();
 
   const label = await menu.textContent();
   if (label?.trim()) await menu.click();

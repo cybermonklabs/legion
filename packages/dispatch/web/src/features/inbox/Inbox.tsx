@@ -52,6 +52,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
 import {
   INBOX_FILTER_FIELDS,
   INBOX_FILTER_VOCABULARY,
@@ -65,6 +66,7 @@ import {
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -82,7 +84,7 @@ import {
 } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
-import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
+import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { useInboxWrites } from "./ask-writes";
 import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
@@ -126,7 +128,6 @@ import {
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
-import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
 import {
@@ -147,10 +148,11 @@ import {
 } from "./sections";
 import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
-import { ThreadTitle, useThreadLine } from "./ThreadTitle";
+import { ThreadLine, ThreadTitle } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
+import { useControlName } from "./useControlName";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -328,6 +330,28 @@ function MarkCheckbox({
 
 /** The checkbox a row draws for its mark (`MarkCheckbox`), the one checkbox every row has. */
 const MARK_SELECTOR = 'input[type="checkbox"]';
+
+/** A thread row's own checkbox, named after the thread it marks. The name is an `aria-label`,
+ *  which can hold no markup: it is the row's one plain-text line (`ThreadLine`) - the
+ *  projection of the subject by the same reader the row's own line is drawn by, with the record
+ *  that line names (`ThreadTitle`), never a second stripper, or a deleted root's deleted line. */
+function ThreadMarkCheckbox({
+  marked,
+  onMark,
+  row,
+  thread,
+}: {
+  marked: boolean;
+  onMark: (id: string) => void;
+  row: InboxListRow;
+  thread: MyReplyRow;
+}): ReactNode {
+  return (
+    <ThreadLine thread={thread}>
+      {(line) => <MarkCheckbox id={rowId(row)} marked={marked} name={line ?? ""} onMark={onMark} />}
+    </ThreadLine>
+  );
+}
 
 /** The `<li>` both layouts sit in: where the row is, what the reader's hand does to it, and the
  *  marks the selected row carries. Only the short row is selectable, so only it is ever drawn
@@ -507,7 +531,7 @@ function AskShortRow({
     /** The signed-in person's lowercase email; "Assign to me" writes it. */
     viewer: string;
   }): ReactNode {
-  const name = controlName(ask, ordinal);
+  const { name, reads } = useControlName(ask, ordinal);
   const snooze = useAskSnooze(ask.id);
   const assign = useAskAssign(ask.id);
   const handOn = useInboxWrites(AskHandOnWritesContext).of(ask);
@@ -517,7 +541,12 @@ function AskShortRow({
   return (
     <ShortRowFrame
       age={formatAskAge(rowLastActivityAt(row))}
-      check={<MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />}
+      check={
+        <>
+          {reads}
+          <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
+        </>
+      }
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -525,7 +554,23 @@ function AskShortRow({
       row={row}
       section={section}
       selected={selected}
-      title={<span className="min-w-0 grow truncate text-sm">{questionLine(ask.question)}</span>}
+      title={
+        // Main's title span, as main drew the question's words: its size, its place in the row
+        // and the line it cuts (`truncate`). The preview is that span's inline text (`inline`),
+        // so the ellipsis falls where main's did, and its type is the span's, since
+        // `.dispatch-markdown` takes its size and its line from the element around it
+        // (styles.css).
+        <span className="min-w-0 grow truncate text-sm">
+          <MarkdownPreview
+            className="inline"
+            lines={1}
+            markdown={ask.question}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="inbox-ask-row"
+            tree={ask.question_tree}
+          />
+        </span>
+      }
     >
       {/* The column's head draws the Snooze and the Assign to me of the question the column
           shows, and a short row draws neither of its own. A snooze or an Assign to me of this
@@ -597,7 +642,6 @@ function ThreadShortRow({
   thread,
 }: InboxRowProps & ShortRowProps & { thread: MyReplyRow }): ReactNode {
   const reference = threadReferenceRoute(thread);
-  const line = useThreadLine(thread);
   // The column draws an ask's thread with the ask's card, whose reply the Inbox holds by ask
   // (`AskReplyWritesContext`): it can be out or failed while the column shows another row. The
   // row then says it is out, or why it failed; the Retry is the card's, once the column shows the
@@ -606,7 +650,7 @@ function ThreadShortRow({
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={<MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />}
+      check={<ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -656,7 +700,7 @@ function InboxCardRow({
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
 }): ReactNode {
-  const name = controlName(ask, ordinal);
+  const { name, reads } = useControlName(ask, ordinal);
   // The optimistic assignee takes the issue out of `isUnassigned` at the press, so the row draws
   // Assign to me while its write is out or refused as well: `Assigning…`, and a refusal with its
   // Retry.
@@ -675,6 +719,7 @@ function InboxCardRow({
           Assign to me is a full-width row inside the right group, so it never draws over the
           issue key. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+        {reads}
         <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
         <RowKindIcon type={rowType(row)} />
         <div className="flex min-w-0 grow basis-48 items-baseline gap-2">
@@ -723,7 +768,6 @@ function ThreadCardRow({
   section,
   thread,
 }: InboxRowProps & { thread: MyReplyRow }): ReactNode {
-  const line = useThreadLine(thread);
   return (
     <InboxRowShell
       group={groupKey}
@@ -735,7 +779,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        <MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />
+        <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>

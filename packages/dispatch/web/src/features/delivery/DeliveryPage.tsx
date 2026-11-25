@@ -14,6 +14,7 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
+import { useSettled } from "../../hooks/useSettled";
 import {
   textParam,
   useAddressParams,
@@ -250,16 +251,6 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   );
 
   return [{ window: windowChoice, filters, sorting, view, brush }, setState];
-}
-
-/** `value`, once it has held still for `delayMs`. */
-function useSettled<T>(value: T, delayMs: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSettled(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-  return settled;
 }
 
 /** The Timeline | List segmented toggle. */
