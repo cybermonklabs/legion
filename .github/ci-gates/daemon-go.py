@@ -70,12 +70,13 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     (".github/ci-tools.yaml", "`.github/actions/install-uv/action.yml#ci_tools_fetch uv` installs the uv row's binary"),
     (".github/scripts/ci-tools.sh", "`.github/actions/install-uv/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
-    (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
-    (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image, "
+    (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS and PgBouncer test container images")),
+    (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const Image, "
                                             f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                            f"const HubImage"),
+    (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const PoolImage"),
 ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
   + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
   + go_modules("daemon-go"))

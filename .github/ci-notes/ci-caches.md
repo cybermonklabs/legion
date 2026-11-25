@@ -3,7 +3,8 @@
 The derivations behind the budgets of `.github/workflows/ci-caches.yaml`, which point into this
 file with `# why:` lines, as `.github/ci-notes/README.md` says, and the record of what the workflow
 fills and why. Each value's own arithmetic stays on its line in the workflow file. The budgets of
-that file's other jobs are still derived in the comments above their keys.
+that file's other jobs are still derived in the comments above their keys. Its other `# why:`
+lines name sections of `.github/ci-notes/ci.md`.
 
 ## What this workflow fills, and why it runs on a push to main
 
@@ -74,9 +75,8 @@ no `restore-keys`: the question is whether that exact key exists, and the answer
 nothing), and only a miss runs the build and saves what it left. Each of their keys carries a
 hash of the files that choose what the entry holds, and a run that finds its key builds
 nothing. Each save takes the key its lookup computed (`steps.<id>.outputs.cache-primary-key`),
-never a hashFiles() of its own (#why-a-lookups-save-takes-the-lookups-key). Where a job fills
-two families it fills the smaller one first, so the entry that carries the other's objects too is
-the one that was large already. A leg of a matrix that fails leaves the other running
+never a hashFiles() of its own (#why-a-lookups-save-takes-the-lookups-key). A leg of a matrix
+that fails leaves the other running
 (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no reason
 to cost the other's.
 
@@ -179,9 +179,9 @@ cache holds what the last fill downloaded, so the call fetches only what moved s
   packages/envoy), so it takes the second call. packages/daemon is downloaded there though the
   daemon job downloads it too: the two jobs answer different keys on runners of their own, so
   neither can lean on the other's module cache.
-- The envoy job's one call serves both of its builds. The go-envoy-test restore after it unpacks
-  that entry's module files over the same cache and takes none out, so the test build finds every
-  module the call fetched.
+- The envoy job makes one call for its build, and the envoy-test job, a job of its own since
+  main's #5334, one for its two, each after its job's restore, which would otherwise unpack over
+  what the call wrote.
 - The darwin vet's call runs on top of the module cache go-envoy's newest entry gave. `go mod
   download` with no arguments takes the whole build list, every platform's modules among them, so
   the darwin vet finds its own.
