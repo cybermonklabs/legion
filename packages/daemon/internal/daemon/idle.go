@@ -724,14 +724,15 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 	return mark, nil
 }
 
-// checkClaim is the claim a workspace check of view's pod reads through, and the one whose role a
-// decline tells: a live claim of the issue's open phase (workflow.OpenRoleAt, which at step is the
-// running step's role), and otherwise the first live claim. If two claims hold the open role, the
-// first in token order reads: every claim of the issue shares the one workspace, so either reads
-// the same answer. A decline tells the claim whose shim answered.
+// checkClaim is the claim a workspace check reads through and tells of unpushed work: the open
+// phase's worker (record.WorkerClaim over view.Phases), if live, else the first live claim. Two
+// live claims may hold one role, but only the phases row's worker is doing its current step.
 func checkClaim(view pods.IdleView, live []store.ReleasedClaim) store.ReleasedClaim {
 	if open := workflow.OpenRoleAt(view.Phase, view.StepRole); open != "" {
-		if i := slices.IndexFunc(live, func(c store.ReleasedClaim) bool { return c.Role == open }); i >= 0 {
+		row := view.Phases[open]
+		worker, err := record.WorkerClaim(view.Project, view.Issue, open,
+			[]record.PhaseRow{{Issue: view.Issue, Role: open, Claim: row.Claim, StepTask: row.StepTask}})
+		if i := slices.IndexFunc(live, func(c store.ReleasedClaim) bool { return c.Token == worker }); err == nil && i >= 0 {
 			return live[i]
 		}
 	}

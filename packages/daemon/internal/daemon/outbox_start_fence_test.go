@@ -11,11 +11,10 @@ import (
 
 // The fences of a start are one judgment (startFenceOf), which the outbox's run of the row logs from and
 // the judgment again under the machine's lock reads (stepStands), so neither can hold a fence the
-// other lacks, as the old step check held the phase where the outbox held the step's role. It
-// names the first fence a row fails, in the outbox's order: the generation, then the phase and the
-// step's role (record.Issue.HoldsQueued), then the entry. It reads the issue's phases rows for the
-// entry fence alone, so a row that fails an earlier fence, a start of no entry and a root
-// architect's start, which names no phase, read none; a failed read is the row's error.
+// other lacks. It names the first fence a row fails, in the outbox's order: the generation, then
+// the phase and the step's role (record.Issue.HoldsQueued), then the entry. It reads the issue's
+// phases rows for the entry fence alone, so a row that fails an earlier fence, a start of no entry
+// and a root architect's start, which names no phase, read none; a failed read is the row's error.
 func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone(t *testing.T) {
 	checking := record.Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker", Generation: 2}
 	rows := []record.PhaseRow{{Issue: "LEGION-208", Role: "checker", Entry: 5}}

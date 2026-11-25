@@ -1337,7 +1337,7 @@ type SuperviseRequest struct {
 	// suspended first. A run of the row again once the claim's session is this agent's asks
 	// nothing of the claim. The
 	// release before decodes strictly (DisallowUnknownFields), so the way back of
-	// 20261125053850_claim_session_agent takes the key off each queued supervise row this release
+	// 20261125114600_claim_session_agent takes the key off each queued supervise row this release
 	// wrote.
 	Agent plan.AgentID `json:"agent,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its

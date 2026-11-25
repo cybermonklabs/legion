@@ -1,4 +1,4 @@
--- 20261125053850_claim_session_agent.up.sql — the agent whose session a claim holds.
+-- 20261125114600_claim_session_agent.up.sql — the agent whose session a claim holds.
 --
 -- claims.session_agent is supervise.Claim.SessionAgent: the agent whose session the claim holds,
 -- in the identity a step's start names it by (plan.Agent.ID): `key:<key>` for the agent of a key,
@@ -107,7 +107,7 @@
 -- update outbox set payload = payload - 'agent' where kind = 'supervise' and payload ? 'agent';
 -- drop function if exists claim_agent_from_steps(text, text);
 -- alter table claims drop column if exists session_agent;
--- delete from schema_version where version = 20261125053850;
+-- delete from schema_version where version = 20261125114600;
 -- commit;
 alter table claims add column session_agent text not null default '';
 create function claim_agent_from_steps(claim_issue text, claim_token text) returns text language sql stable as $$

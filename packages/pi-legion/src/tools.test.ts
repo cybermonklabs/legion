@@ -1962,13 +1962,13 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 258) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (contract 297) is recovered as Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
-  // A claim named by its token (contract 259), another claim of the role than the step's worker,
+  // A claim named by its token (contract 298), another claim of the role than the step's worker,
   // is sent as named, and only when named; compact takes it the same way.
   await run({
     op: "fresh_session",
@@ -2060,7 +2060,7 @@ test("the controller reads the state without a grant and sets an issue's status 
   ]);
 });
 
-// Contract 258: the summary lists each worker of an issue's map, a role of the deployment's after
+// Contract 297: the summary lists each worker of an issue's map, a role of the deployment's after
 // Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
@@ -2097,7 +2097,7 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
-// Contract 259: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// Contract 298: two claims of one issue can hold one role, and `workers` shows one of them, so the
 // summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
 // both turn times and its token, marks it as another claim of that role, and names the token
 // because fresh_session and compact reach that claim only by it (their `claim`).

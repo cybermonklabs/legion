@@ -2369,11 +2369,17 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	return clause
 }
 
+// StaleEntryClause names a report's receiver and its served and current issue-wide entry identities.
+func StaleEntryClause(issue string, role claim.Role, p phase.Phase, current, serving int64, report string) string {
+	return fmt.Sprintf("%s handed the %s phase %s again: this %s is of entry %d, not the phase's current entry %d",
+		issue, role, p, report, serving, current)
+}
+
 // StaleEntry is the 409 HANDOFF_STALE_ENTRY refusal of a completion of a phase entry the issue's
 // phase has moved past: the role was given this phase's work again — the issue left the phase and
 // came back, or the phase ended under the worker and another role's round sent it here — and the
-// turn reporting this completion is on the earlier entry, current - serving entries behind. It
-// names the queued task of the entry the phase hands the role now when the claim already holds it
+// turn reporting this completion is on the earlier entry.
+// It names the queued task of the entry the phase hands the role now when the claim already holds it
 // (pending, which only the completion route reads; the workflow passes nil), as api's
 // staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
 // itself: the claim is behind the entry its phases row names, which is what the admission pass
@@ -2390,8 +2396,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 //
 // clause says what refused this completion (BehindEntryClause).
 func StaleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) *Refusal {
-	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, not the phase's current entry %d, and %s; nothing was recorded",
-		issue, role, p, serving, current, clause)
+	stale := StaleEntryClause(issue, role, p, current, serving, "completion") + ", and " + clause + "; nothing was recorded"
 	if pending != nil && pending.Entry == current {
 		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
 	}
