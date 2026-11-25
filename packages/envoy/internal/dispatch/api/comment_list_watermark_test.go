@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -204,8 +205,10 @@ func TestAMentionWrittenAndRemovedEachMoveTheCommentListsValidator(t *testing.T)
 	}
 }
 
-// The second read of an unchanged comment list builds nothing. It costs the one statement its
-// validator is read with and nothing else: no comment row, no mention, no delivery attempt, and
+// The second read of an unchanged comment list builds nothing. It costs the statement its
+// validator is read with, beside the one that resolves what the caller sees (access.Resolve,
+// which every read that binds a viewer makes once), and nothing else: no comment row, no mention,
+// no delivery attempt, and
 // so no shape, no encode and no compression either. This is the whole point of the watermark -
 // the validator over the answer's own bytes could only be known by building the answer - and the
 // count below is the number that says the build is gone.
@@ -239,8 +242,10 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 	if written := served.listAnswers.answered() - answered; written != 1 {
 		t.Errorf("the cache wrote %d answers over the second read of %s, want the one it kept", written, target)
 	}
-	if len(counted) != 1 || !strings.Contains(counted[0], "comment_watermarks") {
-		t.Fatalf("the warm read ran %d statements, want the one its validator is read with:\n%s",
+	resolved := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, viewerResolution) })
+	validated := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, "comment_watermarks") })
+	if len(counted) != 2 || resolved < 0 || validated < 0 {
+		t.Fatalf("the warm read ran %d statements, want the caller's viewer resolved and the one its validator is read with:\n%s",
 			len(counted), strings.Join(roundTripLines(counted), "\n"))
 	}
 	t.Logf("a warm comment-list read costs %d round trip: %s", len(counted), strings.Join(roundTripLines(counted), "\n"))

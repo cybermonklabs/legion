@@ -409,8 +409,10 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	if actor.Owner == nil || *actor.Owner != brokerTestPerson {
 		t.Fatalf("the write's owner = %v, want %q", actor.Owner, brokerTestPerson)
 	}
-	if actor.Project == nil || *actor.Project != brokerTestProject {
-		t.Fatalf("the write's project = %v, want %q", actor.Project, brokerTestProject)
+	if project, recorded := decodeBody[[]struct {
+		Actor map[string]json.RawMessage `json:"actor"`
+	}](t, listed)[0].Actor["project"]; recorded {
+		t.Fatalf("the write's actor records project %s, want none: the token's list is its credential's, not the record's", project)
 	}
 	if actor.Origin == nil || actor.Origin.Cwd != "/workspace" || actor.Origin.Host != "example-host-one" || actor.Origin.Pane != "%7" {
 		t.Fatalf("the write's origin = %+v, want the body's cwd, host and pane kept", actor.Origin)
