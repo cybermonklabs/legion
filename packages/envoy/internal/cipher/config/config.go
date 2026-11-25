@@ -115,14 +115,14 @@ type Config struct {
 	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
 	EdgeListenAddr string
 	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
-	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
-	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
-	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
-	// https://secrets.example. A machine login's request object made at the edge names it as its
-	// audience and every DPoP proof sent there names it and the route's path, as one made on
-	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
-	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
-	// set.
+	// http or https URL with no user information, path, query or fragment, whose origin is not
+	// BROKER_PUBLIC_URL's: the two are compared as a DPoP proof's htu is, the scheme and the host
+	// without regard to case and the scheme's default port the same as none, so
+	// https://secrets.example:443 is refused beside https://secrets.example. A machine login's
+	// request object made at the edge names it as its audience and every DPoP proof sent there
+	// names it and the route's path, as one made on BROKER_PUBLIC_URL names that, so neither is
+	// spendable at the other. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set.
 	EdgeURL string
 	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
 	// machine login made at the edge on, which that login's verification_uri names in place of
