@@ -1968,6 +1968,26 @@ Each read is given three things: evidence that must pass, evidence that must fai
 The test needs no model, no network, no Postgres and no NATS, runs in seconds with `bun test scripts/e2e/lib` (the `typescript` job of `ci.yaml`), and fails if a read is put back to a bug it names:
 the reachability preflight counted as a model call, the agent's own words counted as the loop's append, an asks body read as an object, a review id compared as a number, a duplicate under one dedupe key counted as one.
 
+**Every write of every answer.**
+Every row that asks the loop a question also reads every tool call of each answer it caused, in `record_result`, the one place every row's result goes, so no row can leave the read out.
+A row's answers are the questions the store's daemon log first names after the lines `criterion` counted when the row began (`row_answers`):
+the log is one file every boot of the pass appends to, so a restart inside the row moves nothing, and a question the row before named first stays that row's.
+Each `answers: gh` and `answers: dispatch` line carries `write`, which the daemon sets for a call that ran a command that writes, whatever its exit, so the read takes `exit` beside it.
+A write that exited 0 posted, and one that exited below 0 (stopped by a signal or its time bound) may have posted and counts as a write;
+one that exited above 0 (a usage error, a reply to no open ask, a 4xx) posted nothing and is counted apart, as a failed write.
+The row records FAIL, naming each question and each call by its tool, seq and arguments on one line, when its answers' writes are not the ones its questions ask for (one more, one fewer or another command), or when a call that ran logs no `write` at all (`writes_fault`).
+A row says what its questions ask for with `asks_writes`, by kind (`write_command`: `gh pr comment` however the comment was posted, `gh pr review`, `dispatch <command>`, `gh api <METHOD> <segment>`, `gh <command words>`), and a row that says nothing asks for none.
+A17 asks for one comment, A18 for two, A19 for one approval and A22 for one `dispatch comment`, and every other row for none;
+A17's leak-guard leg's comment is refused before `gh` starts and its reviewer's workflow file is a failed write, so neither is one.
+The controls run on a daemon with no `answers`, where no loop answers, and read none of this.
+Once each pass's last daemon has stopped, `read_pass_answers` reads every answer of the pass again over the whole log (`pass_answers`), since an answer may still be running when its row records its result:
+a row one of whose answers wrote, or logged a call with no `write`, past the lines the row's own read reached records FAIL then, its summary line rewritten to say so, and an answer no row's read took is named in the transcript.
+Each row's detail ends with its answers' counts, one clause an answer: its question cut to 8 characters, its model calls, its `gh`, `dispatch` and `web_search` calls, its writes, its failed writes and its refused calls.
+No row passes or fails on a count: the spec bounds an answer at eight model calls and no lower number, and the counts are a measurement.
+`answer-calls.tsv` holds one line an answer of every pass, counted over the whole pass, under the row that read it or `between rows`, and the transcript ends with each store's totals (answers, model calls, tool calls, writes, failed writes, refused calls, and the answers that reached the eight-call bound).
+`answer_counts` builds one answer's counts from a daemon log on its standard input, so a finished run's `logs/daemon-<store>.log` is read with no rig;
+a log from before the daemon logged `write` gives such an answer's writes as `?`, never 0.
+
 **PASS, FAIL and WAITING.**
 A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
 the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
@@ -2010,7 +2030,7 @@ While a check is being fixed, `LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boo
 the bring-up and the stopped agents are made as always.
 A run that proves the criteria sets neither.
 
-**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl` (the GPT-6.1 preflight among them, as `gpt-preflight`), `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it, the GPT-6.1 merger's as `gpt.jsonl`), `a3/<store>/` (the conversation-page leg's screenshots:
+**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `answer-calls.tsv` (a header line, then one tab-separated line for each answer of every pass: store, row, question, kind, model, model calls, `gh`, `dispatch` and `web_search` calls, writes, failed writes, refused calls and fault), `logs/` (each service and daemon), `model-calls.jsonl` (the GPT-6.1 preflight among them, as `gpt-preflight`), `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it, the GPT-6.1 merger's as `gpt.jsonl`), `a3/<store>/` (the conversation-page leg's screenshots:
 the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), `a13/{branch,base,control}/<store>/` (the bodies A13 and its control compare), `sessions/<store>/gpt-before-A10-gpt-{1,2}.jsonl` (the conversations the GPT-6.1 clause's cache answers replayed), and `a19/<store>/` (each review A19 delivers by webhook: GitHub's answers for the review and its pull request, and the event body sent).
 
 **GitHub.**

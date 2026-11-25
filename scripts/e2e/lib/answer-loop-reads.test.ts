@@ -840,6 +840,592 @@ describe("the daemon's log, boot by boot", () => {
   });
 });
 
+// Every tool call of every answer a row caused, read from the daemon's log: the writes are judged
+// against the writes the row's questions ask for (row_answers and writes_fault, which the rig's
+// record_result runs for every row criterion opened), what an answer did after its row's result is
+// read once the pass is over (pass_answers, the rig's read_pass_answers), and each answer's calls
+// are counted (answer_counts, answers_clause, answers_tsv, answer_totals). Every line here is made up
+// in the shape the daemon logs (the `log` of internal/ghtool, internal/dispatchtool and
+// internal/websearch, internal/answer's `answers: answered`), and is no run's.
+describe("every tool call of every answer", () => {
+  type Line = Record<string, unknown> | string;
+  let logs = 0;
+  /** A daemon log of its own holding LINES, one a line, a string as it is and an object as JSON. */
+  const logOf = (lines: Line[]) => {
+    logs += 1;
+    const file = join(dir, `answer-calls-${logs}.log`);
+    const text = lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line)));
+    writeFileSync(file, text.length === 0 ? "" : `${text.join("\n")}\n`);
+    return file;
+  };
+  const at = { time: "2026-11-25T12:00:00.000Z", level: "INFO" };
+  const agentFields = { issue: "ALX-9", role: "implementer", session: "session-implementer" };
+  const received = (question: string): Line => ({
+    ...at,
+    msg: "answers: question",
+    question,
+    ...agentFields,
+    state: "received",
+    kind: "message",
+  });
+  const gh = (question: string, seq: number, args: string[], fields = {}): Line => ({
+    ...at,
+    msg: "answers: gh",
+    question,
+    seq,
+    issue: "ALX-9",
+    role: "implementer",
+    app: "implement",
+    appID: "1",
+    owner: "acme",
+    args,
+    exit: 0,
+    ran: true,
+    write: false,
+    ...fields,
+  });
+  const dispatch = (question: string, seq: number, args: string[], fields = {}): Line => ({
+    ...at,
+    msg: "answers: dispatch",
+    question,
+    seq,
+    session: "session-implementer",
+    command: args[0],
+    args,
+    exit: 0,
+    ran: true,
+    write: false,
+    ...fields,
+  });
+  const search = (question: string, seq: number, query: string, fields = {}): Line => ({
+    ...at,
+    msg: "answers: web_search",
+    question,
+    seq,
+    query,
+    searches: 1,
+    costUSD: 0.01,
+    ...fields,
+  });
+  const answered = (question: string, calls: number, fields = {}): Line => ({
+    ...at,
+    msg: "answers: answered",
+    question,
+    ...agentFields,
+    model: "anthropic/claude-sonnet-5-5",
+    kind: "answered",
+    fault: "",
+    calls,
+    ...fields,
+  });
+  /** What a call the tool refused before it started logs beside its own fields. */
+  const refused = {
+    ran: false,
+    exit: -1,
+    write: false,
+    refused: "refused: the proof's own refusal",
+  };
+  /** LINE as a daemon from before `write` was logged writes it. */
+  const unwritten = (line: Line): Line => {
+    if (typeof line === "string") return line;
+    const { write: _, ...rest } = line;
+    return rest;
+  };
+  const q = "c0ffee01c0ffee01c0ffee01c0ffee01";
+  const other = "0dd0dd0dd0dd0dd0dd0dd0dd0dd0dd0d";
+  const commentArgs = [
+    "pr",
+    "comment",
+    "7",
+    "-R",
+    "acme/widgets",
+    "--body",
+    "done\n\n<!-- legion: {} -->",
+  ];
+  const comment = (seq: number, question = q) => gh(question, seq, commentArgs, { write: true });
+  /** writes_fault over the answers of a row whose log holds LINES from its start, asking for ASKED. */
+  const judged = (lines: Line[], ...asked: string[]) =>
+    read(
+      `answers=$(row_answers 0 <${shq(logOf(lines))}); writes_fault "$answers" ${asked.map(shq).join(" ")}`
+    );
+
+  test("an answer with no write passes a row that asks for none", () => {
+    expect(judged([received(q), gh(q, 1, ["pr", "view", "7"]), answered(q, 2)])).toEqual({
+      code: 0,
+      text: "",
+    });
+    // A row that caused no answer at all asked for none and wrote none.
+    expect(judged([])).toEqual({ code: 0, text: "" });
+  });
+
+  test("an answer with one write its question did not ask for fails the row, naming the question and the call", () => {
+    expect(
+      judged([received(q), gh(q, 1, ["pr", "view", "7"]), comment(2), answered(q, 3)])
+    ).toEqual({
+      code: 1,
+      text: "its answers wrote c0ffee01 gh #2 pr comment 7 -R acme/widgets --body done <!-- legion: {} --> [gh pr comment], where its questions ask for no write",
+    });
+  });
+
+  test("a row that asks for one write passes with exactly that one, and fails with two, none or another", () => {
+    expect(judged([received(q), comment(1), answered(q, 2)], "gh pr comment")).toEqual({
+      code: 0,
+      text: "",
+    });
+    // The same comment made with gh api is the same write.
+    const apiArgs = ["api", "repos/acme/widgets/issues/7/comments", "-f", "body=done"];
+    const viaApi = gh(q, 1, apiArgs, { write: true });
+    expect(judged([received(q), viaApi, answered(q, 2)], "gh pr comment").code).toBe(0);
+    const second = gh(q, 2, apiArgs, { write: true });
+    const two = judged([received(q), comment(1), second, answered(q, 3)], "gh pr comment");
+    expect(two.code).toBe(1);
+    expect(two.text).toBe(
+      "its answers wrote c0ffee01 gh #1 pr comment 7 -R acme/widgets --body done <!-- legion: {} --> [gh pr comment], c0ffee01 gh #2 api repos/acme/widgets/issues/7/comments -f body=done [gh pr comment], where its questions ask for gh pr comment"
+    );
+    // One fewer: the write asked for was never made.
+    expect(
+      judged([received(q), gh(q, 1, ["pr", "view", "7"]), answered(q, 2)], "gh pr comment")
+    ).toEqual({
+      code: 1,
+      text: "its answers wrote nothing, where its questions ask for gh pr comment",
+    });
+    // Another command than the one asked for.
+    const merged = gh(q, 1, ["pr", "merge", "7", "--squash"], { write: true });
+    const merge = judged([received(q), merged, answered(q, 2)], "gh pr comment");
+    expect(merge.code).toBe(1);
+    expect(merge.text).toContain("c0ffee01 gh #1 pr merge 7 --squash [gh pr merge]");
+    // The writes of every answer of the row are judged together, each asked for once.
+    const posted = dispatch(other, 1, ["comment", "--issue", "ALX-10", "--body", "x"], {
+      write: true,
+    });
+    const both = [
+      received(q),
+      comment(1),
+      answered(q, 2),
+      received(other),
+      posted,
+      answered(other, 2),
+    ];
+    expect(judged(both, "dispatch comment", "gh pr comment")).toEqual({ code: 0, text: "" });
+    expect(judged(both, "gh pr comment").code).toBe(1);
+  });
+
+  // `write` is true for a call that ran a write command, whatever its exit, so the exit is read
+  // beside it: 0 posted, above 0 posted nothing, below 0 was stopped and may have posted.
+  test("a write's exit decides it: 0 posted, above 0 a failed write and no write, below 0 a write that may have posted", () => {
+    const usage = gh(q, 1, ["pr", "comment", "7", "--bogus"], { write: true, exit: 1 });
+    // A first try the CLI refused, then the one asked for: the row asked for one, and has it.
+    const retried = [received(q), usage, comment(2), answered(q, 3)];
+    expect(judged(retried, "gh pr comment")).toEqual({ code: 0, text: "" });
+    expect(
+      read(`answer_counts <${shq(logOf(retried))} | jq -c '[.writes, .failed_writes]'`).text
+    ).toBe("[1,1]");
+    // The refused try alone posted nothing: one fewer.
+    expect(judged([received(q), usage, answered(q, 2)], "gh pr comment")).toEqual({
+      code: 1,
+      text: "its answers wrote nothing, where its questions ask for gh pr comment",
+    });
+    // Stopped by its time bound: it may have posted, so it is a write, and the failure says so.
+    const stopped = [received(q), gh(q, 1, commentArgs, { write: true, exit: -1 }), answered(q, 2)];
+    expect(judged(stopped)).toEqual({
+      code: 1,
+      text: "its answers wrote c0ffee01 gh #1 pr comment 7 -R acme/widgets --body done <!-- legion: {} --> [gh pr comment, exit -1: stopped by a signal or its time bound, so it may have posted], where its questions ask for no write",
+    });
+    expect(judged(stopped, "gh pr comment")).toEqual({ code: 0, text: "" });
+  });
+
+  // A17 asks for a comment and a workflow file, A19 for an approval: each is named one way, whatever
+  // form of gh the model chose for it.
+  test("a write is named as a row asks for it, whatever form the call took", () => {
+    const forms: [string[], string][] = [
+      [["issue", "comment", "7", "--body", "x"], "gh pr comment"],
+      [
+        [
+          "api",
+          "--method=POST",
+          "/repos/acme/widgets/issues/7/comments?x=1",
+          "--raw-field",
+          "body=x",
+        ],
+        "gh pr comment",
+      ],
+      [["pr", "review", "7", "-R", "acme/widgets", "--approve", "--body", "ok"], "gh pr review"],
+      [["api", "repos/acme/widgets/pulls/7/reviews", "-f", "event=APPROVE"], "gh pr review"],
+      [
+        [
+          "api",
+          "-X",
+          "PUT",
+          "repos/acme/other/contents/.github/workflows/x.yml",
+          "-f",
+          "content=eA==",
+        ],
+        "gh api PUT contents",
+      ],
+      [
+        ["api", "-XPUT", "https://api.github.com/repos/acme/other/contents/x", "-H", "Accept: x"],
+        "gh api PUT contents",
+      ],
+      [["-R", "acme/widgets", "pr", "merge", "7"], "gh pr merge"],
+    ];
+    const lines = [received(q), ...forms.map(([args], n) => gh(q, n + 1, args, { write: true }))];
+    lines.push(
+      dispatch(q, forms.length + 1, ["message", "--issue", "ALX-9", "--body", "x"], { write: true })
+    );
+    expect(
+      read(`row_answers 0 <${shq(logOf(lines))} | jq -r '.[0].written[] | .command'`).text.split(
+        "\n"
+      )
+    ).toEqual([...forms.map(([, command]) => command), "dispatch message"]);
+  });
+
+  test("a refused call and a help call are no writes, and a refused one is counted", () => {
+    const lines = [
+      received(q),
+      dispatch(q, 1, ["comment", "--help"]),
+      dispatch(q, 2, ["claim", "--issue", "ALX-9"], refused),
+      // The leak guard's own line before the call's, which is no call of its own.
+      {
+        ...at,
+        msg: "answers: gh call refused by the leak guard",
+        question: q,
+        seq: 3,
+        why: "refused",
+      },
+      gh(q, 3, ["pr", "comment", "7", "--body", "answer-loop-leak"], { ...refused, owner: "" }),
+      search(q, 4, "a fourth search", {
+        searches: 0,
+        error: "refused: this answer has made its 3 web searches",
+      }),
+      answered(q, 3),
+    ];
+    expect(judged(lines)).toEqual({ code: 0, text: "" });
+    expect(JSON.parse(read(`answer_counts <${shq(logOf(lines))}`).text)).toEqual({
+      question: q,
+      kind: "answered",
+      model: "anthropic/claude-sonnet-5-5",
+      calls: 3,
+      gh: 1,
+      dispatch: 2,
+      web_search: 1,
+      writes: 0,
+      failed_writes: 0,
+      refused: 3,
+      fault: "",
+    });
+  });
+
+  test("a call that ran and logs no write field fails the row, naming the line", () => {
+    const unread = [
+      received(q),
+      unwritten(gh(q, 1, ["pr", "comment", "7", "--body", "x"])),
+      answered(q, 2),
+    ];
+    expect(judged(unread)).toEqual({
+      code: 1,
+      text: "c0ffee01 gh #1 pr comment 7 --body x ran and its line carries no write field, so whether it wrote is unread",
+    });
+    // Asked for, it still fails: a read that cannot tell is no pass.
+    expect(judged(unread, "gh pr comment").code).toBe(1);
+    // A call the tool refused never ran, and its line need not say it wrote nothing.
+    const refusedOnly = [
+      received(q),
+      unwritten(dispatch(q, 1, ["claim"], refused)),
+      answered(q, 1),
+    ];
+    expect(judged(refusedOnly)).toEqual({ code: 0, text: "" });
+    // A read of answers that are none says so and fails.
+    expect(read(`writes_fault 'not answers'`)).toEqual({
+      code: 1,
+      text: "the read of its answers' writes failed",
+    });
+  });
+
+  test("answer_counts counts an answer's model calls, its calls of each tool, its writes and its refusals", () => {
+    const lines: Line[] = [
+      "=== boot at 2026-11-25T12:00:00Z (answers.yaml)",
+      received(q),
+      gh(q, 1, ["pr", "view", "7"]),
+      dispatch(q, 2, ["read", "ALX-9"]),
+      search(q, 3, "widgets"),
+      search(q, 4, "widgets again", {
+        searches: 0,
+        error: "refused: this answer has made its 3 web searches",
+      }),
+      comment(5),
+      dispatch(q, 6, ["comment", "--issue", "ALX-10", "--body", "x"], { write: true }),
+      dispatch(q, 7, ["claim", "--issue", "ALX-10"], refused),
+      dispatch(q, 8, ["comment", "--reply-to-ask", "no-such-ask", "--body", "x"], {
+        write: true,
+        exit: 1,
+      }),
+      // A first run cut off, and the answer made again after a restart.
+      answered(q, 4, { kind: "not_answered", fault: "answer_seconds" }),
+      "not JSON: a line the daemon wrote to its stderr",
+      "=== boot at 2026-11-25T12:05:00Z (answers.yaml)",
+      answered(q, 2),
+      received(other),
+      comment(1, other),
+      answered(other, 1),
+    ];
+    const log = shq(logOf(lines));
+    const counts = {
+      question: q,
+      kind: "answered",
+      model: "anthropic/claude-sonnet-5-5",
+      calls: 6,
+      gh: 2,
+      dispatch: 4,
+      web_search: 2,
+      writes: 2,
+      failed_writes: 1,
+      refused: 2,
+      fault: "",
+    };
+    expect(JSON.parse(read(`answer_counts ${q} <${log}`).text)).toEqual(counts);
+    // With no question named, every answer the log names, in the order it first names them.
+    expect(read(`answer_counts <${log} | jq -c '[.question, .writes]'`).text).toBe(
+      `["${q}",2]\n["${other}",1]`
+    );
+    // The same calls as a daemon from before `write` logged them: the writes unread, never 0.
+    const before = shq(logOf(lines.map(unwritten)));
+    expect(JSON.parse(read(`answer_counts ${q} <${before}`).text)).toEqual({
+      ...counts,
+      writes: "?",
+      failed_writes: "?",
+    });
+    // A question the log never names, and a log with nothing in it.
+    expect(JSON.parse(read(`answer_counts never-asked <${log}`).text)).toEqual({
+      question: "never-asked",
+      kind: null,
+      model: null,
+      calls: 0,
+      gh: 0,
+      dispatch: 0,
+      web_search: 0,
+      writes: 0,
+      failed_writes: 0,
+      refused: 0,
+      fault: null,
+    });
+    expect(read(`answer_counts <${shq(emptyLog)}`)).toEqual({ code: 0, text: "" });
+  });
+
+  // The daemon log of a store is one file every boot appends to, and rows restart the daemon inside
+  // themselves: a row's answers are the questions its own lines name first, wherever the boots fall.
+  test("row_answers reads the questions a row's lines name first, across a restart, and no earlier row's", () => {
+    const earlier = "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0";
+    const lines: Line[] = [
+      received(earlier),
+      gh(earlier, 1, ["pr", "view", "7"]),
+      // The row begins here, at line 2.
+      received(q),
+      // The earlier row's answer is still going: its write is that row's, not this one's.
+      comment(2, earlier),
+      answered(earlier, 2),
+      "=== boot at 2026-11-25T12:05:00Z (the row restarted the daemon)",
+      comment(1),
+      answered(q, 2),
+    ];
+    const log = shq(logOf(lines));
+    expect(read(`row_answers 2 <${log} | jq -c 'map([.question, .writes])'`).text).toBe(
+      `[["${q}",1]]`
+    );
+    expect(read(`row_answers 0 <${log} | jq -c 'map([.question, .writes])'`).text).toBe(
+      `[["${earlier}",1],["${q}",1]]`
+    );
+    expect(read(`row_answers ${lines.length} <${log}`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`row_answers 0 <${shq(emptyLog)}`)).toEqual({ code: 0, text: "[]" });
+    expect(run(`row_answers '' <${log}`).code).not.toBe(0);
+  });
+
+  test("answers_clause, answers_tsv and answer_totals say each answer's counts, with no `|` in them", () => {
+    const lines = [
+      received(q),
+      comment(1),
+      gh(q, 2, ["pr", "comment", "8"], { write: true, exit: 1 }),
+      search(q, 3, "widgets | gadgets"),
+      answered(q, 8),
+      received(other),
+      unwritten(gh(other, 1, ["pr", "view", "7"])),
+      answered(other, 1, { kind: "not_answered", fault: "model_calls" }),
+    ];
+    const answers = `answers=$(row_answers 0 <${shq(logOf(lines))})`;
+    expect(read(`${answers}; answers_clause "$answers"`).text).toBe(
+      "; its answers: c0ffee01 model calls 8, gh 2, dispatch 0, web_search 1, writes 1, failed writes 1, refused 0; 0dd0dd0d model calls 1, gh 1, dispatch 0, web_search 0, writes ?, failed writes ?, refused 0"
+    );
+    expect(read(`answers_clause '[]'`).text).toBe("; its answers: none");
+    expect(read(`answers_clause 'not answers'`).text).toBe("; its answers: unread");
+    const header =
+      "store\trow\tquestion\tkind\tmodel\tmodel_calls\tgh_calls\tdispatch_calls\tweb_search_calls\twrites\tfailed_writes\trefused_calls\tfault";
+    const tsv = join(dir, "answer-calls-totals.tsv");
+    const written = `${answers}; { answer_calls_header; answers_tsv files A17 "$answers"; answers_tsv postgres A17 '[]'; } | tee ${shq(tsv)}`;
+    expect(read(written).text).toBe(
+      [
+        header,
+        `files\tA17\t${q}\tanswered\tanthropic/claude-sonnet-5-5\t8\t2\t0\t1\t1\t1\t0\t-`,
+        `files\tA17\t${other}\tnot_answered\tanthropic/claude-sonnet-5-5\t1\t1\t0\t0\t?\t?\t0\tmodel_calls`,
+      ].join("\n")
+    );
+    expect(read(`answer_totals ${shq(tsv)}`).text).toBe(
+      "files: 2 answers, 9 model calls, 4 tool calls (gh 3, dispatch 0, web_search 1), writes ?, failed writes ?, refused 0, 1 reached the 8-call bound"
+    );
+    // An answer's own row, where it names one, before the row given.
+    expect(
+      read(`answers_tsv files 'between rows' '[{"question":"q","row":"A18","calls":1}]' | cut -f2`)
+        .text
+    ).toBe("A18");
+    const bare = join(dir, "answer-calls-header.tsv");
+    expect(read(`answer_calls_header >${shq(bare)}; answer_totals ${shq(bare)}`)).toEqual({
+      code: 0,
+      text: "",
+    });
+  });
+
+  // record_result is where every row's result goes, so no row can leave the read out: the row
+  // criterion opened is judged there, and a control, a row of another store and a WAITING are not.
+  // read_pass_answers reads every answer of the pass again once it is over: what an answer did after
+  // its row's result fails that row, and an answer no row took is named, not lost.
+  describe("record_result and read_pass_answers", () => {
+    const rigLog = join(dir, "answer-calls-rig.log");
+    const rigTsv = join(dir, "answer-calls-rig.tsv");
+    const header =
+      "store\trow\tquestion\tkind\tmodel\tmodel_calls\tgh_calls\tdispatch_calls\tweb_search_calls\twrites\tfailed_writes\trefused_calls\tfault";
+    /** Runs BODY over a pass whose log begins with an answer no row took, then the pass's read. */
+    const recorded = (body: string) => {
+      cpSync(logOf([received(other), comment(1, other), answered(other, 2)]), rigLog);
+      const result = run(`${rig("record_result")}
+${rig("fail_entry")}
+${rig("read_pass_answers")}
+${rig("criterion")}
+${rig("asks_writes")}
+results=()
+declare -A rows_ran=()
+answers_row=
+answers_taken=
+answers_pass_from=0
+answer_calls_tsv=${shq(rigTsv)}
+daemon_log=${shq(rigLog)}; boot_offset=0
+answer_calls_header >"$answer_calls_tsv"
+${body}
+read_pass_answers "$daemon_log"
+printf '%s\\n' "\${results[@]}"`);
+      return {
+        code: result.code,
+        err: result.err,
+        results: result.out
+          .trimEnd()
+          .split("\n")
+          .filter((line) => !line.startsWith("== ") && !/^(PASS|FAIL|WAITING) /.test(line)),
+        tsv: readFileSync(rigTsv, "utf8").trimEnd().split("\n"),
+      };
+    };
+    const asked = (lines: Line[], ...writes: string[]) =>
+      recorded(`criterion A17 'a row asking for a comment'
+asks_writes ${writes.map(shq).join(" ")}
+cat ${shq(logOf(lines))} >>"$daemon_log"
+record_result A17 PASS "its own read held"
+record_result "A17 control" PASS "with answers removed, nothing held"`);
+
+    test("passes the row whose answers wrote what its questions ask for, and ends its detail with their counts", () => {
+      const result = asked([received(q), comment(1), answered(q, 2)], "gh pr comment");
+      expect(result.code).toBe(0);
+      expect(result.results).toEqual([
+        "files|A17|PASS|its own read held; its answers: c0ffee01 model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0",
+        "files|A17 control|PASS|with answers removed, nothing held",
+      ]);
+      // The answer the log named before the row began is no answer of the row's: no row took it,
+      // and the pass's read names it, in the transcript and in its own line.
+      expect(result.tsv).toEqual([
+        header,
+        `files\tbetween rows\t${other}\tanswered\tanthropic/claude-sonnet-5-5\t2\t1\t0\t0\t1\t0\t0\t-`,
+        `files\tA17\t${q}\tanswered\tanthropic/claude-sonnet-5-5\t2\t1\t0\t0\t1\t0\t0\t-`,
+      ]);
+      expect(result.err).toContain(
+        "an answer no row read, first named between two rows: 0dd0dd0d model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0; it wrote gh #1 pr comment 7"
+      );
+    });
+
+    test("fails the row's PASS on a write its questions did not ask for, naming it, and on a read that cannot tell", () => {
+      const extra = dispatch(q, 2, ["comment", "--issue", "ALX-9", "--body", "placeholder"], {
+        write: true,
+      });
+      const result = asked([received(q), comment(1), extra, answered(q, 3)], "gh pr comment");
+      expect(result.results[0]).toBe(
+        "files|A17|FAIL|its own read held; its answers wrote c0ffee01 gh #1 pr comment 7 -R acme/widgets --body done <!-- legion: {} --> [gh pr comment], c0ffee01 dispatch #2 comment --issue ALX-9 --body placeholder [dispatch comment], where its questions ask for gh pr comment; its answers: c0ffee01 model calls 3, gh 1, dispatch 1, web_search 0, writes 2, failed writes 0, refused 0"
+      );
+      expect(result.results[1]).toBe("files|A17 control|PASS|with answers removed, nothing held");
+      // A row that declares nothing asks for no write.
+      expect(asked([received(q), comment(1), answered(q, 2)]).results[0]).toMatch(
+        /^files\|A17\|FAIL\|/
+      );
+      expect(
+        asked([received(q), unwritten(comment(1)), answered(q, 2)], "gh pr comment").results[0]
+      ).toMatch(/^files\|A17\|FAIL\|its own read held; c0ffee01 gh #1 .* carries no write field/);
+    });
+
+    // An answer still running when its row recorded its result: what it wrote after is read once the
+    // pass is over, fails that row, and is no write of the row after it.
+    test("fails a row whose answer wrote after the row recorded its result, and not the row after it", () => {
+      const late = [
+        dispatch(q, 2, ["comment", "--issue", "ALX-9", "--body", "placeholder"], { write: true }),
+        gh(q, 3, ["pr", "comment", "8"], { write: true, exit: 1 }),
+        answered(q, 3),
+      ];
+      const result = recorded(`criterion A17 'a row asking for a comment'
+asks_writes 'gh pr comment'
+cat ${shq(logOf([received(q), comment(1)]))} >>"$daemon_log"
+record_result A17 PASS "its own read held"
+cat ${shq(logOf(late))} >>"$daemon_log"
+criterion A18 'the row after it'
+record_result A18 PASS "its own read held"`);
+      expect(result.results).toEqual([
+        "files|A17|FAIL|its own read held; after it recorded its result, its answers made calls its read had not reached: c0ffee01 dispatch #2 comment --issue ALX-9 --body placeholder [dispatch comment]; its answers: c0ffee01 model calls 0, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0",
+        "files|A18|PASS|its own read held; its answers: none",
+      ]);
+      // Its line counts every call of the pass, the failed write after the result among them.
+      expect(result.tsv[2]).toBe(
+        `files\tA17\t${q}\tanswered\tanthropic/claude-sonnet-5-5\t3\t2\t1\t0\t2\t1\t0\t-`
+      );
+      // A failed write after the result posted nothing, and fails nothing.
+      const failedOnly = recorded(`criterion A17 'a row asking for a comment'
+asks_writes 'gh pr comment'
+cat ${shq(logOf([received(q), comment(1)]))} >>"$daemon_log"
+record_result A17 PASS "its own read held"
+cat ${shq(logOf(late.slice(1)))} >>"$daemon_log"`);
+      expect(failedOnly.results[0]).toMatch(/^files\|A17\|PASS\|/);
+    });
+
+    test("reads nothing for a WAITING or a row of another store, and fails a row whose log cannot be read", () => {
+      const waiting = recorded(`mode=claims-only
+app_keys_missing=(LEGION_E2E_REVIEW_APP_KEY_COMMAND)
+criterion A17 'a row' || true
+store=postgres
+record_result A17 PASS "another store's"`);
+      expect(waiting.results[0]).toMatch(
+        /^files\|A17\|WAITING\|\(needs LEGION_E2E_REVIEW_APP_KEY_COMMAND\)/
+      );
+      expect(waiting.results[0]).not.toContain("its answers");
+      expect(waiting.results[1]).toBe(`postgres|A17|PASS|another store's`);
+      const gone = recorded(`criterion A17 'a row'
+answers_log=${shq(join(dir, "no-such-daemon.log"))}
+record_result A17 PASS "its own read held"`);
+      expect(gone.results[0]).toMatch(
+        /^files\|A17\|FAIL\|its own read held; its answers could not be read from .*no-such-daemon\.log after its line 3, so no write of theirs was judged$/
+      );
+      // A pass read that fails fails every row that took an answer.
+      const unread = recorded(`criterion A17 'a row'
+asks_writes 'gh pr comment'
+cat ${shq(logOf([received(q), comment(1), answered(q, 2)]))} >>"$daemon_log"
+record_result A17 PASS "its own read held"
+answers_pass_from=not-a-count`);
+      expect(unread.results[0]).toMatch(
+        /^files\|A17\|FAIL\|its own read held; the read of its answers' calls over .* once the pass ended failed, so a write they made after its result is unread; its answers: c0ffee01 model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0$/
+      );
+    });
+  });
+});
+
 describe("the stopped agents' conversations", () => {
   test("conversation_text reads a session file and the session table's row alike", () => {
     const file = read("conversation_text architect | jq -s length");
