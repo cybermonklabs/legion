@@ -22,7 +22,11 @@
 // <reading>" to stderr at once, then fails the test with the same text: without -v, Go's alarm
 // panics without printing a running test's log, so a cleanup that outlasted the margin would
 // otherwise take the message with it. The text is one line: a newline in what or in the reading is
-// written as \n.
+// written as \n. The reading prints as %+v would, but a pointer in it prints what it points to
+// (describe). After the failure the test's output carries the goroutine stacks as the wait gave
+// up, the dump Go's alarm would print had the wait not given up before it: the waiting goroutine's,
+// then those its test started, bounded (goroutineStacks); a wait that began past the margin prints
+// them only when no earlier give-up of the binary has (stacksFor).
 package testwait
 
 import (
@@ -112,13 +116,14 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 	t.Helper()
 	var value T
 	end, bounded := giveUpAt(t)
+	spent := bounded && !clock.Now().Before(end)
 	holds := func() bool {
 		var ok bool
 		value, ok = read()
 		return ok
 	}
 	if !asked(end, bounded, poll, holds) {
-		gaveUp(t, what, func() string { return fmt.Sprintf("%+v", value) })
+		gaveUp(t, what, spent, func() string { return describe(value) })
 	}
 	return value
 }
@@ -130,7 +135,9 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 // select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	if end, bounded := giveUpAt(t); !bounded || clock.Now().Before(end) {
+	end, bounded := giveUpAt(t)
+	spent := bounded && !clock.Now().Before(end)
+	if !spent {
 		expired, stop := expiry(t)
 		defer stop()
 		select {
@@ -146,7 +153,7 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 		return value
 	default:
 	}
-	gaveUp(t, what, nil)
+	gaveUp(t, what, spent, nil)
 	var zero T
 	return zero
 }
@@ -205,15 +212,28 @@ func giveUpAt(t *testing.T) (time.Time, bool) {
 var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 
 // gaveUp ends a wait in t that the margin ended: it writes the failure's text to stderr at once,
-// in one write, then fails t with the same text. reading is the wait's last reading, or nil for a
-// wait that has none.
-func gaveUp(t *testing.T, what string, reading func() string) {
+// in one write, then fails t with the same text, and prints the goroutine stacks as the wait gave
+// up beside it (stacksFor), read before anything else is written. reading is the wait's last
+// reading, or nil for a wait that has none; spent says the wait began past the margin.
+func gaveUp(t *testing.T, what string, spent bool, reading func() string) {
 	t.Helper()
+	stacks := stacksFor(t.Name(), spent)
 	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
 	if reading != nil {
 		text += "; last read: " + reading()
 	}
 	text = oneLine.Replace(text)
 	_, _ = os.Stderr.WriteString(text + "\n")
-	t.Fatalf("%s", text)
+	t.Errorf("%s", text)
+	printStacks(t, stacks)
+	t.FailNow()
+}
+
+// Stacks prints to t's output what a give-up of this package prints after its failure: the
+// goroutine stacks, once per test binary, or the line that says an earlier give-up printed them.
+// It is for a wait with a give-up of its own, which this package does not end, such as one bounded
+// by Bounded (cmd/cipher's): such a wait does not say when it began, so it asks for them once, as
+// a wait begun past the margin does (stacksFor).
+func Stacks(t *testing.T) {
+	printStacks(t, stacksFor(t.Name(), true))
 }

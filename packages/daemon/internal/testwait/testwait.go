@@ -16,7 +16,11 @@
 // fails the test with the same text; "last read" is there only for Until. The direct write is
 // there because Go's alarm panics without printing a running test's log, so a cleanup that
 // outlasted the margin would otherwise take the message with it. The text is one line: a newline
-// in what or in the reading is written as \n.
+// in what or in the reading is written as \n. The reading prints as %+v would, but a pointer in it
+// prints what it points to (describe). After the failure of any wait here that gives up, Receive's
+// included, the test's output carries the goroutine stacks as the wait gave up, the dump Go's alarm
+// would print had the wait not given up before it: the waiting goroutine's, then those its test
+// started, bounded (goroutineStacks).
 //
 // The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
 // deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
@@ -25,7 +29,8 @@
 // first give-up line in time order is the cause" before its reading, so the first give-up line in
 // time order names the wait that never held, and the later ones are its side effects. A wait in a
 // cleanup after its test's wait gave up is one of those, so the cleanups keep the margin to run in;
-// under a -timeout of 30 s or less every such wait is.
+// under a -timeout of 30 s or less every such wait is. Such a wait prints the goroutine stacks only
+// when no earlier give-up of the binary has (stacksFor).
 package testwait
 
 import (
@@ -71,7 +76,7 @@ func Until[T any](t testing.TB, what string, read func() (T, bool)) T {
 		var holds bool
 		value, holds = read()
 		return holds
-	}, func() string { return fmt.Sprintf("%+v", value) })
+	}, func() string { return describe(value) })
 	return value
 }
 
@@ -188,12 +193,15 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	if ok {
 		return value
 	}
+	stacks := stacksFor(t.Name(), bounded && !start.Before(deadline.Add(-marginOf(timeout))))
 	text := oneLine.Replace(fmt.Sprintf(
 		"testwait: %s: gave up waiting for %s after %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
 		t.Name(), what, ended.Sub(start).Round(time.Millisecond), ended.UTC().Format(time.RFC3339Nano), marginOf(timeout),
 		deadline.UTC().Format(time.RFC3339Nano), timeout))
 	_, _ = os.Stderr.WriteString(text + "\n")
-	t.Fatalf("%s", text)
+	t.Errorf("%s", text)
+	printStacks(t, stacks)
+	t.FailNow()
 	return value
 }
 
@@ -378,9 +386,13 @@ func announce(name, what string, spent bool, reading func() string) string {
 	return text
 }
 
-// gaveUp ends a wait in t that the margin ended: it announces the failure, then fails t with the
-// same text.
+// gaveUp ends a wait in t that the margin ended: it announces the failure, fails t with the same
+// text, and prints the goroutine stacks as the wait gave up beside it (stacksFor), read before
+// anything else is written.
 func gaveUp(t testing.TB, what string, spent bool, reading func() string) {
 	t.Helper()
-	t.Fatalf("%s", announce(t.Name(), what, spent, reading))
+	stacks := stacksFor(t.Name(), spent)
+	t.Errorf("%s", announce(t.Name(), what, spent, reading))
+	printStacks(t, stacks)
+	t.FailNow()
 }

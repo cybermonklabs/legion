@@ -2689,7 +2689,7 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, passed); err != nil {
 		t.Fatalf("record the pass: %v", err)
 	}
-	rig.waitFreshnessHeard(t, "the hub to hear the reconcile pass", reconciledAt(passed))
+	rig.waitFreshnessHeard(t, "the hub to hear the reconcile pass recorded at "+passed.UTC().Format(time.RFC3339Nano), reconciledAt(passed))
 	rig.requireNothingSent(t, conn, "a reconcile pass that found nothing new")
 }
 

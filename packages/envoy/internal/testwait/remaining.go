@@ -17,14 +17,19 @@ const unbounded = time.Duration(1 << 60)
 // before the test binary's deadline, the one go test's -timeout sets, to fail in and run its
 // cleanups: that deadline less spare, less now; under -timeout 0, a span no wait reaches. A wait
 // bounded by it ends on its fact or gives up with spare left, never at a fixed span. With spare or
-// less left there is no span to wait, and Remaining fails t at once (Fatal) on the one line Left
-// gives, written to stderr first, as a wait that gives up writes its line (gaveUp).
+// less left there is no span to wait, and Remaining fails t at once on the one line Left gives,
+// written to stderr first, as a wait that gives up writes its line (gaveUp), and then prints the
+// goroutine stacks, as a wait begun past the margin does (stacksFor): only when no give-up of the
+// binary has printed them.
 func Remaining(t *testing.T, spare time.Duration) time.Duration {
 	t.Helper()
 	left, err := Left(t, spare)
 	if err != nil {
+		stacks := stacksFor(t.Name(), true)
 		_, _ = os.Stderr.WriteString(err.Error() + "\n")
-		t.Fatal(err.Error())
+		t.Error(err.Error())
+		printStacks(t, stacks)
+		t.FailNow()
 	}
 	return left
 }
