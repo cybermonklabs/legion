@@ -95,14 +95,21 @@ const miseData =
   (process.env.XDG_DATA_HOME === undefined
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
-/** Runs ARGV, in childCwd, with the variables every child process of this file gets and ENV over
- * them: the caller's PATH, a HOME of the test's own, and the caller's mise data and config
- * directories when the caller names them. A tool on PATH can be a mise shim (jq and jj are, on a
- * devbox). Under a fresh HOME such a shim finds neither its installs nor its global config, so it
- * fails. make_omp_home keeps the operator's two directories for the processes it starts for the
- * same reason, and base_env passes MISE_DATA_DIR to every agent. A caller that names neither
- * variable gets neither: the developer's own home decides nothing here. It is the one place this
- * file builds that environment, so a child that gets the test's HOME gets childCwd with it. */
+/** Runs ARGV, in childCwd, with the test's child environment and ENV over it: the caller's PATH,
+ * a HOME of the test's own, and the caller's mise data and config directories when the caller
+ * names them. A tool on PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME
+ * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
+ * the operator's two directories for the processes it starts for the same reason, and base_env
+ * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
+ * developer's own home decides nothing here. It is the one place this file builds that
+ * environment, and its `cwd` is the only one in the file, so a child that gets the test's HOME
+ * gets childCwd with it. Eight call sites start their children through it: route, bash (and every
+ * row that calls bash), checkout_commit's git, the score spawn, groupBash, judge (and the gateway
+ * rows through it), the judge whose root is no checkout, and gh. Three children of this file do
+ * not, and none of them gets the test's HOME: the key command and the libpq probe pass no
+ * environment, so they run under the caller's own HOME, where mise reads the caller's config as
+ * its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone, and runs sleep,
+ * not a mise shim. */
 function childSpawn(argv: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync(argv, {
     env: {
