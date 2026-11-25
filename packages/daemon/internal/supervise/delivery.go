@@ -1614,10 +1614,10 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 // a tmux pane's or the relaunch into the pod its update round builds. The line names the
 // workspace the agent that reads it is in, and a relaunch moves it. Only a task that names a phase
 // is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds none
-// of the phase's text. An answer that fails sends nothing, as a failed read of a root architect's
-// held task does (currentRootTask): the task stays pending, unsent and charged nothing, and the
-// next trigger asks again, so no send carries a line its process does not work in and none goes
-// without one.
+// of the phase's text. The daemon's answer (its workingCopy) reads no record: what can fail is its
+// decoding of the news the task holds, which fails the same way at every trigger while the task
+// holds that news. An answer that fails sends nothing: the task stays pending, unsent and charged
+// nothing, so no send carries a line its process does not work in and none goes without one.
 //
 // A task the answer leaves as it is is sent as it is. One it rewrites is persisted before it is
 // sent, so a restart reads the task this send carries, under a new id (rotateTaskID): the shim
@@ -1631,7 +1631,7 @@ func (m *Machine) currentWorkingCopy(ctx context.Context) error {
 	}
 	task, news, err := m.deps.WorkingCopy(ctx, m.claim, *p)
 	if err != nil {
-		return fmt.Errorf("read the working copy the task held for %s names now: %w", m.claim.Token, err)
+		return fmt.Errorf("write again the working copy line of the task held for %s: %w", m.claim.Token, err)
 	}
 	if task == p.Task && bytes.Equal(news, p.News) {
 		return nil
