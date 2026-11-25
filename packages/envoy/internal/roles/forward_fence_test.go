@@ -40,25 +40,6 @@ func TestForwardStoredTooLate(t *testing.T) {
 	}
 }
 
-// The fence and the acknowledgement window together leave room for the claim route's own budget
-// inside the keep window, which is a takeover record's life: a forward this reports in time is one
-// the record's passes have read. The windows are the paths' own (cmd/listener roleForwardTimeout is
-// 2 s today, and the outbox's send budget is of that order), so the check holds for any window up
-// to the room the fence leaves.
-func TestTheFenceLeavesRoomForAnAcknowledgementWindow(t *testing.T) {
-	const keepWindow = time.Hour
-	room := keepWindow - roles.ForwardFenceAge
-	if room <= 0 {
-		t.Fatalf("the fence %s leaves no room inside the keep window %s", roles.ForwardFenceAge, keepWindow)
-	}
-	// The claim route's budget (cmd/listener sendRequestBudget, 3.5 s) plus a path's window must
-	// fit in that room, which it does by minutes.
-	const claimBudget = 4 * time.Second
-	if window := room - claimBudget; window < time.Minute {
-		t.Fatalf("the fence leaves %s for an acknowledgement window after the claim's budget; want at least a minute", window)
-	}
-}
-
 // ResolutionTooOld and ForwardStoredTooLate ask the two halves of one rule, and a forward that is
 // too old to start is not yet too late to have been stored: a path that resolves again at the
 // fence (refreshStaleRoleForward) is doing so inside the window this leaves it.

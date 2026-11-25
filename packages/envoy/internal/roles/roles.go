@@ -205,9 +205,8 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 // ErrForwardStoredTooLate is the failure of a forward the stream acknowledged after its
 // resolution's fence and acknowledgement window (ForwardStoredTooLate): the holder it was resolved
 // for may have lost the role, and the takeover record that would copy the message to the next
-// holder may have ended (cmd/listener takeoverRecordLife, the keep window). The forward is no
-// delivery: each path reports it failed and leaves the message to be sent again on a fresh
-// resolution.
+// holder may have ended (cmd/listener takeoverRecordLife). The forward is no delivery: each path
+// reports it failed and leaves the message to be sent again on a fresh resolution.
 var ErrForwardStoredTooLate = errors.New("the forward was stored after its resolution's fence and acknowledgement window")
 
 // ForwardStoredTooLate reports whether a forward whose holder was resolved at resolvedAt, and
@@ -223,8 +222,10 @@ var ErrForwardStoredTooLate = errors.New("the forward was stored after its resol
 // just before, such as the kept lane's walk, which reads the claim before each copy.
 //
 // ackWindow is the path's own bound on that wait (cmd/listener roleForwardTimeout, the outbox's
-// send budget). The sum of ForwardFenceAge, ackWindow and the claim route's budget stays below
-// the record's life, so a forward this reports in time is one the record's passes have read.
+// send budget). The sum of ForwardFenceAge, ackWindow and the claim route's budget must stay
+// below a takeover record's life (cmd/listener takeoverRecordLife), so that a forward this reports
+// in time is one the record's passes read; a path that adopts this rule checks that sum against
+// its own constants where it can read them.
 func ForwardStoredTooLate(resolvedAt, storedAt time.Time, ackWindow time.Duration) bool {
 	return !resolvedAt.IsZero() && storedAt.Sub(resolvedAt) >= ForwardFenceAge+ackWindow
 }
