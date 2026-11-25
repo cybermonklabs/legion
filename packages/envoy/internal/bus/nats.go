@@ -53,6 +53,8 @@ type connectOpts struct {
 	beforeRequestWait           func(loss <-chan struct{})
 	beforeCoreSendFlush         func()
 	afterCoreSendFlush          func()
+	watchWentOn                 func()
+	afterPublishTransport       func(topic string, jetStream bool)
 	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
@@ -183,6 +185,16 @@ func WithReplicas(n int) ConnectOption {
 // sets it, and no caller outside a test may.
 func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
+}
+
+// WithAfterPublishTransport runs after once PublishTakesJetStream has decided a publish's
+// transport, with the topic and the decision, on the caller's goroutine, so a test can land a read
+// of the deployed subjects between a caller's one decision and the send it makes on it
+// (PublishAckOn), which nothing else lets it time. It is exported for the tests of the programs
+// that connect through this package, as WithStreamSubjectsRefresh is: no deployment sets it, and no
+// caller outside a test may.
+func WithAfterPublishTransport(after func(topic string, jetStream bool)) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.afterPublishTransport = after })
 }
 
 // WithStreamMaxBytes sets the deployment's byte limit, StreamMaxBytesEnvVar, for the stream
@@ -498,6 +510,18 @@ type Client struct {
 	// of the request's timeout and its flush it settles first, so the order of the two is the
 	// test's and not the scheduler's.
 	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
+	// watchWentOn, when not nil, runs on the goroutine of a connection watch (connWatch.lost,
+	// connWatch.bound) each time a connection event it woke on left its request unlost, once it
+	// has taken the channel it waits on next. It is nil outside tests: a test sets it
+	// (WithWatchWentOn, export_test.go) to land the reconnect that follows a disconnect there,
+	// the moment a watch that took its next channel only after its read of the connection missed.
+	watchWentOn func()
+	// afterPublishTransport, when not nil, runs once PublishTakesJetStream has decided a publish's
+	// transport, with the topic and the decision, on the caller's goroutine. It is nil outside
+	// tests: a test of a program that connects through this package sets it
+	// (WithAfterPublishTransport) to land a read of the deployed subjects between a caller's one
+	// decision and the send it makes on that decision (PublishAckOn).
+	afterPublishTransport func(topic string, jetStream bool)
 	// closedHook, when not nil, runs at the start of onClosed, before the recovery a close starts.
 	// It is nil outside tests: a test sets it (WithClosedHook, export_test.go) to hold the work a
 	// close sets off, so a caller that returned before that work ran is caught reading too early.
@@ -918,6 +942,8 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		beforeRequestWait:           opts.beforeRequestWait,
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
+		watchWentOn:                 opts.watchWentOn,
+		afterPublishTransport:       opts.afterPublishTransport,
 		streamMessageReads:          opts.streamMessageReads,
 		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,

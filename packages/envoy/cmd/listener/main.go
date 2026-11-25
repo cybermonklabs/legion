@@ -1177,9 +1177,11 @@ const (
 // what names what the step opens, then the refused subject (refusedSubject), the server's text and
 // the wait before the next try. It then sleeps *wait, and doubles *wait up to
 // durableRefusedRetryCap for the step's next refusal (nextRefusedWait), as a refused durable's
-// retries wait; a step starts *wait at durableBindPoll. Every pod of the machine connects as the
-// same NATS user and would be refused alike, and an exit would send each into a crash loop whose
-// backoff delays the recovery by minutes once the grant is fixed.
+// retries wait; a step of the start starts *wait at durableBindPoll, and the join of the listener
+// state bucket (joinDeliveryLease) at twice that, since the start's own ERROR named durableBindPoll
+// as the wait before the join's first try. Every pod of the machine connects as the same NATS user
+// and would be refused alike, and an exit would send each into a crash loop whose backoff delays
+// the recovery by minutes once the grant is fixed.
 func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) {
 	logger.Error(line, append(what,
 		slog.String("subject", refusedSubject(err)),
@@ -1663,10 +1665,11 @@ const listenerStateRefusedLine = "listener state bucket refused by the NATS gran
 // delivery lease over it once it opens: a grant applied after the pod started is picked up without
 // a restart, as the start rule has it for every dependency that answers late (cmd/listener/README.md,
 // "Start"). It tries again after the start's ERROR's wait (durableBindPoll), and each refusal after
-// waitOutGrantRefusal, which logs listenerStateRefusedLine and doubles the wait up to
-// durableRefusedRetryCap; an open the cluster's state answers waits out waitOutClusterState, and
-// any other failure startRetry, as the start's open does. The pod delivers without a lease
-// meanwhile. It returns nil once ctx has ended.
+// waitOutGrantRefusal, which logs listenerStateRefusedLine with the wait before the next try,
+// twice durableBindPoll after the first refusal, doubling up to durableRefusedRetryCap; an open
+// the cluster's state answers waits out waitOutClusterState, and any other failure startRetry, as
+// the start's open does. The pod delivers without a lease meanwhile. It returns nil once ctx has
+// ended.
 func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
 	clusterWait := clusterStateWait{next: durableBindPoll}
@@ -2964,8 +2967,10 @@ func runListener(credentialWait time.Duration) {
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
-	// The lease runs until the shutdown releases it (durableReceiver.Stop); leaseCtx is cancelled
-	// after that, which ends a lease the release could not stop in time.
+	// The lease runs until the shutdown releases it (durableReceiver.Stop). leaseCtx is not
+	// cancelled before the process exits: the shutdown ends in os.Exit (shutdownListener), which
+	// runs no deferred call, so a lease the release did not stop renews until the exit, and a
+	// standby takes its record once it expires.
 	leaseCtx, leaseCancel := context.WithCancel(context.Background())
 	defer leaseCancel()
 	if deliveryLease != nil {
@@ -2982,22 +2987,26 @@ func runListener(credentialWait time.Duration) {
 	// read another pod's (lease.Contend), before anything this pod delivers is given up; its loop
 	// starts, and the receive loop hands the term it receives on to it, which takes that term as
 	// it stands or, when another pod holds the lease, ends it (durableReceiver.join). An edge
-	// listener, which dialled no lease connection, joins none.
+	// listener, which dialled no lease connection, joins none. The join runs under a context of
+	// the receiver's own, which the shutdown ends and waits out before it stops receiving
+	// (durableReceiver.startJoin, durableReceiver.Stop), so a join that completes as the pod stops
+	// is handed over or released by that stop rather than left renewing until the exit; the
+	// joined lease's own loop runs under leaseCtx, as a lease opened at the start does.
 	if deliveryLease == nil && leaseConn != nil {
-		go func() {
-			joined := joinDeliveryLease(leaseCtx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+		receiver.startJoin(func(ctx context.Context) *lease {
+			joined := joinDeliveryLease(ctx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
 			if joined == nil {
-				return
+				return nil
 			}
 			podLease.Store(joined)
 			client.KeepBucket(bus.ListenerStateBucket)
 			ledger.(*dedupe.Joining).Join(leaseLedger(joined, cfg.MachineID, deliveryHandlingLimit))
 			sessions.SetLastSeenBucket(joined.kv)
 			joined.SetReceiveSignal(receiver.receiveUp)
-			joined.Contend(leaseCtx)
+			joined.Contend(ctx)
 			joined.Start(leaseCtx)
-			receiver.join(joined)
-		}()
+			return joined
+		})
 	}
 	deps.Store(ready)
 	logger.Info("envoy-listener ready (NATS connected)")

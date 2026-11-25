@@ -110,3 +110,12 @@ func WithClosedHook(hook func()) ConnectOption {
 func WithCloseSettleBound(bound time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.closeSettleBound = bound })
 }
+
+// WithWatchWentOn runs went on the goroutine of each connection watch of the client
+// (connWatch.lost, connWatch.bound) each time a connection event it woke on left its request
+// unlost, once it has taken the channel it waits on next and before it waits there, so a test can
+// land the reconnect that follows a disconnect in that moment. It is compiled into the package's
+// tests only; no production connect can set it.
+func WithWatchWentOn(went func()) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.watchWentOn = went })
+}

@@ -1617,7 +1617,7 @@ A process of such a build registers no schema numbers either, so while one is li
 So during the first rollout onto this release every page is read-only on this build's processes, and a page is writable on a process of the older build only where its version is that build's own.
 That lasts until every process of the older build is gone: a process stopped as a deploy stops it deletes its row at the end of its HTTP drain and leaves the fleet then, and one killed without deregistering leaves it up to 15 seconds after its last heartbeat, the registry's live window.
 Each page is writable again on the socket it opens after that, which is the socket a reload opens: a socket already admitted read-only stays open and read-only, since the re-check closes writable sockets alone.
-In that first overlap, a take-over (`delivery/held_durable.go`, `heldDurable.takeOver`) deletes a durable and creates it again at its ack floor, all under the durable's consumer lease, and tries a failed create again for up to 10 seconds while it holds its hold.
+In that first overlap, a take-over (`delivery/held_durable_takeover.go`, `heldDurable.takeOver`) deletes a durable and creates it again at its ack floor, all under the durable's consumer lease, and tries a failed create again for up to 10 seconds while it holds its hold.
 The build before holds reconciles the durable under that same lease every 30 seconds and does not read the start the take-over recorded.
 So one case is left: a process of the new build killed between the delete and the create (or one that loses its hold, or fails every try, first) gives up the lease with the durable absent.
 A process of the build before holds that takes the lease next creates the durable with its own config:

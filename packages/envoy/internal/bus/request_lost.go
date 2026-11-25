@@ -50,8 +50,9 @@ type connWatch struct {
 	// one.
 	reconnects uint64
 	// changed is the client's connection-event channel (Client.ConnectionChanged), taken before
-	// conn was read, so an event between the two closes it. Only the one goroutine that waits on
-	// the watch reads or replaces it (lost, bound).
+	// conn was read, so an event between the two closes it, and taken again after each event the
+	// watch wakes on before the watch reads the connection again (lost, bound), for the same
+	// reason. Only the one goroutine that waits on the watch reads or replaces it.
 	changed <-chan struct{}
 }
 
@@ -74,7 +75,10 @@ func (c *Client) watchConnection() connWatch {
 // and with its reconnect count unmoved is none of the request's (lostRequest): it is a disconnect
 // the reconnect has not followed yet, or the moment between a reconnect nats.go has installed,
 // which the watch read, and the callback that reports it. The watch goes on past such an event,
-// on the next channel.
+// on the next channel, which it takes before it reads the connection: the reconnect that follows
+// a disconnect closes no channel when none is taken (Client.connectionChangedLocked), so a channel
+// taken after a read that found the connection still unchanged could miss it and wait on for an
+// event that has already come.
 func (w *connWatch) lost() bool {
 	for {
 		select {
@@ -82,10 +86,11 @@ func (w *connWatch) lost() bool {
 		default:
 			return false
 		}
+		w.changed = w.client.ConnectionChanged()
 		if w.lostRequest() {
 			return true
 		}
-		w.changed = w.client.ConnectionChanged()
+		w.client.watchWentOnForTest()
 	}
 }
 
@@ -107,7 +112,8 @@ func (w *connWatch) lostRequest() bool {
 // subscription's NextMsgWithContext, a JetStream request handed a context (RequestOnConnection) -
 // waits on it to end at the connection event rather than at ctx's deadline, and so does a wait that
 // must read no state of nats.go's itself (boundedBeside, the wait of BoundedOn and
-// BoundedOnConnection), since the loss is read here.
+// BoundedOnConnection), since the loss is read here. After each event it wakes on it takes the next
+// channel before it reads the connection, as lost does, so a reconnect between the two is seen.
 func (w connWatch) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithCancelCause(ctx)
 	go func() {
@@ -117,14 +123,24 @@ func (w connWatch) bound(ctx context.Context) (context.Context, context.CancelFu
 				return
 			case <-w.changed:
 			}
+			w.changed = w.client.ConnectionChanged()
 			if w.lostRequest() {
 				cancel(ErrRequestLostWithConnection)
 				return
 			}
-			w.changed = w.client.ConnectionChanged()
+			w.client.watchWentOnForTest()
 		}
 	}()
 	return bounded, func() { cancel(nil) }
+}
+
+// watchWentOnForTest runs the client's watchWentOn test hook, when one is set, on a watch that
+// has taken its next channel after an event that left its request unlost (lost, bound). Nothing
+// outside a test sets it.
+func (c *Client) watchWentOnForTest() {
+	if c.watchWentOn != nil {
+		c.watchWentOn()
+	}
 }
 
 // lostWithConnection reports whether ctx, a context bound returned, ended because the request it

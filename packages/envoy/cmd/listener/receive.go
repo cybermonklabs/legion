@@ -350,6 +350,13 @@ type durableReceiver struct {
 	joined     atomic.Pointer[lease]
 	joinCtx    context.Context
 	joinCancel context.CancelFunc
+	// stopJoining ends the try to join the machine's lease that startJoin runs, and joinTried is
+	// closed once that try has returned; both are nil, under mu, for a pod that runs no such try
+	// (one that started with a lease, an edge listener). Stop ends the try and waits for it before
+	// it stops the receive loop, so a lease the try took as the pod stopped is handed over or
+	// released by that stop, never left renewing past it.
+	stopJoining context.CancelFunc
+	joinTried   chan struct{}
 	// adopted is the term of the joined lease that took over the subscription this pod received on
 	// without a lease (joinTerm), the zero status while none did. Only the receive loop reads or
 	// writes it.
@@ -413,10 +420,30 @@ func newDurableReceiver(options durableReceiverOptions) *durableReceiver {
 // join hands this pod, which started without a lease, the lease it joined once its NATS grant let
 // it open the listener state bucket (joinDeliveryLease, main.go): the lease's first rounds have
 // taken the record or read another pod's (lease.Contend) and its loop runs. The receive loop
-// takes it from there (run, joinTerm). It is called once.
+// takes it from there (run, joinTerm). It is called once, by the try startJoin runs.
 func (r *durableReceiver) join(l *lease) {
 	r.joined.Store(l)
 	r.joinCancel()
+}
+
+// startJoin runs try, the join of its machine's lease that a pod started without one makes
+// (joinDeliveryLease and the steps main.go takes after it), on a goroutine of its own and under a
+// context of its own, which Stop ends, and hands the receive loop the lease try returns (join). try
+// returns nil when it ends with no lease, and returns once its context has ended. It is called
+// once, after Start.
+func (r *durableReceiver) startJoin(try func(ctx context.Context) *lease) {
+	ctx, stop := context.WithCancel(context.Background())
+	tried := make(chan struct{})
+	r.mu.Lock()
+	r.stopJoining, r.joinTried = stop, tried
+	r.mu.Unlock()
+	go func() {
+		defer close(tried)
+		defer stop()
+		if l := try(ctx); l != nil {
+			r.join(l)
+		}
+	}()
 }
 
 // Start runs the receive loop until Stop. Start is called once; the lease, when there is one, is
@@ -442,12 +469,24 @@ func (r *durableReceiver) Start() {
 // again at ctx's end (awaitDone, closedWithin), which a hand-back that ran to its bounds can have
 // ended first, so a stop that did everything it owed does not report itself unfinished. The release
 // here is the one that writes the record when the hand-back's own release outlasted its bound, and
-// it writes the ack-wait debt that release recorded (lease.Release). A lease that joined as the
-// receive loop stopped, which it never took up (join), is released all the same.
+// it writes the ack-wait debt that release recorded (lease.Release).
+//
+// A pod still trying to join its machine's lease (startJoin) has that try ended first, and Stop
+// waits for it to return, within ctx, before it stops the receive loop: a join that completes
+// after the stop began would otherwise take the record and renew it until the process exits,
+// which leaves a standby to wait it out as an expired one. A lease the try handed over before it
+// returned is taken up by the receive loop, whose term then ends as any term of the lease does,
+// or, when the loop did not take it up (join), is released here all the same.
 func (r *durableReceiver) Stop(ctx context.Context) {
 	r.mu.Lock()
-	stop, done := r.stop, r.done
+	stop, done, stopJoining, joinTried := r.stop, r.done, r.stopJoining, r.joinTried
 	r.mu.Unlock()
+	if stopJoining != nil {
+		stopJoining()
+		if awaitDone(ctx, joinTried) != nil {
+			r.logger.Warn("listener lease join still running at shutdown; a lease it takes after this is left to expire")
+		}
+	}
 	if stop != nil {
 		stop()
 		if awaitDone(ctx, done) != nil {
@@ -594,7 +633,10 @@ func (r *durableReceiver) run(ctx context.Context) {
 	var served uint64
 	if r.lease.Load() == nil {
 		refused := r.serve(ctx, ctx, leaseStatus{How: leaseTakenAbsent})
-		if refused || ctx.Err() != nil {
+		// A term the joined lease took over (joinTerm) is served even once a shutdown has come:
+		// the shutdown ends it at once, with the hand-back a holder's stop owes (end), where
+		// returning here would leave its subscription open under a lease the stop then releases.
+		if refused || (ctx.Err() != nil && !r.adopted.Holding) {
 			return
 		}
 		// A lease joined. A term that ended before it received anything, still preparing or
@@ -787,8 +829,8 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 // moves its subscription onto the client's connection after a reconnect (repair), and once termCtx
 // ends stops the loops and ends the term (end), waiting holderLoopsStopWait at most for a pass in
 // flight. A term this pod serves without a lease is handed instead to a lease that joins (join),
-// the loops stopped the same way (joinTerm). It reports false: a refusal of the durable comes
-// before it.
+// the loops stopped the same way (joinTerm), unless termCtx has ended by then. It reports false: a
+// refusal of the durable comes before it.
 func (r *durableReceiver) receive(ctx, termCtx context.Context) bool {
 	loopsCtx, stopLoops := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
@@ -800,20 +842,28 @@ func (r *durableReceiver) receive(ctx, termCtx context.Context) bool {
 	if r.lease.Load() == nil {
 		joined = r.joinCtx.Done()
 	}
+	// finish stops the loops, ends the term by end, and waits for a pass of the loops in flight.
+	finish := func(end func(context.Context)) bool {
+		stopped := time.Now()
+		stopLoops()
+		end(ctx)
+		waitLoops(r.logger, loops, stopped.Add(holderLoopsStopWait))
+		return false
+	}
 	for {
 		select {
 		case <-termCtx.Done():
-			stopped := time.Now()
-			stopLoops()
-			r.end(ctx)
-			waitLoops(r.logger, loops, stopped.Add(holderLoopsStopWait))
-			return false
+			return finish(r.end)
 		case <-joined:
-			stopped := time.Now()
-			stopLoops()
-			r.joinTerm(ctx)
-			waitLoops(r.logger, loops, stopped.Add(holderLoopsStopWait))
-			return false
+			// A shutdown that came as the lease joined leaves both cases ready, and select
+			// picks either: the term's end wins, so the term drains its subscription and NAKs
+			// what it holds, as the stop of a pod without a lease does (end), and the stop
+			// releases the lease that joined (Stop). The shutdown came no later than the join,
+			// so the term is not handed to the lease (joinTerm) only for run to end it at once.
+			if termCtx.Err() != nil {
+				return finish(r.end)
+			}
+			return finish(r.joinTerm)
 		case <-r.reconnects:
 			r.repair(termCtx)
 		}

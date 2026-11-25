@@ -492,7 +492,7 @@ A listener whose grant refuses the bucket does not exit: it logs one ERROR, `lis
 The shared state above falls back to the pod's own: the ledger is in process, last-seen is in process, and the role-claim grace counts from the pod's own start.
 Run one pod per machine id in this mode: it has no fencing against a second deliverer after a reconnect in place.
 
-The pod tries the bucket again on the lease's own connection by the start rule ("Start" above), logging `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`joinDeliveryLease`).
+The pod tries the bucket again on the lease's own connection by the start rule ("Start" above), logging `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 2 s, twice the 1 s the start's ERROR names for the first try, and doubles up to 30 s (`joinDeliveryLease`).
 A grant applied after the pod started is so taken within one wait, with no restart, and the pod joins the lease:
 
 - The shared state follows: the keeper keeps the bucket, last-seen is recorded in the bucket, the role-claim grace counts from the lease's `service_since`, and the ledger is the machine's shared one.
@@ -508,6 +508,9 @@ A grant applied after the pod started is so taken within one wait, with no resta
   Its relays stop and are given `relayFormerSettle` (1 s) to settle the frames they forwarded, acks included, so the holder's relays, which restart each session's consumer at its ack floor, send none of them again;
   then its subscription goes, which ends the holder's wait at its next poll (1 s), and the pod stands by under the lease.
   A record that is not released counts as held at that first read, one whose holder died included: the pod stands by, and its lease takes the record once it has stood unchanged for the TTL, as any standby's does, with the settle hold an expired record asks for.
+
+- A stop ends a join still trying before it stops receiving, and waits for it, within the receive stop's budget ("Graceful stop order" above): a lease the join took as the pod stopped is ended with the pod's receiving, its term handed back as any holder's is, or released by the stop when the pod had not taken it up yet, so no standby waits out the record of a pod that stopped gracefully (`durableReceiver.Stop`).
+  A shutdown that comes as the lease joins ends the term the pod received on without a lease, its subscription drained and what it holds NAKed, rather than handing that term to the lease (`durableReceiver.receive`); one that comes once the lease has taken the term over ends it as the holder's term, with the hand-back a holder's stop makes (`durableReceiver.run`).
 
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
 for a host, its NATS authorization) before running a second pod of a machine id.

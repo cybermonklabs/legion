@@ -584,6 +584,14 @@ func (e *ErrRoleHeld) Error() string {
 // there is none. No claim record was written: the role is left exactly as the claim that stands
 // left it, and a claim that lost the write's compare-and-swap rolled its own topic back unless
 // the winning claim names the claimant itself.
+//
+// The two revisions are equal only for a claim whose write lost its compare-and-swap and whose
+// read after that (rollBackUnlessHeld) found the revision the claim required: 0 when a claim
+// landed after this claim's read and was released before the read after it, so the role has no
+// claim record again but its key a newer entry than the one the write was conditional on
+// (roleClaimToWrite), and the required revision itself when a copy of a replicated bucket that
+// has not applied the write that won answered that read (RoleClaim's direct get). Error then says
+// the write lost, rather than naming one revision twice as the one held and the one required.
 type ErrRoleClaimRevisionMismatch struct {
 	Role     string
 	Expected uint64
@@ -592,6 +600,9 @@ type ErrRoleClaimRevisionMismatch struct {
 }
 
 func (e *ErrRoleClaimRevisionMismatch) Error() string {
+	if e.Actual == e.Expected {
+		return fmt.Sprintf("role %s's claim changed after this claim read it at revision %d: its conditional write lost to a write that landed since", e.Role, e.Expected)
+	}
 	return fmt.Sprintf("role %s's claim is at revision %d, not the %d this claim required", e.Role, e.Actual, e.Expected)
 }
 

@@ -3,11 +3,14 @@ package bus
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -471,5 +474,185 @@ func TestAKeptLanesReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *
 	defer cancel()
 	if _, err := client.KeptRoleLanes(ctx); err != nil {
 		t.Fatalf("the read of the kept lanes again after the reconnect = %v, want an answer", err)
+	}
+}
+
+// reconnectAfterTheWatch is a link a row cuts through a proxy that refuses every dial while it is
+// cut, so a watch reads the disconnect before any reconnect can come, and restores from the first
+// watch that goes on past an event that left its request unlost (went, the client's
+// WithWatchWentOn), which then waits for the reconnect's hooks (hook, the client's reconnect hook):
+// those run after the client reported the reconnect's event (queueReconnect), so that watch goes
+// on only once the event has come.
+type reconnectAfterTheWatch struct {
+	proxy       *testnats.Proxy
+	armed       atomic.Bool
+	restore     sync.Once
+	heard       sync.Once
+	reconnected chan struct{}
+	// at is when the reconnect's hooks ran, written before reconnected is closed.
+	at time.Time
+}
+
+func newReconnectAfterTheWatch(t *testing.T, uri string) *reconnectAfterTheWatch {
+	t.Helper()
+	return &reconnectAfterTheWatch{proxy: testnats.StartProxy(t, uri), reconnected: make(chan struct{})}
+}
+
+func (r *reconnectAfterTheWatch) went() {
+	if !r.armed.Load() {
+		return
+	}
+	r.restore.Do(func() {
+		r.proxy.Restore()
+		select {
+		case <-r.reconnected:
+		case <-time.After(lostRequestWait):
+		}
+	})
+}
+
+func (r *reconnectAfterTheWatch) hook(context.Context, *nats.Conn) error {
+	if r.armed.Load() {
+		r.heard.Do(func() {
+			r.at = time.Now()
+			close(r.reconnected)
+		})
+	}
+	return nil
+}
+
+// cut cuts the link and returns when the reconnect's hooks have run: the link comes back only once
+// a watch has gone on past the disconnect (went).
+func (r *reconnectAfterTheWatch) cut(t *testing.T) time.Time {
+	t.Helper()
+	r.armed.Store(true)
+	r.proxy.Cut()
+	select {
+	case <-r.reconnected:
+		return r.at
+	case <-time.After(2 * lostRequestWait):
+		t.Fatalf("the link was not restored within %s of the cut: no watch went on past the disconnect", 2*lostRequestWait)
+		return time.Time{}
+	}
+}
+
+// A request whose watch wakes at the disconnect and reads its connection unchanged, the reconnect
+// not yet come, fails with ErrRequestLostWithConnection at that reconnect: after each event the
+// watch takes the channel it waits on next before it reads the connection (connWatch.bound), so
+// the reconnect's event, which closes the channel taken when it comes and none when none is taken
+// (Client.connectionChangedLocked), closes the one the watch waits on. The request goes to a
+// subscriber that never answers, and the reconnect lands just after the watch's read
+// (reconnectAfterTheWatch).
+//
+// A watch that read the connection first and took its next channel after took it once the
+// reconnect had reported its event to no channel, and waited on it for an event that had already
+// come: the request waited out its whole deadline.
+// It must not run in parallel: the request must fail within 500 ms of the reconnect it times.
+func TestARequestWhoseWatchReadTheDisconnectFailsAtTheReconnectThatFollows(t *testing.T) {
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	const subject = "request-lost.unanswered"
+	silent := testnats.Connect(t, uri)
+	asked := make(chan struct{}, 1)
+	if _, err := silent.Subscribe(subject, func(*nats.Msg) {
+		select {
+		case asked <- struct{}{}:
+		default:
+		}
+	}); err != nil {
+		t.Fatalf("subscribe the subscriber that never answers: %v", err)
+	}
+	if err := silent.Flush(); err != nil {
+		t.Fatalf("flush the subscriber that never answers: %v", err)
+	}
+	link := newReconnectAfterTheWatch(t, uri)
+	client, err := Connect([]string{link.proxy.URL()}, WithStreamSubjectsRefresh(time.Hour), WithWatchWentOn(link.went))
+	if err != nil {
+		t.Fatalf("connect through the proxy: %v", err)
+	}
+	t.Cleanup(client.Close)
+	client.AddReconnectHook(link.hook)
+	conn := client.Connection()
+
+	ctx, cancel := context.WithTimeout(context.Background(), lostRequestWait)
+	defer cancel()
+	answers := make(chan lostAnswer, 1)
+	go func() {
+		_, err := RequestOnConnection(ctx, client, func(ctx context.Context) (*nats.Msg, error) {
+			return conn.RequestWithContext(ctx, subject, nil)
+		})
+		answers <- lostAnswer{err: err, at: time.Now()}
+	}()
+	select {
+	case <-asked:
+	case <-time.After(lostRequestWait):
+		t.Fatalf("the request never reached the subscriber that never answers")
+	}
+	reconnected := link.cut(t)
+
+	requireLostAtTheReconnect(t, "a request to a subscriber that never answers", answers, reconnected)
+}
+
+// A pull whose watch wakes at the disconnect and reads its connection unchanged, the reconnect not
+// yet come, ends with ErrSessionPullReconnected at that reconnect, rather than at the silence of
+// twice its heartbeat: the pull's watch takes the channel it waits on next before it reads the
+// connection (connWatch.lost), as a request's does (connWatch.bound), and the reconnect lands just
+// after that read (reconnectAfterTheWatch).
+//
+// A watch that read the connection first and took its next channel after waited on a channel the
+// reconnect had already passed by, and the pull went on waiting for a request the server had
+// dropped with the old connection.
+// It must not run in parallel: the pull must end within 500 ms of the reconnect it times.
+func TestAPullWhoseWatchReadTheDisconnectEndsAtTheReconnectThatFollows(t *testing.T) {
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	link := newReconnectAfterTheWatch(t, uri)
+	consumers, err := ConnectSessionConsumers([]string{link.proxy.URL()}, 0, nil, WithWatchWentOn(link.went))
+	if err != nil {
+		t.Fatalf("connect session consumers through the proxy: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+	consumers.client.AddReconnectHook(link.hook)
+	const session = "ses_pull_watch_order"
+	agent := contracts.LegacyAgentSubject(session)
+	if _, err := consumers.Ensure(context.Background(), session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	pull := pullSession(t, consumers, session)
+	// A message taken shows the pull's request is out and answered on the connection the row
+	// cuts next.
+	before := publishStored(t, owner, agent, "before the cut")
+	if msg := next(t, pull); msg.StreamSeq != before {
+		t.Fatalf("before the cut got %d, want %d", msg.StreamSeq, before)
+	} else if err := msg.Ack(); err != nil {
+		t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lostRequestWait)
+	defer cancel()
+	answers := make(chan lostAnswer, 1)
+	go func() {
+		_, err := pull.Next(ctx)
+		answers <- lostAnswer{err: err, at: time.Now()}
+	}()
+	reconnected := link.cut(t)
+
+	var answer lostAnswer
+	select {
+	case answer = <-answers:
+	case <-time.After(lostRequestWait + time.Second):
+		t.Fatalf("the pull whose connection was cut has not answered %s after the reconnect", lostRequestWait+time.Second)
+	}
+	if after := answer.at.Sub(reconnected); !errors.Is(answer.err, ErrSessionPullReconnected) || after > lostRequestAfterReconnect {
+		t.Fatalf("the pull whose connection was cut under it answered %v, %s after the reconnect; want %v within %s of it",
+			answer.err, after.Round(time.Millisecond), ErrSessionPullReconnected, lostRequestAfterReconnect)
 	}
 }

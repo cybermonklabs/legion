@@ -242,3 +242,48 @@ func TestALateOutrightClaimItsCallerAbandonedIsRefusedOverAReleaseMadeAfterItsRe
 		t.Fatal("the abandoned outright claim answered success")
 	}
 }
+
+// A conditional claim that required no claim record (IfClaimRevision 0), which another session's
+// claim and its release overtake before its write lands, is refused for its write's lost
+// compare-and-swap (*ErrRoleClaimRevisionMismatch), and the read after that finds no claim record
+// again: both revisions are 0. The refusal says the write lost to a write since this claim's read.
+// POST /v1/roles/set answers a soft claim of a role no record holds with this text when it loses
+// that race twice, since it conditions such a claim on the revision it decided on, 0
+// (IfClaimRevision).
+//
+// Before, the text named the one revision twice: "role legion-tester's claim is at revision 0, not
+// the 0 this claim required".
+func TestALateConditionalClaimOverAClaimAndItsReleaseSaysItsWriteLost(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	t.Cleanup(cleanup)
+	reg, _ := coldRegistry(t, conn)
+	const (
+		role     = "legion-tester"
+		claimant = "ses_late_conditional_claimant"
+		other    = "ses_claimed_and_released_again"
+	)
+	raw := reg.roleKV.Legacy()
+	late := &lateKeyWrite{KeyValue: raw, key: role, late: func() {
+		createdAndDeleted(t, raw, role, []byte(`{"holder_session_id":"`+other+`"}`))
+	}}
+	reg.roleKV = bus.NewKeyValue(late, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+
+	none := uint64(0)
+	_, err := reg.SetRoleWithPrevious(context.Background(), RoleClaimRequest{
+		SessionID:       claimant,
+		MachineID:       "example-host",
+		Role:            role,
+		IfClaimRevision: &none,
+	})
+	if late.writes == 0 {
+		t.Fatal("the claim never reached its conditional write, so nothing overtook it")
+	}
+	var mismatch *ErrRoleClaimRevisionMismatch
+	if !errors.As(err, &mismatch) || mismatch.Expected != 0 || mismatch.Actual != 0 || mismatch.Holder != "" {
+		t.Fatalf("UNKNOWN: the late conditional claim answered %v (%+v), want a mismatch whose required and read revisions are both 0 and that names no holder; the row needs the refusal that reads none twice", err, mismatch)
+	}
+	want := "role " + role + "'s claim changed after this claim read it at revision 0: its conditional write lost to a write that landed since"
+	if got := mismatch.Error(); got != want {
+		t.Fatalf("the late conditional claim's refusal reads %q, want %q", got, want)
+	}
+}

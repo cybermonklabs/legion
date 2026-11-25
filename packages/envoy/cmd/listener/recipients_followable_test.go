@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,16 +233,16 @@ func retireStreamSubject(t *testing.T, js natsgo.JetStreamContext, subject strin
 // that captures it, and a read of the subjects takes that in before the count; and an operator
 // retires the subject again before the send, so no stream stores the message and no consumer
 // delivers it, as the decision said. Both counts are left out, the send has no acknowledgement,
-// and the stream holds nothing on the topic. The row drives the route's helpers in the route's
-// order with the subjects changed between them, since no seam of the route lets a test land a read
-// there; the client holds off its periodic reads of the subjects (bus.WithStreamSubjectsRefresh,
+// and the stream holds nothing on the topic. The row pins the helpers only: it drives them in the
+// route's order with one decision handed to both, so a route that decided twice would pass it;
+// TestThePublishRouteCountsAndSendsOnItsOneDecisionOfTheTransport drives the route itself. The
+// client holds off its periodic reads of the subjects (bus.WithStreamSubjectsRefresh,
 // bus.WithKeepInterval), so the row's own reads are the only ones.
 //
 // A count that judged the transport again on the subjects the client last held
 // (bus.Client.UsesCoreTransport) counted the session that follows the topic, recipients 1 for a
-// message no consumer receives; a send that judged it again would as well have read the subjects
-// apart from the count. Each premise is checked as it is set up, and a row whose premise does not
-// hold fails as UNKNOWN.
+// message no consumer receives. Each premise is checked as it is set up, and a row whose premise
+// does not hold fails as UNKNOWN.
 func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
 	t.Parallel()
 	const (
@@ -301,5 +304,101 @@ func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
 	}
 	if _, err := js.GetLastMsg(bus.Stream, topic); !errors.Is(err, natsgo.ErrMsgNotFound) {
 		t.Fatalf("the stream's last message on %s after the send = %v, want none: the row needs a message no stream stores", topic, err)
+	}
+}
+
+// The publish route (POST /v1/messages/publish) counts a message's recipients and sends it on one
+// decision of its transport (bus.Client.PublishTakesJetStream), whatever read of the deployed
+// subjects lands between that decision and the send. Here the route's read of the subjects goes
+// unanswered, so it refuses nothing and decides on the subjects its client holds, which leave the
+// topic uncaptured: core NATS. Between that decision and the send (bus.WithAfterPublishTransport) a
+// newer build's start adds a subject that captures the topic, a read of the subjects takes that in,
+// and an operator retires the subject again, so no stream stores the message and none answers a
+// JetStream publish of it. The route answers 200 with both counts left out, though a session
+// follows the topic, and the send goes over core NATS: the stream holds nothing on the topic.
+//
+// A send that decided the transport again, on the subjects that read left, took JetStream for a
+// topic no stream captures, which no stream answers, and the route answered 503. A count that
+// decided again counted the session that follows the topic. Each premise is checked as it is set
+// up, and a row whose premise does not hold fails as UNKNOWN.
+func TestThePublishRouteCountsAndSendsOnItsOneDecisionOfTheTransport(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID = "ses_route_transport_follower"
+		topic     = "notifications.x.route-counted"
+	)
+	if bus.StreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: this build compiles a subject capturing %s; the row needs a topic only %s captures", topic, rollNewerSubject)
+	}
+	url := testnats.URL(t)
+	relay := testnats.StartUnansweredRelayOn(t, url, "$JS.API.STREAM.INFO."+bus.Stream)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open the row's JetStream: %v", err)
+	}
+	// between is what lands between the route's decision and its send, once, for the row's
+	// topic: what it found is read once the route has answered, on this goroutine, which the
+	// route's handler runs on.
+	var (
+		client    *bus.Client
+		decided   atomic.Bool
+		jetStream bool
+		captured  bool
+	)
+	between := func(decidedTopic string, decision bool) {
+		if decidedTopic != topic || !decided.CompareAndSwap(false, true) {
+			return
+		}
+		jetStream = decision
+		addStreamSubject(t, js, rollNewerSubject)
+		captured = !client.AskDeployedSubjects().Uncaptured(t.Context(), topic) && !client.UsesCoreTransport(topic)
+		retireStreamSubject(t, js, rollNewerSubject)
+	}
+	client, err = bus.ConnectOwningStream([]string{relay.URL()}, bus.WithReplicas(1),
+		bus.WithKeepInterval(backgroundReadsHeld), bus.WithStreamSubjectsRefresh(backgroundReadsHeld),
+		bus.WithAfterPublishTransport(between))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	waitForRegistry(t, rig.harness.registry)
+	storeRawRow(t, rig.harness.registry, client, sessionID, topic)
+	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
+		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
+	}
+	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+		record, ok := rig.known.Get(sessionID)
+		return ok && slices.Contains(record.Topics, topic)
+	})
+	if client.DeployedStreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: the listener judges %s captured before the publish; the row needs subjects that leave it uncaptured", topic)
+	}
+
+	relay.Arm(1)
+	answer := publishOn(rig.mux, topic)
+	switch {
+	case !decided.Load():
+		t.Fatalf("UNKNOWN: the publish route answered %d %s and never decided the transport of %s", answer.Code, answer.Body.String(), topic)
+	case jetStream:
+		t.Fatalf("UNKNOWN: the route's decision for %s was JetStream; the row needs a decision of core NATS, which its unanswered read of the subjects leaves", topic)
+	case !captured:
+		t.Fatalf("UNKNOWN: a read of the subjects after %s was added left %s uncaptured; the row needs subjects that capture it between the decision and the send", rollNewerSubject, topic)
+	}
+	if answer.Code != http.StatusOK {
+		t.Fatalf("the publish on %s, decided core NATS before a read of the subjects captured it, was answered %d %s, want 200: the send did not take the route's decision", topic, answer.Code, answer.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(answer.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the publish's answer %s: %v", answer.Body.String(), err)
+	}
+	if recipients, connected := body["recipients"], body["recipients_connected"]; recipients != nil || connected != nil {
+		t.Fatalf("the publish on %s, whose send takes core NATS, answered recipients %s and recipients_connected %s with %s following it, want both left out: the count did not take the route's decision",
+			topic, recipients, connected, sessionID)
+	}
+	if _, err := js.GetLastMsg(bus.Stream, topic); !errors.Is(err, natsgo.ErrMsgNotFound) {
+		t.Fatalf("the stream's last message on %s after the publish = %v, want none: the send did not go over core NATS", topic, err)
 	}
 }

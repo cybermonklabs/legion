@@ -21,8 +21,9 @@ body: |-
     records and receives again; when the connection dropped again during that setup, the setup
     waited 10 s for a lost answer, and meanwhile the listener received nothing and answered its
     health check 503. It now sends a lost read or create of the stream again at once on the new
-    connection, three sends at most, and after a lost update it reads the stream back rather than
-    sending the update again. And
+    connection, with no cap on the sends: it sends again until the server answers, that connection
+    drops too, the listener stops or the setup's 36 s bound passes, and after a lost update it
+    reads the stream back rather than sending the update again. And
     Dispatch's GitHub intake, taking over from a process that died, could lose one answer the same
     way and take the work over up to 12 s late, past the 17 s it promises; it now sends that
     request again at once too.

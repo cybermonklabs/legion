@@ -36,6 +36,16 @@ import (
 // in the roll window inside the gap or during an unanswered read goes over core NATS, stored, with
 // no MsgId and no acknowledgement.
 func (c *Client) PublishTakesJetStream(ctx context.Context, topic string) bool {
+	jetStream := c.publishTakesJetStream(ctx, topic)
+	if c != nil && c.afterPublishTransport != nil {
+		c.afterPublishTransport(topic, jetStream)
+	}
+	return jetStream
+}
+
+// publishTakesJetStream is PublishTakesJetStream's decision, before its test hook
+// (WithAfterPublishTransport) is told of it.
+func (c *Client) publishTakesJetStream(ctx context.Context, topic string) bool {
 	if !c.UsesCoreTransport(topic) {
 		return true
 	}
