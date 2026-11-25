@@ -414,12 +414,18 @@ func (r *workHoldRig) launches(role claim.Role) int {
 	return len(launchesOf(r.rt, r.token(role)))
 }
 
-// stored is role's claim as the store holds it: its state and its suspension's source.
+// stored is role's claim of the root as the store holds it: its state and its suspension's source.
 func (r *workHoldRig) stored(role claim.Role) (supervise.ClaimState, supervise.SuspendSource) {
 	r.t.Helper()
+	return r.storedOf(r.token(role))
+}
+
+// storedOf is the claim token as the store holds it: its state and its suspension's source.
+func (r *workHoldRig) storedOf(token claim.Token) (supervise.ClaimState, supervise.SuspendSource) {
+	r.t.Helper()
 	var state, by string
-	if err := r.pool.QueryRow(r.ctx, `select state, coalesce(suspended_by, '') from claims where token = $1`, string(r.token(role))).Scan(&state, &by); err != nil {
-		r.t.Fatalf("read the %s's stored claim: %v", role, err)
+	if err := r.pool.QueryRow(r.ctx, `select state, coalesce(suspended_by, '') from claims where token = $1`, string(token)).Scan(&state, &by); err != nil {
+		r.t.Fatalf("read the stored claim %s: %v", token, err)
 	}
 	return supervise.ClaimState(state), supervise.SuspendSource(by)
 }
@@ -4177,5 +4183,117 @@ func TestWorkHoldPhaseStartWithNoOpeningStartQueuedCarriesTheOwedOpening(t *test
 	r.takeTheTask(claim.RoleImplementer)
 	if r.openingOwed() {
 		t.Fatal("the holder's told row still owes the opening after the turn of the task that told it")
+	}
+}
+
+// releasedMember creates role's claim of issue, a member of the root's tree, as an idle release
+// leaves it: suspended with the source `released`, its session intact. It answers the claim's
+// token.
+func (r *workHoldRig) releasedMember(issue string, role claim.Role) claim.Token {
+	r.t.Helper()
+	token := r.tokenOf(issue, role)
+	r.sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	session := "ses-" + issue + "-" + string(role)
+	if _, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: token, Project: r.tokenProject, Tree: r.tree.key, Issue: issue, Role: role,
+		Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+		Session: session, SessionFile: "/tmp/" + session + ".jsonl"}, ""); err != nil {
+		r.t.Fatalf("create the %s's claim of %s: %v", role, issue, err)
+	}
+	return token
+}
+
+// wantSuspendedBy is the claim token suspended by by, in its machine and in the store, holding no
+// task and its agent never started: the hold's own stop of a released worker keeps none, and the
+// daemon's suspension retires the task of the phase it ends.
+func (r *workHoldRig) wantSuspendedBy(token claim.Token, by supervise.SuspendSource, when string) {
+	r.t.Helper()
+	machine, ok := r.sup.Machine(token)
+	if !ok {
+		r.t.Fatalf("%s: no machine for %s", when, token)
+	}
+	c := machine.Claim()
+	if c.State != supervise.StateSuspended || c.SuspendedBy != by || c.WorkHeld() != (by == supervise.SuspendedByHold) {
+		r.t.Fatalf("%s %s is %s by %q, held by the hold %v, want it suspended by %q", when, token, c.State, c.SuspendedBy, c.WorkHeld(), by)
+	}
+	if state, stored := r.storedOf(token); state != supervise.StateSuspended || stored != by {
+		r.t.Fatalf("%s %s is stored %s by %q, want it suspended by %q", when, token, state, stored, by)
+	}
+	if c.Pending != nil {
+		r.t.Fatalf("%s %s holds %+v, want no task", when, token, c.Pending)
+	}
+	if got := len(launchesOf(r.rt, token)); got != 0 {
+		r.t.Fatalf("%s the runtime started %s %d times, want none", when, token, got)
+	}
+}
+
+// sentToClaim is how many rows the outbox holds for issue above row since that start role's claim
+// or message it: the starts and the tasks the opening sends a claim, and its messages.
+func (r *workHoldRig) sentToClaim(issue string, role claim.Role, since int64) int {
+	r.t.Helper()
+	var n int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where issue = $1 and id > $2 and
+		((kind = 'supervise' and payload->>'op' = 'start' and payload->>'role' = $3) or (kind = 'role_message' and payload->>'role' = $4))`,
+		issue, since, string(role), string(r.tokenOf(issue, role))).Scan(&n); err != nil {
+		r.t.Fatalf("count the rows sent to the %s's claim of %s: %v", role, issue, err)
+	}
+	return n
+}
+
+// H27, decision 16: a member of a held tree that a person moves out of the workflow, to the
+// backlog, the icebox or triage, is taken over by the daemon's own suspension. The close stopped
+// a phase worker of the member, so its claim stands suspended by the hold. The move is the real
+// Dispatch fact, so the engine's leave writes the daemon's suspend row for the claim, and the
+// outbox runs it: the claim is suspended by the daemon, not by the hold. The gate's opening then
+// sends that claim no start, no task and no message, and still starts the claim the hold stopped
+// of the root, which stayed.
+func TestWorkHoldGivesWayToTheDaemonsSuspensionOfAMemberMovedOutOfTheWorkflow(t *testing.T) {
+	for _, status := range []string{"backlog", "icebox", "triage"} {
+		t.Run(status, func(t *testing.T) {
+			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+			r.live(claim.RoleArchitect)
+			r.released(claim.RoleTester)
+			parent := r.tree.key
+			putOutboxIssue(t, r.pool, r.records, record.Issue{Key: ownersChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: r.tree.project, Tree: r.tree.key, Parent: &parent, Title: "a child whose worker the hold stops", Phase: phase.Implementing,
+				Generation: 1, Status: workflow.PhaseStatus(phase.Implementing), DispatchStatus: workflow.PhaseStatus(phase.Implementing), Rank: "V",
+				LastDispatchSeq: 3})
+			holdSlot(t, r.pool, ownersChild)
+			worker := r.releasedMember(ownersChild, claim.RoleImplementer)
+
+			r.close(4)
+			r.drain()
+			r.wantHeld(claim.RoleTester, 0, "after the close")
+			r.wantSuspendedBy(worker, supervise.SuspendedByHold, "after the close")
+
+			r.apply("child-"+status, intake.DispatchIssue{Key: ownersChild, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated",
+				Status: status, Title: "a child whose worker the hold stops", Parent: r.tree.key, Rank: "V"})
+			var suspends []record.SuperviseRequest
+			for _, request := range startRequestsOf(t, r.pool, ownersChild, "suspend") {
+				if request.Role == claim.RoleImplementer {
+					suspends = append(suspends, request)
+				}
+			}
+			if len(suspends) != 1 || suspends[0].SuspendedBy == supervise.SuspendedByHold || suspends[0].Reason != ownersChild+" is "+status {
+				t.Fatalf("the move to %s wrote the implementer's suspend rows %+v, want one by the daemon for %q", status, suspends, ownersChild+" is "+status)
+			}
+			r.drain()
+			r.wantSuspendedBy(worker, supervise.SuspendedByDaemon, "after the move to "+status)
+
+			opened := r.newestRow()
+			r.approve(4, 12)
+			if sent := r.sentToClaim(ownersChild, claim.RoleImplementer, opened); sent != 0 {
+				t.Fatalf("the opening queued %d starts or messages for the claim the daemon suspended, want none", sent)
+			}
+			r.drain()
+			r.wantStarted(claim.RoleTester, 0, r.opening(4, 4)+"\n\n"+"The issue's other roles may ask you questions.")
+			r.wantSuspendedBy(worker, supervise.SuspendedByDaemon, "after the opening")
+			topic := notify.RoleTopicPrefix + string(worker)
+			_, delivered := r.publisher.snapshot()
+			for _, publish := range delivered {
+				if publish.topic == topic {
+					t.Fatalf("the opening sent the claim the daemon suspended the message %q, want none", publish.message)
+				}
+			}
+		})
 	}
 }

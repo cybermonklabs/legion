@@ -121,18 +121,14 @@ var approvalPaths = []approvalPath{
 		r.wantCarried(carriedRoot, otherRoot, otherDocument, 12)
 		return r.noticeEntry(carriedRoot, "carried-gate-opened")
 	}},
-	// Path 2 and 6: the same opening of the copy a carried root holds while it is out of the workflow
-	// in the backlog. Its architect stopped with its tree, so the outbox relays the notice's decision
-	// (record.SpecDecision's carried-gate-opened) and keeps it for the root's next start or catch-up,
-	// which names it.
-	{name: "task-carried-gate-opened-kept-for-a-carried-root-out-of-the-workflow", drive: func(r *pathRig) string {
-		r.carried(record.DesignGate{LatestVersion: 12})
-		r.lingering(carriedRoot, "backlog")
-		r.review(otherRoot, otherDocument, intake.DispatchArtifactApproved, 12)
-		r.relay(carriedRoot, "carried-gate-opened")
-		r.wantCarried(carriedRoot, otherRoot, otherDocument, 12)
-		return r.keptTask(carriedRoot)
-	}},
+	// Path 2 and 6: the same opening of the copy a carried root holds while it is out of the
+	// workflow, in the backlog, the icebox or triage. Its architect stopped with its tree, so the
+	// outbox relays the notice's decision (record.SpecDecision's carried-gate-opened) and keeps it
+	// for the root's next start or catch-up, which names it. The approval is of the other root's
+	// document, so the carried root's status only takes it out of the workflow.
+	{name: "task-carried-gate-opened-kept-for-a-carried-root-in-backlog", drive: keptForACarriedRoot("backlog")},
+	{name: "task-carried-gate-opened-kept-for-a-carried-root-in-icebox", drive: keptForACarriedRoot("icebox")},
+	{name: "task-carried-gate-opened-kept-for-a-carried-root-in-triage", drive: keptForACarriedRoot("triage")},
 	// Path 5: the start task of the root a hand-over carried in with a copy carried open, which the
 	// re-admission's promotion writes (Engine.StartArchitect, writeCarriedPhase).
 	{name: "task-start-of-a-carried-root", drive: func(r *pathRig) string {
@@ -223,19 +219,26 @@ var approvalPaths = []approvalPath{
 		r.wantOwn(ownRoot, ownDocument, 3)
 		return r.noticeEntry(ownRoot, "catch-up")
 	}},
-	// Path 6: a person's approval of the spec of a root whose tree closed: nobody in the tree hears
-	// the design-approved notice, so the outbox relays it and keeps the decision for the root's next
-	// start (record.RelayParkedDecision), which names it (KeptDecisionsTask).
-	{name: "task-design-approved-kept-for-a-root-out-of-the-workflow", drive: func(r *pathRig) string {
+	// Path 6: a person's approval of the spec of a root whose tree closed as done: nobody in the
+	// tree hears the design-approved notice, so the outbox relays it and keeps the decision for the
+	// root's next start (record.RelayParkedDecision), which names it (KeptDecisionsTask).
+	{name: "task-design-approved-kept-for-a-root-closed-as-done", drive: func(r *pathRig) string {
 		r.closedRoot()
 		r.relay(ownRoot, "design-approved")
 		r.wantOwn(ownRoot, ownDocument, 2)
 		return r.keptTask(ownRoot)
 	}},
-	// Path 5 and 6: that root re-admitted after a new version of its spec, whose start task names
-	// the kept decision and the approval the version left below it (KeptDecisionsTask). The
-	// re-admission cleared the gate row, and the route answers from the record it left, before the
-	// start task is told and after its confirmation told what it named.
+	// Path 6: the same decision kept for a root a person moved to the backlog, the icebox or
+	// triage. In the backlog and the icebox a fresh approval queues a handover and keeps no
+	// decision, so the decision is the one a refused handover keeps (Engine.refuseHandover); in
+	// triage the gate takes the approval, as a closed root's does, and the outbox keeps it.
+	{name: "task-design-approved-kept-for-a-root-in-backlog", drive: keptForARootOutOfTheWorkflow("backlog")},
+	{name: "task-design-approved-kept-for-a-root-in-icebox", drive: keptForARootOutOfTheWorkflow("icebox")},
+	{name: "task-design-approved-kept-for-a-root-in-triage", drive: keptForARootOutOfTheWorkflow("triage")},
+	// Path 5 and 6: the root closed as done, re-admitted after a new version of its spec, whose
+	// start task names the kept decision and the approval the version left below it
+	// (KeptDecisionsTask). The re-admission cleared the gate row, and the route answers from the
+	// record it left, before the start task is told and after its confirmation told what it named.
 	{name: "task-start-of-the-readmitted-root", drive: func(r *pathRig) string {
 		r.closedRoot()
 		r.relay(ownRoot, "design-approved")
@@ -304,6 +307,55 @@ var approvalPaths = []approvalPath{
 		r.wantOwn(ownRoot, ownDocument, 3)
 		return r.startTaskEntry(ownRoot)
 	}},
+}
+
+// keptForACarriedRoot drives path 2 and 6 for a carried root that is out of the workflow in
+// status (backlog, icebox or triage): a person's approval of the other root's spec opens the copy
+// the carried root holds, its architect stopped with its tree, and the outbox's relay keeps the
+// decision for the root's next start, whose task the row answers.
+func keptForACarriedRoot(status string) func(r *pathRig) string {
+	return func(r *pathRig) string {
+		r.carried(record.DesignGate{LatestVersion: 12})
+		r.lingering(carriedRoot, status)
+		r.review(otherRoot, otherDocument, intake.DispatchArtifactApproved, 12)
+		r.relay(carriedRoot, "carried-gate-opened")
+		r.wantCarried(carriedRoot, otherRoot, otherDocument, 12)
+		return r.keptTask(carriedRoot)
+	}
+}
+
+// keptForARootOutOfTheWorkflow drives path 6 for ownRoot, a root whose tree ran and that a person
+// moved to status (backlog, icebox or triage), where a person approves version 2 of its spec and
+// the approval leaves one kept decision for the root's next start, whose task the row answers.
+//
+// In the backlog and the icebox a fresh approval queues a person's handover, which keeps no
+// decision, so the decision is the one a refused handover keeps: the approval's fact carries a
+// change of the root's status after it (StatusChangedSeq), so the engine hands the approval to
+// record.RelayParkedDecision in the fact's own transaction (Engine.refuseHandover) and queues no
+// handover. In triage the approval queues no handover (intake.DispatchArtifact.MayQueueHandover),
+// so the root's gate takes it, as a closed root's gate does, and the design-approved notice it
+// writes finds nobody to hear it: the outbox's relay keeps the decision.
+func keptForARootOutOfTheWorkflow(status string) func(r *pathRig) string {
+	return func(r *pathRig) string {
+		r.ranRoot(status)
+		switch status {
+		case "backlog", "icebox":
+			r.approvedOutOfWorkflow(status, true)
+		case "triage":
+			r.approvedOutOfWorkflow(status, false)
+			r.relay(ownRoot, "design-approved")
+		default:
+			r.t.Fatalf("no path of an approval is known for the status %s", status)
+		}
+		if pending := r.handoverPending(ownRoot); pending {
+			r.t.Fatalf("the approval of %s in %s left a person's handover pending, want none: it keeps the decision instead", ownRoot, status)
+		}
+		if kept := r.keptRows(ownRoot); kept != 1 {
+			r.t.Fatalf("%s in %s keeps %d decisions after the approval, want its one", ownRoot, status, kept)
+		}
+		r.wantOwn(ownRoot, ownDocument, 2)
+		return r.keptTask(ownRoot)
+	}
 }
 
 // Every path by which the daemon tells an architect that a person approved a spec leaves that
@@ -618,21 +670,56 @@ func (r *pathRig) lingering(key, status string) {
 	r.recordIssue(issue)
 }
 
-// closedRoot is ownRoot as a root whose tree ran and closed as done: its run stood in a phase of
-// its own (record.Issue.TakenBack, which its re-admission keeps), and its spec row holds version
-// 2 as its run registered it. Then a person approves version 2: the gate of a closed tree takes
-// it (a root closed as done is in neither the backlog nor the icebox, so the approval queues no
-// handover), and the design-approved notice it writes finds no architect to hear it.
-func (r *pathRig) closedRoot() {
+// ranRoot is ownRoot as a root whose tree ran and then left the workflow in status (backlog,
+// icebox, triage or done): its run stood in a phase of its own (record.Issue.TakenBack, which its
+// re-admission keeps), and its spec row holds version 2 as its run registered it.
+func (r *pathRig) ranRoot(status string) {
 	r.t.Helper()
 	ran := rootIssue(ownRoot)
 	ran.TakenBack = true
 	r.recordIssue(ran)
-	r.lingering(ownRoot, "done")
+	r.lingering(ownRoot, status)
 	r.write(func(tx pgx.Tx) error {
 		return r.records.PutGate(r.ctx, tx, record.DesignGate{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, LatestVersion: 2})
 	})
+}
+
+// closedRoot is ownRoot as a root whose tree ran and closed as done (ranRoot). Then a person
+// approves version 2: the gate of a closed tree takes it (a root closed as done is in neither the
+// backlog nor the icebox, so the approval queues no handover), and the design-approved notice it
+// writes finds no architect to hear it.
+func (r *pathRig) closedRoot() {
+	r.t.Helper()
+	r.ranRoot("done")
 	r.review(ownRoot, ownDocument, intake.DispatchArtifactApproved, 2)
+}
+
+// approvedOutOfWorkflow is a person's approval of version 2 of ownRoot's spec while the root is out
+// of the workflow in status, prepared with Dispatch's view of the root as the daemon reads it for a
+// person's approval. statusChanged says that the root's status changed after the approval, by the
+// next Dispatch event (intake.DispatchArtifact.StatusChangedSeq): the approval is then delivered
+// late, and a root in the backlog or the icebox is not queued by it.
+func (r *pathRig) approvedOutOfWorkflow(status string, statusChanged bool) {
+	r.t.Helper()
+	fact := intake.DispatchArtifact{Key: ownRoot, ArtifactID: ownDocument, Kind: intake.DispatchArtifactApproved, Version: 2,
+		Mark: r.mark(r.next()), Actor: pathPerson, Issue: &dispatch.Issue{Key: ownRoot, Project: pathProject, Title: ownRoot,
+			Status: status, Labels: []string{dispatch.LegionLabel}, HandedOver: true, PrimaryArtifactID: ownDocument}}
+	if statusChanged {
+		fact.StatusChangedSeq = r.next()
+	}
+	r.apply(fact)
+}
+
+// handoverPending says whether a person's handover of key waits in the outbox.
+func (r *pathRig) handoverPending(key string) bool {
+	r.t.Helper()
+	var pending bool
+	r.read(func(tx pgx.Tx) error {
+		var err error
+		pending, err = r.records.PersonHandoverPending(r.ctx, tx, key)
+		return err
+	})
+	return pending
 }
 
 // todo is key's move into todo with the legion label, which re-admits a root that left the

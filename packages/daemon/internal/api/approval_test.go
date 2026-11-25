@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -51,6 +52,9 @@ const carriedApprovalFixture = "../workflow/testdata/dispatch-carried-approval.j
 
 // approvalPerson is the person whose reviews the facts below carry.
 var approvalPerson = dispatch.Actor{Kind: "user", ID: "person@example.com"}
+
+// relayedAt is the moment the outbox relays a decision nobody in its tree hears (relayKept).
+var relayedAt = time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
 
 // specGated is the deployment's `gates.design: root-issues`, which gates the spec step alone.
 var specGated = config.DesignGateRootIssues.Steps()
@@ -218,24 +222,133 @@ func (r *approvalRig) lingering(key, status string) {
 	r.recordIssue(issue)
 }
 
-// outOfWorkflow records ownRoot as a root a person moved to the backlog after its run, out of the
-// workflow, whose spec row holds document's version latest as its earlier run registered it.
-func (r *approvalRig) outOfWorkflow(latest int) {
+// outOfWorkflowStatuses are the statuses a person's move takes a root out of the workflow in that
+// rows A10 to A13 run for (record.OutOfWorkflowStatuses less done, which is a close): in the
+// backlog or the icebox a person's approval of the root's spec queues a handover, and in triage it
+// queues none, so the root's own gate takes it.
+var outOfWorkflowStatuses = []string{"backlog", "icebox", "triage"}
+
+// eachOutOfWorkflow runs row once for each of outOfWorkflowStatuses, as a subtest named for it.
+func eachOutOfWorkflow(t *testing.T, row func(t *testing.T, status string)) {
+	t.Helper()
+	for _, status := range outOfWorkflowStatuses {
+		t.Run(status, func(t *testing.T) { row(t, status) })
+	}
+}
+
+// outOfWorkflow records ownRoot as a root a person moved to status (backlog, icebox or triage)
+// after its run, out of the workflow, whose spec row holds document's version latest as its
+// earlier run registered it.
+func (r *approvalRig) outOfWorkflow(status string, latest int) {
 	r.t.Helper()
-	r.lingering(ownRoot, "backlog")
+	r.lingering(ownRoot, status)
 	r.write(func(tx pgx.Tx) error {
 		return r.records.PutGate(context.Background(), tx, record.DesignGate{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, LatestVersion: latest})
 	})
 }
 
 // outOfWorkflowApproval is a person's approval of ownRoot's spec at version while the root is out
-// of the workflow in the backlog, prepared with Dispatch's view of the root as the daemon reads it
-// for a person's approval: its handover.
-func (r *approvalRig) outOfWorkflowApproval(version int) {
+// of the workflow in status, prepared with Dispatch's view of the root as the daemon reads it for
+// a person's approval, and the path that approval takes from there:
+//
+//   - in the backlog or the icebox the approval queues a person's handover
+//     (intake.DispatchArtifact.MayQueueHandover) and the root's gate takes it quietly: no
+//     design-approved notice is written;
+//   - in triage the approval queues no handover, so the root's gate takes it as a design-approved
+//     notice that nobody in the root's tree hears, which the outbox keeps as a decision for the
+//     root's next start (relayKept).
+func (r *approvalRig) outOfWorkflowApproval(status string, version int) {
 	r.t.Helper()
 	r.apply(intake.DispatchArtifact{Key: ownRoot, ArtifactID: ownDocument, Kind: intake.DispatchArtifactApproved, Version: version,
 		Mark: mark(r.next()), Actor: approvalPerson, Issue: &dispatch.Issue{Key: ownRoot, Project: approvalProject, Title: ownRoot,
-			Status: "backlog", Labels: []string{dispatch.LegionLabel}, HandedOver: true, PrimaryArtifactID: ownDocument}})
+			Status: status, Labels: []string{dispatch.LegionLabel}, HandedOver: true, PrimaryArtifactID: ownDocument}})
+	pending := r.handoverPending(ownRoot)
+	_, _, noticed := r.notice(ownRoot, "design-approved")
+	switch status {
+	case "backlog", "icebox":
+		if !pending || noticed {
+			r.t.Fatalf("the approval of %s in %s left a handover pending = %v and a design-approved notice queued = %v, want the handover and no notice",
+				ownRoot, status, pending, noticed)
+		}
+	case "triage":
+		if pending || !noticed {
+			r.t.Fatalf("the approval of %s in %s left a handover pending = %v and a design-approved notice queued = %v, want the notice and no handover",
+				ownRoot, status, pending, noticed)
+		}
+		r.relayKept()
+	default:
+		r.t.Fatalf("no path of an approval is known for the status %s", status)
+	}
+}
+
+// handoverPending says whether a person's handover of key waits in the outbox.
+func (r *approvalRig) handoverPending(key string) bool {
+	r.t.Helper()
+	var pending bool
+	r.read(func(tx pgx.Tx) error {
+		var err error
+		pending, err = r.records.PersonHandoverPending(context.Background(), tx, key)
+		return err
+	})
+	return pending
+}
+
+// notice is the newest notice of kind queued on key, and whether there is one.
+func (r *approvalRig) notice(key string, kind record.NoticeKind) (record.OutboxRow, record.Notice, bool) {
+	r.t.Helper()
+	var row record.OutboxRow
+	var rowKind string
+	var payload []byte
+	err := r.store.Pool().QueryRow(context.Background(), `select id, kind, issue, payload from outbox
+		where kind = $1 and issue = $2 and payload->>'kind' = $3 order by id desc limit 1`, string(record.OutboxKindNotice), key, string(kind)).
+		Scan(&row.ID, &rowKind, &row.Issue, &payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return record.OutboxRow{}, record.Notice{}, false
+	}
+	if err != nil {
+		r.t.Fatalf("read the notices of %s: %v", key, err)
+	}
+	row.Kind, row.Payload = record.OutboxKind(rowKind), payload
+	decoded, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		r.t.Fatalf("decode outbox row %d: %v", row.ID, err)
+	}
+	return row, decoded.(record.Notice), true
+}
+
+// relayKept is the outbox's relay of ownRoot's design-approved notice, whose architect it finds
+// stopped with the root's lingering tree (the daemon's parkDecision): the one rule for a decision
+// nobody in its tree hears (record.RelayParkedDecision), run in a transaction of its own, keeps
+// the decision for the root's next start and sends the controller a notice of it.
+func (r *approvalRig) relayKept() {
+	r.t.Helper()
+	row, notice, found := r.notice(ownRoot, "design-approved")
+	if !found {
+		r.t.Fatalf("no design-approved notice is queued on %s", ownRoot)
+	}
+	decision, ok := record.SpecDecision(notice.Kind)
+	if !ok {
+		r.t.Fatalf("a notice of kind %s carries no spec decision", notice.Kind)
+	}
+	r.write(func(tx pgx.Tx) error {
+		root, err := r.records.Issue(context.Background(), tx, ownRoot)
+		if err != nil || root == nil {
+			return errors.Join(err, fmt.Errorf("no record of the root %s", ownRoot))
+		}
+		outcome, err := record.RelayParkedDecision(context.Background(), tx, r.records, row.Issue, *root, true,
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: relayedAt}, notice.Version, notice.Reason, specGated)
+		if err == nil && outcome != record.RelaySent {
+			err = fmt.Errorf("the relay of %s's design-approved notice = outcome %d, want it sent to the controller and kept", ownRoot, outcome)
+		}
+		return err
+	})
+	var kept int
+	if err := r.store.Pool().QueryRow(context.Background(), `select count(*) from parked_decisions where issue = $1`, ownRoot).Scan(&kept); err != nil {
+		r.t.Fatalf("count the decisions %s keeps: %v", ownRoot, err)
+	}
+	if kept != 1 {
+		r.t.Fatalf("%s keeps %d decisions after the relay, want the approval's one", ownRoot, kept)
+	}
 }
 
 // todo is key's move into todo with the legion label, which re-admits a root that left the
@@ -514,51 +627,59 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 		})
 	})
 	t.Run("A10 a root approved at its latest version while out of the workflow, re-admitted, before its registration", func(t *testing.T) {
-		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
-		r.todo(ownRoot)
-		r.wantApproval(r.architect(ownRoot), "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		eachOutOfWorkflow(t, func(t *testing.T, status string) {
+			r := newApprovalRig(t, specGated)
+			r.outOfWorkflow(status, 2)
+			r.outOfWorkflowApproval(status, 2)
+			r.todo(ownRoot)
+			r.wantApproval(r.architect(ownRoot), "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		})
 	})
 	t.Run("A11 the same after its start task is told and a compaction", func(t *testing.T) {
-		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
-		r.todo(ownRoot)
-		architect := r.architect(ownRoot)
-		r.tellStartAndCompact(architect)
-		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		eachOutOfWorkflow(t, func(t *testing.T, status string) {
+			r := newApprovalRig(t, specGated)
+			r.outOfWorkflow(status, 2)
+			r.outOfWorkflowApproval(status, 2)
+			r.todo(ownRoot)
+			architect := r.architect(ownRoot)
+			r.tellStartAndCompact(architect)
+			r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		})
 	})
 	t.Run("A12 the same after a changes request on its document", func(t *testing.T) {
-		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
-		r.todo(ownRoot)
-		architect := r.architect(ownRoot)
-		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
-		r.review(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 2)
-		r.wantNone(architect)
+		eachOutOfWorkflow(t, func(t *testing.T, status string) {
+			r := newApprovalRig(t, specGated)
+			r.outOfWorkflow(status, 2)
+			r.outOfWorkflowApproval(status, 2)
+			r.todo(ownRoot)
+			architect := r.architect(ownRoot)
+			r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+			r.review(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 2)
+			r.wantNone(architect)
+		})
 	})
 	t.Run("A13 the same after its registration", func(t *testing.T) {
-		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
-		approved := r.seq
-		r.todo(ownRoot)
-		architect := r.architect(ownRoot)
-		// The new architect's register_gate reads the person's approval of the latest version from
-		// Dispatch, and its fact carries it.
-		r.apply(intake.GateRegistered{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, Version: 2, DispatchVersion: 2,
-			ApprovedVersion: 2, ApprovedMark: mark(approved), ReviewedBy: approvalPerson, Since: record.EventMark{Seq: r.seq}})
-		if kept := r.clearedSpecApproval(ownRoot); kept != nil {
-			t.Fatalf("the re-admission's record after the registration = %+v, want it cleared", *kept)
-		}
-		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		eachOutOfWorkflow(t, func(t *testing.T, status string) {
+			r := newApprovalRig(t, specGated)
+			r.outOfWorkflow(status, 2)
+			r.outOfWorkflowApproval(status, 2)
+			approved := r.seq
+			r.todo(ownRoot)
+			architect := r.architect(ownRoot)
+			// The new architect's register_gate reads the person's approval of the latest version from
+			// Dispatch, and its fact carries it.
+			r.apply(intake.GateRegistered{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, Version: 2, DispatchVersion: 2,
+				ApprovedVersion: 2, ApprovedMark: mark(approved), ReviewedBy: approvalPerson, Since: record.EventMark{Seq: r.seq}})
+			if kept := r.clearedSpecApproval(ownRoot); kept != nil {
+				t.Fatalf("the re-admission's record after the registration = %+v, want it cleared", *kept)
+			}
+			r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
+		})
 	})
 	t.Run("A14 a root approved below its latest version, re-admitted, after its registration of the latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -575,8 +696,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A15 a root re-admitted, then approved at a later version before its registration", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
@@ -587,9 +708,9 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A16 a re-admitted root's changes requests on its document, older and newer than its approval", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
+		r.outOfWorkflow("backlog", 2)
 		older := r.next()
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
@@ -606,8 +727,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A17 A15 after a registration whose read predates the later approval", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
@@ -626,8 +747,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A18 a re-admitted root's changes request on a version older than its latest", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -643,8 +764,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A19 A18 after a registration whose read predates the record's latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -747,8 +868,8 @@ func carriedApproval(t *testing.T) intake.Fact {
 func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	t.Run("approved at its latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.todo(ownRoot)
 		r.wantRecord(record.ClearedSpecApproval{Issue: ownRoot, ArtifactID: ownDocument, Version: 2, LatestVersion: 2, Mark: mark(approved)})
@@ -756,8 +877,8 @@ func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	})
 	t.Run("approved below its latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
-		r.outOfWorkflowApproval(2)
+		r.outOfWorkflow("backlog", 2)
+		r.outOfWorkflowApproval("backlog", 2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -766,7 +887,7 @@ func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	})
 	t.Run("a changes request on its spec", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.outOfWorkflow(2)
+		r.outOfWorkflow("backlog", 2)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 2)
 		r.todo(ownRoot)
 		if kept := r.clearedSpecApproval(ownRoot); kept != nil {
