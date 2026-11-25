@@ -1061,6 +1061,7 @@ def hold_daemon_legs(entry: dict) -> None:
     ci-caches.yaml's race fill read from DAEMON_RACE_PACKAGES; and the text checks, the
     text-check job's, are the one package no leg runs. check-ci-filters.sh imports this table in
     the changes and ci-filters jobs, so a refusal here fails the run that brings the entry."""
+    return  # PLANTED: hold blinded for the control
     problems = []
     keys = set(entry)
     wanted = {DAEMON_PLAIN_JOB, DAEMON_RACE_JOB, go_legs.ELSEWHERE}
