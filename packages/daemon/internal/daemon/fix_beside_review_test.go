@@ -28,13 +28,16 @@ import (
 // Dispatch's owed rows), and the verdict is read at once after it.
 
 // fixBesideIssues are the issues of TestFixBesideReviewThroughDispatch, each on a pull request of
-// its own: the walk of a fix beside a review, the control with no fix flag, and the control of a
-// review whose footer names another head. No two titles share a word that counts (walkTitles says
-// why).
+// its own: the walk of a fix beside a review, the control with no fix flag, the control of a
+// review whose footer names another head, the fix that takes the merge forward its implementer
+// owes, and that merge's control, which no fix takes. No two titles share a word that counts
+// (walkTitles says why).
 var fixBesideIssues = []fixRigIssue{
 	{title: "Golf ledger balances accounts", number: 7, verification: fixRigVerification},
 	{title: "Hotel indexer skips dotfiles", number: 8, verification: fixRigVerification},
 	{title: "India mailer batches sends", number: 9, verification: fixRigVerification},
+	{title: "Juliet cropper keeps ratios", number: 10, verification: fixRigVerification},
+	{title: "Kilo tracer samples spans", number: 11, verification: fixRigVerification},
 }
 
 // fixRigLogged is one write of a row of the daemon's outbox, as the rig's log of the outbox kept
@@ -261,6 +264,120 @@ func (e *fixEnd) assertFixStartedTold(t *testing.T, role claim.Role) {
 	}
 }
 
+// refuseRoles makes the listener's stand-in refuse each publish to the role topics of roles of the
+// issue, as a stream outage refuses them (refused), or take them again (not refused). The outbox
+// keeps a refused row and runs it again on its backoff.
+func (e *fixEnd) refuseRoles(refused bool, roles ...claim.Role) {
+	n := 0
+	if refused {
+		n = 1 << 30
+	}
+	for _, role := range roles {
+		e.r.notices.refuseFirst(notify.RoleTopicPrefix+string(e.r.tokenOf(e.key, role)), n)
+	}
+}
+
+// conflictsInTesting is the setup of an issue whose pull request opens at X conflicting with its
+// base: the plan and the gate, the stand-in answering X dirty, the implementer taking its task, the
+// pull request opening at X, and the implementer completing there; then the tester takes its task
+// in testing, and its turn stays open. The daemon reads X conflicting at the opening and reads it
+// again a minute later (conflict_confirm), when the issue stands in testing; the base's rules it
+// cannot read (the stand-in answers 404), so it asks the implementer to merge the base forward.
+func (e *fixEnd) conflictsInTesting() {
+	e.r.t.Helper()
+	e.planAndGate(phase.Implementing, "implementer", "tester", "reviewer")
+	r := e.at()
+	r.pulls.conflicts(r.number, e.x)
+	e.implementsAtX()
+	e.worker(claim.RoleTester).take()
+}
+
+// awaitAsk waits for the record's merge forward of X asked of the implementer, which the daemon
+// writes at its second read of X, and answers it.
+func (e *fixEnd) awaitAsk() record.MergeForward {
+	r := e.at()
+	r.t.Helper()
+	var asked record.MergeForward
+	r.await(e.key+"'s merge forward of X asked of the implementer", func() bool {
+		pr := r.pullRequest()
+		if pr == nil || pr.MergeForward == nil {
+			return false
+		}
+		asked = *pr.MergeForward
+		return asked.Head == e.x && asked.Asked() == claim.RoleImplementer
+	})
+	return asked
+}
+
+// mergeForward is the record's merge forward of the issue now, the zero value for none.
+func (e *fixEnd) mergeForward() record.MergeForward {
+	r := e.at()
+	r.t.Helper()
+	if pr := r.pullRequest(); pr != nil && pr.MergeForward != nil {
+		return *pr.MergeForward
+	}
+	return record.MergeForward{}
+}
+
+// mergeMessages is each merge_forward row the outbox was given for the issue, by id.
+func (e *fixEnd) mergeMessages() ([]int64, []record.MergeForwardMessage) {
+	e.r.t.Helper()
+	var ids []int64
+	var messages []record.MergeForwardMessage
+	for _, row := range e.logged(record.OutboxKindMergeForward) {
+		var message record.MergeForwardMessage
+		if err := json.Unmarshal(row.payload, &message); err != nil {
+			e.r.t.Fatalf("decode %s's merge_forward row %d: %v", e.key, row.id, err)
+		}
+		ids, messages = append(ids, row.id), append(messages, message)
+	}
+	return ids, messages
+}
+
+// testerCompletesAt is the tester's completion at commit through the daemon's handoff route, with
+// its handoff record written as the plugin writes it. It answers the route's status, the code of
+// a refusal, and the handoff record's id.
+func (e *fixEnd) testerCompletesAt(commit string) (int, string, string) {
+	r := e.at()
+	r.t.Helper()
+	tester := e.worker(claim.RoleTester)
+	handoff, version := r.writeHandoff(tester.session, "test")
+	status, body := r.complete(tester, api.HandoffCompleteRequest{Summary: "k1 holds", Commit: commit, HandoffID: handoff, HandoffVersion: version})
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	if status != http.StatusOK {
+		if err := json.Unmarshal([]byte(body), &refusal); err != nil {
+			r.t.Fatalf("decode the refusal of %s's tester's completion at %s (%d %s): %v", e.key, commit, status, body, err)
+		}
+	}
+	return status, refusal.Code, handoff
+}
+
+// completionApplied is whether the daemon's processed_events row of the tester's completion naming
+// handoff stands: the route's apply writes it in the transaction that applies the completion
+// (api's handoff key, `handoff:<issue>:…:tester:…:<record>:`).
+func (e *fixEnd) completionApplied(handoff string) bool {
+	r := e.r
+	r.t.Helper()
+	var applied bool
+	if err := r.st.Pool().QueryRow(context.Background(), `select exists (select 1 from processed_events where source = 'api'
+		and event_id like 'handoff:' || $1 || ':%:tester:%:' || $2 || ':%')`, e.key, handoff).Scan(&applied); err != nil {
+		r.t.Fatalf("read the processed completion of %s's tester: %v", e.key, err)
+	}
+	return applied
+}
+
+// k1PassesAt is the tester recording its pass of k1 at commit, once the daemon holds a state of
+// k1 there; it returns once the daemon holds k1 yes at commit.
+func (e *fixEnd) k1PassesAt(commit string) {
+	r := e.at()
+	r.t.Helper()
+	r.awaitState("k1", commit, "of any word", func(scratchCIState) bool { return true })
+	r.recordResult(e.worker(claim.RoleTester), "k1", commit)
+	r.awaitState("k1", commit, "yes", func(held scratchCIState) bool { return held.State == "yes" })
+}
+
 // TestFixBesideReviewThroughDispatch drives a fix beside a review through the real surface, on
 // one daemon and one Dispatch, each issue on a pull request of its own:
 //
@@ -283,12 +400,29 @@ func (e *fixEnd) assertFixStartedTold(t *testing.T, role claim.Role) {
 //     the owner is told once by ci-failed.
 //   - control-other-footer (issue 3): after the fix's push of Y, a review whose footer names Z is
 //     refused and decides nothing.
+//   - fix-owns-owed-merge (issue 4): in testing at X, with the merge forward of X asked of the
+//     implementer and its ask and the tester's hold still queued, unit fails: the fix takes the
+//     ask, and neither queued message is published. The fix's push of Y lands the merge as the
+//     fix's; the tester's completion at X is taken, and the fix's way starts it again at Y once,
+//     with one return and no other merge message. Its control (issue 5): the implementer's own
+//     merge of X into Y, which no fix took, and the tester's completion at X is refused.
+//
+// The issues of the merge forward are set up first: the daemon confirms a conflict at its second
+// read, a minute after the first, and the walk of the other issues runs in that minute.
 func TestFixBesideReviewThroughDispatch(t *testing.T) {
 	t.Parallel()
 	r := newFixRig(t, nil, fixBesideIssues...)
 	r.logOutbox()
-	one, two, three := r.walking(0), r.walking(1), r.walking(2)
+	one, two, three, four, five := r.walking(0), r.walking(1), r.walking(2), r.walking(3), r.walking(4)
 	entries := map[*fixEnd]int64{}
+
+	t.Run("the setup of the merge forward", func(t *testing.T) {
+		// The implementer's and the tester's topics of issue 4 refuse every publish until the fix
+		// takes the ask, so its ask and the tester's hold stay queued.
+		four.refuseRoles(true, claim.RoleImplementer, claim.RoleTester)
+		four.conflictsInTesting()
+		five.conflictsInTesting()
+	})
 
 	t.Run("plan-and-check and review-beside-ci", func(t *testing.T) {
 		for _, e := range []*fixEnd{one, two, three} {
@@ -488,6 +622,98 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 		}
 		if stands := e.standing(); stands.Phase != phase.Reviewing {
 			t.Fatalf("%s stands in %s after the review naming Z, want reviewing", e.key, stands.Phase)
+		}
+	})
+
+	t.Run("fix-owns-owed-merge", func(t *testing.T) {
+		e := four
+		er := e.at()
+		if asked := e.awaitAsk(); asked.Fix != nil || asked.Landed != "" {
+			t.Fatalf("%s's merge forward = %+v, want the implementer's ask of X, not landed and taken by no fix", e.key, asked)
+		}
+		ids, messages := e.mergeMessages()
+		var ask, hold bool
+		for _, message := range messages {
+			ask = ask || message.Role == claim.RoleImplementer && message.Step == record.MergeForwardAsk && message.Head == e.x
+			hold = hold || message.Role == claim.RoleTester && message.Step == record.MergeForwardHold && message.Head == e.x
+		}
+		if !ask || !hold || er.standingRows(ids) != len(ids) {
+			t.Fatalf("%s's merge-forward rows %v = %+v, %d of them queued; want the implementer's ask and the tester's hold of X, both queued", e.key, ids, messages,
+				er.standingRows(ids))
+		}
+
+		run := e.unitFails()
+		owner := record.MergeForwardFix{Generation: 1, Task: "a", Number: 1}
+		if taken := e.mergeForward(); taken.Fix == nil || *taken.Fix != owner || taken.Landed != "" {
+			t.Errorf("%s's merge forward once k-ci failed at X = %+v, want the ask of X taken by fix 1, not landed", e.key, taken)
+		}
+		// The queued rows are made due now and the topics take publishes again: each row runs once
+		// more, and the rows of an ask a fix took finish with nothing published.
+		e.refuseRoles(false, claim.RoleImplementer, claim.RoleTester)
+		er.exec(`update outbox set next_at = now() where id = any($1)`, ids)
+		er.await(fmt.Sprintf("%s's merge-forward rows %v finished", e.key, ids), func() bool { return er.standingRows(ids) == 0 })
+		for _, id := range ids {
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				if er.publishedRow(notify.RoleTopicPrefix+string(er.tokenOf(e.key, role)), id) {
+					t.Errorf("%s's merge-forward row %d was published to its %s once fix 1 took the ask", e.key, id, role)
+				}
+			}
+		}
+
+		e.fixStartsToItsStartRow(t, run)
+		prompt, holdLine := e.awaitFixTask()
+		e.assertFixTask(t, prompt, holdLine, run)
+		e.assertFixAdopted(t)
+		e.works(claim.RoleImplementer, prompt)
+		y := e.pushesY()
+		if landed := e.mergeForward(); landed.Landed != y || landed.ReviewAsked || landed.Fix == nil || *landed.Fix != owner {
+			t.Errorf("%s's merge forward once the fix pushed Y = %+v, want it landed at %s by fix 1 with no review asked", e.key, landed, y)
+		}
+		e.completes(claim.RoleImplementer, "implement", y)
+
+		e.k1PassesAt(e.x)
+		entry := er.phaseOf(claim.RoleTester).Entry
+		status, code, handoff := e.testerCompletesAt(e.x)
+		if status != http.StatusOK {
+			t.Fatalf("%s's tester's completion at X beside the fix = %d %s, want it taken", e.key, status, code)
+		}
+		e.worker(claim.RoleTester).endTurn()
+		if !e.completionApplied(handoff) {
+			t.Fatalf("the daemon holds no processed_events row of %s's tester's completion naming %s", e.key, handoff)
+		}
+		records := e.records()
+		if tested, ok := fixEndRecordOf(records, "step", 2, 1); !ok || tested.Result != "passed" || fixEndCommit(tested.EndCommit) != e.x {
+			t.Fatalf("%s's tester's record = %+v (found %t), want it passed at X %s", e.key, tested, ok, e.x)
+		}
+		if returns := e.returns(); returns != 1 {
+			t.Fatalf("%s's task counts %d returns, want one", e.key, returns)
+		}
+		var again []record.SuperviseRequest
+		for _, start := range e.starts(claim.RoleTester) {
+			if start.request.Entry > entry {
+				again = append(again, start.request)
+			}
+		}
+		if len(again) != 1 || again[0].MoveTo != y {
+			t.Fatalf("%s's tester's starts after its completion at X = %+v, want one, moving to Y %s", e.key, again, y)
+		}
+		if after, messages := e.mergeMessages(); len(after) != len(ids) {
+			t.Fatalf("%s's merge-forward rows after the fix's landing = %+v, want only the %d queued before the fix took the ask", e.key, messages, len(ids))
+		}
+	})
+
+	t.Run("control: an ordinary merge forward refuses the tester's completion at X", func(t *testing.T) {
+		e := five
+		if asked := e.awaitAsk(); asked.Fix != nil {
+			t.Fatalf("%s's merge forward = %+v, want an ask no fix took", e.key, asked)
+		}
+		y := e.pushesY()
+		if landed := e.mergeForward(); landed.Landed != y || landed.Fix != nil {
+			t.Fatalf("%s's merge forward once the implementer pushed Y = %+v, want it landed at %s by no fix", e.key, landed, y)
+		}
+		e.k1PassesAt(e.x)
+		if status, code, _ := e.testerCompletesAt(e.x); status == http.StatusOK || code != "HANDOFF_HEAD_MERGED_FORWARD" {
+			t.Fatalf("%s's tester's completion at X after an ordinary merge forward of X = %d %q, want HANDOFF_HEAD_MERGED_FORWARD", e.key, status, code)
 		}
 	})
 }
