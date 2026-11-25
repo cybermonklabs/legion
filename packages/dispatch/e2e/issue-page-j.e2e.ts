@@ -1792,6 +1792,44 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
   });
 });
 
+// The tester's finding at 2790ecda: a statement that cites a post of the issue that is gone keeps
+// the page inside its viewport at 390 px. A reference with no name - a gone one, or one the read
+// has not answered yet - reads as the words its author wrote, and a reference to a post is drawn
+// as a chip, which does not wrap. At 2790ecda, after the merge of `main` that draws such a
+// reference as written in place of its short form, the chip holds the whole address, a run of 65
+// characters with no space, and the page scrolls sideways: on a large issue's copy at 390 x 844
+// the page was 586 px wide, so the phone drew it zoomed out to 586 by 1269 px, and presses and
+// the focused row's place were read against a screen the reader does not see. At 01679f81 the
+// chip held the reference's short form, and the page fit.
+// SLOW(>=2s): a seeded issue of sixty statements and two loads of the Spec view, at 390 and 320
+// px, each measured once the statement is drawn.
+test("a statement that cites a gone post keeps the page inside its viewport at 390 px", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement((seeded) =>
+    statementBlock(
+      LONG_BLOCK_ID,
+      `Answer dispatch://${seeded.key}/comment/${GONE_COMMENT} at once, then read the rest.`
+    )
+  );
+  await phase(browser, seed, async (page, seeded) => {
+    const cited = issuePage(page).locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"] [data-node-words] a`
+    );
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ height: PHONE.height, width });
+      await gotoIssue(page, presetPath(seeded.key, "spec"));
+      await expect(
+        cited.first(),
+        `the Spec view draws no link for the gone post the statement cites at ${width} px`
+      ).toBeVisible();
+      await expectIssuePageDrawn(page);
+      await assertPageFits(page);
+    }
+  });
+});
+
 // R7 and R9: the Spec view opened at its own address while neither read its statements come
 // from can be read - the spec's blocks and the coverage, which names each statement - draws the
 // statements' line saying so and no row, and that line's Retry takes the focus: nothing else
