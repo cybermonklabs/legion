@@ -94,10 +94,17 @@
 #                 and those of the ref's entry files, so it runs in a blobless clone. It prints, for
 #                 <rev> (default HEAD):
 #                   base <sha> contract <n>                     the merge base and its number
+#                   onmain <n> <number>                         entry <n>, which the ref holds as its
+#                                                               numbered entry <number>
+#                   onmain <n> <file>                           entry <n>, which the ref holds as the
+#                                                               entry file <file>, by its text or its
+#                                                               constant
 #                   entry <n> <constant> <slug> <file:line|->   each entry it would convert
 #                   move <file>:<line> <field> <constant>       each row it would move
 #                   undo <file>                                 each derived copy it would undo
 #                   <file>:<line>: <text>                       each line it would leave
+#                 The entries an onmain line names are refused by the conversion, and the report
+#                 leaves them out of the lines after it.
 #
 # Exits 0 when the branch is converted (or adds no numbered entry), and also where a row of a
 # frozen table left for the author keeps step 5 from writing an entry's fixture, which records that
