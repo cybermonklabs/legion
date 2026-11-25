@@ -362,7 +362,11 @@ Of the window, it holds in memory only the pull requests that the log and the ev
 It writes only that file and `window.json`, each to a temporary file that it renames into place.
 Every other file of the window stays as it was.
 It names each pull request that a line names for an issue whose repository the window does not give, and reads none of them.
-It waits out GitHub's rate limit as `collect-merges` does, with the same bounds and the same line on stderr ([Add the merges of each base branch](#add-the-merges-of-each-base-branch)).
+A line of the log names no repository, so `collect-queue` reads the timeline of a pull request that it names in the repository of the line's issue.
+The daemon can have watched a pull request of another repository for that issue, which `--repo` does not have.
+Where only lines of the log name a pull request, and GitHub answers its timeline with `404 Not Found` in `--repo`, `collect-queue` skips it, names it on one line, and reads the other pull requests.
+Where an attribution names the pull request, it is a pull request of `--repo`, so a `404 Not Found` fails the read.
+Every other refusal is handled as `collect-merges` handles it ([Add the merges of each base branch](#add-the-merges-of-each-base-branch)): a 5xx or no answer is tried again, GitHub's rate limit is waited out with the same bounds and the same line on stderr, and any other status fails the read.
 A read that fails writes nothing.
 
 ```sh

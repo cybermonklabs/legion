@@ -36,7 +36,8 @@ type QueueConfig struct {
 
 // QueueCollected is what a collect-queue read and wrote.
 type QueueCollected struct {
-	// PullRequests is each pull request of the repository whose timeline it read, ascending.
+	// PullRequests is each pull request of the repository whose timeline it read and whose events
+	// it wrote, ascending.
 	PullRequests []int
 	// Lines is how many merge queue events the queue file holds.
 	Lines int
@@ -44,6 +45,11 @@ type QueueCollected struct {
 	// window's events do not give, ascending, and that no attribution names either: its
 	// repository is not known, so its timeline is read from no repository.
 	NoRepo []int
+	// NotFound is each pull request that only lines of the window's log name, for an issue of the
+	// repository, and whose timeline GitHub answered 404 Not Found in the repository, ascending:
+	// a line names no repository, so the number can be one of another repository's pull request,
+	// which the daemon watched for that issue. None of its events is written.
+	NotFound []int
 }
 
 // CollectQueue reads the merge queue events of cfg.Repo's pull requests of the window's project
@@ -58,10 +64,14 @@ type QueueCollected struct {
 // /repos/<owner>/<name>/issues/<n>/timeline, every page by its Link header) and keeps the events of
 // the kinds added_to_merge_queue, removed_from_merge_queue and merged, exactly as GitHub serves
 // them, with the pull request's number (ParseQueueTimeline), the pull requests in ascending order.
-// It sends GET alone: a read GitHub refuses for now (a 5xx, no answer) is tried again with a
-// growing wait, and one GitHub's rate limit refuses is tried again after the wait GitHub names,
-// each such wait told on stderr and bounded (githubReader.read). It writes nothing where a read
-// fails.
+// A line of the log names no repository, so a pull request that only lines name can be one of
+// another repository, which the daemon watched for that issue: where GitHub answers its timeline
+// 404 Not Found in cfg.Repo, it is skipped and named (QueueCollected.NotFound). One an attribution
+// names is cfg.Repo's, as the attribution says, and a 404 of it fails the read. It sends GET
+// alone: a read GitHub refuses for now (a 5xx, no answer) is tried again with a growing wait, and
+// one GitHub's rate limit refuses is tried again after the wait GitHub names, each such wait told
+// on stderr and bounded (githubReader.read); any other refusal fails the read. It writes nothing
+// where a read fails.
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
 // refuses, before any read of GitHub. Of the window it holds its window.json and what names the
@@ -97,10 +107,16 @@ func CollectQueue(ctx context.Context, cfg QueueConfig) (QueueCollected, error) 
 		reader.wait = backoff.Sleep
 	}
 	lines := []json.RawMessage{}
+	var collected, notFound []int
 	for _, number := range numbers {
 		first := api.JoinPath("repos", owner, name, "issues", strconv.Itoa(number), "timeline")
 		first.RawQuery = url.Values{"per_page": {"100"}}.Encode()
 		pages, err := reader.pages(ctx, first)
+		var refusal *githubRefusal
+		if errors.As(err, &refusal) && refusal.status == http.StatusNotFound && !read.attributed[number] {
+			notFound = append(notFound, number)
+			continue
+		}
 		if err != nil {
 			return QueueCollected{}, fmt.Errorf("replay: collect-queue: the timeline of %s#%d: %w", cfg.Repo, number, err)
 		}
@@ -109,6 +125,7 @@ func CollectQueue(ctx context.Context, cfg QueueConfig) (QueueCollected, error) 
 			return QueueCollected{}, fmt.Errorf("replay: collect-queue: %s#%d: %w", cfg.Repo, number, err)
 		}
 		lines = append(lines, queued...)
+		collected = append(collected, number)
 	}
 	if head.Signals == nil {
 		head.Signals = make(map[string][]Span)
@@ -117,7 +134,7 @@ func CollectQueue(ctx context.Context, cfg QueueConfig) (QueueCollected, error) 
 	if err := replaceInput(cfg.Window, head, path.Join(queueDir, owner+"__"+name+".jsonl"), lines); err != nil {
 		return QueueCollected{}, fmt.Errorf("replay: collect-queue: %w", err)
 	}
-	return QueueCollected{PullRequests: numbers, Lines: len(lines), NoRepo: noRepo}, nil
+	return QueueCollected{PullRequests: collected, Lines: len(lines), NoRepo: noRepo, NotFound: notFound}, nil
 }
 
 // queueReading is what collect-queue keeps of a window's inputs as it walks them (visit), to read

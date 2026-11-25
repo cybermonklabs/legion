@@ -252,7 +252,9 @@ added_to_merge_queue, removed_from_merge_queue and merged, exactly as GitHub ser
 with its pull request's number, into the window collect wrote in --out as
 queue/<owner>__<name>.jsonl, with window.json's digest of the file and a record of the queue
 signal over the window's reach written again. A pull request a line names for an issue whose
-repository the window does not give is named, and not read. The token is read from the
+repository the window does not give is named, and not read. A line names no repository, so a
+pull request that only lines name, and whose timeline GitHub answers 404 Not Found in --repo, is
+named and skipped; a 404 of one an attribution names fails the read. The token is read from the
 environment variable --github-token-env names, and is never printed. Run it once for each
 repository of the project's issues.`,
 		Args: noArguments,
@@ -281,6 +283,10 @@ repository of the project's issues.`,
 		if len(queued.NoRepo) > 0 {
 			fmt.Fprintf(stdout, "legion replay collect-queue: the log names the pull requests %v of issues whose repository the window does not give; none of them is read\n",
 				queued.NoRepo)
+		}
+		if len(queued.NotFound) > 0 {
+			fmt.Fprintf(stdout, "legion replay collect-queue: only the log names the pull requests %v, and GitHub answers 404 Not Found for each of them in %s; none of them is written\n",
+				queued.NotFound, *repo)
 		}
 		return 0
 	})
