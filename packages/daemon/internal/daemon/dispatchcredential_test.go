@@ -154,6 +154,7 @@ func writeSecret(t *testing.T, name, value string) string {
 // Dispatch credential is its own pod identity, so a pod whose environment lacks one of the three
 // variables R2 names refuses the boot naming the variable, and trades nothing.
 func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
+	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 	for missing, want := range map[string]string{
@@ -183,6 +184,7 @@ func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
 // never called; a broker answering 503 is logged and traded with again, at the boot gate's pacing,
 // and the boot goes on.
 func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
+	// Not parallel: it writes the package variable readinessRetry (fastReadiness).
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	const words = "system:serviceaccount:legion:legion-daemon is listed by no exchange entry"
 
@@ -236,6 +238,7 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 // token and refuses each, naming the field and the broker entry the deployment must fix. The right
 // answer boots.
 func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
+	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	for name, tc := range map[string]struct {
 		change func(map[string]any)
@@ -280,6 +283,7 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 // Dispatch, the boot's whoami and the workflow's reads and writes, carries the broker's token under
 // DPoP with a proof, and none carries the transition token's text, anywhere in it.
 func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	const transitionToken = "shared-transition-token-3a9f"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
@@ -343,6 +347,7 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 // daemon's Dispatch client presents, the file without the setting and the broker and the session
 // under it, the transition file beside it where one is named, and no token in either.
 func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
+	t.Parallel()
 	const fileToken = "dispatch-file-token-4e7a"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
@@ -409,6 +414,7 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 // tokens live 40 s, so boot's comes due 20 s in, and the transport would still present it until
 // 10 s before it lapses (cipherclient's liveMargin); the call goes between the two.
 func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
+	t.Parallel()
 	const lifetime = 40 * time.Second
 	rig := newBrokerRig(t, ciphertest.WithAccessLifetime(lifetime))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))

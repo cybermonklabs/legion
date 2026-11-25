@@ -567,6 +567,21 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` calls `t.Parallel()` as its first
+statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`). Each test
+already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`, it writes a package variable (`fastReadiness`,
+`record.StatusRowKinds`), it changes the process's signal disposition, or it holds a wall-clock
+bound that the parallel tests' load could make it miss. A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
