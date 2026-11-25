@@ -2744,10 +2744,20 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
+	pushes, err := s.pushesOf(ctx, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read where each role of the update round pushes; asking again at the next sweep",
+				"issue", issue, "round", round, "roles", namesOf(asking), "error", err)
+		}
+		return
+	}
 	reasons := roundReasons(group, round)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound, supervise.UpdatePush{})}
+		push := pushes[c.Role]
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound, push),
+			Branch: push.Branch, OwnFix: push.OwnFix, FixReads: push.FixReads}
 	}
 	written, err := s.enqueue(ctx, issue, rows...)
 	if err != nil {
@@ -2764,6 +2774,17 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	}
 	s.log.Info("supervise: the update round's ask is enqueued for each role of the pod",
 		"issue", issue, "round", round, "pod", pod, "roles", namesOf(asking))
+}
+
+// pushesOf is where each role of issue pushes at the update round's ask (supervision.updatePushes),
+// read once for the issue; nil, the zero push for every role, in a deployment with no workflow. A
+// read that fails asks no role: the zero push would send a step beside a running fix to the issue's
+// branch, which has one writer while the fix holds it, so the round asks again at the next sweep.
+func (s *supervision) pushesOf(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error) {
+	if s.updatePushes == nil {
+		return nil, nil
+	}
+	return s.updatePushes(ctx, issue)
 }
 
 // unaskedClaims is every claim the round asks at the clock's now (roundAsks) whose own record
