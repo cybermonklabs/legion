@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // recheckReadFailedLog is what the access re-check logs, at WARN, for each person whose access it
@@ -87,7 +88,7 @@ func openM12Sockets(t *testing.T, private bool) m12Sockets {
 		t.Fatalf("a project is private: %t; the row needs %t", anyPrivate, private)
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	peers := make(map[string]*docstest.Peer)
 	for _, login := range []string{"alice", m12Bob} {
 		peer := connectPeer(t, httpServer.URL, room, login)
@@ -212,7 +213,7 @@ func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *tes
 						rename("project_access_unread", "project_access")
 					}
 				}
-				t.Cleanup(mend)
+				testcleanup.Add(t, mend)
 				return context.Background(), mend
 			},
 			closed: []string{"alice", m12Bob},

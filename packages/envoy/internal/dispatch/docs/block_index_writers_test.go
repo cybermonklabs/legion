@@ -565,10 +565,8 @@ var indexPasses = map[string]string{
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
 	// after that ask's ask.opened (graphstore.QueueCaused).
 	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
-	// The node of an ask block a settlement opens, before its row, in its document's project, and
-	// caused by the event the settlement appends. The object nodes a request's own write states
+	// The object nodes a request's own write states, an ask block a settlement opens among them,
 	// come with the slices that carry those writers (S3c-documents, S4).
-	"docs/ask_blocks.go#createAskBlock": "the ask block the settlement opens and the document that holds it",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.

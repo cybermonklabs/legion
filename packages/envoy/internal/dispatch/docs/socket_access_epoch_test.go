@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // socketAskReads counts the statements a document socket's ask sends (socketStillReads): the
@@ -174,7 +175,7 @@ func TestADocumentSocketEndsAtTheFirstFrameAfterASessionWriteIsAnnounced(t *test
 				seedServiceText(t, service, artifactID, "before")
 				runRoomSync(t, newRoomSync(service))
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-				t.Cleanup(httpServer.Close)
+				testcleanup.Add(t, httpServer.Close)
 
 				losing := connectPeer(t, httpServer.URL, artifactID, carol)
 				if err := losing.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
@@ -257,7 +258,7 @@ func openSocketStream(t *testing.T, private, roomSync bool) *socketStream {
 		runRoomSync(t, newRoomSync(service))
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	stream := &socketStream{service: service, reads: reads, text: "before"}
 	stream.reader = connectPeer(t, httpServer.URL, artifactID, "carol@example.com")
 	if err := stream.reader.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {

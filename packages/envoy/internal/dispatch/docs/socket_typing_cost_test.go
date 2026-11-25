@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // typingCostPeers, typingCostKeystroke and typingCostWindow are the room the measurement types in:
@@ -110,7 +111,7 @@ func measureTypingRoom(t *testing.T, private bool) {
 	seedServiceText(t, service, artifactID, seed)
 	runRoomSync(t, newRoomSync(service))
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + fmt.Sprint(pmdoc.SchemaVersion())
 	peers := make([]*docstest.Peer, typingCostPeers)

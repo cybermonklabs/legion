@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The settlement that opens a copy's own ask forgets the copy room's owed author of the block
@@ -68,7 +69,7 @@ func TestNoReaderFindsACopiedAsksRowWhileItsRoomStillOwesTheAuthor(t *testing.T)
 			owing.Add(1)
 		}
 	}
-	t.Cleanup(func() { service.afterSettlementCommit = nil })
+	testcleanup.Add(t, func() { service.afterSettlementCommit = nil })
 
 	editLiveTree(t, service, original, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children = tree.Children[:1]

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // docsocketHeartbeat is the heartbeat these rows run the access re-check on (RunAccessRecheck), in
@@ -34,7 +35,7 @@ func runAccessHeartbeat(t *testing.T, service *Service) {
 		defer close(done)
 		service.RunAccessRecheck(ctx, docsocketHeartbeat)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-done
 	})
@@ -117,7 +118,7 @@ func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone
 				})
 			}
 			httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(httpServer.Close)
+			testcleanup.Add(t, httpServer.Close)
 			runAccessHeartbeat(t, service)
 
 			missing := documentSocketRefusal(t, httpServer.URL, uuid.NewString(), row.loser)
@@ -162,7 +163,7 @@ func TestDocumentSocketsOutliveTheAccessHeartbeatWithNoPrivateProjectAndNoChange
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	runAccessHeartbeat(t, service)
 	var private bool
 	if err := service.store.Pool.QueryRow(context.Background(), `select exists (select 1 from projects where visibility = 'private')`).Scan(&private); err != nil || private {

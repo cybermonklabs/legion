@@ -20,18 +20,19 @@ import (
 // names a person by email (access.PersonPrincipal); alice is the test server's own "alice".
 //
 // This slice carries the seed's reads, so three of its writes are held back, each with its row.
-// PRIV's access list is not filled: the route that names a person on it is the access routes'
-// (PUT /api/v1/projects/{key}/access/people/{email}, S2), which this slice does not mount, so
-// only carol, who made both projects, is on PRIV here. bob is a full member, because the write
-// that marks a person restricted is that slice's too (markRestricted). And a caller acts as a
-// person at a browser or through a personal token, never as a session, because a session's own
-// credential is the broker's (stubBrokerTokens, S7).
+// PRIV's access list is filled through the code the route calls (access.AddPrincipal), because
+// the route that names a person on it is the access routes' (S2:
+// PUT /api/v1/projects/{key}/access/people/{email}, which answers 404 here); S2 restores the
+// route call. bob is a full member, because the write that marks a person restricted is that
+// slice's too (markRestricted). And a caller acts as a person at a browser or through a personal
+// token, never as a session, because a session's own credential is the broker's
+// (stubBrokerTokens, S7).
 //
 // So privateCaller.sees() is the rule of the whole seed, which holds from S2. At this head every
-// caller is answered both projects by GET /api/v1/projects, PRIV included: the read binds an open
-// viewer while the deployment holds no restricted member and PRIV's list names nobody, which is
-// this slice's own premise. A scratch probe at 1517e7710c read all eight callers that way
-// (BuildS3a-evidence/seed-probe-1517e7710c.log).
+// caller is answered both projects by GET /api/v1/projects, PRIV included, with bob and carol
+// both on PRIV's list: the read binds an open viewer while the deployment holds no restricted
+// member, which is this slice's own premise. A scratch probe read all eight callers that way
+// (BuildS3a-evidence/seed-probe-with-list.log).
 const (
 	seedPublic  = "PUB"
 	seedPrivate = "PRIV"
@@ -138,6 +139,9 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 			Key string `json:"key"`
 		}](t, created).Key
 	}
+	for _, person := range []string{seedBob, seedCarol} {
+		seed.addToAccessList(t, seedPrivate, person)
+	}
 	for _, token := range []struct {
 		caller   privateCaller
 		login    string
@@ -156,6 +160,26 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 		seed.tokens[token.caller] = minted.Token
 	}
 	return seed
+}
+
+// addToAccessList names person on project key's access list as its owner carol, through the write
+// the access route makes (access.AddPrincipal). The route itself,
+// PUT /api/v1/projects/{key}/access/people/{email}, is the access routes' (S2), which answers 404
+// at this slice.
+func (s privateSeed) addToAccessList(t *testing.T, key, person string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin naming %s on %s's access list: %v", person, key, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := access.AddPrincipal(ctx, tx, s.deps.Events, key, "person", person, model.Actor{Kind: "user", ID: seedCarol}); err != nil {
+		t.Fatalf("name %s on %s's access list: %v", person, key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit naming %s on %s's access list: %v", person, key, err)
+	}
 }
 
 // seedMintBody is the body that mints a personal token named name listing projects, which

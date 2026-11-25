@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames: while no LISTEN of the process stands, the
@@ -29,7 +30,7 @@ func TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	losing := connectPeer(t, httpServer.URL, artifactID, carol)
 	if err := losing.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {

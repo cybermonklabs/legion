@@ -59,16 +59,14 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// The node of an ask block a settlement opens, in its document's project: written before its
-	// row, and caused by the event the settlement appends after it, in the order of the write the
-	// object nodes share (QueueNodes, then QueueCaused), which api's
-	// TestEveryObjectNodeWriterTakesTheStoreLockOrder drives it through. The object nodes a
-	// request's own write states - a document's (queueNewArtifact) and its removal's
-	// (removeArtifact), an approval request's (openApprovalAsk), a message's (createStoredMessage),
-	// a session's reply's (insertSessionReply) and a broadcast copy's (writeBroadcast) - come with
-	// the slices that carry those writers: S3c-documents for the documents and the approval
-	// request, S4 for the messages.
-	"docs/ask_blocks.go#createAskBlock": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	// The object nodes a request's own write states - an ask block a settlement opens
+	// (docs/ask_blocks.go#createAskBlock), a document's (queueNewArtifact) and its removal's
+	// (removeArtifact), an approval request's (openApprovalAsk), a message's
+	// (createStoredMessage), a session's reply's (insertSessionReply) and a broadcast copy's
+	// (writeBroadcast) - come with the slices that carry those writers: S3c-documents for the
+	// documents, the ask block and the approval request, S4 for the messages. Each of them is
+	// driven through the order the object nodes share (QueueNodes, then QueueCaused) by api's
+	// TestEveryObjectNodeWriterTakesTheStoreLockOrder, which comes with them.
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,

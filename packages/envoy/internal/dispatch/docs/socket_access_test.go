@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // writeAccess runs write in a transaction of its own and commits it, as an access route does: the
@@ -108,7 +109,7 @@ func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 		return err
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	missing := documentSocketRefusal(t, httpServer.URL, uuid.NewString(), carol)
 	if hidden := documentSocketRefusal(t, httpServer.URL, artifactID, carol); hidden != missing {
@@ -184,7 +185,7 @@ func TestAPersonWhoLosesTheRoomDuringTheirOwnAdmissionIsRefusedAsAReaderWhoCanno
 					return err
 				})
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-				t.Cleanup(httpServer.Close)
+				testcleanup.Add(t, httpServer.Close)
 				if warm {
 					keeper := connectPeer(t, httpServer.URL, artifactID, "alice")
 					if err := keeper.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
@@ -239,7 +240,7 @@ func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
 	refuseHiddenRoom(hidden)
 	for _, revoked := range []bool{false, true} {
 		ctx, cancel := context.WithCancelCause(context.Background())
-		t.Cleanup(func() { cancel(nil) })
+		testcleanup.Add(t, func() { cancel(nil) })
 		if revoked {
 			cancel(errAccessRevoked)
 		}
@@ -373,14 +374,14 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	// An odd number of changes, the first a removal, so bob ends off the list.
 	const bob, burst, changes = "bob@outside.example", 24, 7
 	holder := newRecheckHolder()
-	t.Cleanup(holder.release)
+	testcleanup.Add(t, holder.release)
 	database := storetest.TracedStore(t, storetest.Open(t), holder)
 	service := New(Deps{
 		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database), Origins: text.NewOrigins("https://dispatch.example"),
 		Settle: time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
 	})
 	*built = weak.Make(service)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -414,7 +415,7 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	}
 	runRoomSync(t, newRoomSync(service))
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	// bob's socket, held through the burst, which the first removal closes. It is also the person
 	// the held re-check reads first, so that re-check makes a statement to be held in.
 	held := connectPeer(t, server.URL, ids[0], bob)
