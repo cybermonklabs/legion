@@ -274,16 +274,20 @@ read_said=
 # for the GPT-6.1 merger's legs, whose gpt_answer_wait covers the rig's own bound on that model's
 # answers (gpt_answer_seconds), which a daemon with answers removed has no block to hold.
 control_wait=300
-# The answering row running now, as criterion opened it: its name and store, the store's daemon log
-# (every boot of the pass appends to the one file) and how many lines it held when the row began,
-# and the writes the row's questions ask for (asks_writes), none unless the row says. record_result
-# reads the row's answers out of that log and keeps what it took in answers_taken, one JSON line an
-# answer, which read_pass_answers reads again once the pass is over, over the pass's lines since
-# answers_pass_from; that read writes each answer of the pass as a line of answer_calls_tsv.
+# The row that asks the loop questions now, as answers_begin opened it (criterion for an answering
+# row, run_a13 for A13's control): its name and store, the store's daemon log (every boot of the
+# pass appends to the one file) and how many lines it held when the row began, which questions of
+# those lines are its (answers_named: empty for criterion's rows, `every` for A13's control;
+# row_answers), and the writes the row's questions ask for (asks_writes), none unless the row says.
+# record_result reads the row's answers out of that log and keeps what it took in answers_taken,
+# one JSON line an answer, which read_pass_answers reads again once the pass is over, over the
+# pass's lines since answers_pass_from; that read writes each answer of the pass as a line of
+# answer_calls_tsv.
 answers_row=
 answers_store=
 answers_log=
 answers_from=
+answers_named=
 answers_asked=()
 answers_taken=
 answers_pass_from=0
@@ -315,25 +319,31 @@ unset DISPATCH_TOKEN
 # log_size NAME is the size of the service's log now, so a restart's wait reads only what this boot
 # wrote: lib/rig.sh's start_process appends every boot of a service to the one log.
 log_size() { stat -c %s "$evidence/logs/$1.log" 2>/dev/null || printf '0\n'; }
+# log_lines FILE is how many lines FILE holds now. It prints nothing and fails for a file it cannot
+# read, and each caller says what it takes then.
+log_lines() { wc -l 2>/dev/null <"$1"; }
 
 # record_result CRITERION VERDICT DETAIL: one summary row, for the current store ("-" for a
 # criterion that does not run per store). VERDICT is PASS, FAIL or WAITING; DETAIL says why.
-# Every row passes through here, so the answers of an answering row are read here and in no row of
-# its own: for the row criterion opened in this store, every question the daemon's log first names
-# since the row began (row_answers). The row records FAIL when the writes of those answers that
-# posted or may have are not the writes its questions ask for (asks_writes; none unless the row
-# says), when a call that ran logs no `write` (writes_fault), or when its log could not be read; and
-# its detail ends with each answer's counts (answers_clause), which no verdict reads. The read moves
-# the row's start to where it stopped, so a second result of the row would read only what came
-# after the first, and it keeps each answer it took, with the summary line it took it for and the
-# lines it read, for read_pass_answers, which reads what the answer did after. A control row, a row
-# criterion did not open and a row of another store read nothing: the controls run on a daemon
-# with no `answers`, where no loop answers.
+# Every row passes through here, so the answers of a row that asks the loop are read here and in no
+# row of its own: for the row answers_begin opened in this store, every question the daemon's log
+# first names since the row began (row_answers), or for A13's control every question it names since
+# then, counted from there (answers_named `every`). The row records FAIL when the writes of those
+# answers that posted or may have are not the writes its questions ask for (asks_writes; none
+# unless the row says), when a call that ran logs no `write` (writes_fault), or when its log could
+# not be read; and its detail ends with each answer's counts (answers_clause), which no verdict
+# reads. The read moves the row's start to where it stopped, so a second result of the row would
+# read only what came after the first, and it keeps each answer it took, with the summary line it
+# took it for and the lines it read, for read_pass_answers, which reads what the answer did after.
+# answers_begin opens each answering row (criterion) and A13's control, whose daemon runs with
+# `answers` on, its questions asking for no write (run_a13). A row it did not open and a row of
+# another store read nothing: the other controls run on a daemon with no `answers`, where no loop
+# answers.
 record_result() {
   local verdict=$2 detail=$3 end answers fault
   if [ -n "$answers_row" ] && [ "$1" = "$answers_row" ] && [ "${store:--}" = "$answers_store" ]; then
-    if [[ $answers_from =~ ^[0-9]+$ ]] && end=$(wc -l 2>/dev/null <"$answers_log") &&
-      answers=$(head -n "$end" "$answers_log" | row_answers "$answers_from"); then
+    if [[ $answers_from =~ ^[0-9]+$ ]] && end=$(log_lines "$answers_log") &&
+      answers=$(head -n "$end" "$answers_log" | row_answers "$answers_from" "$answers_named"); then
       answers_from=$end
       if ! fault=$(writes_fault "$answers" ${answers_asked[@]+"${answers_asked[@]}"}); then
         verdict=FAIL
@@ -357,24 +367,26 @@ fail_entry() {
   local r_store r_row r_verdict r_detail head counts=
   [[ $1 =~ ^[0-9]+$ ]] && [ -n "${results[$1]:-}" ] || return 0
   IFS='|' read -r r_store r_row r_verdict r_detail <<<"${results[$1]}"
-  head=${r_detail%"; its answers: "*}
-  [ "$head" = "$r_detail" ] || counts="; its answers: ${r_detail##*"; its answers: "}"
+  head=${r_detail%"$answers_clause_lead"*}
+  [ "$head" = "$r_detail" ] || counts="$answers_clause_lead${r_detail##*"$answers_clause_lead"}"
   results[$1]="$r_store|$r_row|FAIL|$head; $2$counts"
   printf 'FAIL %s (%s), recorded %s before the pass ended: %s\n' "$r_row" "$r_store" "$r_verdict" "$2"
 }
 # read_pass_answers LOG reads, once the pass's last daemon has stopped, every answer the store's
 # daemon log LOG first names since the pass began (pass_answers over answers_pass_from and
-# answers_taken), so no call of an answer goes unread: an answer may still be running when its row
-# records its result, and what it does after is read here. A row one of whose answers, past the
-# lines the row read, made a write that posted or may have, or a call that logs no `write`, records
-# FAIL now (fail_entry), naming each such call. An answer no row's read took, first named between
-# two rows, is no row's to fail: the transcript names it with its counts and each write it made, and
-# its line of answer_calls_tsv names the row `between rows`. Every answer of the pass is then a line
-# of answer_calls_tsv, counted over the whole pass. A read that fails fails every row of the pass
-# that took an answer, since none of their later calls was read.
+# answers_taken, under the rule of the row answers_begin opened last, answers_named: after A13's
+# control, every answer named since its count), so no call of an answer goes unread: an answer may
+# still be running when its row records its result, and what it does after is read here. A row one
+# of whose answers, past the lines the row read, made a write that posted or may have, or a call
+# that logs no `write`, records FAIL now (fail_entry), naming each such call. An answer no row's
+# read took, first named between two rows, is no row's to fail: the transcript names it with its
+# counts and each write it made, and its line of answer_calls_tsv names the row `between rows`.
+# Every answer of the pass is then a line of answer_calls_tsv, counted over the whole pass. A read
+# that fails fails every row of the pass that took an answer, since none of their later calls was
+# read.
 read_pass_answers() {
   local answers entry late line
-  if ! answers=$(pass_answers "$answers_pass_from" "$answers_taken" <"$1" 2>/dev/null); then
+  if ! answers=$(pass_answers "$answers_pass_from" "$answers_taken" "$answers_named" <"$1" 2>/dev/null); then
     for entry in $(jq -r '.entry' <<<"$answers_taken" 2>/dev/null | sort -un); do
       fail_entry "$entry" "the read of its answers' calls over $1 once the pass ended failed, so a write they made after its result is unread"
     done
@@ -385,8 +397,8 @@ read_pass_answers() {
     fail_entry "$entry" "after it recorded its result, its answers made calls its read had not reached: $late"
   done < <(jq -r '[.[] | select(.entry != null and (.late | length) > 0)] | group_by(.entry)[]
     | "\(.[0].entry)\t\([.[].late[]] | join(", "))"' <<<"$answers")
-  while IFS= read -r line; do note "$line"; done < <(jq -r '.[] | select(.entry == null)
-    | "an answer no row read, first named between two rows: \(.question[0:8]) model calls \(.calls), gh \(.gh), dispatch \(.dispatch), web_search \(.web_search), writes \(.writes), failed writes \(.failed_writes), refused \(.refused)\(if (.written | length) > 0 then "; it wrote " + (.written | map(.said) | join(", ")) else "" end)"' <<<"$answers")
+  while IFS= read -r line; do note "$line"; done < <(jq -r "$answer_tool_calls_jq"'.[] | select(.entry == null)
+    | "an answer no row read, first named between two rows: \(counts_said)\(if (.written | length) > 0 then "; it wrote " + (.written | map(.said) | join(", ")) else "" end)"' <<<"$answers")
   answers_tsv "$store" "between rows" "$answers" >>"$answer_calls_tsv" || note "the answers of the $store pass could not be written to $answer_calls_tsv"
 }
 # said_text TEXT prints TEXT's first 300 bytes on one line, or `none` for no text: how a read quotes
@@ -1925,12 +1937,12 @@ pass
 # prerequisite beyond the answering ones, each read from what the run has: infra448 (the listener's
 # registry routes in this checkout, A3, A20 and A21), openai (a model route that serves the GPT
 # model, as gpt_preflight asked it, A10's and A23's GPT-6.1 clauses), second-owner
-# (LEGION_E2E_REPO_SECOND_OWNER). A row it lets run begins here: it ends the row before it, and
-# notes the daemon log's lines now, so record_result reads as the row's answers each question that
-# log first names after them (row_answers), however often the row restarts the daemon. The row's
-# questions ask for no write until it says otherwise (asks_writes).
+# (LEGION_E2E_REPO_SECOND_OWNER). A row it lets run begins here (answers_begin): it ends the row
+# before it, and notes the daemon log's lines now, so record_result reads as the row's answers each
+# question that log first names after them (row_answers), however often the row restarts the
+# daemon. The row's questions ask for no write until it says otherwise (asks_writes).
 criterion() {
-  local id=$1 description=$2 blockers line
+  local id=$1 description=$2 blockers line from
   shift 2
   answers_row=
   printf '== %s (%s): %s\n' "$id" "$store" "$description"
@@ -1947,15 +1959,27 @@ criterion() {
   blockers=$(sed '/^$/d' <<<"$blockers")
   if [ -z "$blockers" ]; then
     [[ " ${rows_ran[$store]:-} " == *" $id "* ]] || rows_ran[$store]+=" $id"
-    answers_row=$id
-    answers_store=$store
-    answers_log=$daemon_log
-    answers_asked=()
-    answers_from=$(wc -l 2>/dev/null <"$daemon_log") || answers_from=
+    from=$(log_lines "$daemon_log") || from=
+    answers_begin "$id" "$daemon_log" "$from"
     return 0
   fi
   while IFS= read -r line; do record_result "$id" WAITING "${line#WAITING }"; done <<<"$blockers"
   return 1
+}
+# answers_begin ROW LOG FROM [every]: ROW's answers, in the current store, are the questions the
+# store's daemon log LOG first names after its first FROM lines, and its questions ask for no write
+# until it says otherwise (asks_writes); the row before it ends here. record_result reads them.
+# criterion begins each answering row here, and run_a13 A13's control, whose daemon runs with
+# `answers` on, with `every`: that daemon answers again at its boot a question the pass's last
+# daemon left generating, named first before FROM, so each question a line after FROM names is the
+# control's, counted over those lines alone (row_answers).
+answers_begin() {
+  answers_row=$1
+  answers_store=$store
+  answers_log=$2
+  answers_asked=()
+  answers_from=$3
+  answers_named=${4:-}
 }
 # asks_writes WRITE... says which writes the questions of the row criterion just let run ask for,
 # each once, as write_command names it (lib/answer-loop-reads.sh): A17's comment on its pull
@@ -5256,9 +5280,11 @@ for store in $stores; do
   produce_pre_change
   write_legion_config "$work/answers-$store.yaml" yes
   write_legion_config "$work/plain-$store.yaml" no
-  # The pass's answers are those its daemon log first names from here on (read_pass_answers).
+  # The pass's answers are those its daemon log first names from here on (read_pass_answers), under
+  # criterion's rule whatever row was opened last.
   answers_taken=
-  answers_pass_from=$(wc -l 2>/dev/null <"$evidence/logs/daemon-$store.log") || answers_pass_from=0
+  answers_named=
+  answers_pass_from=$(log_lines "$evidence/logs/daemon-$store.log") || answers_pass_from=0
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
     "$branch_plugin"
   produce_agents
@@ -5310,7 +5336,9 @@ done
 # rows of that store's answering rows run against the same daemon (run_controls); they read the
 # asker's inbox, so the inbox is started again on the restarted NATS, whose port is a new one. Then
 # A13's own control: the same probe against the branch's daemon with `answers` on, whose
-# comparison with the base commit must fail.
+# comparison with the base commit must fail. The loop answers that probe's messages, so the
+# control's row reads every answer its daemon gave as an answering row reads its own, asking for no
+# write.
 # Both stacks are probed at one point of the role claim reaper, so the comparison reads the
 # branch's change and not the reaper's timing: both listeners run it every reap_period seconds
 # (scripts/e2e/envoy-session-states.sh's 20 s, not the deployment's five minutes) over a live
@@ -5323,6 +5351,7 @@ done
 # of each listener waits out the rest of its window; every later one finds the pass logged already.
 run_a13() {
   local differs probe_store branch control_differs live_window=300 reap_period=20
+  local -A control_from=()
   local reaper_env=("ENVOY_ROLE_CLAIM_REAP_INTERVAL=${reap_period}s" "ENVOY_SESSION_LIVE_WINDOW=${live_window}s")
   begin a13
   store=-
@@ -5357,6 +5386,9 @@ run_a13() {
     a13_probe branch "$store"
     run_controls
     stop_daemon
+    # The daemon started next answers A13's control, and its row reads every answer this log names
+    # past the lines it holds now (answers_begin, below).
+    control_from[$store]=$(log_lines "$evidence/logs/daemon-$store.log") || control_from[$store]=
     start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
       "$branch_plugin"
     sleep 65
@@ -5411,6 +5443,15 @@ run_a13() {
     printf '== A13 control (%s): with answers on, the branch answers a stopped agent unlike the base commit\n' "$store"
     control_differs=$(a13_differs control)
     branch=$evidence/a13/control/$store
+    # The row reads every answer the control's daemon gave as an answering row reads its own, asking
+    # for no write: each question the store's log names past the lines it held before that daemon
+    # started (control_from), counted over those lines alone, a question the pass left generating
+    # and that daemon answered again at its boot among them (answers_begin's `every`). That daemon
+    # is the last that wrote the log, since the base daemon writes base-daemon-a13.log, so those
+    # lines are its alone. Once the row's result is recorded, the pass's read takes them again from
+    # there under the same rule, each a line of answer_calls_tsv under the row's name.
+    answers_taken=
+    answers_begin "A13 control" "$evidence/logs/daemon-$store.log" "${control_from[$store]}" every
     if ! a13_captured control; then
       record_result "A13 control" FAIL "the probe of the branch with answers on, or the base commit's, captured nothing to compare under $evidence/a13"
     elif [ -n "$control_differs" ]; then
@@ -5418,6 +5459,8 @@ run_a13() {
     else
       record_result "A13 control" FAIL "with answers on, A13's comparison with the base commit held: every capture said what the base commit says"
     fi
+    answers_pass_from=${control_from[$store]}
+    read_pass_answers "$evidence/logs/daemon-$store.log"
   done
   pass
 }

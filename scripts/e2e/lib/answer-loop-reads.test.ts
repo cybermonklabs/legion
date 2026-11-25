@@ -943,6 +943,9 @@ describe("every tool call of every answer", () => {
     "done\n\n<!-- legion: {} -->",
   ];
   const comment = (seq: number, question = q) => gh(question, seq, commentArgs, { write: true });
+  /** The header line of the run's answer-calls.tsv (answer_calls_header). */
+  const header =
+    "store\trow\tquestion\tkind\tmodel\tmodel_calls\tgh_calls\tdispatch_calls\tweb_search_calls\twrites\tfailed_writes\trefused_calls\tfault";
   /** writes_fault over the answers of a row whose log holds LINES from its start, asking for ASKED. */
   const judged = (lines: Line[], ...asked: string[]) =>
     read(
@@ -1256,8 +1259,6 @@ describe("every tool call of every answer", () => {
     );
     expect(read(`answers_clause '[]'`).text).toBe("; its answers: none");
     expect(read(`answers_clause 'not answers'`).text).toBe("; its answers: unread");
-    const header =
-      "store\trow\tquestion\tkind\tmodel\tmodel_calls\tgh_calls\tdispatch_calls\tweb_search_calls\twrites\tfailed_writes\trefused_calls\tfault";
     const tsv = join(dir, "answer-calls-totals.tsv");
     const written = `${answers}; { answer_calls_header; answers_tsv files A17 "$answers"; answers_tsv postgres A17 '[]'; } | tee ${shq(tsv)}`;
     expect(read(written).text).toBe(
@@ -1283,14 +1284,13 @@ describe("every tool call of every answer", () => {
   });
 
   // record_result is where every row's result goes, so no row can leave the read out: the row
-  // criterion opened is judged there, and a control, a row of another store and a WAITING are not.
+  // criterion opened is judged there, and so is A13's control, which answers_begin opens, while the
+  // other controls, a row of another store and a WAITING are not.
   // read_pass_answers reads every answer of the pass again once it is over: what an answer did after
   // its row's result fails that row, and an answer no row took is named, not lost.
   describe("record_result and read_pass_answers", () => {
     const rigLog = join(dir, "answer-calls-rig.log");
     const rigTsv = join(dir, "answer-calls-rig.tsv");
-    const header =
-      "store\trow\tquestion\tkind\tmodel\tmodel_calls\tgh_calls\tdispatch_calls\tweb_search_calls\twrites\tfailed_writes\trefused_calls\tfault";
     /** Runs BODY over a pass whose log begins with an answer no row took, then the pass's read. */
     const recorded = (body: string) => {
       cpSync(logOf([received(other), comment(1, other), answered(other, 2)]), rigLog);
@@ -1299,9 +1299,12 @@ ${rig("fail_entry")}
 ${rig("read_pass_answers")}
 ${rig("criterion")}
 ${rig("asks_writes")}
+${rig("log_lines")}
+${rig("answers_begin")}
 results=()
 declare -A rows_ran=()
 answers_row=
+answers_named=
 answers_taken=
 answers_pass_from=0
 answer_calls_tsv=${shq(rigTsv)}
@@ -1397,16 +1400,22 @@ cat ${shq(logOf(late.slice(1)))} >>"$daemon_log"`);
     });
 
     test("reads nothing for a WAITING or a row of another store, and fails a row whose log cannot be read", () => {
-      const waiting = recorded(`mode=claims-only
+      // A17 opened, its answer then writing what nobody asked for, and opened again under a blocker:
+      // the WAITING reads nothing of the row before it.
+      const waiting = recorded(`criterion A17 'a row'
+cat ${shq(logOf([comment(1)]))} >>"$daemon_log"
+mode=claims-only
 app_keys_missing=(LEGION_E2E_REVIEW_APP_KEY_COMMAND)
-criterion A17 'a row' || true
+criterion A17 'a row' || true`);
+      expect(waiting.results).toEqual([
+        "files|A17|WAITING|(needs LEGION_E2E_REVIEW_APP_KEY_COMMAND): the daemon runs without its workflow, which carries the answer loop and boots only with both role Apps, each minting its tokens from the key its command prints",
+      ]);
+      // A17 opened under files, whose answer then wrote what nobody asked for, recorded under postgres.
+      const elsewhere = recorded(`criterion A17 'a row'
+cat ${shq(logOf([comment(1)]))} >>"$daemon_log"
 store=postgres
 record_result A17 PASS "another store's"`);
-      expect(waiting.results[0]).toMatch(
-        /^files\|A17\|WAITING\|\(needs LEGION_E2E_REVIEW_APP_KEY_COMMAND\)/
-      );
-      expect(waiting.results[0]).not.toContain("its answers");
-      expect(waiting.results[1]).toBe(`postgres|A17|PASS|another store's`);
+      expect(elsewhere.results).toEqual(["postgres|A17|PASS|another store's"]);
       const gone = recorded(`criterion A17 'a row'
 answers_log=${shq(join(dir, "no-such-daemon.log"))}
 record_result A17 PASS "its own read held"`);
@@ -1422,6 +1431,68 @@ answers_pass_from=not-a-count`);
       expect(unread.results[0]).toMatch(
         /^files\|A17\|FAIL\|its own read held; the read of its answers' calls over .* once the pass ended failed, so a write they made after its result is unread; its answers: c0ffee01 model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0$/
       );
+    });
+
+    // A13's control asks the branch's daemon, with `answers` on, what A13 asks it with them off, and
+    // the loop answers: run_a13 opens the row with answers_begin, from the lines the store's log held
+    // before that daemon started, and reads the pass again from there for answer-calls.tsv. The row
+    // before it asked for a comment; the control asks for none.
+    test("judges a row answers_begin opened as asking for no write, from its line of the log and none before", () => {
+      const earlier = "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0";
+      const result = recorded(`criterion A17 'a row asking for a comment'
+asks_writes 'gh pr comment'
+cat ${shq(logOf([received(earlier), comment(1, earlier), answered(earlier, 2)]))} >>"$daemon_log"
+record_result A17 PASS "its own read held"
+from=$(log_lines "$daemon_log")
+cat ${shq(logOf([received(q), comment(1), answered(q, 2)]))} >>"$daemon_log"
+answers_taken=
+answers_begin 'A13 control' "$daemon_log" "$from" every
+record_result 'A13 control' PASS "with answers on, A13's comparison with the base commit failed"
+answers_pass_from=$from`);
+      expect(result.results).toEqual([
+        "files|A17|PASS|its own read held; its answers: e0e0e0e0 model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0",
+        "files|A13 control|FAIL|with answers on, A13's comparison with the base commit failed; its answers wrote c0ffee01 gh #1 pr comment 7 -R acme/widgets --body done <!-- legion: {} --> [gh pr comment], where its questions ask for no write; its answers: c0ffee01 model calls 2, gh 1, dispatch 0, web_search 0, writes 1, failed writes 0, refused 0",
+      ]);
+      // The answers with no line past that one, each of which wrote too, are none of the row's, and
+      // no line of the file the pass's read writes again from there.
+      expect(result.tsv).toEqual([
+        header,
+        `files\tA13 control\t${q}\tanswered\tanthropic/claude-sonnet-5-5\t2\t1\t0\t0\t1\t0\t0\t-`,
+      ]);
+      expect(result.err).not.toContain("an answer no row read");
+    });
+
+    // The pass's last daemon may stop with a question `generating`, which the control's daemon,
+    // `answers` on, answers again at its boot: the question's first line comes before the control's
+    // count and its later calls after. Under the control's rule (answers_begin's `every`) it is the
+    // row's, counted from the count on; under criterion's it stays the row's that named it first.
+    test("takes as A13 control's every question with a line past its count, counted from there, and criterion's rows not", () => {
+      const later = [
+        dispatch(other, 2, ["comment", "--issue", "ALX-9", "--body", "placeholder"], {
+          write: true,
+        }),
+        answered(other, 3),
+      ];
+      const control = recorded(`from=$(log_lines "$daemon_log")
+cat ${shq(logOf(later))} >>"$daemon_log"
+answers_taken=
+answers_begin 'A13 control' "$daemon_log" "$from" every
+record_result 'A13 control' PASS "with answers on, A13's comparison with the base commit failed"
+answers_pass_from=$from`);
+      expect(control.results).toEqual([
+        "files|A13 control|FAIL|with answers on, A13's comparison with the base commit failed; its answers wrote 0dd0dd0d dispatch #2 comment --issue ALX-9 --body placeholder [dispatch comment], where its questions ask for no write; its answers: 0dd0dd0d model calls 3, gh 0, dispatch 1, web_search 0, writes 1, failed writes 0, refused 0",
+      ]);
+      // Its line counts what it did under the control's daemon alone: not the gh comment, nor the
+      // two model calls, its first run made before the count.
+      expect(control.tsv).toEqual([
+        header,
+        `files\tA13 control\t${other}\tanswered\tanthropic/claude-sonnet-5-5\t3\t0\t1\t0\t1\t0\t0\t-`,
+      ]);
+      expect(control.err).not.toContain("an answer no row read");
+      const row = recorded(`criterion A17 'a row'
+cat ${shq(logOf(later))} >>"$daemon_log"
+record_result A17 PASS "its own read held"`);
+      expect(row.results).toEqual(["files|A17|PASS|its own read held; its answers: none"]);
     });
   });
 });

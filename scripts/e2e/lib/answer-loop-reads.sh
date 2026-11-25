@@ -367,21 +367,26 @@ phase_changed() {
 # leg's and A23's fourth search's, which set a lower one to make its fault. The run's totals count
 # the answers that reached it (answer_totals); no row passes or fails on a count.
 answers_model_calls_bound=8
-# answer_calls_jq holds the jq definitions the reads below share. write_command is the kind of write
-# a call is, which a row names the writes its questions ask for by (the rig's asks_writes):
-# `dispatch <command>`; `gh pr comment` for a comment on a pull request or an issue, by `gh pr
-# comment`, `gh issue comment` or a gh api POST to `repos/<owner>/<name>/issues/<n>/comments`; `gh pr
-# review` for a review, by `gh pr review` or a POST to `…/pulls/<n>/reviews`; `gh api <METHOD>
-# <segment>` for another gh api call, its method as gh reads it (-X or --method, else POST with a
-# field and GET without) and the segment the first of its endpoint after `repos/<owner>/<name>/`
-# (`contents` for A17's workflow file); and `gh <command words>` for any other gh call, its words
-# read as the tool reads them (ghtool's commandWords). call_said is a call on one line, its tool,
-# seq and arguments, cut to 120 characters, with no `|` in it, since a summary line is split on its
-# first three; write_said adds the write's kind and, for one stopped below exit 0, that it may have
-# posted. answers_after reads the answers a log names first after its first FROM lines (row_answers,
-# pass_answers), each line numbered (`@line`) as it stands in the log.
+# answer_tool_calls_jq holds the jq definitions the reads below share. write_command is the kind
+# of write a call is, which a row names the writes its questions ask for by (the rig's
+# asks_writes): `dispatch <command>`; `gh pr comment` for a comment on a pull request or an issue,
+# by `gh pr comment`, `gh issue comment` or a gh api POST to
+# `repos/<owner>/<name>/issues/<n>/comments`; `gh pr review` for a review, by `gh pr review` or a
+# POST to `…/pulls/<n>/reviews`; `gh api <METHOD> <segment>` for another gh api call, its method as
+# gh reads it (-X or --method, else POST with a field and GET without) and the segment the first of
+# its endpoint after `repos/<owner>/<name>/` (`contents` for A17's workflow file); and `gh <command
+# words>` for any other gh call, its words read as the tool reads them (ghtool's commandWords).
+# tool_name is a call's tool, `gh`, `dispatch` or `web_search`. call_said is a call on one line,
+# its tool, seq and arguments, cut to 120 characters, with no `|` in it, since a summary line is
+# split on its first three; write_said adds the write's kind and, for one stopped below exit 0,
+# that it may have posted. counts_said is an answer's counts (answer_of) on one line, its question
+# cut to 8 characters (answers_clause, the rig's read_pass_answers). answers_after reads the
+# answers a log names first after its first FROM lines (row_answers, pass_answers), or with EVERY
+# true every answer a line after them names, keeping their `answers:` lines from there, each
+# numbered (`@line`) as it stands in the log.
 # shellcheck disable=SC2016 # jq's variables, not the shell's
-answer_calls_jq='def tool_call: .msg == "answers: gh" or .msg == "answers: dispatch" or .msg == "answers: web_search";
+answer_tool_calls_jq='def tool_call: .msg == "answers: gh" or .msg == "answers: dispatch" or .msg == "answers: web_search";
+def tool_name: .msg | ltrimstr("answers: ");
 def answers_line: ((.msg // "") | tostring | startswith("answers:")) and ((.question | type) == "string") and .question != "";
 def refused_call: if .msg == "answers: web_search" then ((.error // "") | tostring | startswith("refused: ")) else .ran == false end;
 def write_unread: .msg != "answers: web_search" and .ran != false and ((.write | type) != "boolean");
@@ -427,15 +432,16 @@ def write_command:
       elif ($words | join(" ")) | IN("pr comment", "issue comment") then "gh pr comment"
       else "gh \($words | join(" "))" end
   else .msg end;
-def call_said: "\(.msg | ltrimstr("answers: ")) #\(.seq) \((.args // []) | if type == "array" then map(tostring) | join(" ") else tostring end)"
+def call_said: "\(tool_name) #\(.seq) \((.args // []) | if type == "array" then map(tostring) | join(" ") else tostring end)"
   | gsub("\\s+"; " ") | gsub("\\|"; "¦") | if length > 120 then .[0:119] + "…" else . end;
 def write_said: "\(call_said) [\(write_command)\(if (.exit | type) == "number" and .exit < 0 then ", exit \(.exit): stopped by a signal or its time bound, so it may have posted" else "" end)]";
 def unread_said: "\(call_said) ran and its line carries no write field, so whether it wrote is unread";
+def counts_said: "\(.question[0:8]) model calls \(.calls), gh \(.gh), dispatch \(.dispatch), web_search \(.web_search), writes \(.writes), failed writes \(.failed_writes), refused \(.refused)";
 def questions_named: reduce (.[] | select(answers_line) | .question) as $q ({seen: {}, order: []};
   if .seen[$q] then . else .seen[$q] = true | .order += [$q] end) | .order;
-def answers_after($from): split("\n") as $raw
-  | (reduce ($raw[:$from][] | fromjson? | objects | select(answers_line) | .question) as $q ({}; .[$q] = true)) as $before
-  | [range($from; $raw | length) as $i | $raw[$i] | fromjson? | objects | . + {"@line": $i}] as $lines
+def answers_after($from; $every): split("\n") as $raw
+  | (if $every then {} else reduce ($raw[:$from][] | fromjson? | objects | select(answers_line) | .question) as $q ({}; .[$q] = true) end) as $before
+  | [range($from; $raw | length) as $i | $raw[$i] | fromjson? | objects | select(answers_line) | . + {"@line": $i}] as $lines
   | {lines: $lines, questions: [($lines | questions_named)[] | select(. as $q | $before | has($q) | not)]};
 def answer_of($q; $lines): [$lines[] | select(.question == $q)] as $own
   | [$own[] | select(tool_call)] as $calls
@@ -448,8 +454,8 @@ def answer_of($q; $lines): [$lines[] | select(.question == $q)] as $own
      writes: (if $unread then "?" else ([$calls[] | select(posted_write)] | length) end),
      failed_writes: (if $unread then "?" else ([$calls[] | select(failed_write)] | length) end),
      refused: ([$calls[] | select(refused_call)] | length), fault: ($last | .fault),
-     written: [$calls[] | select(posted_write) | {tool: (.msg | ltrimstr("answers: ")), seq, command: write_command, said: write_said}],
-     unread: [$calls[] | select(write_unread) | {tool: (.msg | ltrimstr("answers: ")), seq, said: unread_said}]}; '
+     written: [$calls[] | select(posted_write) | {tool: tool_name, seq, command: write_command, said: write_said}],
+     unread: [$calls[] | select(write_unread) | {tool: tool_name, seq, said: unread_said}]}; '
 # answer_counts [QUESTION...] reads a daemon log's lines on its standard input, every boot of it or
 # any part, lines that are not JSON among them, and prints one JSON object a line for each answer:
 # each QUESTION's, in the order given, or with none given each question an `answers:` line of the
@@ -462,24 +468,27 @@ def answer_of($q; $lines): [$lines[] | select(.question == $q)] as $own
 # standard input and not boot_log, so a finished run's daemon log is read with no rig:
 #   . scripts/e2e/lib/answer-loop-reads.sh && answer_counts <"$evidence/logs/daemon-files.log"
 answer_counts() {
-  jq -R -s -c "$answer_calls_jq"'[split("\n")[] | fromjson? | objects] as $lines
+  jq -R -s -c "$answer_tool_calls_jq"'[split("\n")[] | fromjson? | objects] as $lines
     | (if ($ARGS.positional | length) > 0 then $ARGS.positional else ($lines | questions_named) end)[]
     | answer_of(.; $lines) | del(.written, .unread)' --args "$@"
 }
-# row_answers FROM reads one store's daemon log on its standard input, every boot of it, and prints
-# as one JSON array the answers of the row that began when the log held FROM lines: each question
-# an `answers:` line after those names and no line before them names. So an answer is the row's
-# whose first line came while the row ran, however often the daemon restarted inside it, since every
-# boot appends to the one file, and the row before it, whose lines named the question first, holds
-# none of it. Each is answer_counts' object with `written`, every write that posted or may have as
-# {tool, seq, command, said} (write_command, write_said), and `unread`, every call that ran and logs
-# no `write`, as {tool, seq, said}.
+# row_answers FROM [every] reads one store's daemon log on its standard input, every boot of it, and
+# prints as one JSON array the answers of the row that began when the log held FROM lines: each
+# question an `answers:` line after those names and no line before them names. So an answer is the
+# row's whose first line came while the row ran, however often the daemon restarted inside it, since
+# every boot appends to the one file, and the row before it, whose lines named the question first,
+# holds none of it. With `every` (A13's control alone) each question an `answers:` line after those
+# names is the row's, counted over those lines alone: a daemon answers again at its boot a question
+# an earlier daemon left generating, whose first line came before. Each is answer_counts' object
+# with `written`, every write that posted or may have as {tool, seq, command, said} (write_command,
+# write_said), and `unread`, every call that ran and logs no `write`, as {tool, seq, said}.
 row_answers() {
-  jq -R -s -c --argjson from "$1" "$answer_calls_jq"'answers_after($from) as $after
+  jq -R -s -c --argjson from "$1" --arg named "${2:-}" "$answer_tool_calls_jq"'answers_after($from; $named == "every") as $after
     | [$after.questions[] | answer_of(.; $after.lines)]'
 }
-# pass_answers FROM TAKEN reads one store's daemon log on its standard input once its pass is over,
-# and prints as one JSON array every answer the pass's lines, those after the first FROM, name first:
+# pass_answers FROM TAKEN [every] reads one store's daemon log on its standard input once its pass
+# is over, and prints as one JSON array every answer the pass's lines, those after the first FROM,
+# name first (with `every`, every answer they name, row_answers' rule of that name):
 # row_answers' object over the whole pass, with the row that read it and the summary entry it read
 # it for (`row`, `entry`; null for an answer no row's read took) and `late`, each call of it from the
 # lines that row's read had not reached that posted, may have, or logs no `write`, on one line each.
@@ -487,7 +496,7 @@ row_answers() {
 # the lines of the log its read covered. A row records its result once its own read holds, and an
 # answer may still be running then; what it does after is read here and nowhere else.
 pass_answers() {
-  jq -R -s -c --argjson from "$1" --arg taken "${2:-}" "$answer_calls_jq"'answers_after($from) as $after
+  jq -R -s -c --argjson from "$1" --arg taken "${2:-}" --arg named "${3:-}" "$answer_tool_calls_jq"'answers_after($from; $named == "every") as $after
     | (reduce ($taken | split("\n")[] | fromjson? | objects | select((.question | type) == "string")) as $t ({}; .[$t.question] = $t)) as $by
     | [$after.questions[] as $q | ($by[$q] // null) as $t
       | answer_of($q; $after.lines) + {row: ($t | .row), entry: ($t | .entry), late: (if $t == null then [] else
@@ -519,15 +528,17 @@ writes_fault() {
     return 1
   }
 }
-# answers_clause ANSWERS prints what a row's detail ends with: `; its answers: `, then for each of
-# ANSWERS (row_answers) its question cut to 8 characters, its model calls, its calls of each tool,
-# its writes, its failed writes and its refused calls, `; ` between two, or `none`. A read that fails
-# says so.
+# answers_clause ANSWERS prints what a row's detail ends with: answers_clause_lead, `; its
+# answers: `, then for each of ANSWERS (row_answers) its counts (counts_said: its question cut to 8
+# characters, its model calls, its calls of each tool, its writes, its failed writes and its refused
+# calls), `; ` between two, or `none`. A read that fails says so. The rig's fail_entry finds the
+# clause in a summary line by answers_clause_lead.
+answers_clause_lead='; its answers: '
 answers_clause() {
   local clause
-  clause=$(jq -r 'if length == 0 then "none" else map("\(.question[0:8]) model calls \(.calls), gh \(.gh), dispatch \(.dispatch), web_search \(.web_search), writes \(.writes), failed writes \(.failed_writes), refused \(.refused)") | join("; ") end' \
+  clause=$(jq -r "$answer_tool_calls_jq"'if length == 0 then "none" else map(counts_said) | join("; ") end' \
     <<<"${1:-null}" 2>/dev/null) || clause=
-  printf '; its answers: %s\n' "${clause:-unread}"
+  printf '%s%s\n' "$answers_clause_lead" "${clause:-unread}"
 }
 # answer_calls_header prints the header of the run's answer-calls.tsv, and answers_tsv STORE ROW
 # ANSWERS one line of it for each of ANSWERS (pass_answers): the store, the row that read it (ROW

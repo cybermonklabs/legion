@@ -1912,6 +1912,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   the default decides the repository Dispatch resolves the pass's rig issues to, which would otherwise be none.
   The base stack's Dispatch is a database of its own, so the base daemon's project is created there and takes the same default.
   `A13 control`: in the branch's phase, after the control rows of each pass, the same four probes are taken again against the branch's daemon with `answers` on (`a13/control/<store>/`), and the row reads PASS when their comparison with the base commit's fails, once both probes are known to have captured all six files (`a13_captured`), since a missing capture compares as a difference.
+  The loop answers those probes' messages, so the row also records FAIL, as any row the loop answers does, when one of those answers made a write that posted or may have, or a call that logs no `write` (**Every write of every answer**).
 
 - A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages (`internal/answer`, `internal/answerloop`, `internal/ghtool`, `internal/dispatchtool`, `internal/websearch`, `internal/conversation`, `internal/agenthistory`), the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
   a hit fails unless `questions.json` records it as not about the loop.
@@ -1976,7 +1977,7 @@ the reachability preflight counted as a model call, the agent's own words counte
 
 **Every write of every answer.**
 Every row that asks the loop a question also reads every tool call of each answer it caused, in `record_result`, the one place every row's result goes, so no row can leave the read out.
-A row's answers are the questions the store's daemon log first names after the lines `criterion` counted when the row began (`row_answers`):
+A row's answers are the questions the store's daemon log first names after the lines it held when the row began, which `criterion` counts as it begins each answering row (`answers_begin`, `row_answers`):
 the log is one file every boot of the pass appends to, so a restart inside the row moves nothing, and a question the row before named first stays that row's.
 Each `answers: gh` and `answers: dispatch` line carries `write`, which the daemon sets for a call that ran a command that writes, whatever its exit, so the read takes `exit` beside it.
 A write that exited 0 posted, and one that exited below 0 (stopped by a signal or its time bound) may have posted and counts as a write;
@@ -1985,12 +1986,16 @@ The row records FAIL, naming each question and each call by its tool, seq and ar
 A row says what its questions ask for with `asks_writes`, by kind (`write_command`: `gh pr comment` however the comment was posted, `gh pr review`, `dispatch <command>`, `gh api <METHOD> <segment>`, `gh <command words>`), and a row that says nothing asks for none.
 A17 asks for one comment, A18 for two, A19 for one approval and A22 for one `dispatch comment`, and every other row for none;
 A17's leak-guard leg's comment is refused before `gh` starts and its reviewer's workflow file is a failed write, so neither is one.
-The controls run on a daemon with no `answers`, where no loop answers, and read none of this.
+The other rows' controls run on a daemon with no `answers`, where no loop answers, and read none of this.
+A13's own control (`A13 control`) runs the branch's daemon with `answers` on, and the loop answers its probe's messages, so its row reads every answer that daemon gave as an answering row's, asking for no write:
+each question with an `answers:` line after the lines the store's daemon log held before that daemon started, the last daemon to write that log (the base daemon writes `base-daemon-a13.log`), counted over those lines alone; `run_a13` opens the row from there with `answers_begin … every`.
+That takes in a question the pass's last daemon left `generating`, which the control's daemon answers again at its boot though the pass named it first, and its line of `answer-calls.tsv` under `A13 control` counts only what it did under that daemon.
 Once each pass's last daemon has stopped, `read_pass_answers` reads every answer of the pass again over the whole log (`pass_answers`), since an answer may still be running when its row records its result:
 a row one of whose answers wrote, or logged a call with no `write`, past the lines the row's own read reached records FAIL then, its summary line rewritten to say so, and an answer no row's read took is named in the transcript.
 Each row's detail ends with its answers' counts, one clause an answer: its question cut to 8 characters, its model calls, its `gh`, `dispatch` and `web_search` calls, its writes, its failed writes and its refused calls.
 No row passes or fails on a count: the spec bounds an answer at eight model calls and no lower number, and the counts are a measurement.
-`answer-calls.tsv` holds one line an answer of every pass, counted over the whole pass, under the row that read it or `between rows`, and the transcript ends with each store's totals (answers, model calls, tool calls, writes, failed writes, refused calls, and the answers that reached the eight-call bound).
+`answer-calls.tsv` holds one line an answer of every pass, counted over the whole pass, under the row that read it or `between rows`, and one an answer of A13's control, under `A13 control`;
+the transcript ends with each store's totals (answers, model calls, tool calls, writes, failed writes, refused calls, and the answers that reached the eight-call bound).
 `answer_counts` builds one answer's counts from a daemon log on its standard input, so a finished run's `logs/daemon-<store>.log` is read with no rig;
 a log from before the daemon logged `write` gives such an answer's writes as `?`, never 0.
 
