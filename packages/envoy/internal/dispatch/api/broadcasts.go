@@ -461,7 +461,7 @@ func (s *server) writeBroadcast(
 	// that plan to the id and time its insert made. A write holds its transaction id only for its
 	// database statements (INFRA-636), so no parse runs once the broadcast's insert has taken one.
 	// Each copy is a direct message, which holds no mention, so the plan extracts none.
-	plan, err := refs.PlanNewItemIndex(refs.ItemMessage, body, nil)
+	plan, err := refs.PlanNewItemIndex(refs.ItemMessage, body, s.deps.ServerURL, nil)
 	if err != nil {
 		return broadcastRead{}, nil, err
 	}

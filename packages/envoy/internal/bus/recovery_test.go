@@ -235,6 +235,7 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 // Recovery keeps retrying the durable's restore, and does not run the hooks again for a connection
 // they already moved to. The refused restore is a failure, so it stays an ERROR.
 func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -246,8 +247,10 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, uri := startNATS(t)
-			client, err := bus.ConnectOwningStream([]string{uri})
+			clientLogs := captureBusLogs()
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -258,7 +261,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 				hooked <- conn
 				return nil
 			})
-			logs := captureBusLogs(t)
+			logs := clientLogs.fromHere()
 			if err := tc.reconnect(client); err != nil {
 				t.Fatalf("reconnect: %v", err)
 			}
@@ -299,8 +302,10 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 // reconnect's run. Two events between runs, two runs, never two at once: a recovery that read the
 // hooks as due while the reconnect's run was still in progress started a third, alongside it.
 func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -344,7 +349,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	// has ended finds what every later attempt finds, both events covered and no event since, and the
 	// attempt that came during the run has logged before it began. So once an attempt begun from here
 	// has logged, every chance to run the hooks again has passed.
-	afterRun := captureBusLogs(t)
+	afterRun := clientLogs.fromHere()
 	waitFor(t, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
 		begun := afterRun.attempts("INFO", "envoy nats recovery attempt")
 		return len(begun) > 0 && slices.Contains(afterRun.attempts("ERROR", "envoy nats recovery resubscribe failed"), begun[0])
@@ -466,9 +471,11 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 // registration left to its bind in flight is the design working, not a failure, so nothing on the
 // way logs an ERROR.
 func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
-	client, err := bus.ConnectOwningStream([]string{proxy.url()})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -494,7 +501,7 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	}
 	bound := make(chan bindResult, 1)
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	proxy.arm("$JS.API.CONSUMER.INFO.")
 	go func() {
 		_, err := client.Subscribe("", func(msg *natsgo.Msg) {
@@ -1027,8 +1034,8 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		})
 	}
 
-	logs := captureBusLogs(t)
-	options := []bus.ConnectOption{bus.WithReplicas(1), bus.WithName(name)}
+	logs := captureBusLogs()
+	options := []bus.ConnectOption{bus.WithReplicas(1), bus.WithName(name), bus.WithLogger(logs.logger)}
 	if through != nil {
 		options = append(options, through(uri)...)
 	}
@@ -1113,11 +1120,12 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 // sees the close, so the test polls its connection list rather than reading it once: on main the
 // replacement stays listed for good, and the poll runs out.
 func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	connections := serverConnections(t, srv)
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const name = "refused-start"
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(3), bus.WithName(name))
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(3), bus.WithName(name), bus.WithLogger(logs.logger))
 	if err == nil {
 		client.Close()
 		t.Fatal("a single server took the stream at three copies")

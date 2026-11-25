@@ -278,7 +278,7 @@ func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body 
 func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
 	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}
 }

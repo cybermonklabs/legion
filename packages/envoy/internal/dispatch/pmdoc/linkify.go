@@ -49,7 +49,9 @@ func linkifyParsers() []util.PrioritizedValue {
 // outside links, decoded: its URL pattern over every one first, then its email pattern over the
 // text left, each refusal searched again one character later (mdast-util-find-and-replace). That
 // is each block's CloseBlock's (linkTextAddresses), over each run of its text nodes between other
-// nodes; autolink_transform.go holds it, and this file the tokenizer.
+// nodes; autolink_transform.go holds it, and this file the tokenizer. After both have read a
+// block, an autolink either started inside a `dispatch://` address is text again
+// (keepAddressesWhole).
 //
 // Asking the guard at a character no other parser is asked at ends the text goldmark is building
 // there: a line asked at a `.` and nowhere else becomes two texts. The guard records the last such
@@ -225,9 +227,14 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 }
 
 // bareAutolink is the autolink of a bare address of kind at source offsets [start, end), whose
-// href takes an `http://` before a www URL.
+// href takes an `http://` before a www URL. Its position is the address's first byte: goldmark
+// gives a node it is handed without one the offset its parser was asked at, which for the guard is
+// where the text before the address begins, and for the transform no offset at all.
+// keepAddressesWhole tells a bare autolink from an angle one by the byte its position names
+// (literalAutolink), and puts it back as text from there.
 func bareAutolink(kind ast.AutoLinkType, www bool, start, end int) *ast.AutoLink {
 	link := ast.NewAutoLink(kind, ast.NewTextSegment(text.NewSegment(start, end)))
+	link.SetPos(start)
 	if www {
 		link.Protocol = []byte("http")
 	}
@@ -276,7 +283,7 @@ func (underscoreEmail) Parse(parent ast.Node, block text.Reader, pc parser.Conte
 		return nil
 	}
 	block.Advance(length)
-	return ast.NewAutoLink(ast.AutoLinkEmail, ast.NewTextSegment(segment.WithStop(segment.Start+length)))
+	return bareAutolink(ast.AutoLinkEmail, false, segment.Start, segment.Start+length)
 }
 
 // gfmAtext reports whether c is a character of an email's local part to both readers: to the

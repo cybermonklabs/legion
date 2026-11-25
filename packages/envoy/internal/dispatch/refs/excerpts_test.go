@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -32,7 +34,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -136,7 +138,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -377,7 +379,7 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	createReferenceProject(t, tx, "CORE")
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -416,6 +418,115 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	if moved := record(4, reblocked); !slices.Equal(moved, []Target{core2}) {
 		t.Fatalf("moved by a mention's new block = %#v, want CORE-2 alone", moved)
+	}
+}
+
+// A mention's excerpt is written when it is owed (excerpt_version null) or older than the version
+// recorded, and kept when it already holds that version's: a re-index of a version already
+// indexed - the block index of a document owed one, the forms drain - reads the same text, and the
+// excerpt that version's write stored was cut as the block's own row was, so a cut that moved
+// since never rewrites the mention's excerpt and leaves the block's as it was.
+func TestRecordExcerptsKeepsAnExcerptOfTheSameVersion(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, excerpt_version, excerpt_block_id, excerpt_text) values
+			('artifact', $1, 'issue', 'CORE-1', null, null, null),
+			('artifact', $1, 'issue', 'CORE-2', 1, 'b2', 'the cut of version 1'),
+			('artifact', $1, 'issue', 'CORE-3', 2, 'b3', 'the cut version 2 stored')
+	`, document); err != nil {
+		t.Fatalf("write the document's mentions: %v", err)
+	}
+
+	moved, err := RecordExcerpts(ctx, tx, document, 2, map[Target]model.GraphExcerpt{
+		{Kind: "issue", ID: "CORE-1"}: {BlockID: "b1", Text: "a new cut"},
+		{Kind: "issue", ID: "CORE-2"}: {BlockID: "b2", Text: "a new cut"},
+		{Kind: "issue", ID: "CORE-3"}: {BlockID: "b3", Text: "a new cut"},
+	})
+	if err != nil {
+		t.Fatalf("record version 2: %v", err)
+	}
+
+	if want := []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "issue", ID: "CORE-2"}}; !slices.Equal(moved, want) {
+		t.Fatalf("moved = %#v, want the owed mention and the older one, %#v", moved, want)
+	}
+	rows, err := tx.Query(ctx, `
+		select to_id || ' v' || excerpt_version || ' ' || excerpt_text from refs
+		where from_kind = 'artifact' and from_id = $1 order by to_id
+	`, document)
+	if err != nil {
+		t.Fatalf("read the excerpts: %v", err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the excerpts: %v", err)
+	}
+	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
+		t.Fatalf("the excerpts are %q, want %q", stored, want)
+	}
+}
+
+// The write phase's two halves of RecordExcerpts keep its guard: ExcerptsMoved names the owed
+// mention and the older one, and the update QueueRecordExcerpts queues writes those two and keeps
+// the one already holding this version's excerpt.
+func TestQueuedExcerptsKeepAnExcerptOfTheSameVersion(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, excerpt_version, excerpt_block_id, excerpt_text) values
+			('artifact', $1, 'issue', 'CORE-1', null, null, null),
+			('artifact', $1, 'issue', 'CORE-2', 1, 'b2', 'the cut of version 1'),
+			('artifact', $1, 'issue', 'CORE-3', 2, 'b3', 'the cut version 2 stored')
+	`, document); err != nil {
+		t.Fatalf("write the document's mentions: %v", err)
+	}
+	held := []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "issue", ID: "CORE-2"}, {Kind: "issue", ID: "CORE-3"}}
+	excerpts := map[Target]model.GraphExcerpt{
+		held[0]: {BlockID: "b1", Text: "a new cut"},
+		held[1]: {BlockID: "b2", Text: "a new cut"},
+		held[2]: {BlockID: "b3", Text: "a new cut"},
+	}
+
+	moved, err := ExcerptsMoved(ctx, tx, document, 2, held, excerpts)
+	if err != nil {
+		t.Fatalf("work out what version 2 moves: %v", err)
+	}
+	if want := held[:2]; !slices.Equal(moved, want) {
+		t.Fatalf("moved = %#v, want the owed mention and the older one, %#v", moved, want)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueRecordExcerpts(b, document, 2, excerpts)
+		return nil
+	}); err != nil {
+		t.Fatalf("record version 2: %v", err)
+	}
+	rows, err := tx.Query(ctx, `
+		select to_id || ' v' || excerpt_version || ' ' || excerpt_text from refs
+		where from_kind = 'artifact' and from_id = $1 order by to_id
+	`, document)
+	if err != nil {
+		t.Fatalf("read the excerpts: %v", err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the excerpts: %v", err)
+	}
+	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
+		t.Fatalf("the excerpts are %q, want %q", stored, want)
 	}
 }
 

@@ -247,7 +247,7 @@ func TestABroadcastIndexesEveryCopyAsIndexItemIndexesItsBody(t *testing.T) {
 	`, body).Scan(&reference, &at); err != nil {
 		t.Fatalf("insert the reference message: %v", err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, reference, body, at, nil, nil); err != nil {
+	if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, reference, body, testServerURL, at, nil, nil); err != nil {
 		t.Fatalf("index the reference message: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

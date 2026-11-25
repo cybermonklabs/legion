@@ -1,7 +1,8 @@
 # operator-token-minters/code-rbac.jq: the step "code: RBAC" (step-code-rbac.sh) reads the renders
 # as the RBAC authorizer does, and live_named (reviews.sh) reads a cluster's live bindings and roles
 # the same way. Each binding gives a `grant` record per right of $rights its role holds (the binding,
-# the right's label, and the subject's kind, namespace and name), or a `role` record when the input
+# the right's label, the subject's kind, namespace and name, and the fence's verdict on the right,
+# below), or a `role` record when the input
 # does not hold its role (or aggregates it); input with no binding gives one `empty` record with the
 # number of objects it holds. A rule limited by resourceNames on any right of $rights or
 # $named_rights is a grant too, its label naming the names: a review that names nothing never
@@ -15,11 +16,12 @@
 # its label saying so. $named_rights are read by name alone; $live true drops the `role` and `empty`
 # records, which only a render's reader needs. $rights and $named_rights each come from a file
 # (--slurpfile), and must hold one JSON array (one_array): a cluster's rights are more than a command
-# line's argument may hold.
+# line's argument may hold. A grant's last two fields are broker-fence.jq's fence_fields for the
+# right under $fence (the credited fence, or null): the policy that refuses its use on the broker's
+# pods, and `residual` when its use on the namespace's other pods carries the fence's residual,
+# each "" when there is none.
 include "rec";
-        def objs: if type == "array" then .[] | objs
-                  elif type == "object" and (.kind // "") == "List" then (.items // [])[] | objs
-                  elif type == "object" then . else empty end;
+include "broker-fence";
         def has_($list; $x): any(($list // [])[]; . == $x);
         def matches_but_name($r): (has_(.verbs; $r.verb) or has_(.verbs; "*"))
           and (has_(.apiGroups; $r.group) or has_(.apiGroups; "*"))
@@ -77,9 +79,10 @@ include "rec";
                  | map(select(. as $n | may_write($held; $subject; $r; "patch"; $n)
                                          or (creates_on_update($r) and may_write($held; $subject; $r; "update"; $n))))
                else [] end) as $applied
-            | if any($plain[]; . == $r.key) and any($rules[]; matches($r)) then (["grant", $id, $r.label] + $subject) | rec
-              elif ($names | length) > 0 then (["grant", $id, named_label($r; $names)] + $subject) | rec
-              elif ($applied | length) > 0 then (["grant", $id, named_label($r; $applied) + ", which its patch or update of that name makes"] + $subject) | rec
+            | fence_fields($fence; $r) as $fields
+            | if any($plain[]; . == $r.key) and any($rules[]; matches($r)) then (["grant", $id, $r.label] + $subject + $fields) | rec
+              elif ($names | length) > 0 then (["grant", $id, named_label($r; $names)] + $subject + $fields) | rec
+              elif ($applied | length) > 0 then (["grant", $id, named_label($r; $applied) + ", which its patch or update of that name makes"] + $subject + $fields) | rec
               else empty end
             end
           end
