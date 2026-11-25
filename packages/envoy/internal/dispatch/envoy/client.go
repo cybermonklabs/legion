@@ -445,14 +445,14 @@ func (b windowedBody) Close() error {
 // error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
 // ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
-// through redact.Cause over the base URL: its text, without net/http's quote of the request URL,
-// when the base is a plain http(s) URL and the route a plain path, a context's end's fixed text
-// beside any URL ("context canceled", "context deadline exceeded", net/http's client timeout),
-// and its class otherwise, so a user name or a query in ENVOY_URL, which net/http's quote keeps,
-// never reaches Dispatch's log or the API answers that carry this error (a 503
-// ENVOY_UNAVAILABLE, a 502 ENVOY_UNSUBSCRIBE_FAILED), while a read still says whether a
-// shutdown, its own bound or the client's window ended it. Each caller names the route itself.
-// It still unwraps to the failure, so errors.Is and errors.As classify it as before.
+// through causeOf: redact.Cause over the base URL, its text without net/http's quote of the
+// request URL when the base is a plain http(s) URL and the route a plain path, a context's end's
+// fixed text beside any URL ("context canceled", "context deadline exceeded"), and its class
+// otherwise, so a user name or a query in ENVOY_URL, which net/http's quote keeps, never reaches
+// Dispatch's log or the API answers that carry this error (a 503 ENVOY_UNAVAILABLE, a 502
+// ENVOY_UNSUBSCRIBE_FAILED), while a read still says whether a shutdown, its own bound or the
+// client's window (ErrCallWindow) ended it. Each caller names the route itself. It still unwraps
+// to the failure, so errors.Is and errors.As classify it as before.
 //
 // A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
 // the call on its identity token. A try whose token could not be presented, or that the listener
@@ -478,7 +478,7 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		response, err := c.roundTrip(request)
 		if err != nil {
-			return nil, transport(redact.Cause(err, c.baseURL))
+			return nil, transport(c.causeOf(err))
 		}
 		return response, nil
 	}
@@ -500,6 +500,17 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
 		"route", route, "refusal", identityRefusal(response, err))
 	return try(true)
+}
+
+// causeOf is err, a call's failure roundTrip answered, as do hands it to transport: redact.Cause of
+// it over the base URL, and where the client's window ended the call (callWindowError), that
+// cause under the window's own words, so the error still names ErrCallWindow and its window and is
+// still a timeout, with no part of the URL net/http's error under it quotes.
+func (c *Client) causeOf(err error) error {
+	if window, ok := err.(callWindowError); ok {
+		return callWindowError{err: redact.Cause(window.err, c.baseURL), window: window.window}
+	}
+	return redact.Cause(err, c.baseURL)
 }
 
 // identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking

@@ -1192,3 +1192,55 @@ func TestNoListenerCallPrintsATokenInTheListenersURL(t *testing.T) {
 		}
 	}
 }
+
+// A call the client's window ended, under a listener URL that carries a made-up token as its user
+// name or in its query, prints no part of the token and still names the window's end, while
+// net/http's error under it quotes the request URL: a read's text names ErrCallWindow after its
+// cause, and a send's does too and carries it in its chain (errors.Is).
+func TestACallTheWindowEndedPrintsNoTokenInTheListenersURL(t *testing.T) {
+	const token = "madeUpEnvoyToken0123"
+	reached, held := make(chan struct{}, 4), make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		select {
+		case <-held:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(held)
+		listener.Close()
+	}()
+	host := strings.TrimPrefix(listener.URL, "http://")
+	for form, listenerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + host,
+		"a token in the query":     "http://" + host + "?token=" + token,
+	} {
+		start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+		fake := clocktest.New(start)
+		client := New(listenerURL, WithClock(fake))
+		ended := make(chan error, 2)
+		go func() {
+			_, err := client.Sessions(context.Background())
+			ended <- err
+		}()
+		go func() {
+			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "held", IdempotencyKey: "held:steer"})
+			ended <- err
+		}()
+		testwait.Receive(t, "the first call to reach the listener", reached)
+		testwait.Receive(t, "the second call to reach the listener", reached)
+		fake.Set(start.Add(CallWindow))
+		for range 2 {
+			err := testwait.Receive(t, "a call to end once its clock reached its window", ended)
+			sent := err != nil && strings.Contains(err.Error(), "/v1/messages/send")
+			if err == nil || !strings.Contains(err.Error(), ErrCallWindow.Error()) || sent && !errors.Is(err, ErrCallWindow) {
+				t.Errorf("%s: a call the window ended = %v, want one naming %v (a send's chain holding it)", form, err, ErrCallWindow)
+				continue
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("%s: a call the window ended = %q, which holds part of the token", form, err)
+			}
+		}
+	}
+}
