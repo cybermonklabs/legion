@@ -15,6 +15,7 @@ var setextEquals = regexp.MustCompile(`(?m)^([ >]*)=+[ \t]*$`)
 var emptyAttribute = regexp.MustCompile(`(\s[A-Za-z][\w-]*)=""`)
 
 func TestRenderMatchesMilkdownForFixtures(t *testing.T) {
+	t.Parallel()
 	for _, fx := range loadFixtures(t) {
 		t.Run(fx.Name, func(t *testing.T) {
 			doc, err := FromJSON(fx.PMJSON)
@@ -33,6 +34,7 @@ func TestRenderMatchesMilkdownForFixtures(t *testing.T) {
 }
 
 func TestRenderEmphasisAndEmoji(t *testing.T) {
+	t.Parallel()
 	doc, err := FromJSON([]byte(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Some "},{"type":"text","text":"bold","marks":[{"type":"strong"}]},{"type":"text","text":" 😀 end"}]}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +49,7 @@ func TestRenderEmphasisAndEmoji(t *testing.T) {
 }
 
 func TestRenderEmptyDocumentPreservesProofParagraph(t *testing.T) {
+	t.Parallel()
 	want := &Node{Type: "doc", Children: []*Node{{Type: "paragraph"}}}
 	parsed, err := Parse("")
 	if err != nil {
@@ -72,6 +75,7 @@ func TestRenderEmptyDocumentPreservesProofParagraph(t *testing.T) {
 }
 
 func TestRenderHardBreakUsesBackslash(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "paragraph",
 		Children: []*Node{
@@ -90,6 +94,7 @@ func TestRenderHardBreakUsesBackslash(t *testing.T) {
 }
 
 func TestRenderTableCellEscapesPipes(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -107,6 +112,7 @@ func TestRenderTableCellEscapesPipes(t *testing.T) {
 }
 
 func TestRenderTableCellParagraph(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -144,6 +150,7 @@ func plain(markdown string) string {
 }
 
 func TestRenderTableEscapedPipeMapsToFlattenedText(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| a\\|b |\n| :--- |\n| body |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +181,7 @@ func TestRenderTableEscapedPipeMapsToFlattenedText(t *testing.T) {
 }
 
 func TestRenderEscapesLiteralMarkdownText(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "literal **not bold** and `not code` and [not link](x) < & |",
@@ -196,6 +204,7 @@ func TestRenderEscapesLiteralMarkdownText(t *testing.T) {
 }
 
 func TestRenderEscapesOrderedListLookingParagraphs(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "1. not a list\n2) also not a list",
@@ -223,6 +232,7 @@ func TestRenderEscapesOrderedListLookingParagraphs(t *testing.T) {
 }
 
 func TestRenderLeavesOrdinaryProseUnescaped(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "It's ordinary: prose - with [brackets], | pipes, and < 2.",
@@ -244,6 +254,7 @@ func TestRenderLeavesOrdinaryProseUnescaped(t *testing.T) {
 }
 
 func TestRenderBareURLLinkAsAutolinkLiteral(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/docs"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
 		{Type: "text", Text: "see "},
@@ -266,6 +277,7 @@ func TestRenderBareURLLinkAsAutolinkLiteral(t *testing.T) {
 }
 
 func TestRenderKeepsNonAutolinkURLAsExplicitLink(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/a b"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: url, Marks: []Mark{{Type: "link", Attrs: Attrs{"href": url, "title": nil}}},
@@ -287,6 +299,7 @@ func TestRenderKeepsNonAutolinkURLAsExplicitLink(t *testing.T) {
 }
 
 func TestRenderDoesNotEscapeExplicitURLLinkLabel(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/x"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: url, Marks: []Mark{{Type: "link", Attrs: Attrs{"href": url, "title": "title"}}},
@@ -308,6 +321,7 @@ func TestRenderDoesNotEscapeExplicitURLLinkLabel(t *testing.T) {
 }
 
 func TestRenderFencesInlineCodeContainingBackticks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		text string
@@ -340,6 +354,7 @@ func TestRenderFencesInlineCodeContainingBackticks(t *testing.T) {
 }
 
 func TestRenderPadsInlineCodeSurroundedBySpaces(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: " x ", Marks: []Mark{{Type: "inlineCode"}},
 	}}}}}
@@ -360,6 +375,7 @@ func TestRenderPadsInlineCodeSurroundedBySpaces(t *testing.T) {
 }
 
 func TestRenderEscapesLinkDelimiters(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "label",
@@ -388,6 +404,7 @@ func TestRenderEscapesLinkDelimiters(t *testing.T) {
 }
 
 func TestRenderFencesCodeBlockContainingFence(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("````markdown\n```\nexample\n```\n````\n")
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +426,7 @@ func TestRenderFencesCodeBlockContainingFence(t *testing.T) {
 }
 
 func TestRenderEscapesImageDelimiters(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "image",
 		Attrs: Attrs{
@@ -437,6 +455,7 @@ func TestRenderEscapesImageDelimiters(t *testing.T) {
 }
 
 func TestRenderPrefixesNestedCodeBlockLines(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("> - item\n>\n>       code\n")
 	if err != nil {
 		t.Fatal(err)
@@ -457,6 +476,7 @@ func TestRenderPrefixesNestedCodeBlockLines(t *testing.T) {
 }
 
 func TestRenderParseRoundTripPreservesTableCellPipes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		markdown      string
@@ -580,6 +600,7 @@ func footnoteLabelsInDocument(doc *Node) []string {
 }
 
 func TestRenderParseRoundTripPreservesNonTableEntities(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		markdown string
@@ -620,6 +641,7 @@ func TestRenderParseRoundTripPreservesNonTableEntities(t *testing.T) {
 }
 
 func TestRenderTableLinkDestinationPreservesLiteralBackslashBeforePipe(t *testing.T) {
+	t.Parallel()
 	markdown := "| header |\n| :--- |\n| [label](https://example.test/one" + strings.Repeat("\\", 3) + "|two) |\n"
 	doc, err := Parse(markdown)
 	if err != nil {
@@ -645,6 +667,7 @@ func TestRenderTableLinkDestinationPreservesLiteralBackslashBeforePipe(t *testin
 }
 
 func TestRenderTableHTMLPipeCanonicalizesToEntity(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -677,6 +700,7 @@ func TestRenderTableHTMLPipeCanonicalizesToEntity(t *testing.T) {
 }
 
 func TestRenderTableAutolinkPreservesHref(t *testing.T) {
+	t.Parallel()
 	markdown := "| header |\n| :--- |\n| <https://example.test/one\\|two> |\n"
 	doc, err := Parse(markdown)
 	if err != nil {
@@ -706,6 +730,7 @@ func TestRenderTableAutolinkPreservesHref(t *testing.T) {
 // change the markdown, whichever one a later schema adds: the loop reads active.Load().marks, so a new
 // invisible mark is covered here the day it exists.
 func TestNoUnrenderedSchemaMarkChangesTheMarkdown(t *testing.T) {
+	t.Parallel()
 	const head, marked, tail = "Use snake_", "case here. see [x]", "(y)"
 	whole := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
 		{Type: "text", Text: head + marked + tail},
@@ -740,6 +765,7 @@ func TestNoUnrenderedSchemaMarkChangesTheMarkdown(t *testing.T) {
 // text into two runs. The rendering is the same as if the mark were not there: an escape is
 // decided over the whole run, so `snake_case` is never written `snake\_case`.
 func TestRenderIsTheSameWhereverAnAnchorMarkSplitsText(t *testing.T) {
+	t.Parallel()
 	comment := []Mark{{Type: "proofComment", Attrs: Attrs{"id": "c1", "by": "user:alice"}}}
 	ask := []Mark{{Type: "dispatchAsk", Attrs: Attrs{"id": "a1", "by": "user:alice"}}}
 	for _, test := range []struct {
@@ -781,6 +807,7 @@ func TestRenderIsTheSameWhereverAnAnchorMarkSplitsText(t *testing.T) {
 // browser editor's writer puts a blank line between two paragraphs, which the item then reads back
 // as spread, and writes a rule `***`; so does this renderer, and every block reads back.
 func TestRenderKeepsTheBlocksOfATightListItem(t *testing.T) {
+	t.Parallel()
 	paragraph := func(value string) *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}
 	}
@@ -939,6 +966,7 @@ func TestRenderWritesOneBlankLineBetweenTheItemsOfALooseList(t *testing.T) {
 // reference is read back with its definition, so delimiters that pair around the reference are
 // escaped as they are anywhere else.
 func TestRenderKeepsTextAroundFootnoteReferences(t *testing.T) {
+	t.Parallel()
 	definition := func(label string) *Node {
 		return &Node{Type: "footnote_definition", Attrs: Attrs{"label": label}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "x"}}}}}
 	}
@@ -975,6 +1003,7 @@ func TestRenderKeepsTextAroundFootnoteReferences(t *testing.T) {
 // indentation a blank line does not take, so a blank code line there is written without the
 // definition's indentation; elsewhere it keeps the prefix it has always been written with.
 func TestRenderKeepsBlankCodeLinesInFootnoteDefinitions(t *testing.T) {
+	t.Parallel()
 	paragraph := func(value string) *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}
 	}
@@ -1009,6 +1038,7 @@ func TestRenderKeepsBlankCodeLinesInFootnoteDefinitions(t *testing.T) {
 // An empty task item is written as an empty item, as the browser editor writes it: no form of
 // its marker alone reads back as a task, and `- [ ]` reads back as an item holding the text `[ ]`.
 func TestRenderWritesAnEmptyTaskItemAsAnEmptyItem(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "bullet_list", Attrs: Attrs{"spread": false}, Children: []*Node{
 		{Type: "list_item", Attrs: Attrs{"label": "•", "listType": "bullet", "checked": false, "spread": false}, Children: []*Node{{Type: "paragraph"}}},
 		{Type: "list_item", Attrs: Attrs{"label": "•", "listType": "bullet", "checked": true, "spread": false}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "b"}}}}},
@@ -1038,6 +1068,7 @@ func TestRenderWritesAnEmptyTaskItemAsAnEmptyItem(t *testing.T) {
 // interrupts nowhere, and the containers take the prefix off the code's text again
 // (codeLineOpensHTML).
 func TestRenderPrefixesACodeSpanLineHoldingOneHTMLTag(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, want string }{
 		{
 			name:     "a quote",
@@ -1082,6 +1113,7 @@ func TestRenderPrefixesACodeSpanLineHoldingOneHTMLTag(t *testing.T) {
 // address with no local part (`@b.test`), whose `@` the matcher never starts at, is not one, nor is
 // one ending in a digit or one whose href or title differs.
 func TestABareEmailLinkIsWhatTheTransformLinksWhole(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		text, href, title string
 		bare              bool
