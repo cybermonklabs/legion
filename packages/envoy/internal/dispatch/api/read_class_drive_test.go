@@ -216,6 +216,8 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+artifact_versions\s+v\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`)},
 	"GET /api/v1/artifacts/{id}/changes": {target: "/api/v1/artifacts/$notes/changes?from=1&to=2",
 		statement: statementOf(`\bfrom\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1::uuid\s+and\s+number\s*=\s*any\(\$2::int\[\]\)`)},
+	"GET /api/v1/artifacts/{id}/spec-form": {target: "/api/v1/artifacts/$notes/spec-form?version=1",
+		statement: statementOf(`\bselect\s+coalesce\(markdown,\s*''\)\s+from\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1\s+and\s+number\s*=\s*\$2\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}": {target: "/api/v1/issues/$issue/artifacts/$notesSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {target: "/api/v1/issues/$issue/artifacts/$notesSlug/text",
 		statement: statementOf(`\bselect\s+max\(number\)\s+from\s+artifact_versions\b`)},
