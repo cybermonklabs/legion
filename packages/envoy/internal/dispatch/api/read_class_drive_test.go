@@ -144,7 +144,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/lenses":               {target: "/api/v1/lenses?on=$issueRef", statement: statementOf(`\bt\.to_kind\s*=\s*\$1\s+and\s+t\.to_id\s*=\s*\$2\s+and\s+t\.kind\s*=\s*'part_of'\s+and\s+t\.from_kind\s*=\s*'lens'`)},
 	"GET /api/v1/issues/{key}/subscribers": {target: "/api/v1/issues/$issue/subscribers",
 		fromMemory: "it lists the listener's interests and sessions, and reads no row"},
-	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\s+retired_at\s+is\s+null\s+order\s+by\b`)},
 	// The after_merge and default_branch checks' read of whether a commit is on their branch.
 	"GET /api/v1/issues/{key}/results": {target: "/api/v1/issues/$issue/results", statement: statementOf(`\bfrom\s+branch_commits\s+where\s+repo\b`),
 		volatile: []volatileMember{
