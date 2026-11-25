@@ -1536,8 +1536,11 @@ step of its own that reads the labels. GitHub compares the label without regard 
 
 A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
 takes effect at the next push, reopen or ready-for-review, not when it is added, since this
-workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
-request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
+workflow takes no `labeled` trigger. So add the label, then push, or close the pull request and
+reopen it when there is no new commit to push: a label on its own starts no run. Before asking
+for review, read the ci-ok summary's `not run at this head` lines: a lane the pull request needs
+that is listed there means the label did not take. Take the label off once the run it was added
+for passes, as `full-ci`.
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
