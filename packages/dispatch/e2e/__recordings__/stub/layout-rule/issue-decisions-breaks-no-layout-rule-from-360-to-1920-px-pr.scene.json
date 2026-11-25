@@ -1,5 +1,5 @@
 {
-  "broadcast": "29d4a0fb-8af6-4ade-ac4a-3cb906b55340",
+  "broadcast": "ec858250-6ec9-487b-a4d3-707bb74ad2fc",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
@@ -9,17 +9,17 @@
   "readMarks": {
     "agents": {
       "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
-        "f4580b94-4544-4741-af84-3b7d5c97a627"
+        "8f28386a-b4b7-4ac6-8566-0576a0a7b14d"
       ]
     },
     "documents": {
-      "b205d44e-9583-4965-874e-f28aec11da59": 1
+      "80104821-e18f-40ba-a9bc-0ee8ddbf8d82": 1
     }
   },
-  "priority": "local-testing-is-one-command",
+  "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
   "project": "CORE",
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-25T17:22:25.581Z"
+  "seededAt": "2026-11-25T18:59:18.702Z"
 }

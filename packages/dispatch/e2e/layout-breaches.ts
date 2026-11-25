@@ -1115,235 +1115,24 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     kind: "group-missing",
     element: "chosen-agents",
   },
-  { route: "priorities", width: 360, kind: "clipped", element: '[aria-label="Priorities table"]' },
-  {
-    route: "priorities",
-    width: 360,
-    kind: "clipped",
-    element: '[aria-label="P1 Local testing is one command"]',
-  },
-  {
-    route: "priorities",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="P2 Every surface of Dispatch reads at every width from a phone to a wide screen"]',
-  },
-  {
-    route: "priorities",
-    width: 360,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  { route: "priorities", width: 360, kind: "clipped", element: '[aria-label="Title of P1"]' },
-  { route: "priorities", width: 360, kind: "clipped", element: '[aria-label="Title of P2"]' },
-  { route: "priorities", width: 900, kind: "clipped", element: '[aria-label="Priorities table"]' },
-  {
-    route: "priorities",
-    width: 900,
-    kind: "clipped",
-    element: '[aria-label="P1 Local testing is one command"]',
-  },
-  {
-    route: "priorities",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="P2 Every surface of Dispatch reads at every width from a phone to a wide screen"]',
-  },
-  {
-    route: "priorities",
-    width: 900,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  { route: "priorities", width: 900, kind: "clipped", element: '[aria-label="Title of P2"]' },
-  { route: "priorities", width: 1280, kind: "clipped", element: '[aria-label="Priorities table"]' },
-  {
-    route: "priorities",
-    width: 1280,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  { route: "priorities", width: 1280, kind: "clipped", element: '[aria-label="Title of P2"]' },
-  { route: "priorities", width: 1440, kind: "clipped", element: '[aria-label="Priorities table"]' },
-  {
-    route: "priorities",
-    width: 1440,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  { route: "priorities", width: 1440, kind: "clipped", element: '[aria-label="Title of P2"]' },
-  { route: "priorities", width: 1920, kind: "clipped", element: '[aria-label="Priorities table"]' },
-  {
-    route: "priorities",
-    width: 1920,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  { route: "priorities", width: 1920, kind: "clipped", element: '[aria-label="Title of P2"]' },
-  { route: "priority", width: 360, kind: "box-scroll", element: '[aria-label="Issues by status"]' },
   {
     route: "priority",
     width: 360,
     kind: "clipped",
     element: '[data-testid="issue-route-unreachable"]',
-  },
-  {
-    route: "priority",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  { route: "priority", width: 360, kind: "clipped", element: '[aria-label="Title"]' },
-  {
-    route: "priority",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "priority",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "priority", width: 360, kind: "group-missing", element: "labels" },
-  {
-    route: "priority",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "priority",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "priority",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
   { route: "priority", width: 900, kind: "group-missing", element: "labels" },
-  {
-    route: "priority",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "priority",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "priority",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
   { route: "priority", width: 1280, kind: "group-missing", element: "labels" },
-  {
-    route: "priority",
-    width: 1440,
-    kind: "clipped",
-    element: '[data-testid="issue-route-unreachable"]',
-  },
-  {
-    route: "priority",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "priority",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "priority",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
   { route: "priority", width: 1440, kind: "group-missing", element: "labels" },
-  {
-    route: "priority",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "priority",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "priority",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
   { route: "priority", width: 1920, kind: "group-missing", element: "labels" },
+  { route: "priority", width: 360, kind: "clipped", element: '[aria-label="Priority issues"]' },
+  { route: "priority", width: 1280, kind: "clipped", element: '[aria-label="Priority issues"]' },
   {
     route: "project-issues",
     width: 360,
     kind: "box-scroll",
     element: '[aria-label="Issues by status"]',
-  },
-  {
-    route: "project-issues",
-    width: 360,
-    kind: "clipped",
-    element: '[data-testid="issue-route-unreachable"]',
-  },
-  {
-    route: "project-issues",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "project-issues", width: 360, kind: "group-missing", element: "labels" },
   {
@@ -1364,62 +1153,8 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     route: "project-issues",
     state: "two-rows-selected",
     width: 360,
-    kind: "clipped",
-    element: '[data-testid="issue-route-unreachable"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 360,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 360,
     kind: "group-missing",
     element: "labels",
-  },
-  {
-    route: "project-issues",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "project-issues", width: 900, kind: "group-missing", element: "labels" },
   {
@@ -1433,237 +1168,137 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     route: "project-issues",
     state: "two-rows-selected",
     width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 900,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 900,
     kind: "group-missing",
     element: "labels",
-  },
-  {
-    route: "project-issues",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    width: 1280,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "project-issues", width: 1280, kind: "group-missing", element: "labels" },
   {
     route: "project-issues",
     state: "two-rows-selected",
     width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1280,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1280,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1280,
     kind: "group-missing",
     element: "labels",
-  },
-  {
-    route: "project-issues",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    width: 1440,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "project-issues", width: 1440, kind: "group-missing", element: "labels" },
   {
     route: "project-issues",
     state: "two-rows-selected",
     width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1440,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1440,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1440,
     kind: "group-missing",
     element: "labels",
-  },
-  {
-    route: "project-issues",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    width: 1920,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
   },
   { route: "project-issues", width: 1920, kind: "group-missing", element: "labels" },
   {
     route: "project-issues",
     state: "two-rows-selected",
     width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
-    count: 2,
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1920,
-    kind: "clipped",
-    element: '[aria-label="CORE-3 Broadcast recipients keep their send order"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-10 Child 2: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1920,
-    kind: "clipped",
-    element:
-      '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-  },
-  {
-    route: "project-issues",
-    state: "two-rows-selected",
-    width: 1920,
     kind: "group-missing",
     element: "labels",
+  },
+  { route: "project-issues", width: 360, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "project-issues",
+    width: 360,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 360,
+    kind: "clipped",
+    element: '[aria-label="Not running"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 360,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  { route: "project-issues", width: 900, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "project-issues",
+    width: 900,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 900,
+    kind: "clipped",
+    element: '[aria-label="Not running"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 900,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  { route: "project-issues", width: 1280, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "project-issues",
+    width: 1280,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1280,
+    kind: "clipped",
+    element: '[aria-label="Not running"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1280,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  { route: "project-issues", width: 1440, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "project-issues",
+    width: 1440,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1440,
+    kind: "clipped",
+    element: '[aria-label="Not running"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1440,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  { route: "project-issues", width: 1920, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "project-issues",
+    width: 1920,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1920,
+    kind: "clipped",
+    element: '[aria-label="Not running"]',
+  },
+  {
+    route: "project-issues",
+    state: "two-rows-selected",
+    width: 1920,
+    kind: "clipped",
+    element: '[data-testid="issue-claim-lapsed"]',
   },
   {
     route: "settings",
@@ -1731,6 +1366,35 @@ export const otherPagesBreaches: readonly KnownLayoutBreach[] = [
     element: '[data-testid="board-scroll-container"]',
   },
   { route: "project-board", width: 1920, kind: "group-missing", element: "labels" },
+  { route: "project-board", width: 360, kind: "clipped", element: '[aria-label="Not running"]' },
+  { route: "project-board", width: 900, kind: "clipped", element: '[aria-label="Not running"]' },
+  { route: "project-board", width: 1280, kind: "clipped", element: '[aria-label="Not running"]' },
+  { route: "project-board", width: 1440, kind: "clipped", element: '[aria-label="Not running"]' },
+  { route: "project-board", width: 1920, kind: "clipped", element: '[aria-label="Not running"]' },
+  {
+    route: "priorities",
+    width: 360,
+    kind: "box-scroll",
+    element: '[aria-label="Priorities page"]',
+  },
+  {
+    route: "priorities-in-flight",
+    width: 360,
+    kind: "box-scroll",
+    element: '[aria-label="Priorities page"]',
+  },
+  {
+    route: "priorities-in-flight",
+    width: 360,
+    kind: "clipped",
+    element: '[aria-label="Active under no priority"]',
+  },
+  {
+    route: "priorities-backlog",
+    width: 360,
+    kind: "box-scroll",
+    element: '[aria-label="Priorities page"]',
+  },
 ];
 
 /** Every breach the layout rows accept: the three arrays above, one per fix pull request. */
