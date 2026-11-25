@@ -14,7 +14,7 @@ import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
 import type { SessionSettingsView } from "./conversation";
 import type { SwitchRequest } from "./use-session-switch";
 
-/** A picker in the row under the message box: a native `<select>`, as the delivery control is. A
+/** A picker in the row under the message box: a native `<select>`. A
  *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
  *  id), so the picker never runs wider than a phone, and `shrink-0` keeps it at that width while
  *  the directory beside it takes what is left and shortens (INFRA-812, R6). A held picker

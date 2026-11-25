@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
+import { pickNamed } from "../../__tests__/list-picks";
 import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
@@ -103,7 +104,7 @@ test("a conversation the runtime cannot convert costs the thread, not the page a
   // …and everything the viewer needs to know what they are looking at, and to act, survives.
   expect(screen.getByTestId("agent-conversation")).toBeTruthy();
   expect(screen.getByRole("link", { name: /Agents/ })).toBeTruthy();
-  expect(screen.getByRole("combobox", { name: "Delivery mode" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: pickNamed("Delivery mode") })).toBeTruthy();
   // The row under the box, with the one question mark that holds what this view keeps of the
   // conversation (INFRA-812, R6), outlives the thread the same way.
   expect(screen.getByTestId("agent-composer-footer")).toBeTruthy();

@@ -14,6 +14,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import { settledState } from "./settled";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -451,7 +452,7 @@ test("a model picked in the header is the viewer's own Send of /model, holds Sen
     await expectPicked(page, "anthropic/model-a", "auto");
     const { model, status, thinking } = header(page);
     const input = page.getByTestId("agent-composer").locator("textarea");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { exact: true, name: "Send" });
     await input.fill("now review the diff");
     await expect(send).toBeEnabled();
 
@@ -494,8 +495,8 @@ test("a model picked in the header is the viewer's own Send of /model, holds Sen
     await expect(model).toBeEnabled();
 
     // The composer set to BTW: the pick still goes as a steer, and the composer keeps its mode.
-    const mode = page.getByRole("combobox", { name: "Delivery mode" });
-    await mode.selectOption("btw");
+    const mode = listTrigger(page, "Delivery mode");
+    await pickFromList(mode, "BTW");
     await model.selectOption("anthropic/model-a");
     await expect(status).toHaveText("Switching model to anthropic/model-a…");
     await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(2);
@@ -505,7 +506,7 @@ test("a model picked in the header is the viewer's own Send of /model, holds Sen
       mode: "steer",
       target: id,
     });
-    await expect(mode).toHaveValue("btw");
+    await expect(mode).toHaveAccessibleName("Delivery mode BTW");
   } finally {
     await context.close();
   }
@@ -582,7 +583,7 @@ test("a switch the session refuses shows its reason and leaves the header on the
     );
     await expectPicked(page, "anthropic/model-a", "auto");
     await expect(model).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+    await expect(page.getByRole("button", { exact: true, name: "Send" })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -740,7 +741,7 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
     await page.goto(livePath(id));
     await expectPicked(page, "anthropic/model-a", "auto");
     const { model, status, thinking } = header(page);
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { exact: true, name: "Send" });
     await page.getByTestId("agent-composer").locator("textarea").fill("carry on");
 
     await model.selectOption("anthropic/model-b");

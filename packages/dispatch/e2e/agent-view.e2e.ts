@@ -24,6 +24,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import { inboxPane, selectRow } from "./inbox-pane";
 import { agentRowId, newestDeliveryOf, seedAgentThread } from "./inbox-threads";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
@@ -462,10 +463,10 @@ test("the conversation view replays what the session held, streams its next turn
 
     // Talking to the agent is the delivery the Agents page already uses, not a new write path,
     // and its default is Send - Enter at the session's terminal - since the session takes a steer.
-    await expect(page.getByRole("combobox", { name: "Delivery mode" })).toHaveValue("steer");
+    await expect(listTrigger(page, "Delivery mode")).toHaveAccessibleName("Delivery mode Send");
     await page.getByTestId("agent-composer").locator("textarea").fill("try the other branch");
-    await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
-    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByRole("button", { exact: true, name: "Send" })).toBeEnabled();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     await expect
       .poll(async () =>
         (await getSentMessages()).map((sent) => ({
@@ -526,7 +527,7 @@ test("Send stays pressable while the session is mid-turn: a click sends as Send 
     await publishAgentStreamFrame(planner.session_id, assistantFrame(4, "Working", true));
     await expect(assistant.last()).toContainText("Working");
 
-    await expect(page.getByRole("combobox", { name: "Delivery mode" })).toHaveValue("steer");
+    await expect(listTrigger(page, "Delivery mode")).toHaveAccessibleName("Delivery mode Send");
     const composer = page.getByTestId("agent-composer");
     await composer.locator("textarea").fill("stop after this file");
     const send = composer.getByRole("button", { exact: true, name: "Send" });
@@ -575,7 +576,7 @@ test("Enter sends mid-turn in the delivery mode the person picked", async ({ bro
     await publishAgentStreamFrame(planner.session_id, assistantFrame(4, "Working", true));
     await expect(assistant.last()).toContainText("Working");
 
-    await page.getByRole("combobox", { name: "Delivery mode" }).selectOption("aside");
+    await pickFromList(listTrigger(page, "Delivery mode"), "Aside");
     const field = page.getByTestId("agent-composer").locator("textarea");
     await field.fill("note the flaky test for later");
     await field.press("Enter");
@@ -1768,7 +1769,7 @@ test("sending a message from the live view while scrolled back takes the reader 
     // nothing left behind them to catch up on.
     const input = page.getByTestId("agent-composer").locator("textarea");
     await input.fill("try the other branch");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     // The transcript's own turn, not the held line above it, which shows while the send is out.
     await expect(
       page.getByTestId("agent-thread").getByText("try the other branch", { exact: true })
@@ -1786,7 +1787,7 @@ test("sending a message from the live view while scrolled back takes the reader 
       MESSAGE_REFUSED
     );
     await input.fill("and this one is refused");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { exact: true, name: "Send" }).click();
     refuse();
     await expect(page.getByTestId("agent-send-error")).toBeVisible();
     // A refused message is not lost: it is held on screen, with Retry, to send again.

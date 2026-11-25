@@ -16,7 +16,14 @@ import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
-import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import {
+  listOf,
+  panelOf,
+  pickFromList,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ownReplies } from "../../__tests__/own-replies";
 import { answerAgentStates } from "../../__tests__/send-answers";
@@ -5441,7 +5448,7 @@ async function renderPlannerLiveView(listedAgents: Agent[] = agents) {
   await screen.findByRole("region", { name: "Agents" });
   // Both pages are opened on the real clock, before any test holds it still.
   await openLiveView(userEvent.setup(), "Planner");
-  await screen.findByRole("combobox", { name: "Delivery mode" });
+  await screen.findByRole("button", { name: pickNamed("Delivery mode") });
   return page;
 }
 
@@ -5574,10 +5581,10 @@ test("the session's Agents row shows a live-view send as its own turn and can st
 test("the Agents row's Retry of a live-view send re-sends it as it was", async () => {
   const both: Agent = { ...agents[0], capabilities: ["aside", "steer"] };
   const page = await renderPlannerLiveView([both, agents[1]]);
-  const mode = screen.getByRole("combobox", { name: "Delivery mode" }) as HTMLSelectElement;
-  await waitFor(() => expect(mode.value).toBe("steer"));
+  const mode = screen.getByRole("button", { name: pickNamed("Delivery mode") });
+  await waitFor(() => expect(mode).toHaveAccessibleName("Delivery mode Send"));
   // The pick is made before the clock is held still, so a plain user makes it.
-  await userEvent.setup().selectOptions(mode, "aside");
+  await pickFromList(userEvent.setup(), mode, "Aside");
   await screen.findByPlaceholderText(/delivered as Aside/);
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -5656,8 +5663,8 @@ test("the Agents row's composer warns about its own message, not a live-view sen
   const page = await renderPlannerLiveView();
   const plainNotice = /does not advertise Send/;
   try {
-    const mode = screen.getByRole("combobox", { name: "Delivery mode" }) as HTMLSelectElement;
-    await user.selectOptions(mode, "btw");
+    const mode = screen.getByRole("button", { name: pickNamed("Delivery mode") });
+    await pickFromList(user, mode, "BTW");
     await screen.findByPlaceholderText(/delivered as BTW/);
     page.createAgentMessage.mockRejectedValueOnce(
       new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })

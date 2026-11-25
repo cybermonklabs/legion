@@ -7,6 +7,7 @@ import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -24,7 +25,13 @@ import {
 } from "../../theme/classes";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
-import { deliveryModesOf, MODE_LABELS, noDeliveryLine } from "../conversation/delivery";
+import {
+  capabilityLabel,
+  deliveryMode,
+  deliveryModesOf,
+  MODE_LABELS,
+  noDeliveryLine,
+} from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
@@ -283,9 +290,11 @@ export function AgentConversationPage({
   // the page, and a pick the session does not advertise would be refused.
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
   const mode = picked !== null && modes.includes(picked) ? picked : (modes[0] ?? "aside");
-  // Which panel of the footer row stands open, since both open upwards over the transcript from
-  // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
-  const [panel, setPanel] = useState<"context" | "help" | null>(null);
+  // Which panel of the footer row stands open, since all three open upwards over the transcript
+  // from the same corner: the Delivery mode's list, the ring's and the question mark's. One at a
+  // time, so opening one closes the other, from the keyboard too, where no press outside closes
+  // the one left open; it is the list's open state as a `MultiSelect`'s host holds it.
+  const [panel, setPanel] = useState<"context" | "help" | "mode" | null>(null);
   // The ring's panel goes with the ring: a session that stops reporting its window takes the ring
   // away, and its next reading draws the ring closed rather than reopening a panel by itself.
   if (panel === "context" && conversation.context === undefined) setPanel(null);
@@ -511,26 +520,37 @@ export function AgentConversationPage({
             from here rather than inside a clipped scroller. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
-              delivery picker and the session's pickers are the stops that bring each into view
-              as it takes the focus. */}
+              Delivery mode's trigger and the session's pickers are the stops that bring each into
+              view as it takes the focus. The mode's list is portalled out of this scroller, so
+              it opens whole over the transcript rather than clipped inside the row. */}
           <div
             className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
             data-testid="agent-composer-facts"
             tabIndex={-1}
           >
-            <select
-              aria-label="Delivery mode"
-              className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
-              data-testid="agent-delivery-picker"
-              onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
+            {/* The shared list's single pick of the modes this session takes, in the composer's
+                order, whose text box narrows them as the reader types; its trigger shows the
+                mode the next message goes in. A pick of that mode changes nothing, as a select
+                set to the value it holds fires nothing, so a mode the session list settled stays
+                the list's until the human picks another. The trigger keeps the select's look and
+                room, which the row's layout reads. */}
+            <MultiSelect
+              emptyMessage="No mode matches that."
+              label="Delivery mode"
+              marks={{ trigger: { "data-testid": "agent-delivery-picker" } }}
+              mode="single"
+              onOpenChange={(next) => setPanel(next ? "mode" : null)}
+              onPick={(value) => {
+                const next = deliveryMode(value);
+                if (next !== undefined && next !== mode) setPicked(next);
+              }}
+              open={panel === "mode"}
+              optionLabel={capabilityLabel}
+              options={modes}
+              searchLabel="Search delivery modes"
+              triggerClassName={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
               value={mode}
-            >
-              {modes.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {MODE_LABELS[candidate]}
-                </option>
-              ))}
-            </select>
+            />
             {/* A claim that the session is gone starts only from a current list. The header's
                 presence and the transcript's line keep that fact through a failed read, from the
                 kept rows of the last read that returned a list; this line waits for a current
