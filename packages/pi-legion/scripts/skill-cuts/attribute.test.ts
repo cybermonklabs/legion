@@ -2116,7 +2116,7 @@ test("the command writes the count, its report, each cut's ranking and the model
   };
   expect([modelsOf("beta"), modelsOf("gone")]).toEqual([empty, empty]);
   expect(result.out).toContain(`${path.join(out, "skills-1", "models")}/ (3 files)`);
-  // No transcriptStore is configured: no store-only file (INFRA-4676, 2026-11-25).
+  // No transcriptStore is configured: no store-only file (2026-11-25).
   expect(existsSync(path.join(out, "skills-1", "store-only"))).toBe(false);
 
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
@@ -2553,7 +2553,7 @@ test("R1 v3 row 5: the transcript SQL fills the UTC day and window and rejects a
   );
 });
 
-// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// The task's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
 // alone, so each behaviour report says how many of its skill's counted sessions only the
 // transcript store holds, from attribute's store-only file of the skill.
 test("with a transcript store, each ranked skill's store-only file gives its counted sessions, those only the transcript store holds and each host's, which its sessions file leaves out", () => {
