@@ -3668,6 +3668,10 @@ Its header names no other way back that it must follow or come before, and it ch
 20261124182040_issue_pod_disks adds `issue_pod_disks` and touches none of the six, so the block holds over it.
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
+20261125105345_claim_round_hold_marks adds two nullable marks to `claims`, null on every row it finds, and touches none of the six, so the block holds over it and leaves both columns in place.
+`claims.update_hold_told_at` is the time the daemon told the claim's role that its pod update round waits for the work hold.
+`claims.update_asked_again_at` is the time that round asked the claim again.
+A rollback to a release before it needs no SQL for this migration, since no earlier release reads or writes either column.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
