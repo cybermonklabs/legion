@@ -455,12 +455,17 @@
 #
 # --published reads the default branch and the record of the delivery R13 asks for, both
 # live. published-tree holds the default branch's commit, or the one IOC_PUBLISHED_COMMIT
-# names, to the evidence, the transcript, this script, every path under
+# names, to the evidence, the transcript, this script and every path under
 # docs/research/internet-of-cognition/ the judgement names, read over the whole document,
 # front page and pages, as the directory's name and the path characters after it with its
-# trailing dots and slashes taken off, and the sentences each landed step added in its files;
-# a judgement that names no such path fails, by the expected-set rule, and a path of another
-# repository is not read. published-delivery reads this issue, its messages and its comments
+# trailing dots and slashes taken off; a judgement that names no such path fails, by the
+# expected-set rule, and a path of another repository is not read. It reads the sentences
+# each landed step added in its files at the step's own commit, which must be in the history
+# of the default branch's commit, as the architect's reading of c-published records
+# (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6): a step whose commit
+# the history does not hold fails, naming the step, its commit and the branch's commit, and
+# main's tip may hold other words on the step's files: later work of other trees on them is
+# not this check's subject. published-delivery reads this issue, its messages and its comments
 # and the comments of dispatch://INFRA-1098 from the Dispatch API, and holds them to the
 # judgement as Dispatch holds it, each part read by rule: the ranking, every item of the list
 # under "## The ranking", in order; the paragraph, the text under "## Where the authors'
@@ -706,9 +711,11 @@ FIXTURE_OMP_MODELS="$FIXTURE_OMP_STUB/models.yml"
 #                  17:27Z, beside 21 in the fresh-clone runs; --shape 120, three times 31,
 #                  its run without this rule in the issue pod at 17:28Z, beside 12; --admitted
 #                  150, three times 43, its run under this rule in the issue pod at 18:08Z,
-#                  beside 7; --published 600, which is not measured: its heaviest
-#                  read is the fetch of one commit of our repository at depth one, the read
-#                  --landed makes in a run of 21 s whole.
+#                  beside 7; --published 600, which is not measured whole: its heaviest
+#                  read is the fetch of the default branch's history, its commits without
+#                  their trees, which took 1 s and 5.5 MB for the 4676 commits of main at
+#                  8ce41950 in the issue pod on 2026-11-25, beside fetches of one commit of
+#                  our repository at depth one, the read --landed makes in a run of 21 s whole.
 #   BOUND_PROGRAM  each program of BOUND_PROGRAMS a mode runs by name, and each program env.sh
 #                  runs by the path it exports. The slowest measured alone is env.sh's uv pip
 #                  sync of IOC_VENV, cold, at most 129 s with the two checks after it, from
@@ -935,7 +942,7 @@ landed-no-refusal|landed|no landed step's diff reaches a refusal path of the dae
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 landed-coverage|landed|every non-blank line the merge commit of a step merged in another pull request added to a file its published list names is covered by the sentences the merged-in steps publish there, all but whitespace and a list marker|a line the merge commit added that its step's published list leaves out
 landed-proof-holds|landed|the proof the page of each step merged in another pull request writes holds every sentence the step publishes, backticks taken out|a published sentence the page's proof does not grep for
-published-tree|published|the default branch carries the evidence directory, the committed transcript, this script, every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and the sentences each landed step added in its files|a page that names a file of this directory the default branch's commit lacks
+published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and each landed step's files carry the sentences the step added at the step's own commit, which the default branch's history holds|a page that names a file of this directory the default branch's commit lacks
 published-delivery|published|the record of the delivery is on the issue: a message to its assignee carrying each item of the ranking in order, the paragraph on where the two accounts differ and each candidate above one engineer-day with its default after its title; a comment of dispatch://INFRA-1098 naming this issue that cites each gap node-model.md records, or, where it records none, R8's sentence in the judgement; and a comment of this issue naming the controller's topic, the time of the publication as a UTC time in RFC 3339 form and the ranking as published|a delivery message without the paragraph on where the two accounts differ
 admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
 admitted-rows|admitted|every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command|-
@@ -1023,7 +1030,7 @@ landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of
 landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
 landed|tool|timeout|ends the mode, and each child of it the mode bounds, proofs among them, at its bound, in a process group of its own|apt-get install coreutils
 landed|pcre|grep|reads each record the Not landed line of a step names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
-published|tool|git|fetches the default branch into the run's scratch|apt-get install git
+published|tool|git|fetches the default branch, its history without trees and the commit of each landed step into the run's scratch|apt-get install git
 published|tool|jq|reads sources.json and judges the answers of the Dispatch API|apt-get install jq
 published|tool|curl|reads the Dispatch API|apt-get install curl
 published|tool|dispatch|reads the judgement, whose paths published-tree reads and whose ranking, paragraph and pages published-delivery holds the delivery to|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
@@ -8301,16 +8308,21 @@ mode_published() {
             missing=$((missing + 1))
             fail published-tree "the judgement names no path under docs/research/internet-of-cognition/, so no file of this directory a page links to is read"
         }
-        # The files each landed step changed stand there as the step left them, each read
-        # by the sentences its own step added and not by a word the file carried before.
-        # Each entry of sources.json's landed list whose state is landed lists them as its
-        # `published` pairs, so a change to a rule edits that one list; a step not landed,
-        # or not made (refuted), changed no file and is not read, and the line that passes
-        # names it. A list with no step is no pass.
-        local title sentence state
+        # The files each landed step changed are read at the step's own commit, by the
+        # sentences its own step added and not by a word the file carried before, and that
+        # commit is held to the default branch's history at the commit read above. The
+        # architect's reading of c-published
+        # (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6) makes the
+        # step's commit, which main merged, this check's subject: main's tip may hold other
+        # words on the step's files, since later work of other trees changes them, and that
+        # work is not read. Each entry of sources.json's landed list whose state is landed
+        # lists its sentences as its `published` pairs, so a change to a rule edits that one
+        # list; a step not landed, or not made (refuted), changed no file and is not read, and
+        # the line that passes names it. A list with no step is no pass.
+        local title sentence state index commit history="$work/history" fetched=" "
         [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
             missing=$((missing + 1))
-            fail published-tree "sources.json's landed list names no step, so no landed step is read on the default branch"
+            fail published-tree "sources.json's landed list names no step, so no landed step is read at its commit"
         }
         while IFS=$'\t' read -r title state; do
             missing=$((missing + 1))
@@ -8318,24 +8330,53 @@ mode_published() {
         done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed" and .state != "refuted") | [(.title // ""), (.state // "")] | @tsv' "$EVIDENCE/sources.json")
         while IFS= read -r title; do
             missing=$((missing + 1))
-            fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
+            fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read at its commit"
         done < <(jq -r '.landed[]? | select(.state == "landed") | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
-        while IFS=$'\t' read -r path sentence; do
-            git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
+        # The clone above holds the one commit it fetched at depth 1, so ancestry needs the
+        # branch's history: its commits, without their trees, are fetched once, only when a
+        # step is landed, into a repository of their own under this run's scratch, through
+        # live_read like the fetch above, and listed once. A step's commit is held when that
+        # list names it whole. The list is read, never git merge-base: the history is a partial
+        # clone, and merge-base fetches a commit it does not hold from the remote before it
+        # answers, as it did for a commit of this pull request in 3 s against GitHub on
+        # 2026-11-25. A step whose commit the list does not name fails, naming the step, its
+        # commit and the branch's commit, and its sentences are not read: a commit main never
+        # merged is no published step, whatever it carries.
+        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
+        if [ "$landed_steps" -gt 0 ]; then
+            git init --quiet "$history" 2>/dev/null || cannot_run environment " --published: git init of the scratch repository of the default branch's history failed."
+            live_read "GitHub, the fetch of the history of $head from $remote" "$work/history.log" git -C "$history" fetch --quiet --filter=tree:0 --no-tags "$remote" "$head"
+            git -C "$history" rev-list "$head" >"$work/history.list" 2>/dev/null ||
+                cannot_run environment " --published: git rev-list of the fetched history of $head failed."
+        fi
+        while IFS=$'\t' read -r index title commit; do
+            grep -qxF -- "$commit" "$work/history.list" || {
                 missing=$((missing + 1))
-                fail published-tree "the default branch at $head does not carry $path"
+                fail published-tree "the landed step '$title' commits $commit, and the default branch's history at $head does not hold that commit, so its sentences are not read"
                 continue
             }
-            grep -qF -- "$sentence" "$work/published" || {
-                missing=$((missing + 1))
-                fail published-tree "the published $path does not carry the landed step: '$sentence'"
-            }
-        done < <(jq -r '.landed[]? | select(.state == "landed") | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
-        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
+            # A held commit is fetched into the clone once, however many steps name it, and
+            # each of its step's pairs is read in the file as that commit holds it.
+            if [[ "$fetched" != *" $commit "* ]]; then
+                live_read "GitHub, the fetch of $commit, the commit of the landed step '$title', from $remote" "$work/step-fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$commit"
+                fetched="$fetched$commit "
+            fi
+            while IFS=$'\t' read -r path sentence; do
+                git -C "$clone" show "$commit:$path" >"$work/published" 2>/dev/null || {
+                    missing=$((missing + 1))
+                    fail published-tree "the landed step '$title' commits $commit, and that commit does not carry $path"
+                    continue
+                }
+                grep -qF -- "$sentence" "$work/published" || {
+                    missing=$((missing + 1))
+                    fail published-tree "the landed step '$title' commits $commit, and $path at that commit does not carry its sentence '$sentence'"
+                }
+            done < <(jq -r --argjson i "$index" '.landed[$i].published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+        done < <(jq -r '.landed // [] | to_entries[] | select(.value.state == "landed") | [.key, (.value.title // ""), (.value.commit // "")] | @tsv' "$EVIDENCE/sources.json")
         not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
         [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed or not made changed no file and are not read there: $not_landed"
     fi
-    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script, every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed$not_landed"
+    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed hold its sentences at the step's own commit, which the branch's history holds$not_landed"
 
     # The record of the delivery, held to the judgement by delivery_judge, one line per
     # verdict.

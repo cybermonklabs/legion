@@ -7586,21 +7586,26 @@ one_failure_result "a page that names a file of this directory the default branc
     '^1 of 2 assertions failed: published-tree$' '^FAIL published-tree: the judgement names docs/research/internet-of-cognition/coordination/no-such-count\.md, and the default branch at [0-9a-f]+ does not carry it$' \
     "$(fixture_published "$dir")"
 
-# 239. The default branch carries the files each landed step changed. The case removes
-# skills/legion-worker/references/pr-body.md, the file of the fixture's landed step, in a
-# commit of the fixture's own head, and names the fixture's own repository as our
-# repository's url, so the mode fetches that head: published-tree must fail alone, naming the
-# file. The gate of 3e1e50ce failed it the same way, so this case guards the read and does not
-# bite.
+# 239. The files each landed step changed are read at the step's own commit. The case makes a
+# commit on the fixture's head that removes skills/legion-worker/references/pr-body.md, the
+# file of the fixture's landed step, names that commit as the step's commit in sources.json
+# and the fixture's own repository as our repository's url, so the mode fetches it:
+# published-tree must fail alone, naming that commit and the file. At ded1a321 published-tree
+# read the head, so the removal on the head failed it; under the architect's reading of
+# c-published (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6) only the
+# step's own commit is read, so the case plants the removal in that commit, which the head is.
 dir="$(fresh published-landed-file)"
 (cd "$dir/repo" && git rm --quiet skills/legion-worker/references/pr-body.md && git commit --quiet -m "the landed step's file removed") &&
-    jq --arg url "$dir/repo" '.our_repository.url = $url' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    step_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    jq --arg url "$dir/repo" --arg c "$step_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
+        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
     mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
-    printf "FAIL the landed step's file could not be removed from the fixture's head\n"
+    printf "FAIL the landed step's file could not be removed in the step's own commit on the fixture's head\n"
     exit 1
 }
-one_failure_result "a landed step's file the default branch's commit lacks fails published-tree alone, naming the file" published-tree \
-    '^1 of 2 assertions failed: published-tree$' '^FAIL published-tree: the default branch at [0-9a-f]+ does not carry skills/legion-worker/references/pr-body\.md$' \
+one_failure_result "a landed step's file its own commit lacks fails published-tree alone, naming the commit and the file" published-tree \
+    '^1 of 2 assertions failed: published-tree$' \
+    "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $step_commit, and that commit does not carry skills/legion-worker/references/pr-body\\.md\$" \
     "$(fixture_published "$dir")"
 
 # 240. A recorded command reads nothing on its input, so it can neither read the rows --replay
@@ -7699,6 +7704,59 @@ dir="$(fresh published-landed-later-words)"
 }
 ending_result "a landed step whose sentence the default branch's tip holds in later words, and whose own commit in the branch's history holds it, passes --published" 0 \
     '^all 2 assertions passed$' "$(fixture_published "$dir")"
+
+# 244. A landed step's sentence is read at the step's own commit, so a commit that lacks it
+# fails (the architect's reading of c-published,
+# dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6). The case makes a
+# commit on the fixture's head that rewrites the step's sentence 'one row per half' in
+# pr-body.md, as case 243 does, names that commit as the step's commit in sources.json and the
+# fixture's own repository as our repository's url, so the mode fetches it: published-tree must
+# fail alone, naming the commit, the file and the sentence. At ded1a321 published-tree read the
+# head, which is that commit, and failed it too, with a line that names no commit.
+dir="$(fresh published-landed-sentence)"
+(cd "$dir/repo" && sed -i 's/one row per half/a row for each half of the pair/' skills/legion-worker/references/pr-body.md &&
+    ! grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
+    git commit --quiet -am "docs(skills): the landed step's sentence in other words") &&
+    step_commit="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    jq --arg url "$dir/repo" --arg c "$step_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
+        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    printf "FAIL the landed step's sentence could not be rewritten in the step's own commit on the fixture's head\n"
+    exit 1
+}
+one_failure_result "a landed step's sentence its own commit lacks fails published-tree alone, naming the commit, the file and the sentence" published-tree \
+    '^1 of 2 assertions failed: published-tree$' \
+    "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $step_commit, and skills/legion-worker/references/pr-body\\.md at that commit does not carry its sentence 'one row per half'\$" \
+    "$(fixture_published "$dir")"
+
+# 245. A landed step's commit is one the default branch's history holds, since a commit main
+# never merged is no published step (the architect's reading of c-published). The case makes
+# a commit on a side branch of the fixture's repository that adds a line to pr-body.md and
+# keeps the step's sentence, keeps that branch so the commit can be fetched, goes back to the
+# fixture's branch, whose head is unchanged, and names the side commit as the step's commit in
+# sources.json and the fixture's own repository as our repository's url: published-tree must
+# fail alone, naming the step, that commit and the head. At ded1a321 published-tree read the
+# head alone, which carries the sentence, and never the step's commit, so it passed, exit 0.
+dir="$(fresh published-landed-side)"
+(cd "$dir/repo" && branch="$(git branch --show-current)" && [ -n "$branch" ] &&
+    git checkout --quiet -b side &&
+    printf '%s\n' '- a line of a branch main never merged.' >>skills/legion-worker/references/pr-body.md &&
+    git commit --quiet -am "docs(skills): a change main never merged" &&
+    git checkout --quiet "$branch") &&
+    side_commit="$(git -C "$dir/repo" rev-parse side)" &&
+    fixture_head="$(git -C "$dir/repo" rev-parse HEAD)" &&
+    ! git -C "$dir/repo" merge-base --is-ancestor "$side_commit" "$fixture_head" &&
+    git -C "$dir/repo" show "$side_commit:skills/legion-worker/references/pr-body.md" | grep -qF 'one row per half' &&
+    jq --arg url "$dir/repo" --arg c "$side_commit" '.our_repository.url = $url | .landed[0].commit = $c' \
+        "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    printf "FAIL a step commit the fixture's branch does not hold could not be planted on a side branch\n"
+    exit 1
+}
+one_failure_result "a landed step whose commit the default branch's history does not hold fails published-tree alone, naming the step, the commit and the head" published-tree \
+    '^1 of 2 assertions failed: published-tree$' \
+    "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' commits $side_commit, and the default branch's history at $fixture_head does not hold that commit, so its sentences are not read\$" \
+    "$(fixture_published "$dir")"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
