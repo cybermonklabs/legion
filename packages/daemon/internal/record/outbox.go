@@ -1468,21 +1468,74 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // recipient can read the pull request's checks on GitHub for itself.
 //
 // A role whose claim is released is told nothing either, and is not woken for the message: the
-// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
-// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
-// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
-// message to a released role was dropped all the same once that session expired; and a wake for
-// each would start a pod for every CI settlement and every gate move, once per released role.
-// Published, the message would meet a released role as one nobody holds: the listener answers
-// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
-// beside either, so the pod would come back for a message the row had already dropped. The one
-// exception is a row a project's pause held for a role a pause stopped: without the pause the role
-// would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+// row finishes without a publish. The message's four senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move), tellStuckMergeState (an approved round
+// stuck on its merge state) and the memory guard's note - only inform; before a release stopped
+// its session cleanly, such a message to a released role was dropped all the same once that
+// session expired; and a wake for each would start a pod for every CI settlement and every gate
+// move, once per released role. Published, the message would meet a released role as one nobody
+// holds: the listener answers holder_lapsed, or unclaimed once the reaper has freed the claim,
+// and raises the role's wake beside either, so the pod would come back for a message the row had
+// already dropped.
+//
+// Three exceptions keep a row for a released role, and only the first one's publish wakes it
+// (internal/daemon's outbox.roleMessage):
+//
+//   - A row a project's pause held for a role a pause stopped: without the pause the role would
+//     have had the message, so the row is published to the role after the resume, and that
+//     publish wakes it (R4 of dispatch://INFRA-3759).
+//   - A row for a role whose wake is already under way (R2 of dispatch://INFRA-4480): the role's
+//     pod resume is open, its issue can be woken, and its claim is released with a start of the
+//     role still queued, or has left released after that resume. The row publishes nothing while
+//     the claim reads released, and once the claim has left released it publishes with keep, so
+//     the listener holds the message for the role's woken session until that session claims its
+//     topic. The role would have had the message had its pod not been released, and each sender
+//     names the head, the gate, the state or the process it reports, so the role can tell for
+//     itself whether that still stands.
+//   - A design gate's move (Gate, R4 of dispatch://INFRA-4480), whose row waits while its
+//     holder's claim reads released and publishes with keep once the claim has left released for
+//     any other cause, and only while it is the newest move its holder was told of and the gate
+//     still stands as that move left it.
+//
+// A release before R4's knows no Gate key and decodes every payload strictly, so a rollback strips
+// the key first (RoleMessageGateWayBack); a stripped row is a plain role message to that release.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
+	// Gate marks a design gate's move, the message tellGateMoved writes for a phase holder that is
+	// no merger, at the gate's close and at its opening (R4 of dispatch://INFRA-4480); nil for
+	// every other message, the root architect's and a merger's of a gate move among them. The row
+	// waits while its holder's claim reads released and wakes nothing, since the holder's phase
+	// goes on under the gate, and is published with keep once the claim has left released, only
+	// while it is the newest move of the gate its holder was told of (GateMove.Seq) and the gate
+	// still stands as the move left it, so the holder never reads a state the gate has left.
+	Gate *GateMove `json:"gate,omitempty"`
 }
+
+// GateMove is the move of a tree's standing design gate a role message reports
+// (RoleMessage.Gate): the tree whose root holds the gate, the step whose document moved it, that
+// document's version, whether the move opened the gate or closed it, and Seq, the opening number
+// the holder's told row took at the move (design_news_told.opening_seq, read in the move's own
+// transaction after its settlement). Every move of the gate settles every told row of the tree
+// (Store.CloseOpenings at a close, Store.SettleOpening for each holder at an opening), and nothing
+// else moves that number, so the move whose Seq the row still holds is the newest move its holder
+// was told of, and an older one, however long its row waited, is not.
+type GateMove struct {
+	Tree    string     `json:"tree"`
+	Step    DesignStep `json:"step"`
+	Version int        `json:"version"`
+	Open    bool       `json:"open"`
+	Seq     int        `json:"seq"`
+}
+
+// RoleMessageGateWayBack is the statement that takes the Gate key off every queued role message,
+// for a rollback to a release before R4 of dispatch://INFRA-4480. That release decodes an outbox
+// payload strictly (decodeOutboxJSON's DisallowUnknownFields) and knows a role message of Role and
+// Body alone, so a row that still carries Gate fails at every attempt on its backoff. A stripped
+// row is a plain role message, which that release ends for a released claim as it ends every
+// other one. docs/kubernetes.md, "Rolling back the release that tells a released holder the design
+// gate's move", carries the same statement.
+const RoleMessageGateWayBack = `update outbox set payload = payload - 'gate' where kind = 'role_message' and payload ? 'gate'`
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 
@@ -1730,7 +1783,10 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // It rides the role-message lane (LaneRoleMessage) because a role hears a hook prompt while it is
 // news, as it hears a merge forward's messages (MergeForwardMessage): a prompt held behind
 // whatever the architect that owns its issue is owed would reach the role rounds after the round
-// the firing wrote it for.
+// the firing wrote it for. It still waits for that round to open: while the outbox holds the start
+// of To's role that its move back queued after it (Store.MoveStartQueued), the row wakes nothing
+// and publishes nothing, so a prompt never runs a worker before the issue holds the slot its phase
+// start waits for (R1 of dispatch://INFRA-4480, the daemon's outbox.hookPrompt).
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the
@@ -2577,6 +2633,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
+		}
+		if move := value.Gate; move != nil && (move.Tree == "" || !move.Step.Valid() || move.Seq < 1) {
+			return fmt.Errorf("a role message's design gate move names the tree whose gate moved, a design-gate step and the opening number its holder's row took at the move; it names %q at %q with number %d",
+				move.Tree, move.Step, move.Seq)
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {

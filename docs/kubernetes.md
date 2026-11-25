@@ -2989,6 +2989,21 @@ So once one daemon has run this migration, a daemon of the same database that is
 The statements above act on every project's claims in the same way.
 Deploy, roll back and roll forward every daemon of one database in the same change, and run the statements above only when all of those daemons are stopped.
 
+#### Rolling back the release that tells a released holder the design gate's move
+
+This release writes a new field, `gate`, on the role message a design gate's close or opening sends a phase worker that is no merger: the move, and the opening number the worker's `design_news_told` row took at that move.
+Such a row can wait in the outbox for a long time, while its worker's pod is released.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows a role message of `role` and `body` alone, so a row that still carries `gate` fails on its backoff at every attempt.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'gate' where kind = 'role_message' and payload ? 'gate';
+```
+
+The statement is `record.RoleMessageGateWayBack`, and `TestARoleMessageOfAGateMoveDecodesOnTheReleaseBeforeAfterItsWayBack` decodes a stripped row as the earlier release does.
+A stripped row is a plain role message to the earlier release, which ends it for a released worker as it ends every other role message, so that worker is not told the move.
+Nothing else of this release needs a rollback step: it adds no table and no column.
+
 #### Rolling back the release that names what nothing starts
 
 This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.

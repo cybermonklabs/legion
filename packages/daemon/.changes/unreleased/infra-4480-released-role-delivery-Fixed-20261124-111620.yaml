@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A work-back hook's prompt waits until the phase start its move back queued has been given to
+    its worker, so it no longer wakes a released role, or prompts a live one, while the issue holds
+    no admission slot; a prompt whose round the issue has left ends unpublished. A role message to
+    a role whose wake is already under way no longer ends "not worth a wake": it waits while the
+    role's claim reads released and is published with keep once the claim leaves released, so the
+    woken session receives it. A design gate's close and opening reach a released phase holder that
+    is no merger the same way, waking nothing; each is published only while it is the newest move
+    its holder was told of and the gate still stands as it left it. A rollback to an earlier
+    release strips the new `gate` key from queued role messages first (docs/kubernetes.md).
+time: 2026-11-24T11:16:20Z
+custom:
+    Issue: INFRA-4480

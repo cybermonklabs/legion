@@ -2566,6 +2566,19 @@ type Store interface {
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
 	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// MoveStartQueued says whether the outbox still holds the start of a phase worker that a move
+	// back into phase to queued for issue after row id: a start of to's role that names to, carries
+	// the slot mark workflow.StartOrOwe gives a start of to, and was written after row id, whatever
+	// its lease or its next_at. A start can also leave without being given: a later start of the
+	// issue takes it out (EnqueueStart), or the phase fence finishes it once the issue has left
+	// to. So false says that no such start waits, not that its worker was given it.
+	MoveStartQueued(ctx context.Context, tx pgx.Tx, issue string, id int64, to phase.Phase) (bool, error)
+	// OpeningSeq is the opening number issue's audience row holds now (design_news_told.opening_seq,
+	// DesignTold.Opening), read from the table itself with no credit counted, and whether the row
+	// exists. Every settlement of the gate's opening on the row moves it (SettleOpening and
+	// CloseOpenings), and nothing else does, so a design gate's move names itself to its holder by
+	// the number its row took (GateMove.Seq).
+	OpeningSeq(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) (int, bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)

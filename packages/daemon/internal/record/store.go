@@ -3209,6 +3209,48 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 	return queued, nil
 }
 
+// MoveStartQueued says whether the outbox still holds the start of a phase worker that a move
+// back into phase to queued for issue after row id was written — due, running, backing off or
+// held for the issue's admission slot. Such a start names to and its role (phase.RoleFor), carries
+// the slot mark workflow.StartOrOwe gives a start of to (PhaseKeepsSlot), and has a write mark
+// above row id's. A lane finishes the row once the claim's machine took its task (the daemon's
+// outbox: supervise, then settle, then finish). But the row can also leave with its task never
+// given: a later start of the issue takes it out (EnqueueStart, which matches the issue's pending
+// phase start of the same slot mark whatever its phase), or the phase fence finishes it once the
+// issue has left to. So false says that no such start waits, not that its worker was given it,
+// and the daemon's hook prompt reads the issue again before it acts on a false
+// (outbox.hookPrompt, roundOpened).
+//
+// The move writes the prompt and then the start in one transaction (workflow's transition), and
+// every insert takes a fresh write mark, the start EnqueueStart writes over an owed one included,
+// so that start is written after the prompt. A start queued before the move is no start of the
+// prompt's round. For a to that keeps a slot, nor is the phase's resume task enqueued directly
+// for a ready worker level with its entry (workflow's readyWorkerTask): it names the same phase
+// and role and carries no slot mark, and only the mark tells it apart. For accepting, retro and
+// merging, whose starts carry no mark either, that resume task matches as well, and the prompt
+// waits until it too is given, which it is at once: such a start waits for no slot. A later start
+// that StartOrOwe writes for the same phase, a send of the entry the move raised, holds the prompt
+// until it is given in turn.
+//
+// RoleFor answers the architect for the two phases the architect works. The read never meets
+// admitted: a hook prompt names a move between two phases of the forward line (phase.IsMovePair),
+// which admitted is not, so no such row is written. For accepting it reads a start of the
+// architect that names accepting with no slot mark, which no transition writes, so it answers
+// false and the prompt waits for no start: accepting keeps no slot, and its architect is no phase
+// worker (TestAMoveStartQueuedHoldsAHookPromptOnlyForTheStartItsMoveBackQueued).
+func (s *Postgres) MoveStartQueued(ctx context.Context, tx pgx.Tx, issue string, id int64, to phase.Phase) (bool, error) {
+	role := phase.RoleFor(to)
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where `+pendingPhaseStart+`
+		and payload->>'phase' = $3 and payload->>'role' = $4 and coalesce(payload->>'needsSlot', 'false') = $5
+		and write_mark > (select write_mark from outbox where id = $2))`,
+		issue, id, string(to), string(role), strconv.FormatBool(PhaseKeepsSlot(to))).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the start of %s that a move of %s to %s queued after row %d is still queued: %w",
+			role, issue, to, id, err)
+	}
+	return queued, nil
+}
+
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays
