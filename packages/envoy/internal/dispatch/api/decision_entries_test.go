@@ -1220,7 +1220,7 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
 }
 
-// INFRA-1150, test round 2, the defect INFRA-1152's implementer found at 44f1abef1605 and the
+// Test round 2 of this change, the defect a sibling change's implementer found at 44f1abef1605 and the
 // architect sent to this round: the release before answered the text of a document with no ask
 // block with no asks member at all, and this build adds "asks":[]. The field carries omitzero,
 // which leaves out a nil slice and keeps an empty one, so a writer that fills the field with an
