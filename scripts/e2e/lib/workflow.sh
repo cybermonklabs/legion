@@ -1252,9 +1252,10 @@ assert_round_handoff() {
 # default): the daemon opens the check on the merge commit, hands that role its first look, and
 # `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
-# it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
-# commit: `pending` before the last look ends the look and suspends the role's claim with the
-# issue's Sandbox, so the check stays open with `lookOpen` false. That report carries `wake_at`,
+# it once it has closed. A look's report is that role's `handoff_complete` with `check_opened_at`
+# from its look task, a verdict and no commit. A `pending` before the last look ends the look and
+# suspends the role's claim with the issue's Sandbox, so the check stays open with `lookOpen`
+# false. That report carries `wake_at`,
 # when the agent wants its next look, and the daemon starts the next look then (`nextWakeAt`): it
 # is the only thing that starts a look before the bound, since no deploy, no Dispatch notice and
 # no boot of the daemon's own wakes a check any more. A wake at or past the check's bound starts

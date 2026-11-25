@@ -152,7 +152,7 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 }
 
 func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
-	for _, which := range []string{"replaced", "closed", "absent", "step without a check"} {
+	for _, which := range []string{"replaced", "wrong time", "closed", "absent", "step without a check"} {
 		t.Run(which, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			at := phase.Done
@@ -160,7 +160,7 @@ func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
 				at = phase.Testing
 			}
 			seedIssueAt(t, h, "LEGION-208", at)
-			if which == "replaced" || which == "closed" {
+			if which == "replaced" || which == "wrong time" || which == "closed" {
 				seedCheck(t, h, "LEGION-208", claim.RoleTester, which == "closed", false)
 			}
 			c := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
@@ -168,13 +168,47 @@ func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
 			if which == "replaced" {
 				opened = opened.Add(-24 * time.Hour)
 			}
+			if which == "wrong time" {
+				opened = opened.Add(time.Second)
+			}
 			if which == "step without a check" {
 				seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
 				takeTask(t, h, c.token, "outbox:testing-1", "test it", 1, 1)
 			} else {
 				c.worksLook(t, 2, opened)
 			}
-			refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
+			message := refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
+			if which == "replaced" || which == "wrong time" {
+				for _, detail := range []string{"production check is open", "check_opened_at", "check.openedAt", "read_record"} {
+					if !strings.Contains(message, detail) {
+						t.Fatalf("refusal = %q, want the open check and its recovery source %q", message, detail)
+					}
+				}
+			} else if strings.Contains(message, "production check is open") {
+				t.Fatalf("refusal = %q, but no check is open", message)
+			}
+			assertNoNamedFact(t, h, facts)
+		})
+	}
+}
+
+func TestANamedCheckReportRefusesPhaseOnlyFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  HandoffCompleteRequest
+	}{
+		{"commit", HandoffCompleteRequest{Commit: headSHA}},
+		{"handoff id", HandoffCompleteRequest{HandoffID: "test-phase-1"}},
+		{"handoff version", HandoffCompleteRequest{HandoffVersion: 1}},
+		{"all phase fields", HandoffCompleteRequest{Commit: headSHA, HandoffID: "test-phase-1", HandoffVersion: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Done)
+			seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
+			c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
+			tc.req.GrantID, tc.req.Summary, tc.req.Verdict = c.grant(t), "production passes", "pass"
+			refused(t, completeCheck(h, tc.req, checkOpenedAt), http.StatusBadRequest, "CHECK_PHASE_FIELDS_UNEXPECTED")
 			assertNoNamedFact(t, h, facts)
 		})
 	}

@@ -761,8 +761,8 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input. A report with
+          // check_opened_at leaves it open for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of

@@ -1038,11 +1038,10 @@ func lastCheckReport(t *testing.T, facts *factRecorder) intake.CheckReport {
 	return fact
 }
 
-// The checking role's call inside the turn of a look's task is a report on that look: it carries
-// no commit (the look pushed nothing) and one of the three verdicts, and the fact is the check
-// report of that look, not a phase completion. No run is read — the check fences itself on the
-// look, not on a run — and nothing reads GitHub. A repeated report of the same look and verdict
-// is answered as already received.
+// checkOpenedAt selects the check path. The role and served look then identify which look the
+// report records. The look pushed nothing, so it carries no commit, and it names one of the
+// three verdicts. No phase run or GitHub read chooses the report kind. A repeated report of
+// the same look and verdict is answered as already received.
 func TestHandoffCompleteRecordsACheckReportOfTheOpenLookWithoutACommit(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
@@ -1096,9 +1095,9 @@ func TestHandoffCompleteRefusesACheckReportWithoutOneOfTheThreeVerdicts(t *testi
 	}
 }
 
-// A caller whose live assignment is a look of its issue's production check, on an issue with no
-// open check — none ever opened, or the check closed on an earlier look — reports on nothing: the
-// call is refused by name, with nothing recorded, rather than falling into the phase path.
+// A call naming checkOpenedAt reports no check when none is open, whether none ever opened or
+// an earlier look closed it. The route refuses it before any fact and never falls back to the
+// phase path.
 func TestHandoffCompleteRefusesALooksCallWhereNoCheckIsOpen(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)

@@ -63,16 +63,17 @@ export function isPhaseOp(op: string): op is PhaseOp {
   return (PHASE_OPS as readonly string[]).includes(op);
 }
 
+function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
+  return args["check_opened_at"] !== undefined;
+}
+
 /** The input gate effect of a successful call. A look's report leaves phase input open. */
 export function phaseInputAfter(
   op: string,
   args: { readonly check_opened_at?: unknown }
 ): "phase-closed" | "update-answered" | undefined {
   if (op === "ready_for_update") return "update-answered";
-  if (
-    op === "request_backward_move" ||
-    (op === "handoff_complete" && args.check_opened_at === undefined)
-  )
+  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
     return "phase-closed";
   return undefined;
 }
@@ -888,7 +889,7 @@ async function completeHandoff(
   const { daemon, claim } = runtime;
   // Only the explicit field selects a look report. No record read chooses the call or adds a
   // handoff to it; the daemon checks the named check, its role and its last-look state.
-  if (args.check_opened_at !== undefined) {
+  if (namesCheck(args)) {
     if (args.verdict === undefined) {
       throw new Error(
         "handoff_complete with check_opened_at names a verdict of pass, pending or fail"

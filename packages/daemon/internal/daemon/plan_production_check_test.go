@@ -115,11 +115,15 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
-	_, value, ok := strings.Cut(prompt.Message, "check_opened_at ")
-	if !ok || len(strings.Fields(value)) == 0 {
+	_, value, ok := strings.Cut(prompt.Message, "check_opened_at `")
+	if !ok {
 		t.Fatalf("the production check task gives no check identity: %s", prompt.Message)
 	}
-	opened, err := time.Parse(time.RFC3339Nano, strings.TrimRight(strings.Fields(value)[0], "."))
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the production check task gives no closing delimiter for its check identity")
+	}
+	opened, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		t.Fatalf("the task's check identity is not an RFC3339 instant: %v", err)
 	}

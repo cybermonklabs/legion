@@ -12,12 +12,14 @@ func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
 	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
 	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
-	_, value, ok := strings.Cut(task, "check_opened_at ")
+	_, value, ok := strings.Cut(task, "check_opened_at `")
 	if !ok {
 		t.Fatal("the task gives no check identity to report")
 	}
-	value = strings.Fields(value)[0]
-	value = strings.TrimRight(value, ".")
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the task gives no closing delimiter for the check identity")
+	}
 	got, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil || !got.Equal(opened) {
 		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)

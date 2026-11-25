@@ -15,7 +15,7 @@ import (
 )
 
 func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
-	for _, which := range []string{"no entry", "entry without task", "started", "carried run", "empty token", "missing record", "cleared issue", "cleared tree"} {
+	for _, which := range []string{"no entry", "entry without task", "started", "empty token", "missing record", "cleared issue", "cleared tree"} {
 		t.Run(which, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := testEngine(config.DesignGateRootIssues, nil)
@@ -54,7 +54,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 			apply := applyFacts(t, pool, engine)
 			result := apply("first", fact)
 			want := "HANDOFF_NOT_CURRENT_PHASE"
-			if which == "started" || which == "carried run" {
+			if which == "started" {
 				want = ""
 			}
 			if which == "missing record" {

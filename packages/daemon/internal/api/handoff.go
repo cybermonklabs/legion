@@ -899,9 +899,15 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // left unmarked (intake's ApplyFact), so the checking role's next send of it applies, and the
 // report of the next look is a new fact.
 func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, check *record.ProductionCheck, look supervise.CheckLook, req HandoffCompleteRequest) {
-	if check == nil || !check.Open() || !check.OpenedAt.Equal(*req.CheckOpenedAt) {
+	if check == nil || !check.Open() {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
 			"%s has no open production check opened at %s; this completion changed nothing",
+			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano)))
+		return
+	}
+	if !check.OpenedAt.Equal(*req.CheckOpenedAt) {
+		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
+			"%s's production check is open, but it did not open at %s. This completion changed nothing. Use check_opened_at from its look task or check.openedAt from read_record as checkOpenedAt. Send the report again with that time.",
 			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano)))
 		return
 	}
@@ -934,6 +940,11 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		}
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
+		return
+	}
+	if req.Commit != "" || req.HandoffID != "" || req.HandoffVersion != 0 {
+		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_PHASE_FIELDS_UNEXPECTED",
+			"a check report carries no commit, handoffId or handoffVersion. Remove those phase fields and send the report again. Nothing was recorded.")
 		return
 	}
 	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)

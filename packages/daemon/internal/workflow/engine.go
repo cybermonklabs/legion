@@ -956,11 +956,11 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 }
 
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
-// rather than refused: the daemon started role on this issue, which is what gives it the claim the
-// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
-// (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
-// on without it - the review event taking reviewing on - and its handoff is the findings the next
-// phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
+// rather than refused. The stored EntryTask shows that the daemon started this run's step, and
+// record.PhaseRow.Completed shows whether the role reported it. A claim alone proves neither.
+// The daemon may have moved the issue on without this completion, such as on a review event.
+// Its handoff gives the next phase findings a refusal would lose. Four completions remain refused:
+// one from a role whose handoff
 // already stands, which is reporting a phase it finished a second time; one from a role the daemon
 // never started on this issue, which has held no phase of it to report; any while the issue stands
 // where no role works - parked, closed or held - which is past recording work at all; and any

@@ -66,10 +66,10 @@ import { staleGitLockNote } from "./git-lock";
  * daemon would not read, and the daemon never records a sibling's `@-` as the role's handoff
  * commit.
  *
- * Every other completion — retro, the merger's, the architect's, which leaves no phase — reports
- * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
- * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
- * one.
+ * Every other phase completion — retro, the merger's, the architect's, which leaves no phase —
+ * reports the commit the workspace stands on, `@-`, and no record. A report with
+ * `check_opened_at` resolves neither: `legion-phase-ops.ts` bypasses this module for it. Without
+ * that field, even a call on a done issue follows the phase path and asks this module.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push

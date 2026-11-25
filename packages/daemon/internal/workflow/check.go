@@ -147,8 +147,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
-	fmt.Fprintf(&text, " The check opened at %s: your report names it with check_opened_at %s.",
-		check.OpenedAt.UTC().Format(time.RFC3339Nano), check.OpenedAt.UTC().Format(time.RFC3339Nano))
+	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
+	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",
+		openedAt, openedAt)
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}

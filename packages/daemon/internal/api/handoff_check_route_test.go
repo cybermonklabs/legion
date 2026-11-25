@@ -144,15 +144,11 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 	}
 }
 
-// The reviewer's trace, which the issue's phase cannot tell apart from a check report and the
-// caller's own assignment can. The tester ends the testing turn the close ran behind with a
-// verdict of pass — which is also a check verdict.
-//
-// Routed by the issue's phase, that completion was recorded as the production check passing with
-// nobody having looked at production. Routed by the claim's own live assignment, which is still
-// the testing task's, it is no report on the check — and no phase completion either, since a done
-// issue runs no phase, so the route names the cause (CHECK_LOOK_NOT_SERVED) rather than holding
-// an answer the agent cannot give to a field. Nothing is recorded, and the check is untouched.
+// A tester ends its testing turn after the merge closed the issue. Its verdict also names a
+// valid check outcome, but only checkOpenedAt selects a check report. This fieldless call is a
+// phase completion, and a done issue runs no phase. The route refuses it with
+// CHECK_LOOK_NOT_SERVED and the check identity's recovery path. It records nothing and leaves
+// the check untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
@@ -328,10 +324,9 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 	}
 }
 
-// A worker whose live assignment is a check look reports on that look, not on whichever look the
-// check has reached: a report from a turn that outlived its look names the look it was given, and
-// the engine's own fence refuses it (CHECK_LOOK_NOT_OPEN) instead of recording it as the current
-// look's.
+// A report that names its check carries the look this session served, not whichever look the
+// check has reached. The engine refuses a turn that outlived its look (CHECK_LOOK_NOT_OPEN)
+// instead of recording it as the current look's report.
 func TestACheckReportCarriesTheLookTheClaimWasGivenNotTheChecksCurrentOne(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
