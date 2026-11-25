@@ -707,7 +707,7 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 // DISPATCH_TOKEN_BROKER). A launch that keeps a pod built before the identity has none to trade
 // until the pod's update round replaces the pod (keptPod.trades), so it carries the transition
 // token as a launch carries the bearer without the setting, the role reading it through
-// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused with
+// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused (awaitsPodRound) with
 // runtime.AwaitingPodRound, which is runtime.ErrAwaitingPodRound naming the pod, and the supervisor
 // waits for that round, charging nothing. The refusal names the pod by the locator this launch's
 // process in it would have had (locatorFor). The supervisor keeps that locator on the claim, and
@@ -724,18 +724,28 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 // pod is read only for a launch that keeps it, which is a launch that found it live: a launch
 // that replaces its pod, or finds none, trades the identity the pod it builds carries.
 func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
-	if !r.dispatch.Broker || l.trades(r) {
-		return nil
-	}
-	if r.dispatch.Transition == "" {
+	trades := l.trades(r)
+	if r.awaitsPodRound(trades) {
 		return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
 			Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
 			Reason: fmt.Sprintf("pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
 				l.name),
 		})
 	}
-	l.secrets[dispatchTokenKey] = r.dispatch.Transition
+	if r.dispatch.Broker && !trades {
+		l.secrets[dispatchTokenKey] = r.dispatch.Transition
+	}
 	return nil
+}
+
+// awaitsPodRound is whether a launch into a pod that trades as trades says (tradesIn) is refused
+// until the pod's update round replaces it: the deployment sets dispatch_token_broker, names no
+// dispatch_token_transition_file, and the pod carries no identity the exchange trades. It is the
+// one statement of that condition. dispatchCredential refuses a launch on it, and PodDrift marks a
+// drift of the pod's exchange identity as one that breaks the pod on it, read of the live pod for
+// the claim's role, so the refusal and the mark cannot come apart.
+func (r *Runtime) awaitsPodRound(trades bool) bool {
+	return r.dispatch.Broker && r.dispatch.Transition == "" && !trades
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
