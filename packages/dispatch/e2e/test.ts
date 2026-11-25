@@ -506,10 +506,11 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   },
   // The review corpus is a dataset every accessibility row and every foot-sweep route row reads
   // alike, so the worker seeds it once into a database it empties for it, and hands each row the
-  // seed it returned. Its keys are the corpus's own (`CORE`, `ACME`), which the stubbed layer's
-  // recordings were made under and no other row writes, since every other row writes keys of its
-  // own. Before reusing the corpus, the fixture restores its delivery settings and fake Envoy
-  // sessions. It sends the broadcast again because `ownBroadcasts` deletes it after each reader.
+  // seed it returned. Its keys are the corpus's own (`CORE`, `OPS` and, for its delivery records,
+  // `ACME`), which the stubbed layer's recordings were made under and no other row writes, since
+  // every other row writes keys of its own. Before reusing the corpus, the fixture restores its
+  // delivery settings and fake Envoy sessions. It sends the broadcast again because
+  // `ownBroadcasts` deletes it after each reader.
   // The seed reads lists the whole stack holds: open questions in the Inbox (`seedWorkspace`)
   // and check results (`seedReviewRoutes`). The worker empties its database before it seeds
   // the corpus. Earlier rows have ended, and later ones write under keys of their own. The
