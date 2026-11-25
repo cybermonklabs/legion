@@ -1560,6 +1560,37 @@ func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T
 	}
 }
 
+// Two asks for one write, made before the writer takes it, queue that write once: the one write
+// answers both, so GitHub is read and written once, and the issue's merge-state reads wait on that
+// write alone. The same holds for two of the writers' sweep's asks. Once the writer has taken the
+// write, the same ask queues it again, since the head's verdict may change after the write read it.
+func TestLegionVerdictTwoAsksForOneWriteQueueItOnce(t *testing.T) {
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
+	fact := verdictTarget{issue: "CAPTURE-1", repository: widgets, number: 86, head: "code"}
+	swept := verdictTarget{repository: widgets, number: 90, head: "out-1", overForeign: true}
+	writer.add(fact)
+	writer.add(fact)
+	writer.add(swept)
+	writer.add(swept)
+	target, ok := writer.next()
+	if !ok || target != fact {
+		t.Fatalf("the writer took %+v, %v; want the fact's write of code", target, ok)
+	}
+	writer.done(target)
+	if ended, err := writer.await(canceledContext(), "CAPTURE-1"); err != nil || !ended {
+		t.Fatalf("CAPTURE-1's reads wait (%v, %v) after its one write ended: two asks queued two writes", ended, err)
+	}
+	writer.add(fact)
+	var taken []verdictTarget
+	for target, ok := writer.next(); ok; target, ok = writer.next() {
+		taken = append(taken, target)
+		writer.done(target)
+	}
+	if want := []verdictTarget{fact, swept}; !slices.Equal(taken, want) {
+		t.Fatalf("the writer then took %+v, want %+v: the fact's ask after the writer took its write, and the sweep's two asks as one", taken, want)
+	}
+}
+
 // A merge-state read waits on its issue's write of legion-verdict for one bound at most (the
 // writer's bound, one issueRead): a write held up by a slow GitHub or a long queue holds the
 // issue's reads no longer than that, and the read then goes on and says so once.
