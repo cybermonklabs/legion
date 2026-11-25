@@ -181,12 +181,16 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
 // lost "or write an" (3). The three skills stay at 2,337 words, as on main.
 //
-// R5 of dispatch://INFRA-3686 has every session that follows a Legion issue's topic told that a
-// status move the daemon writes comes at `low`, for its next turn, and `dispatch` is the skill
-// every such session loads. That rule first took 15 words, so the bound moved by those 15 to
-// 2,355; naming its two exceptions (a close and a release) took 7 more, paid by cuts elsewhere in
-// `dispatch`, so the bound stays.
-test("the three Dispatch skills total fewer than 2,355 words", () => {
+// The bound did not move when dispatch-first's blocker bullet took one sentence of 19 words at
+// its end: "A secret request that waits for a person is already in their Inbox, so it gets no ask
+// (`skill://agent-secrets`)." A person directed that every agent know that a secret request
+// already reaches its approver's Inbox, so an ask for it is a duplicate, and that the rule go in a
+// generic skill. The rule lives in skills/agent-secrets/SKILL.md, which a session reads when a
+// command needs a secret. The blocker bullet, which every session holds whole, is the line that
+// sends an agent to open an ask, so its exception sits there and links the rule. Before this
+// sentence came, #5051 cut 80 words from dispatch-writing-specs, which left the three skills at
+// 2,257 words. The three skills now stand at 2,276 words, 64 under the bound.
+test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
