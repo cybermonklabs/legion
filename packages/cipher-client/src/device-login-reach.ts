@@ -44,9 +44,10 @@ export function seconds(value: number): string {
  * `value * 1000` in floating point can fall short of the milliseconds the broker's own digits
  * name, as 1.001 gives 1000.9999999999999; a shifted string can round up to the next millisecond,
  * as 1.0999999999999999 gives 1100 where its digits name 1099.9999999999999 ms. The end of a code
- * is counted so ({@link startDeviceLogin}), and a refusal reads the code's lifetime by that end
- * ({@link unpollableRemedy}'s `left`); the interval is counted by {@link waitMillisecondsOf}.
- * Exported for the tests, which hand a refused code to the poll the way the start would have.
+ * is counted so (`device-login.ts`'s `startDeviceLogin`), and a refusal reads the code's lifetime
+ * by that end ({@link unpollableRemedy}'s `left`); the interval is counted by
+ * {@link waitMillisecondsOf}. `device-login.ts` counts a code's end by it, and the agreement test
+ * hands a refused code to the poll with the end the start would have given it.
  */
 export function wholeMillisecondsOf(value: number): number {
   const [whole = "", fraction = ""] = seconds(value).split(".");
@@ -81,8 +82,8 @@ export function pastTheMillisecond(value: number): boolean {
  * `intervalSeconds` apart reaches it: a poll waits the interval first (RFC 8628 Section 3.5),
  * {@link waitMillisecondsOf} of it, and reaches the code only where the code's end, a `Date`'s
  * whole millisecond, holds more than that wait, so a code that lapses no later than the wait is
- * one no poll reaches. {@link startDeviceLogin} and {@link finishDeviceLogin} both read a code by
- * this test, and {@link finishDeviceLogin} waits by that same count, so a code the one shows the
+ * one no poll reaches. `device-login.ts`'s `startDeviceLogin` and `finishDeviceLogin` both read a
+ * code by this test, and `finishDeviceLogin` waits by that same count, so a code the one shows the
  * other polls, but for the time between the two calls, and an interval of 1.001 s reaches no code
  * that ends 1001 ms on.
  */
@@ -145,14 +146,14 @@ function unpollableRemedy(
 }
 
 /**
- * What {@link startDeviceLogin}'s refusal of `answered` says the broker answered, for a code no
- * poll `intervalSeconds` apart reaches that lives `lifetimeSeconds` here, its end holding `left`
- * milliseconds ({@link codeLeft}): the interval the broker named, or none, with the one used where
- * this machine's bounds set it; the code's lifetime, that it had already lapsed, or the hour this
- * machine polls a code at most where that ends it first; and what must change at the broker,
- * worded from what ends the code, since asking again would meet the same answer. An interval used
- * shorter than its code's life, which the test still refuses (the interval counted up to a
- * millisecond, the end down), is said to be so.
+ * What the refusal of `answered` by `device-login.ts`'s `startDeviceLogin` says the broker
+ * answered, for a code no poll `intervalSeconds` apart reaches that lives `lifetimeSeconds` here,
+ * its end holding `left` milliseconds ({@link codeLeft}): the interval the broker named, or none,
+ * with the one used where this machine's bounds set it; the code's lifetime, that it had already
+ * lapsed, or the hour this machine polls a code at most where that ends it first; and what must
+ * change at the broker, worded from what ends the code, since asking again would meet the same
+ * answer. An interval used shorter than its code's life, which the test still refuses (the
+ * interval counted up to a millisecond, the end down), is said to be so.
  */
 export function unpollableAnswer(
   answered: DeviceAuthorizationResponse,

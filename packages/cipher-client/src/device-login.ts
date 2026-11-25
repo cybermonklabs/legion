@@ -665,7 +665,7 @@ interface LoginKey {
 
 /** How a {@link DeviceLoginIdentity} is made. */
 export interface DeviceLoginIdentityOptions {
-  /** The login's file ({@link deviceLoginFile}). */
+  /** The login's file (`device-login-file.ts`'s `deviceLoginFile`). */
   readonly path: string;
   /** The broker, as `AGENT_SECRETS_URL` names it: the one the login must have been made at
    *  ({@link deviceLoginBroker}). */
