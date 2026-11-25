@@ -742,11 +742,14 @@ type RouteMux interface {
 // Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
 // answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
+// GET /ws/doc/{room} answers a read-only broker-issued token 403 READ_ONLY_TOKEN too, and reads
+// no personal token, a read-only one included (refuseDocumentSocketCredential).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
-// websocket. The live socket takes a bearer as well as a cookie, so it runs under
-// decideBrokerToken; the document websocket takes a cookie alone and does not. It also holds the
+// websocket. The live socket takes every credential the API takes, a bearer among them. The
+// document websocket takes a sign-in or a broker-issued token, and reads no bearer. Both run
+// under decideBrokerToken (liveSocketHandler, documentSocketHandler). It also holds the
 // event stream relay (INFRA-66), which every events subscription reads and which starts its own
 // listening connection on the first of them, also on lifetime. lifetime is the process's own
 // context, cancelled when the server is shutting down (server.lifetime says what else it ends).
@@ -1661,7 +1664,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // refuseReadOnlyToken is the one place a read-only credential (model.Credential.ReadOnly) is held
 // to the read class: register wraps every row of the table in it, name being the row's
 // "<method> <pattern>" and entry its read class (apiRoute.Read), and GET /ws/live with the zero
-// entry, which classes nothing. It reads every credential that can be read-only:
+// entry, which classes nothing. GET /ws/doc/{room} runs it with the zero entry too, but only on a
+// request that presents a broker-issued token (refuseDocumentSocketCredential), so there it
+// resolves no personal token. It reads every credential that can be read-only:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1679,9 +1684,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //
 // Then a caller whose credential is read-only (readOnlyCredential, which a results read reads the
 // caller by too) is answered 403 READ_ONLY_TOKEN on every row that is not a read
-// (readWritesNothing), every write among them, and on GET /ws/live, and next does not run. On a
-// read, a read-only credential that carries a cut (model.Credential.Cut) is
-// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
+// (readWritesNothing), every write among them, and on GET /ws/live and GET /ws/doc/{room}, and
+// next does not run. On a read, a read-only credential that carries a cut (model.Credential.Cut)
+// is answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
 // since this build answers no read at a past time and must not answer one with the present.
 // Every other request runs next as it always did.
 //

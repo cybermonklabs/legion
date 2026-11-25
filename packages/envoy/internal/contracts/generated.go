@@ -483,7 +483,10 @@ const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
 // DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
 // document socket whose page the live server processes no longer admit, once the message in flight
 // on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
-// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// expired. They also close an open writable document socket that a broker-issued token opened on
+// an issue's spec or Verification document, once the spec-writer rule no longer lets that token
+// write it or the rule's read fails. The Hocuspocus provider reconnects on the code, and the
+// reconnect is admitted again.
 // Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
 // in packages/contracts so the server's close and the dashboard's reading of it cannot drift
 // apart.

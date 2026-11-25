@@ -4,9 +4,11 @@
 // nothing else. Every other row of the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before
 // the route's handler, before the row's scopes and the sign-in check and before its
 // Idempotency-Key is read, and every read but GET /api/v1/whoami answers one that carries a cut
-// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken). register refuses a table whose GET rows
-// readClasses does not class, and a personal token the gate resolves before the route keeps the
-// answer it had before the gate.
+// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken). GET /ws/doc/{room} answers a read-only
+// broker-issued token 403 READ_ONLY_TOKEN too, and a read-only personal token with no sign-in
+// beside it 401 DOC_SOCKET_CREDENTIAL_REFUSED, as it answers every personal token.
+// register refuses a table whose GET rows readClasses does not class, and a personal token the
+// gate resolves before the route keeps the answer it had before the gate.
 //
 // A token that names a service and no person is already refused every write, SIGN_IN_REQUIRED or
 // OAUTH_SCOPE_REQUIRED, so each refusal here is read by its code: a bare 403 would prove nothing.

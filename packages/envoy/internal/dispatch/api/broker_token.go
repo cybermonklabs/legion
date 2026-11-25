@@ -7,8 +7,9 @@ package api
 //
 // A DPoP proof is single use by its 'jti' and 'htu' (store.DPoPProofs), which is what the two
 // pieces below are for: decideBrokerToken decides a request's presentation once however many
-// times its handler resolves the caller, and callerStillResolves asks a connection's broker only
-// whether the token is still live, never checking the proof the upgrade already spent.
+// times its handler resolves the caller, and brokerTokenStillLive, the one check the heartbeats
+// of GET /ws/live and GET /ws/doc/{room} both ask, asks the broker only whether the token is
+// still live, never checking the proof the upgrade already spent.
 
 import (
 	"context"
@@ -130,11 +131,11 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // account and writes nothing, as every read-only token does. Its credential is marked read-only
 // (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
 // refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
-// entry's write as its account and everything else the route does. While no build answers a read
-// at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
+// (readClasses), on GET /ws/live and on GET /ws/doc/{room}, ahead of the scope gate, the sign-in
+// check, an account entry's write as its account and everything else the route does. While no
+// build answers a read at a past time, it answers one that carries a cut 403
+// AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
+// session it names, reading as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //

@@ -29,7 +29,10 @@ const (
 // trimmed, then the token after "Bearer ". present is false when the header is absent or blank,
 // so the caller authenticates the request another way. A header that is present but is not a
 // bearer gives present true and an empty token, which no credential matches. The HTTP API and
-// the document websocket both read their bearer through it.
+// the live socket read their bearer through it (api.credentialOf). The document websocket uses
+// only present from it, never the token: a request that presents no broker-issued token and whose
+// sign-in does not resolve is refused DOC_SOCKET_CREDENTIAL_REFUSED when present is true
+// (api.refuseDocumentSocketCredential).
 func BearerToken(r *http.Request) (token string, present bool) {
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	if authorization == "" {
@@ -46,7 +49,8 @@ func BearerToken(r *http.Request) (token string, present bool) {
 // once at boot by ParseSharedAgentTokens: the values it accepts, the first being the current one
 // and every later one a value on its way out, which a rotation keeps accepting while its consumers
 // move. It also remembers which callers it has logged authenticating with a later value, so one
-// value serves the HTTP API and the document websocket together. A nil list accepts nothing.
+// value serves the HTTP API and the live socket together. The document websocket reads no shared
+// token. A nil list accepts nothing.
 type SharedAgentTokens struct {
 	values [][]byte
 
@@ -122,7 +126,8 @@ func splitAtEachSpace(s string) []string {
 // value. As with a single value, a compare returns at once on a length mismatch, so the values'
 // lengths are not hidden, and a match on a later value does the logging work below. A nil list
 // matches nothing, and the empty bearer matches no value, since none is empty. The HTTP API and
-// the document websocket both authenticate the shared token through it.
+// the live socket authenticate the shared token through it (api.credentialOf). The document
+// websocket reads no shared token (api.refuseDocumentSocketCredential).
 //
 // A bearer matching a value after the first is logged with the request's rightmost
 // X-Forwarded-For address (the hop the load balancer appended; the connection's own address when

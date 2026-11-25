@@ -282,10 +282,13 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
  * class. Every token that holds `read` is read-only: one the secrets broker minted from a read
  * entry or narrowed when its trade asked for `read`, and a personal token minted with `read`.
  * Dispatch serves such a token on the GET routes it classes as reads and refuses it on every
- * other route and on `GET /ws/live`, before the route's handler runs and before its idempotency
- * key is read. So the refused request claims no key, and writes nothing but the record of the
- * token's use: a broker token's spent DPoP proof, or a personal token's last use. No sign-in and
- * no other scope makes the request possible for that token.
+ * other route, on `GET /ws/live` and on `GET /ws/doc/{room}`, before the route's handler runs and
+ * before its idempotency key is read. So the refused request claims no key, and writes nothing
+ * but the record of the token's use: a broker token's spent DPoP proof, or a personal token's
+ * last use. No sign-in and no other scope makes the request possible for that token. The
+ * document socket reads no personal token, so there this code refuses only a read-only token the
+ * secrets broker issued, and a read-only personal token with no sign-in beside it gets
+ * `401 DOC_SOCKET_CREDENTIAL_REFUSED`, as every personal token does there.
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
@@ -565,7 +568,11 @@ export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
  * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
  * fleet withdrew is. The socket closes with it too once the Identity-Aware Proxy assertion its
  * upgrade carried expires (`DISPATCH_IDENTITY=iap`): the reconnect carries a fresh assertion, which
- * is judged again. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ * is judged again. A writable socket that an access token the secrets broker issued opened on an
+ * issue's spec or Verification document closes with it too, at a heartbeat, once the rule of who
+ * writes those documents (`403 DOCUMENT_WRITER_NOT_ARCHITECT`) refuses that token, or the rule's
+ * read fails: the reconnect decides the write again, and is read-only where the rule refuses the
+ * token. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
  */
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 

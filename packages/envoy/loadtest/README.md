@@ -1291,7 +1291,8 @@ document websocket, as the dashboard's editor does
 
 - Editor i edits spec i mod D of the first D seeded specs in key order (`--editor-docs`), as the
   person `person-<i>`: the request carries `X-Dispatch-User: person-<i>`, the stack's header
-  identity, which the document websocket takes as a person (`docs.Service.requestActor`).
+  identity. The api package reads it as the document websocket's sign-in and hands that person
+  to the document service (`api.refuseDocumentSocketCredential`, `docs.Service.requestCaller`).
 - It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>`, on Hocuspocus
   framing (each frame starts with the document's name). As `@hocuspocus/provider` does, it sends
   the token frame (the dashboard's token is its schema version), then sync step 1. It answers the
