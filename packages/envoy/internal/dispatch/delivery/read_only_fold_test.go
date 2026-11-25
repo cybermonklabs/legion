@@ -546,7 +546,11 @@ func TestAReadOnlyReadWithAConcurrentWriteReadsWhatTheCommittedWritesLeave(t *te
 		var answers HeadAnswers
 		if planted {
 			answers.writes = append(answers.writes, func(ctx context.Context, db refs.Pool) error {
-				_, err := db.Exec(ctx, `update pull_request_heads set head_sha = $3, event_at = $4 where repo = $1 and number = $2`,
+				if _, err := db.Exec(ctx, `update pull_request_heads set head_sha = $3, event_at = $4 where repo = $1 and number = $2`,
+					kept.Repo, kept.Number, kept.HeadSHA, *kept.EventAt); err != nil {
+					return err
+				}
+				_, err := db.Exec(ctx, `update pull_request_texts set head_sha = $3, updated_at = $4 where repo = $1 and number = $2`,
 					kept.Repo, kept.Number, kept.HeadSHA, *kept.EventAt)
 				return err
 			})
@@ -607,11 +611,14 @@ func TestAReadOnlyReadWithAConcurrentWriteReadsWhatTheCommittedWritesLeave(t *te
 	}
 	t.Run("control: a write that ignores the guard reads past the committed write", func(t *testing.T) {
 		issue := seedHeadIssue(t, ctx, pool, 979)
-		got, want, _ := race(t, issue, 9791, base.Add(3*time.Hour), true)
+		got, want, shas := race(t, issue, 9791, base.Add(3*time.Hour), true)
 		t.Logf("the planted request answered\n\t%s\nthe committed writes leave\n\t%s", got, want)
 		if got == want {
 			t.Errorf("CONTROL: a request whose write ignores the guard answered the committed writes'\n\t%s\nso this test "+
 				"cannot tell a read that overrides a write committed in its lock window", want)
+		}
+		if !strings.Contains(got, fmt.Sprintf("head #9791 %s ", shas["B"])) {
+			t.Errorf("CONTROL: the planted request answered\n\t%s\nwant #9791 at B, the write that overrides the committed C", got)
 		}
 	})
 }
