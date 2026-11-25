@@ -482,21 +482,47 @@ type Shown = "any" | "cut";
  *  Firefox moved a control half cut by a dialog's top edge 405 px. WebKit scrolls a focused
  *  control only a frame later, by when a list's own scroll keeping may have moved the page again.
  *  So every engine lands a control the same way. `clips` is the caller's read of which boxes clip
- *  (`clippingBoxes`): a focus changes no box's overflow. Answers whether it took the focus. */
-function land(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): boolean {
+ *  (`clippingBoxes`): a focus changes no box's overflow. `head` is a list's sticky head over the
+ *  element (`showWhole`). Answers whether it took the focus. */
+function land(
+  element: HTMLElement,
+  clips: Map<Element, boolean>,
+  shown: Shown,
+  head: Element | null = null
+): boolean {
   if (!focusNoScroll(element)) return false;
-  showWhole(element, clips, shown);
+  showWhole(element, clips, shown, head);
   queueMicrotask(() => {
-    if (document.activeElement === element) showWhole(element, clips, shown);
+    if (document.activeElement === element) showWhole(element, clips, shown, head);
   });
   return true;
 }
 
 /** Scrolls `element` to its nearest edge where it is not wholly in sight, in the window or in a
  *  box around it that clips it (`clippingBoxes`): the least distance that shows it whole. A control
- *  wholly in sight scrolls nothing, and so, under `"cut"`, does one wholly out of sight. */
-function showWhole(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): void {
-  const sight = sightOf(clippingBoxes(element, clips), undefined);
+ *  wholly in sight scrolls nothing, and so, under `"cut"`, does one wholly out of sight. `head`, a
+ *  list's sticky head, hides the element where the element's top edge is above the head's bottom
+ *  edge. The engine does not see the head: it scrolls a box only clear of the box's own
+ *  `scroll-padding`. So first the box that holds the head, else the window, scrolls the element's
+ *  top edge down to the head's bottom edge, the least distance. */
+function showWhole(
+  element: HTMLElement,
+  clips: Map<Element, boolean>,
+  shown: Shown,
+  head: Element | null = null
+): void {
+  const boxes = clippingBoxes(element, clips);
+  if (head !== null) {
+    const top = Math.max(sightOf(boxes, undefined).top, head.getBoundingClientRect().bottom);
+    // Rounded down, so no part of a pixel that the engine rounds away stays under the head.
+    const by = Math.floor(boxOf(element, undefined).top - top);
+    if (by < 0) {
+      const box = boxes.find((each) => each.contains(head));
+      if (box === undefined) window.scrollBy({ top: by });
+      else box.scrollBy({ top: by });
+    }
+  }
+  const sight = sightOf(boxes, undefined);
   const drawn = boxOf(element, undefined);
   if (liesWithin(drawn, sight) || (shown === "cut" && !meets(drawn, sight))) return;
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -520,10 +546,11 @@ function landFirstInSight(candidates: readonly HTMLElement[]): boolean {
  *  only on one in sight. For a hand-off that names its own landing, as ControlRow's chips hand-off
  *  does: the Inbox list's `ViewportAnchor` puts the control row back where the commit found it
  *  after that hand-off has run (`keepPressedRow`), which undid the engine's own scroll of a plain
- *  `focus()` and left the control as far out of sight as before. Answers whether it took the
- *  focus. */
-export function landWhole(element: HTMLElement): boolean {
-  return land(element, new Map(), "any");
+ *  `focus()` and left the control as far out of sight as before. With `head`, a list's sticky head,
+ *  it shows it whole below that head too (`showWhole`), as the List's selection bar hand-off does
+ *  (`useLastMarkedPlace`). Answers whether it took the focus. */
+export function landWhole(element: HTMLElement, head: Element | null = null): boolean {
+  return land(element, new Map(), "any", head);
 }
 
 /** A row that will move up the page by `by` pixels once the rows a press is still taking away

@@ -299,14 +299,16 @@ export function IssuesTable({
   // - off the list, or out of what the filters show, as Take out of epic does under the Epic
   // filter: a row the reader can see at its place, else before it. With no issue marked, as after
   // a select-all from the table's head: the first row the reader can see below the table's sticky
-  // head. Each is shown whole at its nearest edge. Else the table's own stop, with no scroll. A
-  // row the window has not drawn is out of their sight, so it is never where the focus lands in
-  // the place of an issue that went.
+  // head. Each is shown whole at its nearest edge, below that head too. `head` is a header cell:
+  // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
+  // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
+  // lands in the place of an issue that went.
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
         ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
     lastMarked: () => lastMarked.current,
     list: tableStop,
     order: leaves,

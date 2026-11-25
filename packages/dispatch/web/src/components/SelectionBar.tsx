@@ -85,6 +85,9 @@ export interface MarkedList {
    *  page's list lets the rows after such a row move up by the space it takes once it goes
    *  (`ViewportAnchor`'s `leaving`), and the hand-off reads each row where it will stand then. */
   readonly leaving?: (id: string) => boolean;
+  /** The list's sticky head, which its rows scroll under, else null. A mark the hand-off lands is
+   *  shown whole below it (`landMark`). */
+  readonly head?: () => Element | null;
   /** The list's own element. It takes the focus at its own stop where no row in sight can. */
   readonly list: () => HTMLElement | null;
 }
@@ -145,7 +148,7 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
         : markAtPlace(kept, before.current, last, list.control, landing);
     const mark = id === null ? null : list.control(id);
     if (id !== null && mark !== null) {
-      landMark(mark, landing.moves.get(id));
+      landMark(mark, landing.moves.get(id), list.head?.() ?? null);
       return true;
     }
     if (listed) return false;
@@ -299,16 +302,16 @@ function firstMarkShown(
 }
 
 /** Lands `mark`, the row mark the bar's hand-off chose, with no scroll of the engine's own, and
- *  shows it whole at its nearest edge, the least scroll, wherever it stands (`landWhole`). A mark
- *  whose row will move up into the reader's sight once the rows a press is still taking away have
- *  gone (`moved`) takes the focus with no scroll instead: shown now, it would be shown where it
- *  stands before they go, and the list's anchor shows it whole once they have gone
- *  (`ViewportAnchor`). */
-function landMark(mark: HTMLElement, moved: MovedUp | undefined): void {
+ *  shows it whole at its nearest edge, the least scroll, wherever it stands, below the list's
+ *  sticky head `head` too (`landWhole`). A mark whose row will move up into the reader's sight once
+ *  the rows a press is still taking away have gone (`moved`) takes the focus with no scroll
+ *  instead: shown now, it would be shown where it stands before they go, and the list's anchor
+ *  shows it whole once they have gone (`ViewportAnchor`). */
+function landMark(mark: HTMLElement, moved: MovedUp | undefined, head: Element | null): void {
   if (moved !== undefined && inSightNow(mark, new Map(), moved)) {
     focusNoScroll(mark);
   } else {
-    landWhole(mark);
+    landWhole(mark, head);
   }
 }
 

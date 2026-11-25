@@ -780,11 +780,12 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  press is taking away, `headings` the rows a group's heading is drawn right before, and `last`
  *  the row marked last, null where no row is marked. With `cards`, each row draws a card of its
  *  own after its mark, an `<article>` and so a row nested in it, as an Inbox row draws an ask
- *  card. Its `returnFocus` ends at the list's own stop where the hand-off moves nothing, as the
- *  Inbox's does. */
+ *  card. `head` is the list's sticky head, as the List names its table's. Its `returnFocus` ends
+ *  at the list's own stop where the hand-off moves nothing, as the Inbox's does. */
 function PlacedList({
   cards = false,
   count,
+  head = null,
   headings = [],
   last,
   leaving = [],
@@ -792,6 +793,7 @@ function PlacedList({
 }: {
   cards?: boolean;
   count: number;
+  head?: Element | null;
   headings?: readonly string[];
   last: string | null;
   leaving?: readonly string[];
@@ -802,6 +804,7 @@ function PlacedList({
     list.current?.querySelector<HTMLElement>(`[data-row="${key}"] input`) ?? null;
   const landAtPlace = useLastMarkedPlace({
     control: markOf,
+    head: () => head,
     lastMarked: () => last,
     leaving: (key) => leaving.includes(key),
     list: () => list.current,
@@ -1073,6 +1076,35 @@ test("the row marked last still listed takes the focus out of sight too, shown w
     shown.mockRestore();
     moves.restore();
     view.unmount();
+    laidOut();
+  }
+});
+
+// The row marked last, still listed, stands in the window under the list's sticky head, which
+// covers the top 60 px of its mark. The engine does not see the head, so its own scroll to the
+// nearest edge would move nothing. The mark takes the focus and the page scrolls it out from under
+// the head by the least distance, the 60 px.
+test("the row marked last still listed under the list's sticky head takes the focus, scrolled out from under the head by the least distance", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  // The head is 60 px tall, over the top of CORE-10, which stands from 0 to 100 px.
+  const head = document.createElement("div");
+  const headBox = spyOn(head, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 60));
+  const view = render(<PlacedList count={1} head={head} last="CORE-10" listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    pressInBar("Dismiss");
+    view.rerender(<PlacedList count={0} head={head} last="CORE-10" listed={PLACED_KEYS} />);
+    const mark = rowBox("CORE-10");
+    expect(mark).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -60 }]]);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    scrolled.mockRestore();
+    moves.restore();
+    view.unmount();
+    headBox.mockRestore();
     laidOut();
   }
 });
