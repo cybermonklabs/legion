@@ -13,11 +13,12 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  * gives the target's id, the words are the link to its row on this issue's page (`?node=`), drawn
  * as `NodeRow.tsx`'s `Chip` draws its link, in the view that draws the row (R7): in the open
  * outline where it draws it - Graph, which draws every row, and Conversation, but for a target
- * only Graph draws (`LensChip.graphOnly`), as an issue constraint is in Conversation - and in Graph
- * from anywhere else: from Conversation for such a target, and from the Spec view. The issue's key
- * is the address's own (`lensPlaceOf`), so the link works in each view alike. A target with no
- * id, or an address that names no issue, draws the words alone. A chip's words are whole, and
- * wrap inside the line they stand in, as `NodeRow.tsx`'s `ParentLink` does.
+ * only Graph draws (`LensChip.graphOnly`), as an issue constraint is in Conversation, or one no
+ * page read so far holds - and in Graph from anywhere else: from Conversation for such a target,
+ * and from the Spec view. The issue's key is the address's own (`lensPlaceOf`), so the link works
+ * in each view alike. A target with no id, or an address that names no issue, draws the words
+ * alone. A chip's words are whole, and wrap inside the line they stand in, as `NodeRow.tsx`'s
+ * `ParentLink` does.
  *
  * A press on a link to the open outline also focuses the target's row where the tree the chip
  * stands in draws it already (`focusDrawnRow`), at every press: the address puts the focus on its
@@ -29,8 +30,9 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  * holds: `f` steps to it and Enter follows it (`useTreeKeymap.ts`'s `rowStops`). The words are
  * one element right inside the chip, so the marks of a node's state and visibility can stand
  * after them. They are the author's (`authorText`), but where the chip marks them as the page's
- * own (`chip.chrome`, the page's word for a lens whose kind has no words), as `NodeRow.tsx`'s
- * `Chip` marks the page's word for a document.
+ * own (`chip.chrome`: the page's word for a lens whose kind has no words, and for the kind of a
+ * node no page read so far holds), as `NodeRow.tsx`'s `Chip` marks the page's word for a
+ * document.
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
   const { pathname, search } = useLocation();
