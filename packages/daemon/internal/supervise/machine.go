@@ -4613,32 +4613,16 @@ func (m *Machine) forgetSend() {
 // own: PutClaim, PutClaimAndDelivery and PauseStopped are the writes the repair itself makes again
 // (repair); PutDelivery is an upsert of one row; RetireDelivery reads ErrNoSuchDelivery after a
 // landed first try as the retirement made; HoldSessions inserts on conflict do nothing. A new
-// caller of write must have such a reason too. ReleaseHolds has none, because it answers the names
-// it freed, so ReleaseNames makes it once (writeOnce). A second cut is owed as every write the
-// database did not take is (owes, repair). Any other failure — a dial the bound cut, a
-// wait in the store's pool queue that ran out its bound (defaultClaimAcquire), a connection that
-// broke or was refused, a statement refused, a refusal of the store's own — is answered at once
-// and is not made again here: none of them reached the database, or the database answered it, so
-// a database that answers no dial, or a pool that admits no write, costs each write one bound.
+// caller of write must have such a reason too. The one bounded write that has none is the
+// exception to the retry and does not come here: ReleaseHolds answers the names it freed, so
+// ReleaseNames makes it once under bounded. A second cut is owed as every write the database did
+// not take is (owes, repair). Any other failure is answered at once and is not made again here.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	return m.writeTries(ctx, claimWriteTries, call)
-}
-
-// writeOnce is write for a call whose answer reads what its first try changed, made at most once: a
-// second try after a cut whose first try was applied would answer as though the first had changed
-// nothing. Its one caller is ReleaseNames, whose ReleaseHolds answers the names it freed.
-func (m *Machine) writeOnce(ctx context.Context, call func(context.Context) error) error {
-	return m.writeTries(ctx, 1, call)
-}
-
-// writeTries makes call under the claim-write deadline (bounded) up to tries times, the later tries
-// only after a cut of a call the database was handed (cutByBound).
-func (m *Machine) writeTries(ctx context.Context, tries int, call func(context.Context) error) error {
 	for try := 1; ; try++ {
 		writing, cancel := m.bounded(ctx)
 		err := call(writing)
 		cancel()
-		if err == nil || try >= tries || !cutByBound(ctx, err) {
+		if err == nil || try == claimWriteTries || !cutByBound(ctx, err) {
 			return err
 		}
 		m.log.Warn(claimWriteAgainLine, "try", try, "bound", m.deps.claimWrite(), "error", err)
@@ -4651,17 +4635,26 @@ func (m *Machine) writeTries(ctx context.Context, tries int, call func(context.C
 // holding its lock through a third bound.
 const claimWriteTries = 2
 
-// cutByBound is whether err is a store call that the claim-write bound ended after the database was
-// handed it: a deadline, while the decision's own context still runs, on an error that answers
-// WriteBegun. The store marks every error of a transaction whose BEGIN the database answered so
-// (store's writeBegun) and no error before that, so a dial the bound cut, a wait in the pool's
-// queue that ran out, and a BEGIN that never came back are not made again: the database was never
-// handed the write, and a second try would hold the machine's lock another bound for a database
-// that answers nothing. This reads a fact the store states, not the absence of one. A call the
-// daemon's stop ended carries the stop's cancellation, or a deadline once ctx has ended, and is
-// not made again either: the daemon is going.
+// BegunWriteError is the one contract between the store and write's retry about which errors a
+// write may be made again for: an error of a transaction whose BEGIN the database answered, so the
+// database was handed the write. The store's error type asserts at compile time that it implements
+// this interface (store's begunError), and cutByBound reads nothing else, so the two cannot drift
+// apart without the store failing to build.
+type BegunWriteError interface {
+	error
+	WriteBegun() bool
+}
+
+// cutByBound is the one place that decides whether write makes a call again: err is a deadline,
+// while the decision's own context still runs, on a BegunWriteError. So a dial the bound cut, a
+// wait in the pool's queue that ran out its bound (defaultClaimAcquire), and a BEGIN that never
+// came back are owed at once: the database was never handed the write, and a second try would
+// hold the machine's lock another bound for a database that answers nothing. A connection that
+// broke or was refused, a statement refused and a refusal of the store's own carry no deadline and
+// are owed or answered at once too. A call the daemon's stop ended carries the stop's
+// cancellation, or a deadline once ctx has ended, and is not made again: the daemon is going.
 func cutByBound(ctx context.Context, err error) bool {
-	var begun interface{ WriteBegun() bool }
+	var begun BegunWriteError
 	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) && errors.As(err, &begun) && begun.WriteBegun()
 }
 

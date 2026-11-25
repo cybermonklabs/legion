@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // TxPool is what TransactWith opens its transaction on, and the outcome read of a lost commit
@@ -164,12 +166,11 @@ func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error
 var errAcquireBound = errors.New("store: the pool handed out no connection within the wait for one")
 
 // writeBegun is err, an error of a transaction whose BEGIN the database answered, marked as one
-// (WriteBegun): the database was handed the write, so the write may have been applied however its
-// answer ended. Every error TransactWith answers once its transaction has begun carries the mark,
-// and no error before it does: a dial, a wait in the pool's queue or a BEGIN that the write bound
-// or the acquire bound cut never reached the write. supervise reads the mark (its cutByBound) to
-// make again, once, a claim write its bound cut after the database was handed it, and only that:
-// supervise cannot import this package. nil stays nil.
+// (supervise.BegunWriteError): the database was handed the write, so the write may have been
+// applied however its answer ended. Every error TransactWith answers once its transaction has
+// begun carries the mark, and no error before it does: a dial, a wait in the pool's queue or a
+// BEGIN that a bound cut never reached the write. What a caller does with the mark is the
+// caller's rule (supervise's cutByBound), not the store's. nil stays nil.
 func writeBegun(err error) error {
 	if err == nil {
 		return nil
@@ -180,6 +181,9 @@ func writeBegun(err error) error {
 // begunError is writeBegun's mark around the error it carries, which errors.Is and errors.As still
 // read through it.
 type begunError struct{ err error }
+
+// begunError implements the one contract supervise reads, so renaming either side fails the build.
+var _ supervise.BegunWriteError = begunError{}
 
 func (e begunError) Error() string { return e.err.Error() }
 
@@ -265,9 +269,11 @@ func Transact(ctx context.Context, pool TxPool, write func(ctx context.Context, 
 }
 
 // ReadOnly runs read in one read-only TransactWith on pool and answers the value it read: the one
-// form of a standalone read. An error read returns is answered as it is, since read names what it
-// read; an error of the transaction itself (its begin, a cancel, its commit) is answered wrapped as
-// "<what>: <error>". On any error the value is T's zero value.
+// form of a standalone read. An error read returns is answered with read's own text, since read
+// names what it read, under the mark TransactWith gives every error once its BEGIN was answered
+// (writeBegun), so errors.Is and errors.As still reach read's error through it; an error of the
+// transaction itself (its begin, a cancel, its commit) is answered wrapped as "<what>: <error>".
+// On any error the value is T's zero value.
 func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ctx context.Context, tx pgx.Tx) (T, error)) (T, error) {
 	var value, zero T
 	var readErr error

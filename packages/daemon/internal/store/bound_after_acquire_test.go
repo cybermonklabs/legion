@@ -139,8 +139,9 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 	})
 }
 
-// began reports whether err answers WriteBegun, the mark supervise reads to make a cut write again.
+// began reports whether err is a supervise.BegunWriteError that answers WriteBegun, the one
+// contract supervise's cutByBound reads.
 func began(err error) bool {
-	var begun interface{ WriteBegun() bool }
+	var begun supervise.BegunWriteError
 	return errors.As(err, &begun) && begun.WriteBegun()
 }
