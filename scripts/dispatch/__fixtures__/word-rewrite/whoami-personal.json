@@ -1,8 +1,0 @@
-{
-  "kind": "agent",
-  "owner": "alice",
-  "project": null,
-  "scopes": ["person", "approve"],
-  "service": null,
-  "session": null
-}
