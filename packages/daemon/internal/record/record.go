@@ -2400,6 +2400,9 @@ type Store interface {
 	// MergeDefects marks each open defect of issue that generation carries as merged at at: the
 	// change that carried it merged, so it holds the close no more.
 	MergeDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, at time.Time) error
+	// CloseDefectsByPerson ends each open defect of issue, of any kind, as closed by a person
+	// (DefectClosedByPerson) at at: a person's done closed the issue. It answers how many it ended.
+	CloseDefectsByPerson(ctx context.Context, tx pgx.Tx, issue string, at time.Time) (int64, error)
 	// PutCheckRead stores read as the issue's newest read of the checks' states, where no read of a
 	// later moment stands. It answers whether it was stored.
 	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
