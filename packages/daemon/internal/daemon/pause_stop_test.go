@@ -1036,12 +1036,14 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // release's backstop reads (getsBackstop, record.PhaseOwed). The stop transaction
 // (projectPause.stopTx), and a cancel of the pod's release made while the project is paused,
 // which records the released role stopped by the pause in the store (outbox.cancelRelease,
-// store.ReleaseCancelPause.GetsBackstop), each arm no backstop for LEGION-208's implementer when
-// its completion of the entry its phases row stands on is recorded while the issue stays in
-// implementing and it holds no task, and none when it is behind that entry and holds no task of
-// the issue's run and phase, since the daemon sends it its entry's task itself: in neither case
-// does it owe the phase anything a wake could bring back. The behind rows read the entry the claim
-// serves from the whole claim (supervise.Claim.ServingEntry, store.ClaimTx).
+// store.ReleaseCancelPause.GetsBackstop) and is also how a workspace check's decline of that
+// release ends it (outbox.declineRelease, store.DeclineIssueRelease), each arm no backstop for
+// LEGION-208's implementer when its completion of the entry its phases row stands on is recorded
+// while the issue stays in implementing and it holds no task, and none when it is behind that
+// entry and holds no task of the issue's run and phase, since the daemon sends it its entry's
+// task itself: in neither case does it owe the phase anything a wake could bring back. The behind
+// rows read the entry the claim serves from the whole claim (supervise.Claim.ServingEntry,
+// store.ClaimTx).
 //
 // The second control of the check is the first of the two kinds of claim that owe nothing and
 // still get the backstop (holdsUndeliveredEntryTask): the implementer took entry 1, was handed
@@ -1105,6 +1107,9 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 		}},
 		{name: "a cancel of its release while paused", released: true, stop: func(r *pauseRig, _ store.Pause, _ supervise.Claim) {
 			r.cancelRelease()
+		}},
+		{name: "a decline of its release while paused", released: true, stop: func(r *pauseRig, _ store.Pause, worker supervise.Claim) {
+			r.declineRelease(worker.Role)
 		}},
 	} {
 		for _, c := range []struct {
@@ -1301,5 +1306,22 @@ func (r *pauseRig) cancelRelease() {
 	hold, why := releaseHold(store.ReleaseCausePaused)
 	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, hold, why); err != nil {
 		r.t.Fatalf("cancel the release of %s while LEGION is paused: %v", pauseIssue, err)
+	}
+}
+
+// declineRelease declines LEGION-208's release through the outbox's own decline, with the rig's
+// backstop, as a workspace check that read the workspace through role and found a commit no branch
+// or tag on origin holds does (idleRigUnpushed), and fails unless the decline was recorded. The
+// runner's supervisor has no runtime, so the decline names no pod (declineFor).
+func (r *pauseRig) declineRelease(role claim.Role) {
+	r.t.Helper()
+	runner := &outbox{pool: r.pool, records: r.pauses.records, trees: r.st, supervisor: &supervisor{}, project: "legion",
+		backstop: r.pauses.backstop, now: time.Now, log: quietLogger()}
+	check := record.IssueWorkspaceCheck{Tree: pauseIssue, Role: role}
+	if err := runner.declineRelease(r.ctx, pauseIssue, check, time.Now(), idleRigUnpushed, nil); err != nil {
+		r.t.Fatalf("decline the release of %s while LEGION is paused: %v", pauseIssue, err)
+	}
+	if n := r.count(`select count(*) from idle_release_declines where issue = $1`, pauseIssue); n != 1 {
+		r.t.Fatalf("the declines recorded of %s's release = %d, want 1", pauseIssue, n)
 	}
 }
