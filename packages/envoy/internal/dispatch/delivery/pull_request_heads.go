@@ -1305,12 +1305,12 @@ type headAttributionResult struct {
 // messages could change anything, and as complete, since an answer naming no head repository at
 // all left a source unread and so may attribute nobody but delete nobody either.
 //
-// A log line is written per call, not per attribution: the fork's head names the first
-// candidate it refused, and a pull request that passed candidates over names them and the issue
-// it settled on, if any. attributeHead calls this a second time, after reading the commit
-// messages, whenever the first call held no candidate, so on that path both calls log and the
-// second line names the candidates the commit messages added.
-func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
+// A log line is written per call, not per attribution, to logger, the caller's: the fork's head
+// names the first candidate it refused, and a pull request that passed candidates over names them
+// and the issue it settled on, if any. attributeHead calls this a second time, after reading the
+// commit messages, whenever the first call held no candidate, so on that path both calls log and
+// the second line names the candidates the commit messages added.
+func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
 	attributed := headAttributionResult{
 		source:   string(sourceNone),
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
@@ -1321,7 +1321,7 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 		return attributed, err
 	}
 	if !attributed.ownHead {
-		slog.Info("dispatch delivery: a pull request whose head is in another repository names an issue",
+		logger.Info("dispatch delivery: a pull request whose head is in another repository names an issue",
 			"repo", facts.Repo, "head_repo", headRepo, "issue", candidates[0].key, "source", string(candidates[0].source))
 		return attributed, nil
 	}
@@ -1341,7 +1341,7 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 		if attributed.issueKey != nil {
 			settled = *attributed.issueKey
 		}
-		slog.Info("dispatch delivery: a pull request names an issue of another repository",
+		logger.Info("dispatch delivery: a pull request names an issue of another repository",
 			"repo", facts.Repo, "passed_over", strings.Join(keys, " "), "issue", settled, "source", attributed.source)
 	}
 	return attributed, nil
@@ -1362,8 +1362,12 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 // the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
 // the reconcile's leased pass carries: the intakes and the results routes call this too, and
 // their contexts carry none, so the note changes nothing there.
-func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
-	attributed, err := a.headAttribution(ctx, pool, facts, headRepo)
+//
+// Its lines go to logger, the caller's: the intake passes its own (intakeTuning.log), so they
+// reach whoever reads that intake's lines; the readers below, which the reconcile and the results
+// routes call, pass slog.Default(), where those callers write.
+func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
+	attributed, err := a.headAttribution(ctx, logger, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
 	}
@@ -1376,14 +1380,14 @@ func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
 			return headAttributionResult{source: string(sourceNone)}, limited
 		}
-		slog.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
+		logger.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
 		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
 		return attributed, nil
 	}
 	facts.CommitMessages = read
-	attributed, err = a.headAttribution(ctx, pool, facts, headRepo)
+	attributed, err = a.headAttribution(ctx, logger, pool, facts, headRepo)
 	attributed.messages = read
 	return attributed, err
 }
@@ -1429,7 +1433,7 @@ func mergeCommitOf(payload pullRequestPayload) string {
 // caller's installation token. The one place the two GitHub readers below build an attribution
 // from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
 func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
-	return a.attributeHead(ctx, pool, client, func() (string, error) { return token, nil },
+	return a.attributeHead(ctx, slog.Default(), pool, client, func() (string, error) { return token, nil },
 		attributionFacts{
 			Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
 			HeadRef: payload.Head.Ref,
@@ -1702,7 +1706,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return nil, err
 	}
-	attributed, err := in.attributor.attributeHead(ctx, in.pool, in.github,
+	attributed, err := in.attributor.attributeHead(ctx, in.tuning.log, in.pool, in.github,
 		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
 		attributionFacts{
 			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],

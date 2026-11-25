@@ -318,7 +318,8 @@ func (l *stepRecordsLive) holdsID(read stepRecordsRead, id string) bool {
 	return false
 }
 
-// stepsPrinted is what `dispatch steps` printed: its header's counts and one line per run.
+// stepsPrinted is what `dispatch steps` printed of an issue in no experiment's group, which every
+// issue these proofs read is: its header's counts and one line per run, with no `Experiment …` line.
 type stepsPrinted struct {
 	steps, tasks int
 	lines        []stepLine
@@ -333,10 +334,11 @@ type stepLine struct {
 	agent, model, started, ended, result string
 }
 
-// parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
-// tasks`, then exactly n lines of runs. The line of a task of the issue's plan, `task <task> needs
-// <needs>: …` with its needs as `[a,b]`, `[]` or `-`, which comes before that task's runs, is no
-// run and is passed over.
+// parseSteps reads the output of `dispatch steps --issue key` for an issue in no experiment's
+// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs, with no
+// `Experiment <experiment>: variant <variant>.` line between them, which it would read as no run.
+// The line of a task of the issue's plan, `task <task> needs <needs>: …` with its needs as
+// `[a,b]`, `[]` or `-`, which comes before that task's runs, is no run and is passed over.
 func parseSteps(key, out string) (stepsPrinted, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var printed stepsPrinted

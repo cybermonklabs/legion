@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci.yaml's `changes` job selects each job through a dorny/paths-filter filter, and a change to a
+# `.github/workflows/ci.yaml#changes` job selects each job through a dorny/paths-filter filter, and a change to a
 # file a job reads but its filter misses skips that job, on the pull request and again on the
 # merge group that lands it, after which nothing runs it. So every filter must match every file
 # its job reads. No file of the repository holds the filters: the changes job computes them when
@@ -22,7 +22,7 @@
 #     .github/scripts/ci_filter_sources.py): the closure of a go command it starts, and each file
 #     it reads through `..`;
 #   * the module files of each go command's workspace: go.work, go.work.sum and every bound
-#     module's go.mod and go.sum (`go env GOWORK`, `go work edit -json`);
+#     module's go.mod and go.sum, as `go env GOWORK` and `go work edit -json` report them;
 #   * for a claimed go command this check does not reduce (below), every Go file of the
 #     repository and every file under a Go module's directory;
 #   * the static reads of the job's other steps: actions, the Bun install, Biome, scripts,
@@ -56,7 +56,7 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
+#      gate: `.github/workflows/dispatch-browser.yaml#lane`, which each of ci.yaml's two callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
@@ -114,7 +114,10 @@
 #      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
 #      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
 #      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
-#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      reports that check on a pull request or a merge group, or whose `if:` is any but `${{
+#      !github.event.pull_request.draft }}`, since GitHub names a job it skips by its name
+#      expression's literal text, so a dispatch must run it to name it pr-title (dispatch); a
+#      ci-ok job — the verdict, whose own
 #      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
 #      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
@@ -139,7 +142,7 @@
 #      matches. Such a pattern holds its filter to nothing, so a change to the files it means
 #      starts no job. Its other half, a filter pattern matching nothing its job reads, has no
 #      subject left: a computed filter selects exactly what its job reads.
-#  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
+#  10. an if: condition of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the
 #      job, the
@@ -222,7 +225,7 @@
 #      from the day it was added, and its own typecheck and tests ran in no job for a second
 #      reason no rule reads, that no step ran them. The other way round is a read every Bun job
 #      declares of a manifest no install reads. The manifest is read as
-#      .github/scripts/check-bun-workspace-manifests.sh:103-111 reads it, at every shape: a
+#      `.github/scripts/check-bun-workspace-manifests.sh#root_manifest` reads it, at every shape: a
 #      package.json that is missing or is not valid JSON, and a `workspaces` that is not a list
 #      or holds anything but non-empty strings, are named rather than taken for an empty list; an
 #      empty array is accepted, as that script accepts it, since a root declaring no workspace
@@ -284,14 +287,22 @@
 #      computed filter (no file of .github/ci-gates declares it), naming the output and the
 #      reference. Such an output is empty on every run, which reads as a filter that never
 #      matched: the job it gates would be skipped on every change it selects, and nothing else
-#      here would say so. The one name no filter holds that an output may read is the paths
+#      here would say so. The one other reference an output may carry is the every-job term's
+#      `steps.scope.outputs.every_job`, written by the job's scope step, which
+#      ci-router-outputs.test.sh runs and holds to what it selects, and only beside a filter's
+#      verdict: an output that reads it alone is true only on a run that selects every job. Also
+#      a changes job with no step of id `scope`, and an output but ref_is_main that does not open
+#      with `${{ steps.scope.outputs.every_job && `, since one written with an older
+#      `github.event_name == 'workflow_dispatch' && 'true'` term selects its job on every dispatch
+#      of a branch. The one name no filter holds that an output may read is the paths
 #      filter's own `changes`, the list of the filters that matched, in the output
-#      matched_filters alone, which must be exactly `${{ (github.event_name ==
-#      'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' ||
-#      steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched run, whose
-#      filter step is skipped, or on one whose filters fell open, whose fallback file holds no
-#      filter a step reads out of the list, skips there every step it gates - in a job whose one
-#      step of id `generate` runs the generation (ci-filters-generate.sh writes
+#      matched_filters alone, which must be exactly `${{ steps.scope.outputs.every_job && 'all' ||
+#      steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}`
+#      - a list that is not `all` on a run whose filter step is skipped, or on one whose filters
+#      fell open, whose fallback file holds no filter a step reads out of the list, skips there
+#      every step it gates, and #5309's `github.event_name == 'workflow_dispatch'` term, `all` on
+#      every dispatch, runs every step on a dispatch of a branch whose diff reaches few - in a job
+#      whose one step of id `generate` runs the generation (ci-filters-generate.sh writes
 #      every_filter=true to that step's outputs when it writes the fallback file), while every
 #      filter's name is letters, digits, `_` and `-` (which JSON writes as they are) and no two
 #      names differ only in case (GitHub's `contains` ignores case). And with or without the
@@ -334,23 +345,24 @@
 #      every run; a `!` before the `contains` runs the step when its filter did not match, and a
 #      term after it can stop it running at all; a `contains` without the quotes matches every
 #      name holding the filter's (`ci_tools_test` inside `mirror_ci_tools_test`); a condition
-#      without the `all` term is skipped on every dispatched run, and one without the result term
-#      on every run whose changes failed; and a job-level read selects a job by an output that is
-#      never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a `with:` value
-#      of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it calls (but
-#      ci.yaml's ci-ok job), that names the changes job other than as needs.changes.result,
-#      needs.changes.outputs.<name> or needs.changes, or an input other than as inputs.<name>
-#      (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`, `inputs. x`,
-#      `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule here reads
-#      them, so a read so spelt would be held to nothing. An input's name is read in any case, as
-#      GitHub reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which
-#      holds the list and filter_verdicts), filter_verdicts, `toJSON(needs)` or every job's
-#      outputs (`needs.*` but `needs.*.result`) other than as the payload's `!= ''`, which asks
-#      only whether ci.yaml is the caller; and a `run:`, `env:`, `with:` or other text of a job
-#      that reads any of them, but ci.yaml's own `with:` to a workflow it calls, the ci-ok report
-#      action's `changes:` and ci.yaml's ci-ok job: each of these names every filter on every run,
-#      so a step reading one for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is
-#      gated on a filter no rule reads. Rules 2 and 3 read the filter out of each `contains`
+#      without the `all` term is skipped on every run that selects every job, and one without the
+#      result term on every run whose changes failed; and a job-level read selects a job by an
+#      output that is never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a
+#      `with:` value of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it
+#      calls (but ci.yaml's ci-ok job), that names the changes job other than as
+#      needs.changes.result, needs.changes.outputs.<name> or needs.changes, or an input other than
+#      as inputs.<name> (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`,
+#      `inputs. x`, `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule
+#      here reads them, so a read so spelt would be held to nothing. An input's name is read in any
+#      case, as GitHub reads it. Also a condition reading the ci-ok payload
+#      (`toJSON(needs.changes)`, which holds the list and filter_verdicts), filter_verdicts,
+#      `toJSON(needs)` or every job's outputs (`needs.*` but `needs.*.result`) other than as the
+#      payload's `!= ''`, which asks only whether ci.yaml is the caller; and a `run:`, `env:`,
+#      `with:` or other text of a job that reads any of them, but ci.yaml's own `with:` to a
+#      workflow it calls, the ci-ok report action's `changes:` and ci.yaml's ci-ok job: each of
+#      these names every filter on every run, so a step reading one for a filter
+#      (`case '${{ inputs.matched-filters }}' in *apx*)`) is gated on a filter no rule reads. Rules
+#      2 and 3 read the filter out of each `contains`
 #      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old

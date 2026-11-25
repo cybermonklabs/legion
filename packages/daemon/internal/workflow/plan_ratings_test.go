@@ -31,6 +31,7 @@ var todaysDefaultSteps = []string{"planner", "implementer", "tester", "reviewer"
 // RunsByDefault answers a fresh copy, so a caller that changes the slice it got changes no later
 // answer.
 func TestARunWithNoPlanRowsWalksTodaysDefaultSteps(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Generation: 1}
 	if node := planNode(issue, todaysWalk()); len(node.Tasks) != 1 || node.Tasks[0].ID != "default" || !slices.Equal(node.Tasks[0].Steps, todaysDefaultSteps) ||
 		node.Source != record.PlanSourceDefault || node.PlanDocument != nil {
@@ -101,6 +102,7 @@ func retroEndsAndRatings(t *testing.T, pool *pgxpool.Pool, issue string) (ends, 
 // the first, with run 2's generation and run 2's id, and the first stays as it was. A second
 // opening of that gate, by one more engine, writes no plan: the issue has left admitted.
 func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
@@ -146,6 +148,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 // of the child's key and that run, so neither carries the other's id or the root's. Dispatch
 // refuses a plan id that belongs to another issue, so a plan named by the tree would be lost.
 func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	engine := stepEngine(nil)
@@ -172,6 +175,7 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 // rated or not, writes none either. A plan is written at the start of a run's work alone, so a run
 // already working at the deploy finishes with no plan (its read shows the plan null).
 func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// rating is the completion's rating of the plan, nil for a retro that gives none.
@@ -226,6 +230,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 // third, so the generation in each id is a number neither retro's count of starts is, and each
 // retro is completed by a new engine over the same store, as after a restart.
 func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Accepting)
 	root.Generation = 3
@@ -275,6 +280,7 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 // agent, the rating and its reason. The retro writes no plan, which only the start of a run's work
 // writes.
 func TestARetroRunningAtTheDeployRatesTheRecordItsEndMakes(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Retro)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim", Entry: 1,
