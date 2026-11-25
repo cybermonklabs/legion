@@ -81,14 +81,42 @@ func (*Store) ValidName(id string) error {
 	return nil
 }
 
+// spend spends n requests of call from the store's budget before a call of 1Password. held is a
+// List's or a Describe's call the budget holds on a store that holds an earlier result, which the
+// store answers instead; a store that holds none spends the call as callFirst, from the reserve,
+// and past the whole budget answers ErrBudgetSpent, so a held call never answers empty.
+func (s *Store) spend(ctx context.Context, call string, n int) (held bool, err error) {
+	spent, err := s.budget.Spend(ctx, call, n)
+	if err != nil || spent {
+		return false, err
+	}
+	s.mu.Lock()
+	earlier := !s.listedAt.IsZero()
+	s.mu.Unlock()
+	if earlier {
+		return true, nil
+	}
+	if spent, err = s.budget.Spend(ctx, callFirst, n); err != nil {
+		return false, err
+	}
+	if !spent {
+		return false, ErrBudgetSpent
+	}
+	return false, nil
+}
+
 // list lists the vault and reads in full, in one Get, each item want picks from that List,
 // with the item the store keeps of it when it keeps one; then the List's answer is the store's
-// last, each item read is kept, and an item the List no longer answers is dropped. The caller
-// holds s.refreshing.
-func (s *Store) list(ctx context.Context, want func(o Overview, kept Item, held bool) bool) error {
+// last, each item read is kept, and an item the List no longer answers is dropped. It spends each
+// of the two calls as call before it makes it, and answers held, changing nothing, where the
+// budget holds either. The caller holds s.refreshing.
+func (s *Store) list(ctx context.Context, call string, want func(o Overview, kept Item, held bool) bool) (held bool, err error) {
+	if held, err := s.spend(ctx, call, ListRequests); held || err != nil {
+		return held, err
+	}
 	overviews, err := s.client.List(ctx)
 	if err != nil {
-		return fmt.Errorf("list 1Password vault %s: %w", s.vault, err)
+		return false, fmt.Errorf("list 1Password vault %s: %w", s.vault, err)
 	}
 	at := s.now()
 	var ids []string
@@ -101,12 +129,15 @@ func (s *Store) list(ctx context.Context, want func(o Overview, kept Item, held 
 	s.mu.Unlock()
 	var items []Item
 	if len(ids) > 0 {
+		if held, err := s.spend(ctx, call, GetRequests(len(ids))); held || err != nil {
+			return held, err
+		}
 		items, err = s.client.Get(ctx, ids...)
 		if errors.Is(err, secretstore.ErrNotFound) {
-			return fmt.Errorf("an item of 1Password vault %s was deleted between its List and its read; the next read lists the vault again", s.vault)
+			return false, fmt.Errorf("an item of 1Password vault %s was deleted between its List and its read; the next read lists the vault again", s.vault)
 		}
 		if err != nil {
-			return fmt.Errorf("read the changed items of 1Password vault %s: %w", s.vault, err)
+			return false, fmt.Errorf("read the changed items of 1Password vault %s: %w", s.vault, err)
 		}
 	}
 	s.mu.Lock()
@@ -124,7 +155,7 @@ func (s *Store) list(ctx context.Context, want func(o Overview, kept Item, held 
 			delete(s.kept, id)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // keep holds item, unless the store keeps a read of it that 1Password changed later. The caller
@@ -230,11 +261,11 @@ func (s *Store) listing(title string, item Item, archived bool, opts secretstore
 
 // List lists the vault, reads in full each item under prefix whose UpdatedAt moved since the store
 // last read it (an archived one only with opts.IncludeDeleted), and answers one listing a title
-// (listings).
+// (listings). Where the budget holds it, it answers the store's last result, as kept.
 func (s *Store) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	s.refreshing.Lock()
 	defer s.refreshing.Unlock()
-	err := s.list(ctx, func(o Overview, kept Item, held bool) bool {
+	_, err := s.list(ctx, callList, func(o Overview, kept Item, held bool) bool {
 		return strings.HasPrefix(o.Title, prefix) && (o.State == StateActive || opts.IncludeDeleted) && (!held || !kept.UpdatedAt.Equal(o.UpdatedAt))
 	})
 	if err != nil {
@@ -252,7 +283,7 @@ func (s *Store) List(ctx context.Context, prefix string, opts secretstore.ReadOp
 // opts.IncludeDeleted, only archived ones; a title two active items hold it answers with
 // Duplicates set, as List does, so the policy refuses it by that mark rather than as absent. An
 // item of the title that another writer makes after the store's last List is seen at the next
-// List.
+// List. Where the budget holds it, it answers from the store's last result, as kept.
 func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	s.refreshing.Lock()
 	defer s.refreshing.Unlock()
@@ -265,7 +296,14 @@ func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOp
 		}
 	}
 	s.mu.Unlock()
+	held := false
 	if len(ids) > 0 {
+		var err error
+		if held, err = s.spend(ctx, callDescribe, GetRequests(len(ids))); err != nil {
+			return secretstore.Listing{}, err
+		}
+	}
+	if len(ids) > 0 && !held {
 		items, err := s.client.Get(ctx, ids...)
 		switch {
 		case errors.Is(err, secretstore.ErrNotFound):
@@ -284,7 +322,7 @@ func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOp
 		}
 	}
 	if len(ids) == 0 {
-		if err := s.list(ctx, func(o Overview, _ Item, _ bool) bool { return wanted(o) }); err != nil {
+		if _, err := s.list(ctx, callDescribe, func(o Overview, _ Item, _ bool) bool { return wanted(o) }); err != nil {
 			return secretstore.Listing{}, err
 		}
 	}
@@ -299,9 +337,9 @@ func (s *Store) Describe(ctx context.Context, id string, opts secretstore.ReadOp
 
 // Read answers the credential of the item source names. Within readHeldFor of the store's last
 // List it answers the kept item, with no call, while its UpdatedAt is the one that List answered;
-// otherwise it lists the vault, and reads the item in full only where its UpdatedAt moved.
-// ErrNotFound for a source of another vault, an item the vault no longer holds, one in its
-// Archive, and one with no credential.
+// otherwise it lists the vault, and reads the item in full only where its UpdatedAt moved. It is
+// never held: its calls spend past the budget where they must. ErrNotFound for a source of another
+// vault, an item the vault no longer holds, one in its Archive, and one with no credential.
 func (s *Store) Read(ctx context.Context, source string) (string, error) {
 	rest, ok := strings.CutPrefix(source, sourcePrefix)
 	vault, id, cut := strings.Cut(rest, "/")
@@ -317,7 +355,7 @@ func (s *Store) Read(ctx context.Context, source string) (string, error) {
 	if value, held, err := s.held(id, true); held {
 		return value, err
 	}
-	err := s.list(ctx, func(o Overview, kept Item, held bool) bool {
+	_, err := s.list(ctx, callRead, func(o Overview, kept Item, held bool) bool {
 		return o.ID == id && (!held || !kept.UpdatedAt.Equal(o.UpdatedAt))
 	})
 	if err != nil {

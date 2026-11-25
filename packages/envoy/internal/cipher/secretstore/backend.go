@@ -3,6 +3,7 @@ package secretstore
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -22,6 +23,33 @@ type Config interface {
 type OpenEnv struct {
 	// Log is the broker's logger, which a store's SDK logs through where it logs at all.
 	Log *slog.Logger
+	// Database is the broker's Postgres, which every replica shares: where a store keeps what all
+	// of them count together, such as the 1Password store's daily request budget. cipherd hands
+	// every store the one its database answers (store.Store.SecretStoreDatabase).
+	Database Database
+	// Now is the broker's clock.
+	Now func() time.Time
+}
+
+// Database is the broker's Postgres as a store reads and writes it: one transaction at a time,
+// over plain Go values. It names no database driver's type, so a store package, and the
+// agent-secrets CLI that links every store, links no driver.
+type Database interface {
+	// InTx runs fn in one transaction, committed when fn returns nil and rolled back otherwise.
+	InTx(ctx context.Context, fn func(Tx) error) error
+}
+
+// Tx is one transaction of a Database.
+type Tx interface {
+	// Exec runs a statement with args.
+	Exec(ctx context.Context, sql string, args ...any) error
+	// QueryRow runs a query of one row with args; its Scan reads the row's columns into dest.
+	QueryRow(ctx context.Context, sql string, args ...any) Row
+}
+
+// Row is one row a Tx's QueryRow answered.
+type Row interface {
+	Scan(dest ...any) error
 }
 
 // Opened is a store Backend.OpenStore opened: the Store, the credentials it reads with as the

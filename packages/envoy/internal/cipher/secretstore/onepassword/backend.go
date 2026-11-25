@@ -2,6 +2,7 @@ package onepassword
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -36,8 +37,9 @@ func (Backend) Variables() []string {
 }
 
 // OpenStore reads the service account token from the file cfg names, once, and opens the vault
-// through the 1Password SDK signed in with it.
-func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config, _ secretstore.OpenEnv) (secretstore.Opened, error) {
+// through the 1Password SDK signed in with it, spending from the deployment's daily budget of
+// requests, which env's database counts for every replica (NewBudget).
+func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config, env secretstore.OpenEnv) (secretstore.Opened, error) {
 	c := cfg.(config)
 	raw, err := os.ReadFile(c.tokenFile)
 	if err != nil {
@@ -47,9 +49,13 @@ func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config, _ secretst
 	if token == "" {
 		return secretstore.Opened{}, fmt.Errorf("%s names %s, which holds no token", tokenFileVariable, c.tokenFile)
 	}
+	if env.Database == nil {
+		return secretstore.Opened{}, errors.New("the 1Password store counts its requests in the broker's database, and the broker gave it none")
+	}
 	client, err := NewSDKClient(ctx, token, c.vault)
 	if err != nil {
 		return secretstore.Opened{}, err
 	}
-	return secretstore.Opened{Store: New(client, c.vault, Unlimited, nil), Credentials: "service account token file"}, nil
+	budget := NewBudget(env.Database, c.dailyRequests, env.Now, env.Log)
+	return secretstore.Opened{Store: New(client, c.vault, budget, env.Now), Credentials: "service account token file"}, nil
 }

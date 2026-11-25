@@ -359,8 +359,10 @@ func main() {
 
 	// The secret store, opened by its registry entry and logged with how it signs in, so an
 	// operator reads it from the log: the AWS SDK's credential chain, Application Default
-	// Credentials, or the memory secrets file.
-	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets, secretstore.OpenEnv{Log: slog.Default()})
+	// Credentials, or the memory secrets file. It is handed the broker's database, where a store
+	// keeps what every replica counts together (the 1Password store's daily request budget), and
+	// the broker's clock.
+	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets, secretstore.OpenEnv{Log: slog.Default(), Database: st.SecretStoreDatabase(), Now: time.Now})
 	fatal(err)
 	if opened.Close != nil {
 		defer opened.Close()
