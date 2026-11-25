@@ -176,6 +176,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/artifacts/{id}/reviews":                                 {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/versions/{number}":                       {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/changes":                                 {Writes: readWritesNothing},
+	"GET /api/v1/artifacts/{id}/spec-form":                               {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/artifacts/{slug}":                          {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}":        {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/artifacts/{slug}":                        {Writes: readWritesNothing},
