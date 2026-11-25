@@ -21,7 +21,7 @@ func TestABrokerRefusalIsReadFromItsCodeAsItCame(t *testing.T) {
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
 	_, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7)
 	var api *APIError
-	if !errors.As(err, &api) || api.Code != "POD_REGISTRAR_NOT_LISTED" || !api.RegistrarNotListed() || IsPermanent(err) {
+	if !errors.As(err, &api) || !api.HasCode("POD_REGISTRAR_NOT_LISTED") || !strings.HasPrefix(err.Error(), "broker answered 403 POD_REGISTRAR_NOT_LISTED: ") || !api.RegistrarNotListed() || IsPermanent(err) {
 		t.Fatalf("a refusal coded POD_REGISTRAR_NOT_LISTED beside a URL = %v, want the broker's code, retried", err)
 	}
 	if strings.Contains(err.Error(), "#registrars") {
