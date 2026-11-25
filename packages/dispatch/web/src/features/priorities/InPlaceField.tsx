@@ -412,6 +412,8 @@ export function InPlaceField({
     return (
       <>
         {opened ? (
+          // A title holds no markup, so the box takes no picker: `priority-title` in
+          // `DISPATCH_WRITING_BOXES` says why.
           <h1 className={`-mx-2 min-w-0 ${TITLE_TYPE} ${textPrimaryOnSurface}`}>
             <textarea
               {...typing}

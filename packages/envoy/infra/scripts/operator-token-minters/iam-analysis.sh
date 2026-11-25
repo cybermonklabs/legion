@@ -71,10 +71,12 @@ analyze() {
   fi
 }
 
-# live_iam CHECK [PASS_NOTE]: the check's analysis, each holder judged.
+# live_iam CHECK [PASS_NOTE]: the check's analysis, each holder judged (iam_verdict): a finding, or,
+# for a check of CHECK_RESIDUAL, an ALLOWANCE naming the holder's chain to the account and the
+# fence's residual (iam_holder).
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders what identity role attached perms how designed hattached text chains=0
+  local holders what identity role attached perms how designed hattached text chains=0 allowances
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -119,17 +121,29 @@ live_iam() {
       [ "$designed" != designed ] || continue
       iam_verdict "$check" "$identity" "$role" "$attached" "$how"
       [ "$VERDICT" != finding ] ||
-        finding "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
+        iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
           "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
       continue
     fi
     iam_verdict "$check" "$identity" "$role" "$attached" "$how"
     [ "$VERDICT" != finding ] ||
-      finding "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
+      iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
         "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}"
+    allowances="$(allowed)"
+    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
+  fi
+}
+# iam_holder CHECK IDENTITY RIGHT ROLE RESOURCE PERMISSIONS ATTACHED: a holder iam_verdict judged a
+# finding: for a check of CHECK_RESIDUAL, whose account's grant reaches the broker's pod fence's
+# residual and no more, an ALLOWANCE naming RIGHT, the chain to the account and the residual
+# (residual_allowance, broker-fence.sh); else a finding.
+iam_holder() {
+  if [ -n "${CHECK_RESIDUAL[$1]:-}" ]; then
+    residual_allowance "$2" "$3, so it can act as ${CHECK_RESIDUAL[$1]}" "$5" "$7"
+  else
+    finding "$2" "$3" "$4" "$5" "$6" "$7"
   fi
 }
 

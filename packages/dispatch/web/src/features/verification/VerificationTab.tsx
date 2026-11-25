@@ -235,6 +235,7 @@ function Result({
           {result.run}
         </Fact>
         <Fact label="Observed" testId="verification-result-observed">
+          {/* What the run printed, as the characters it is: `check-result-observed`. */}
           {result.observed === "" ? "This result carries no reading." : result.observed}
         </Fact>
         <Fact label="Commit" testId="verification-result-commit">
@@ -249,6 +250,7 @@ function Result({
           {checkWordsText(result, checkVersion)}
         </Fact>
         <Fact label="Negative control" testId="verification-result-negative-control">
+          {/* As the characters it is: the reading list's `check-result-negative-control`. */}
           {result.negative_control}
         </Fact>
         <Fact label="Failed" testId="verification-result-failed">
@@ -263,6 +265,7 @@ function Result({
       </dl>
       {retracted === undefined ? null : (
         <p className={`text-sm ${dangerText}`} data-testid="verification-result-retraction">
+          {/* As the characters it is: the reading list's `check-retraction-reason`. */}
           Retracted: {retracted.reason}{" "}
           <span className={textMutedOnSurface}>
             · <AgentName actor={retracted.actor} inline /> · <Timestamp at={retracted.created_at} />
@@ -328,6 +331,9 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
             </span>
           )}
         </span>
+        {/* A check's words are shown as the characters they are, and so are its negative
+            control, a result's reading and a retraction's reason below: the reading list's
+            `check-text` (`DISPATCH_READING_SURFACES`) says why. */}
         <span className="font-medium">{check.text}</span>
       </div>
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
@@ -346,6 +352,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           </Fact>
         )}
         <Fact label="Negative control" testId="verification-check-negative-control">
+          {/* As the characters it is: the reading list's `check-negative-control`. */}
           {check.negative_control}
         </Fact>
         <Fact label="Compared with" testId="verification-check-compared-with">
