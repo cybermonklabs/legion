@@ -610,8 +610,10 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		f := k.issue(t, "PKA")
 		requirePersonKeptTaken(t, "the shared token's decision ad1", k.send(t, shared, http.MethodPost, f.edits(),
 			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": personKeptAgentDecisionCode}}}, ""), http.StatusOK)
+		// A typed block's opening line carries braces (pmdoc's malformedDirectiveReason), so the
+		// plan's decision names an id of its own.
 		plan := k.send(t, shared, http.MethodPost, f.uploads(), map[string]any{
-			"name": "plan.md", "content": "# Plan\n\n" + personKeptQuestion + " The ledger.\n\n:::decision\n" + personKeptWords + "\n:::\n",
+			"name": "plan.md", "content": "# Plan\n\n" + personKeptQuestion + " The ledger.\n\n:::decision{#td1}\n" + personKeptWords + "\n:::\n",
 		}, "")
 		requirePersonKeptTaken(t, "the shared token's plan holding alice's words", plan, http.StatusCreated)
 		k.documents = append(k.documents, decodeBody[struct {
@@ -693,8 +695,9 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			what string
 			op   map[string]any
 		}{
+			// The reading's opening line carries braces for the same reason as the plan's decision.
 			{"agent reading inserted into alice's decision", map[string]any{
-				"op": "insert", "into": "block:pd2", "markdown": ":::reading\nThe agent reads it as one ledger for every writer.\n:::\n",
+				"op": "insert", "into": "block:pd2", "markdown": ":::reading{#g1}\nThe agent reads it as one ledger for every writer.\n:::\n",
 			}},
 			{"agent retype writing the shaped of alice's decision", map[string]any{
 				"op": "retype", "block": "pd2", "type": "decision", "attributes": map[string]any{"shaped": []string{pointer}},
