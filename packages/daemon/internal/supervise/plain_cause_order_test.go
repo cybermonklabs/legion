@@ -37,6 +37,13 @@ func TestPlainCauseTheCauseSentenceStandsBeforeTheRuntimesDetailWhereverTheTaskO
 			lead: "the kubelet evicted the pod for node memory pressure because its roles container was using 9 GiB, more than its 8 GiB memory request.",
 		},
 		{
+			name: "a node-pressure eviction of the pod's own disk use over its request",
+			cause: runtime.DeathCause{Kind: runtime.DeathDiskRequest, Container: runtime.IssuePodContainer,
+				Use: 7 << 30, Request: 6 << 30},
+			lead: "the kubelet evicted the pod for node disk pressure because its roles container was using 7 GiB of its own disk, " +
+				"outside $TMPDIR, more than its 6 GiB ephemeral storage request.",
+		},
+		{
 			name:  "an eviction for the pod's own disk",
 			cause: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: 10 << 30},
 			lead:  "the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its 10 GiB limit.",
@@ -73,8 +80,8 @@ func TestPlainCauseTheCauseSentenceStandsBeforeTheRuntimesDetailWhereverTheTaskO
 					t.Errorf("the relaunched role's task carries the cause at %d and the runtime's detail at %d, want the cause first: %q",
 						lead, runtimeDetail, task)
 				}
-				if tmpdir := strings.Index(task, disk); cause.cause.Kind == runtime.DeathDiskLimit &&
-					(tmpdir < lead || tmpdir > runtimeDetail) {
+				diskEviction := cause.cause.Kind == runtime.DeathDiskRequest || cause.cause.Kind == runtime.DeathDiskLimit
+				if tmpdir := strings.Index(task, disk); diskEviction && (tmpdir < lead || tmpdir > runtimeDetail) {
 					t.Errorf("the relaunched role's task says %q at %d, want it between the cause at %d and the runtime's detail at %d: %q",
 						disk, tmpdir, lead, runtimeDetail, task)
 				}

@@ -5,6 +5,7 @@ package textcheck
 //ci:reads packages/daemon/internal/launcher/testpg_disk_doc_extract.txt TestTheKubernetesDocExtractsAreTheGuidesOwnLines reads it as ../launcher/testpg_disk_doc_extract.txt, the committed copy it holds the guide's region to (readExtract)
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -48,7 +49,7 @@ const (
 // failure prints the guide's lines, so the fix is a paste.
 func TestTheKubernetesDocExtractsAreTheGuidesOwnLines(t *testing.T) {
 	guide := strings.Split(shippedText(t, extractsGuide), "\n")
-	flat, lineOf := flattenKeepingLines(guide)
+	flat, lineOf := testdoc.FlattenKeepingLines(guide)
 	for _, extract := range []string{sandboxEvictionExtract, launcherTestPGDiskExtract} {
 		for _, region := range kubernetesExtractRegions(t, extract) {
 			first, last, ok := kubernetesGuideRun(t, flat, lineOf, extract, region)
@@ -102,34 +103,31 @@ func kubernetesExtractRegions(t *testing.T, extract string) []testdoc.ExtractReg
 // kubernetesGuideRun is the run of the guide's lines that region's two markers bound, as the
 // indexes of its first and last lines: from the line the start marker opens on through the line
 // the end marker finishes on, the bound internal/testdoc reads the region by in the copy. The
-// markers are prose and the guide is wrapped, so they are found in the flattened guide
-// (flattenKeepingLines, reclaim_doc_test.go) and carried back to its lines. A marker the guide does
-// not carry, or carries where it no longer bounds one run, fails naming it and answers false, so no
-// region is compared with lines nobody chose.
+// markers are prose and the guide is wrapped, so they are found in the flattened guide by
+// internal/testdoc's own search (testdoc.FlattenKeepingLines, testdoc.MarkedRun) and carried back
+// to its lines. A marker the guide does not carry, or carries where it no longer bounds one run,
+// fails naming it and answers false, so no region is compared with lines nobody chose.
 func kubernetesGuideRun(t *testing.T, flat string, lineOf []int, extract string, region testdoc.ExtractRegion) (first, last int, ok bool) {
 	t.Helper()
-	startOffset := strings.Index(flat, region.Start)
-	if startOffset < 0 {
+	first, last, _, err := testdoc.MarkedRun(flat, lineOf, region.Start, region.End)
+	switch {
+	case err == nil:
+		return first, last, true
+	case errors.Is(err, testdoc.ErrNoStartMarker):
 		t.Errorf("%s has no %q, the start marker of %s's region: the guide's paragraph was reworded or moved, "+
 			"and the doc test beside the copy reads words the guide no longer ships. Repaste the region and "+
 			"its markers from the guide as it reads now, and change that test's marker with them",
 			extractsGuide, region.Start, extract)
-		return 0, 0, false
-	}
-	if strings.Contains(flat[startOffset+len(region.Start):], region.Start) {
+	case errors.Is(err, testdoc.ErrStartMarkerTwice):
 		t.Errorf("%s has %q more than once, so it no longer says where %s's region starts: the region could "+
 			"be held to whichever comes first. Choose a start marker the guide carries once, in the copy and "+
 			"in the doc test beside it", extractsGuide, region.Start, extract)
-		return 0, 0, false
-	}
-	endOffset := strings.Index(flat[startOffset:], region.End)
-	if endOffset < 0 {
+	case errors.Is(err, testdoc.ErrNoEndMarker):
 		t.Errorf("%s has no %q after %q, so the end of %s's region moved: an unbounded region would hold the "+
 			"doc test's facts to whatever the guide carries after it", extractsGuide, region.End, region.Start,
 			extract)
-		return 0, 0, false
 	}
-	return lineOf[startOffset], lineOf[startOffset+endOffset+len(region.End)-1], true
+	return 0, 0, false
 }
 
 // kubernetesGuideRunAt is the index of the first guide line of a run equal to lines, or -1 when

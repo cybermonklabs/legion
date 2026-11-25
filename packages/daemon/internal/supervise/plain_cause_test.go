@@ -221,8 +221,9 @@ func TestPGDiskTheNoteOfADiskLimitEvictionNamesWhatTheLimitCounts(t *testing.T) 
 }
 
 // The sizes in those sentences are the daemon's formatting of the bytes the runtime parsed, in
-// GiB or MiB as the amount reads, to two decimals with the zeros that end them dropped, so a use
-// just over a request never reads as equal to it.
+// GiB or MiB as the amount reads, rounded to two decimals with the zeros that end them dropped, so
+// a use more than 0.005 of its unit over a request reads as more than it, and a use less than
+// 0.005 of its unit over a request reads as equal to it.
 func TestPlainCauseSizesReadAsAPersonReadsThem(t *testing.T) {
 	for _, tc := range []struct {
 		bytes int64

@@ -688,16 +688,16 @@ type PodEndReading string
 const (
 	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
 	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
-	// an end; the kubelet's `Evicted` counts only with the condition, and not when the kubelet's
-	// message names a container of the pod using more memory, or more ephemeral storage, than it
-	// requested, which is the pod's own use and read neither way: DeathMemoryRequest,
-	// DeathDiskRequest), or the pod, not yet terminal, was deleted under a deletion timestamp that
-	// no intent of the daemon's accounts for; a pod already terminal is read from its status
-	// alone. The process did nothing the daemon can see wrong, so the supervisor continues each
-	// role of that pod in its own session, charging neither a death nor a launch failure however
-	// often such ends come, and sends each the task it owed again (supervise's judge,
-	// endedFromOutside, displaced). It covers every claim the runtime observes, the project
-	// controller's included: the reading is of the cause of the end, not of the kind of pod.
+	// an end; the kubelet's `Evicted` counts only with the condition, and not when its message
+	// names a container of the pod over its request, the pod's own use: sandbox's
+	// evictedOverRequest, DeathMemoryRequest, DeathDiskRequest), or the pod, not yet terminal, was
+	// deleted under a deletion timestamp that no intent of the daemon's accounts for; a pod
+	// already terminal is read from its status alone. The process did nothing the daemon can see
+	// wrong, so the supervisor continues each role of that pod in its own session, charging
+	// neither a death nor a launch failure however often such ends come, and sends each the task it
+	// owed again (supervise's judge, endedFromOutside, displaced). It covers every claim the
+	// runtime observes, the project controller's included: the reading is of the cause of the end,
+	// not of the kind of pod.
 	PodEndNotOurs PodEndReading = "pod_end_not_ours"
 	// PodEndOurs: an act of the daemon's own ended the pod — an issue's close or an idle release's
 	// teardown, a tree's cleanup or the orphan sweep, an update round's replacement or a
@@ -718,10 +718,10 @@ const (
 	// than its memory limit. DeathCause.Limit is that limit, as the pod's spec holds it.
 	DeathMemoryLimit DeathCauseKind = "memory_limit"
 	// DeathMemoryRequest: the kubelet evicted the pod for node memory pressure, and its message
-	// named a container of the pod using more memory than the container requested. A pod over its
-	// request is the one the kubelet evicts first, so the end is the pod's own memory use and not a
-	// neighbour's, though the pod was under its limit. DeathCause.Container, Use and Request are the
-	// container, its use and its request as that message gave them.
+	// named a container of the pod using more memory than the container requested: the pod's own
+	// memory use, though the pod was under its limit (sandbox's evictedOverRequest).
+	// DeathCause.Container, Use and Request are the container, its use and its request as that
+	// message gave them.
 	DeathMemoryRequest DeathCauseKind = "memory_request"
 	// DeathDiskLimit: the kubelet evicted the pod, with no DisruptionTarget condition, for passing
 	// a disk limit of its own: the pod's ephemeral-storage limit, a container's or an emptyDir's
@@ -733,10 +733,9 @@ const (
 	// a container of the pod using more ephemeral storage than the container requested. What the
 	// kubelet counts as a container's use there is its own disk, its writable layer and its logs,
 	// which holds nothing of $TMPDIR, on the issue's volume, and nothing of an emptyDir volume,
-	// whose use its message names no container for. A pod over its request is the one the kubelet
-	// evicts first, so the end is the pod's own disk use and not a neighbour's, though the pod was
-	// under its limit. DeathCause.Container, Use and Request are the container, its use and its
-	// request as that message gave them.
+	// whose use its message names no container for. That is the pod's own disk use, though the pod
+	// was under its limit (sandbox's evictedOverRequest). DeathCause.Container, Use and Request are
+	// the container, its use and its request as that message gave them.
 	DeathDiskRequest DeathCauseKind = "disk_request"
 )
 

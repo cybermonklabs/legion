@@ -514,7 +514,7 @@ Then:
 - **The reset's line.**
   A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, once it has read the databases and stopped the server and before its rename.
   Once the new cluster has started, it appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
-  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, with the free space, the disk's size and the floor each in GiB to a tenth, or in MiB below one GiB, and each database's size as PostgreSQL's `pg_size_pretty` writes it.
   Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
   Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
   `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.
@@ -5539,7 +5539,7 @@ The role's next task carries the sentence where it says why its process ended, a
 After an eviction over the pod's ephemeral-storage request the note is `Keep large files under $TMPDIR, on the issue's volume.` (`diskTask`), since what the kubelet's message counts there is the container's own layer and its logs alone.
 After an eviction for the pod's disk limit the note first says what that limit counts and then where large files go (`diskLimitTask`): `That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer. Keep large files under $TMPDIR, on the issue's volume.`
 Where the pod that ended kept its test database in the `testpg` `emptyDir`, which that limit counts, the note also names the test database, between those two sentences: `It also counts the pod's test database, which fills up with the databases test runs make and never drop. Drop each database a test run makes when the run ends.`
-The daemon reads that from the ended pod's own spec (`testDatabaseCounted`, `pod_end.go`) and not from the setting, so a pod made before `runtime.kubernetes.test_postgres_disk` was set is told what its own limit counted, and a pod whose test database is on a disk of its own ([A test database in the pod](#a-test-database-in-the-pod), "A disk of its own"), or that runs none, is told of no database.
+The daemon reads that from the ended pod's own spec (`testDatabaseCounted`, `end_reading.go`) and not from the setting, so a pod made before `runtime.kubernetes.test_postgres_disk` was set is told what its own limit counted, and a pod whose test database is on a disk of its own ([A test database in the pod](#a-test-database-in-the-pod), "A disk of its own"), or that runs none, is told of no database.
 For a `roles` container killed for memory that sentence is the task's one statement that the pod ran out of memory: the note behind it keeps its guidance, that the work can be another role's and the pointer to the worker guide, and drops its own `Your pod ran out of memory.` and the sentence after it (`outOfMemoryNote`), which it still carries whole where the daemon names no limit.
 The claim's `lastDeathCause` opens with the same sentence, as `<sentence>. The runtime's detail: <detail>`.
 So when those deaths fail the claim, the hold notice its architect gets, the controller's copy of it and the `worker-died` beside them carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
@@ -7561,10 +7561,10 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   The daemon continues the roles of such a pod uncharged where it read the end as one from outside the pod, and counts the end as a stop of each role's process where it did not (below).
 
 **An end from outside the pod.**
-The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
+The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`captureEndReading`, `internal/runtime/sandbox/end_reading.go`):
 `sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
 A reading of neither kind decides nothing and writes no line, though the daemon keeps it and reads the end again at the pod's next event.
-An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellPodEnds`), and only once.
+An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellEndReadings`), and only once.
 The line is written before any claim is decided on its reading and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:
 
@@ -7573,7 +7573,7 @@ Two readings say something outside the pod ended it:
   That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
 
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
-  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
+  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `end_reading.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
   An eviction for node memory or disk pressure whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested is not such an end, though it carries the condition (below).
 
@@ -7583,7 +7583,7 @@ The rule has one cost: an outside delete the daemon first sees when the pod is a
 That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
 It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
 
-The daemon keeps each reading for as long as the pod stays in its informer's store, and for ten minutes after the informer delivers the pod's delete (`podEndRecordLife`, `pod_end.go`), so a reading made when the end began still answers for the pod's roles when the end finishes.
+The daemon keeps each reading for as long as the pod stays in its informer's store, and for ten minutes after the informer delivers the pod's delete (`endReadingRecordLife`, `end_reading.go`), so a reading made when the end began still answers for the pod's roles when the end finishes.
 That is for a node that fails: its pods stay in the store under their deletion timestamps through the taint manager's evictions and the node's grace, which can run well past ten minutes, and no role of such a pod is judged for its end until the pod has left the store or its Sandbox holds a new pod.
 A later event of the same pod, such as a second eviction, leaves an end read from outside the pod, or as the daemon's own, as it was read; it reads again only an end of neither reading, so that end is read as it would have been had all its facts come in one event.
 An end the informer never saw is not read as an end from outside the pod, and is counted as a stop of each role's process as an end of neither reading is (below): a pod deleted while the daemon was restarting, since the readings are held in memory alone, or a pod the informer saw only while it was `Running`, because its watch missed the deletion and the relist that followed found the pod gone or replaced.
@@ -7604,7 +7604,7 @@ After a ready, a stop of a role that held neither is restarted with no limit, wh
 `Evicted` with no `DisruptionTarget` condition is such an end:
 the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
 An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
-the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`overRequest`, `pod_end.go`).
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`overRequest`, `end_reading.go`).
 The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
 An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too, for the same reason:
 its message names each such container in the words `Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage.`, counting as the container's use its own disk, its writable layer and its logs, and never `$TMPDIR`, which is on the issue's volume.

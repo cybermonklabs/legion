@@ -102,11 +102,11 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // whether it was ready or still starting. Nothing the role in the pod can do fixes a cause
 // outside it, and stopping the role fixes a cause that stays no better: a charge at some count
 // would only turn a loop of restarts into a stall. An end the runtime read neither way is charged
-// as a death (died), as it always was. Three of the kubelet's evictions are such ends, since the
-// pod that replaces each runs the same task into the same bound: the eviction of a pod over a
-// limit of its own, which carries no DisruptionTarget condition, and the two of a node under
-// pressure whose message names a container over its memory or ephemeral-storage request, which
-// carry the condition (runtime.DeathMemoryRequest, runtime.DeathDiskRequest).
+// as a death (died), as it always was. Three of the kubelet's evictions are such ends: the eviction
+// of a pod over a limit of its own, which carries no DisruptionTarget condition, and the two of a
+// node under pressure whose message names a container over its memory or ephemeral-storage
+// request, which carry it (runtime.DeathMemoryRequest, runtime.DeathDiskRequest; sandbox's
+// clusterEndedReasons and evictedOverRequest say why).
 //
 // It records two things all the same, before the relaunch, because a parked relaunch writes
 // nothing until its turn; a write the store would not take is owed and the relaunch goes on

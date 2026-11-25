@@ -44,7 +44,11 @@ func farPastTheLimit() int { return testLimits().LaunchFailures + 5 }
 // session: its process is replaced at once, nothing is charged, and the task it owed is sent
 // again. The claim holds that task unconfirmed when the end arrives, so the same walk under an end
 // the runtime read neither way charges the death and the launch failure it always did: that is
-// the control, and it is what makes the uncharged half mean anything.
+// the control, and it is what makes the uncharged half mean anything. The continue is of the cause
+// of the end and not of the kind of pod, so both halves run over both kinds of claim
+// (outsideEndClaims): the project controller's claim, which is no role of an issue and shares its
+// pod with nobody, is continued under an end from outside its pod as an issue's role is, and
+// charged the death it always was under an end read neither way.
 func TestAnEvictedPodsRoleIsContinuedChargingNoDeathAndSentItsTaskAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -54,31 +58,27 @@ func TestAnEvictedPodsRoleIsContinuedChargingNoDeathAndSentItsTaskAgain(t *testi
 		{name: "something outside the pod ended it", reading: runtime.PodEndNotOurs},
 		{name: "the end was read neither way", want: Budgets{LaunchFailures: 1, Deaths: 1}},
 	} {
-		for _, kind := range []runtime.ObservationKind{runtime.Gone, runtime.NotRecordedProcess} {
-			t.Run(tc.name+"/"+string(kind), func(t *testing.T) {
-				h := newHarness(t)
-				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: owedTask})
-				h.wantPrompts(1)
-				if p := h.pending(); p.Task != owedTask || !p.ConfirmedAt.IsZero() {
-					t.Fatalf("pending %+v, want the task outstanding and unconfirmed when the pod ends", p)
-				}
-				ended := h.locator()
+		for _, kind := range outsideEndClaims {
+			for _, observed := range []runtime.ObservationKind{runtime.Gone, runtime.NotRecordedProcess} {
+				t.Run(tc.name+"/"+kind.name+"/"+string(observed), func(t *testing.T) {
+					h := owingTask(t, kind.claim(), kind.task)
+					ended := h.locator()
 
-				h.observePodEnd(kind, tc.reading)
+					h.observePodEnd(observed, tc.reading)
 
-				h.wantState(StateLaunching)
-				h.wantBudgets(tc.want)
-				resume := h.wantCalls("Resume", 1)[0]
-				if resume.Previous == nil || *resume.Previous != ended || resume.Spec.ResumeSessionFile != sessionFile {
-					t.Fatalf("resumed %+v from %+v, want the role's own recorded session after the ended incarnation",
-						resume.Spec, resume.Previous)
-				}
-				h.relaunched()
-				if resent := h.wantPrompts(2)[1]; !strings.HasSuffix(resent.Message, owedTask) {
-					t.Fatalf("re-sent %+v, want the task the role owed", resent)
-				}
-			})
+					h.wantState(StateLaunching)
+					h.wantBudgets(tc.want)
+					resume := h.wantCalls("Resume", 1)[0]
+					if resume.Previous == nil || *resume.Previous != ended || resume.Spec.ResumeSessionFile != sessionFile {
+						t.Fatalf("resumed %+v from %+v, want the claim's own recorded session after the ended incarnation",
+							resume.Spec, resume.Previous)
+					}
+					h.relaunched()
+					if resent := h.wantPrompts(2)[1]; !strings.HasSuffix(resent.Message, kind.task) {
+						t.Fatalf("re-sent %+v, want the task %q the claim owed", resent, kind.task)
+					}
+				})
+			}
 		}
 	}
 }
@@ -110,35 +110,6 @@ func TestAnEndTheDaemonItselfMadeIsChargedTheDeathItAlwaysWas(t *testing.T) {
 			h.wantState(StateLaunching)
 			h.wantBudgets(tc.want)
 		})
-	}
-}
-
-// An end the runtime read neither way is the claim's own death: it is charged one, relaunched, and
-// at the third it has no budget left and fails. A terminal pod whose reason is none of the
-// cluster's own reaches the supervisor exactly this way
-// (sandbox's TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason), so a pod a node refuses
-// again and again ends the claim rather than relaunching it for ever.
-func TestAnEndOutsideTheClustersOwnReasonsIsChargedADeathAndFailsTheClaimAtTheThird(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: owedTask})
-	h.wantPrompts(1)
-
-	for death := 1; death < testLimits().LaunchFailures; death++ {
-		h.observePodEnd(runtime.Gone, "")
-
-		h.wantState(StateLaunching)
-		// One launch failure for the relaunch each death makes, which the launch that reaches
-		// ready clears; the deaths themselves are what accumulate to the limit.
-		h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death})
-		h.relaunched()
-	}
-
-	h.observePodEnd(runtime.Gone, "")
-
-	h.wantState(StateFailed)
-	if deaths := h.budgets().Deaths; deaths != testLimits().LaunchFailures {
-		t.Fatalf("the failed claim was charged %d deaths, want the limit %d", deaths, testLimits().LaunchFailures)
 	}
 }
 
@@ -192,11 +163,13 @@ func (h *harness) wantNothingCharged(when string) {
 // ephemeral-storage limit, a container's or an emptyDir's sizeLimit, and the runtime reads that
 // end as neither reading (sandbox's TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason):
 // it is charged a death, and at the third the claim fails, rather than a task that fills its own
-// disk being relaunched into the same eviction for ever. The control is the eviction a node under
-// pressure makes of a pod whose message names no container over its request, which carries the
-// condition and is read as an end from outside the pod: the same first end costs nothing there.
-// An eviction under pressure that names a container over its request is the pod's own use, read
-// neither way and charged as this one is (sandbox's overRequest).
+// disk being relaunched into the same eviction for ever. A terminal pod whose reason is none of
+// the cluster's own reaches the supervisor exactly this way, so a pod a node refuses again and
+// again ends the claim rather than relaunching it for ever. The control is the eviction a node
+// under pressure makes of a pod whose message names no container over its request, which carries
+// the condition and is read as an end from outside the pod: the same first end costs nothing
+// there. An eviction under pressure that names a container over its request is the pod's own use,
+// read neither way and charged as this one is (sandbox's overRequest).
 func TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThird(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	for _, kind := range outsideEndClaims {
@@ -228,42 +201,6 @@ func TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThi
 			h.wantNothingCharged("the end")
 			h.relaunched()
 			h.wantOwed(kind.task)
-		})
-	}
-}
-
-// The uncharged continue is of the cause of the end and not of the kind of pod, so the project
-// controller's claim — which is no role of an issue and shares its pod with nobody — is continued
-// under an end from outside its pod as any role is. The second half is the condition for the
-// first: under an end the runtime read neither way that same claim is charged the death it always
-// was, so the rule waives what the cluster did and nothing else.
-func TestTheControllersEvictedPodIsContinuedUnchargedAndItsOwnDeathIsStillCharged(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		reading runtime.PodEndReading
-		want    Budgets
-	}{
-		{name: "something outside its pod ended it", reading: runtime.PodEndNotOurs},
-		{name: "the end was read neither way", want: Budgets{LaunchFailures: 1, Deaths: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarnessOf(t, controllerClaim())
-			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
-			h.wantPrompts(1)
-			ended := h.locator()
-
-			h.observePodEnd(runtime.Gone, tc.reading)
-
-			h.wantState(StateLaunching)
-			h.wantBudgets(tc.want)
-			if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != ended {
-				t.Fatalf("resumed from %+v, want the controller's own ended incarnation", resume.Previous)
-			}
-			h.relaunched()
-			if resent := h.wantPrompts(2)[1]; !strings.HasSuffix(resent.Message, "Legion controller start") {
-				t.Fatalf("re-sent %+v, want the task the controller owed", resent)
-			}
 		})
 	}
 }
@@ -650,13 +587,13 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 		name      string
 		idle      bool
 		held      bool
-		podEnd    runtime.PodEndReading
+		reading   runtime.PodEndReading
 		displaced bool
 		cause     string
 	}{
-		{name: "an end from outside the pod in a turn", podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
-		{name: "an end from outside the pod in a turn a suspension is held for", held: true, podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
-		{name: "an end from outside the pod with no work outstanding", idle: true, podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "an end from outside the pod in a turn", reading: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "an end from outside the pod in a turn a suspension is held for", held: true, reading: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "an end from outside the pod with no work outstanding", idle: true, reading: runtime.PodEndNotOurs, cause: endFromOutside},
 		{name: "the daemon's replacement of the pod in a turn", displaced: true, cause: endDisplaced},
 		{name: "the daemon's replacement of the pod in a turn a suspension is held for", held: true, displaced: true, cause: endDisplaced},
 	} {
@@ -679,7 +616,7 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 			want.Generation, want.At = h.generation(), h.clock.Now()
 
 			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
-				EndReading: tc.podEnd, Displaced: tc.displaced, Detail: detail}})
+				EndReading: tc.reading, Displaced: tc.displaced, Detail: detail}})
 
 			h.wantEnded(want)
 			h.wantEndedLine(tc.cause)

@@ -212,28 +212,23 @@ func (r *pgDiskRig) script(t *testing.T, command string) {
 	}
 }
 
-// dsnSQL runs sql through the DSN, as every role's tests reach the server.
-func (r *pgDiskRig) dsnSQL(sql string) (string, error) {
-	cmd := exec.Command("psql", "-X", "-w", "-tAq", r.dsn, "-c", sql)
+// psql runs sql under psql's connection arguments connection and answers what it printed: r.dsn,
+// as every role's tests reach the server, or superuserSocket, which the DSN's login running out of
+// connections leaves open.
+func (r *pgDiskRig) psql(sql string, connection ...string) (string, error) {
+	args := append([]string{"-X", "-w", "-tAq"}, connection...)
+	cmd := exec.Command("psql", append(args, "-c", sql)...)
 	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=10")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("psql %s -c %q: %w: %s", r.dsn, sql, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("psql %s -c %q: %w: %s", strings.Join(connection, " "), sql, err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-// superSQL runs sql as the cluster's superuser over its socket, which the DSN's login running
-// out of connections leaves open.
-func (r *pgDiskRig) superSQL(sql string) (string, error) {
-	cmd := exec.Command("psql", "-X", "-w", "-tAq", "-h", filepath.Join(r.dir, "sockets"), "-p", strconv.Itoa(r.port),
-		"-U", r.superuser, "-d", "postgres", "-c", sql)
-	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=10")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("psql as %s -c %q: %w: %s", r.superuser, sql, err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
+// superuserSocket is psql's connection arguments for the cluster's superuser over its socket.
+func (r *pgDiskRig) superuserSocket() []string {
+	return []string{"-h", filepath.Join(r.dir, "sockets"), "-p", strconv.Itoa(r.port), "-U", r.superuser, "-d", "postgres"}
 }
 
 // madeSQL lists the databases a case made, every one named tpg_…, by name.
@@ -243,7 +238,7 @@ const madeSQL = `select coalesce(string_agg(datname, ' ' order by datname), '') 
 func (r *pgDiskRig) makeDatabases(t *testing.T, names ...string) {
 	t.Helper()
 	for _, name := range names {
-		if _, err := r.dsnSQL("create database " + name + " strategy file_copy"); err != nil {
+		if _, err := r.psql("create database "+name+" strategy file_copy", r.dsn); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -252,7 +247,7 @@ func (r *pgDiskRig) makeDatabases(t *testing.T, names ...string) {
 // made is the databases a case made that the cluster holds, read through the DSN.
 func (r *pgDiskRig) made(t *testing.T) []string {
 	t.Helper()
-	out, err := r.dsnSQL(madeSQL)
+	out, err := r.psql(madeSQL, r.dsn)
 	if err != nil {
 		t.Fatalf("the DSN does not answer: %v\n%s", err, r.log)
 	}
@@ -263,7 +258,7 @@ func (r *pgDiskRig) made(t *testing.T) []string {
 func (r *pgDiskRig) answers(t *testing.T) {
 	t.Helper()
 	for _, sql := range []string{"create database tpg_after strategy file_copy", "drop database tpg_after with (force)"} {
-		if _, err := r.dsnSQL(sql); err != nil {
+		if _, err := r.psql(sql, r.dsn); err != nil {
 			t.Fatalf("the DSN does not serve a database: %v\n%s", err, r.log)
 		}
 	}
@@ -278,7 +273,7 @@ func (r *pgDiskRig) listening() bool {
 func (r *pgDiskRig) resetLines() []string {
 	var lines []string
 	for _, line := range strings.Split(r.log.String(), "\n") {
-		if rest, ok := strings.CutPrefix(line, testPGProgram+": "); ok && strings.HasPrefix(rest, "legion-testpg: reset") {
+		if rest, ok := strings.CutPrefix(line, testPGProgram+": "); ok && strings.HasPrefix(rest, testPGProgram+": reset") {
 			lines = append(lines, rest)
 		}
 	}
@@ -405,16 +400,16 @@ func TestPGDiskAtOrOverTheFloorChangesNothing(t *testing.T) {
 		kept(t, r.made(t))
 	})
 	t.Run("out of connections", func(t *testing.T) {
-		if _, err := r.superSQL("alter role legion_test connection limit 0"); err != nil {
+		if _, err := r.psql("alter role legion_test connection limit 0", r.superuserSocket()...); err != nil {
 			t.Fatal(err)
 		}
 		r.check(pgDiskSize)
-		out, err := r.superSQL(madeSQL)
+		out, err := r.psql(madeSQL, r.superuserSocket()...)
 		if err != nil {
 			t.Fatal(err)
 		}
 		kept(t, strings.Fields(out))
-		if _, err := r.superSQL("alter role legion_test connection limit -1"); err != nil {
+		if _, err := r.psql("alter role legion_test connection limit -1", r.superuserSocket()...); err != nil {
 			t.Fatal(err)
 		}
 		kept(t, r.made(t))
@@ -461,7 +456,7 @@ func TestPGDiskAResetWaitsForTheStartLock(t *testing.T) {
 			return true
 		default:
 		}
-		out, err := r.dsnSQL(madeSQL)
+		out, err := r.psql(madeSQL, r.dsn)
 		if err != nil {
 			changed = err.Error()
 			return true

@@ -15,7 +15,7 @@
 
 from: `legion-testpg: reset of the cluster in <data directory>
 to: a role reads it there or in `$LEGION_TEST_PG_LOG`.
-  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, with the free space, the disk's size and the floor each in GiB to a tenth, or in MiB below one GiB, and each database's size as PostgreSQL's `pg_size_pretty` writes it.
   Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
   Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
   `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.

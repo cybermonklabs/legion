@@ -104,9 +104,10 @@ func diskLimitTask(cause runtime.DeathCause) string {
 const runtimeDetail = "The runtime's detail: "
 
 // plainSize is a number of bytes as a person reads one: in GiB from one GiB up and in MiB from one
-// MiB up, to two decimals with the zeros that end them dropped (8 GiB, 15.34 GiB, 768 MiB), and in
-// bytes below a MiB. Two decimals keep a use just over a request from reading as equal to it: one
-// decimal would write 8.04 GiB as 8 GiB.
+// MiB up, rounded to two decimals with the zeros that end them dropped (8 GiB, 15.34 GiB, 768 MiB),
+// and in bytes below a MiB. Two decimals write a use more than 0.005 of its unit over a request as
+// more than it, where one decimal would write 8.04 GiB as 8 GiB; a use less than 0.005 of its unit
+// over a request still reads as equal to it (8 GiB and 1 MiB is written 8 GiB).
 func plainSize(bytes int64) string {
 	const mib, gib = 1 << 20, 1 << 30
 	amount := func(value float64) string {

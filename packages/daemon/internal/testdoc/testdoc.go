@@ -13,14 +13,17 @@
 //
 // Region finds the region an extract names by its two markers and fails by naming what it cannot
 // place; ExtractRegions reads an extract into all its regions, which Region and
-// internal/textcheck's comparison with the guide both read it by; RequireDocFacts holds a region,
-// or one bullet of it, to its facts; RegionBullets and BulletNaming read a region that is a list
-// as the list it is, so each fact is held to the bullet that carries it. Which facts a region
-// must state stays each test's own, and so does a list whose shape is its own, such as the
-// reclaim paragraph's two lists under their headings.
+// internal/textcheck's comparison with the guide both read it by; FlattenKeepingLines and
+// MarkedRun find the run of a document's lines two markers bound, which Region and that
+// comparison's search of the guide both bound a region by; RequireDocFacts holds a region, or one
+// bullet of it, to its facts; RegionBullets and BulletNaming read a region that is a list as the
+// list it is, so each fact is held to the bullet that carries it. Which facts a region must state
+// stays each test's own, and so does a list whose shape is its own, such as the reclaim
+// paragraph's two lists under their headings.
 package testdoc
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,29 +159,58 @@ func ExtractRegions(t testing.TB, extract, text string) []ExtractRegion {
 func region(t testing.TB, doc, text, what, start, end string) ([]string, string) {
 	t.Helper()
 	lines := strings.Split(text, "\n")
-	flat, lineOf := flattenKeepingLines(lines)
-	startOffset := strings.Index(flat, start)
-	if startOffset < 0 {
+	flat, lineOf := FlattenKeepingLines(lines)
+	first, last, bounded, err := MarkedRun(flat, lineOf, start, end)
+	switch {
+	case errors.Is(err, ErrNoStartMarker):
 		t.Fatalf("%s has no %q, so %s cannot be found: the region was reworded or removed, and this "+
 			"check stops checking the moment it cannot find it", doc, start, what)
-	}
-	if strings.Contains(flat[startOffset+len(start):], start) {
+	case errors.Is(err, ErrStartMarkerTwice):
 		t.Fatalf("%s has %q more than once, so it no longer says where %s starts: the check would read "+
 			"whichever comes first and cannot tell that it read the wrong one", doc, start, what)
-	}
-	endOffset := strings.Index(flat[startOffset:], end)
-	if endOffset < 0 {
+	case errors.Is(err, ErrNoEndMarker):
 		t.Fatalf("%s has no %q after %q, so the end of %s moved: an unbounded search would pass on a "+
 			"sentence anywhere in the document", doc, end, start, what)
 	}
-	last := startOffset + endOffset + len(end) - 1
-	return lines[lineOf[startOffset] : lineOf[last]+1], flat[startOffset : last+1]
+	return lines[first : last+1], bounded
 }
 
-// flattenKeepingLines collapses the document's whitespace so prose that was wrapped reads as one
+// The ways two markers fail to bound a run of a document (MarkedRun). Each caller words the
+// failure for its own reader, so these name the failure and nothing of what to do about it.
+var (
+	ErrNoStartMarker    = errors.New("the document has no start marker")
+	ErrStartMarkerTwice = errors.New("the document has the start marker more than once")
+	ErrNoEndMarker      = errors.New("the document has no end marker after its start marker")
+)
+
+// MarkedRun is the run of a document's lines that the markers start and end bound, found in flat
+// and lineOf, the document as FlattenKeepingLines answers it: the indexes of the run's first and
+// last lines, from the line the start marker opens on through the line the end marker finishes
+// on, and the flattened text from the start marker's first word through the end marker's last. A
+// start marker the document does not carry, one it carries more than once, and an end marker it
+// does not carry after the start marker answer ErrNoStartMarker, ErrStartMarkerTwice and
+// ErrNoEndMarker, since a run bounded by whichever start comes first, or by no end, would hold a
+// check to lines nobody chose.
+func MarkedRun(flat string, lineOf []int, start, end string) (first, last int, text string, err error) {
+	startOffset := strings.Index(flat, start)
+	if startOffset < 0 {
+		return 0, 0, "", ErrNoStartMarker
+	}
+	if strings.Contains(flat[startOffset+len(start):], start) {
+		return 0, 0, "", ErrStartMarkerTwice
+	}
+	endOffset := strings.Index(flat[startOffset:], end)
+	if endOffset < 0 {
+		return 0, 0, "", ErrNoEndMarker
+	}
+	lastOffset := startOffset + endOffset + len(end) - 1
+	return lineOf[startOffset], lineOf[lastOffset], flat[startOffset : lastOffset+1], nil
+}
+
+// FlattenKeepingLines collapses the document's whitespace so prose that was wrapped reads as one
 // line, and records for every byte of the result the line it came from, which is what turns a
 // marker found in the flat text back into a bound on the lines a list lives in.
-func flattenKeepingLines(lines []string) (string, []int) {
+func FlattenKeepingLines(lines []string) (string, []int) {
 	var flat strings.Builder
 	lineOf := make([]int, 0, len(lines)*8)
 	for i, line := range lines {

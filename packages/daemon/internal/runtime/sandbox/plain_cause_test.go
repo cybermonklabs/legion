@@ -164,7 +164,7 @@ func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 					p.Spec.Volumes = append(p.Spec.Volumes, tc.volumes...)
 					p.Status = status
 				})
-				if end := g.podEndHeld(recorded); tc.words != "" && end.cause != tc.words {
+				if end := g.awaitEndReadingRecord(recorded); tc.words != "" && end.cause != tc.words {
 					t.Fatalf("read the end in the words %q, want %q", end.cause, tc.words)
 				}
 				if gone {
@@ -315,7 +315,7 @@ func TestPlainCauseANodePressureEvictionNamingThisPodsContainerIsItsOwnUse(t *te
 			status := endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
 			status.Message = tc.message
 			g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Status = status })
-			if end := g.podEndHeld(recorded); end.reading != tc.reading {
+			if end := g.awaitEndReadingRecord(recorded); end.reading != tc.reading {
 				t.Fatalf("read %+v of the evicted pod, want the reading %q", end, tc.reading)
 			}
 			if tc.gone {

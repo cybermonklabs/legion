@@ -59,8 +59,8 @@ const (
 	burstAnnotationStart = "An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: \"false\"` only while"
 	burstAnnotationEnd   = "rather than into a node of its own."
 
-	podEndReadingsStart = "The daemon reads what ended each watched pod where"
-	podEndReadingsEnd   = "would be relaunched for ever."
+	endReadingsStart = "The daemon reads what ended each watched pod where"
+	endReadingsEnd   = "would be relaunched for ever."
 
 	karpenterStart = "`" + doNotDisruptAnnotation + "` is the AWS scheduler's annotation"
 	karpenterEnd   = "and no repacking of its pods."
@@ -158,9 +158,9 @@ func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T
 // and the daemon's own end whatever the kubelet wrote.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
-	lines, region := testdoc.Region(t, evictionDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
+	lines, region := testdoc.Region(t, evictionDocExtract, what, endReadingsStart, endReadingsEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
-		{Fact: "the line one pod end writes", Phrase: podEndLine},
+		{Fact: "the line one pod end writes", Phrase: endReadingLine},
 		{Fact: "that each role is continued in its own session", Phrase: "in that role's own session"},
 		{Fact: "that neither a death nor a launch failure is charged", Phrase: "charges no death and no launch failure"},
 		{Fact: "that each role is sent the task it owed again", Phrase: "sends each role the task it owed again"},

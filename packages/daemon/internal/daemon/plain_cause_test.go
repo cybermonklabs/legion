@@ -138,7 +138,8 @@ func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) 
 // A root architect's ready writes a catch-up beside them, which is no notice of the failure.
 func plainCauseNotices(t *testing.T, pool *store.Pool) []toldNotice {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "select id, kind, issue, payload from outbox where kind in ('notice', 'controller_notice') order by id")
+	rows, err := pool.Query(context.Background(), "select id, kind, issue, payload from outbox where kind in ($1, $2) order by id",
+		string(record.OutboxKindNotice), string(record.OutboxKindControllerNotice))
 	if err != nil {
 		t.Fatalf("read the notice rows: %v", err)
 	}

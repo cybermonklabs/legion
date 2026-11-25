@@ -37,7 +37,7 @@ func TestAReleaseEndsAPodWhoseInitFailedOnItsKeptVolumeAsTheDaemonsOwn(t *testin
 	if s := g.sandbox(name); s == nil || s.Annotations[volumeResetAnnotation] != want {
 		t.Fatalf("the release left the Sandbox %+v, want it kept with the reset mark %q: this case is about the merge patch the mark makes of the suspension", s, want)
 	}
-	if end := g.podEndHeld(old.Sandbox.PodUID); end.reading != runtime.PodEndOurs || end.cause != daemonSuspendedAct {
+	if end := g.awaitEndReadingRecord(old.Sandbox.PodUID); end.reading != runtime.PodEndOurs || end.cause != daemonSuspendedAct {
 		t.Fatalf("read %+v of the released pod, want %s under the act %q: the release suspended it", end, runtime.PodEndOurs, daemonSuspendedAct)
 	}
 }

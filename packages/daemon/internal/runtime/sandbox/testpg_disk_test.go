@@ -98,9 +98,9 @@ func TestPGDiskAnIssuePodKeepsTheTestDatabaseOnADiskOfItsOwn(t *testing.T) {
 				t.Errorf("the test database's disk requests %s, want %s", size.String(), want.String())
 			}
 			c := pod.Containers[0]
-			mount := mountHolding(c, "/var/run/legion/roles/testpg")
-			if mount == nil || mount.Name != testPGVolume || mount.MountPath != "/var/run/legion/roles/testpg" || mount.ReadOnly {
-				t.Errorf("the roles container mounts %+v at /var/run/legion/roles/testpg, want the writable volume %s", mount, testPGVolume)
+			mount := mountHolding(c, TestPGDir)
+			if mount == nil || mount.Name != testPGVolume || mount.MountPath != TestPGDir || mount.ReadOnly {
+				t.Errorf("the roles container mounts %+v at %s, want the writable volume %s", mount, TestPGDir, testPGVolume)
 			}
 			if serves, disk := testPGFlags(c); !serves || !disk {
 				t.Errorf("the roles container runs %q, want --test-postgres followed by --test-postgres-disk", c.Command)

@@ -225,18 +225,19 @@ type Runtime struct {
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
 	// intendedEnds is, by pod uid, the act of the daemon's own that is about to end that pod
-	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. podEnds is,
-	// by pod uid, what the daemon read about the cause of a pod's end (capturePodEnd), captured
-	// where the informer delivers that end because neither fact it rests on can be read once the
-	// end is final. The first is consumed by the second (takeIntendedEnd) and expires
-	// podEndRecordLife after the act it was written for, so it answers for no later end of a pod
-	// that kept running. The second stands while its pod is in the pods informer's store and for
-	// podEndRecordLife after the pod leaves it, since a node's failure can hold a pod there under
-	// its deletion timestamp for longer than that before any claim of it is judged for its end.
-	// Both are pruned wherever either is written (prunePodEnds), so neither grows without bound,
-	// and neither answers for an end it is not of. Every read and write of both runs under mu.
+	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. endReadings
+	// is, by pod uid, what the daemon read about the cause of a pod's end (captureEndReading),
+	// captured where the informer delivers that end because neither fact it rests on can be read
+	// once the end is final. The first is consumed by the second (takeIntendedEnd) and expires
+	// endReadingRecordLife after the act it was written for, so it answers for no later end of a
+	// pod that kept running. The second stands while its pod is in the pods informer's store and
+	// for endReadingRecordLife after the pod leaves it, since a node's failure can hold a pod there
+	// under its deletion timestamp for longer than that before any claim of it is judged for its
+	// end. Both are pruned wherever either is written (pruneEndReadings), so neither grows without
+	// bound, and neither answers for an end it is not of. Every read and write of both runs under
+	// mu.
 	intendedEnds map[string]intendedEnd
-	podEnds      map[string]podEnd
+	endReadings  map[string]endReading
 	// taken is, by Sandbox name, what one of this runtime's own writes took from a Sandbox before
 	// the informer's store shows it (sandboxTaken): a delete (deleteSandbox, deleteFenced), or a
 	// release's record that it deleted the Secrets of a Sandbox it kept (secretsReleasedAnnotation,
@@ -472,7 +473,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
-		intendedEnds: map[string]intendedEnd{}, podEnds: map[string]podEnd{},
+		intendedEnds: map[string]intendedEnd{}, endReadings: map[string]endReading{},
 		taken:       map[string]sandboxTaken{},
 		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
@@ -698,10 +699,10 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe, and reads what ended a pod the informer delivers ending (capturePodEnd). A pod
-// is named after its Sandbox, so one name finds both. An event of a Sandbox drops what is kept of
-// this runtime's write to that name once the store shows it (dropCaughtUp): the informer writes its
-// store before it hands the event on, so the store read there is never older than the event.
+// running Observe, and reads what ended a pod the informer delivers ending (captureEndReading). A
+// pod is named after its Sandbox, so one name finds both. An event of a Sandbox drops what is kept
+// of this runtime's write to that name once the store shows it (dropCaughtUp): the informer writes
+// its store before it hands the event on, so the store read there is never older than the event.
 //
 // gone says the event is the informer's delete: the object has left the store, which for a pod is
 // its end whatever the copy the event carries says. That is why the pod's end is read here at all
@@ -732,7 +733,7 @@ func (r *Runtime) notify(obj any, gone bool) {
 	close(r.changed)
 	r.changed = make(chan struct{})
 	if pod != nil {
-		r.capturePodEnd(pod, gone)
+		r.captureEndReading(pod, gone)
 	}
 	if r.observer == nil {
 		return
@@ -1259,7 +1260,7 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 // claim path. known's located claims join the watch, unless it already holds a newer incarnation
 // of the claim, and are evaluated at once; the end of a pod read while no claim of it was watched,
 // as every end that came while no daemon ran is read at a boot, writes its line once its claims
-// are adopted (tellPodEnds). Nothing here lists Secrets: each goes with its Sandbox.
+// are adopted (tellEndReadings). Nothing here lists Secrets: each goes with its Sandbox.
 // Each Sandbox whose pod runs an image other than the runtime's (imageDrift), or as a
 // ServiceAccount other than the configured one (accountDrift), is warned of, named with both
 // images or both accounts, at the boot reconciliation and at every sweep until the pod is
@@ -1293,7 +1294,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		}
 		r.adopt(*k.Locator)
 	}
-	r.tellPodEnds()
+	r.tellEndReadings()
 	for _, obj := range r.sandboxes.GetStore().List() {
 		u := obj.(*unstructured.Unstructured)
 		if u.GetLabels()[labelProbe] != "" || u.GetLabels()[labelCache] != "" || u.GetDeletionTimestamp() != nil {

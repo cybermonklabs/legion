@@ -73,7 +73,7 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
 // replacement of the recorded pod is what ended the process (displaced), and carrying what the
 // daemon read about the cause of the pod's end where the process ended with its pod
-// (runtime.Observation.EndReading, capturePodEnd).
+// (runtime.Observation.EndReading, captureEndReading).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -141,14 +141,15 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
-	// What ended the pod the process ran in, as the informer saw that end (capturePodEnd): the one
-	// value the supervisor decides the end on, read here for every claim of the pod and for every
-	// kind of pod, since the reading is of the cause of the end and not of the kind of pod. An end
-	// of the pod's own that the daemon tells in plain words carries its cause beside it
-	// (podEnd.death), read there because the kubelet's message it comes from leaves with the pod; a
-	// cause the verdict read off the container itself (markOutOfMemory) is the nearer one and stands.
+	// What ended the pod the process ran in, as the informer saw that end (captureEndReading): the
+	// one value the supervisor decides the end on, read here for every claim of the pod and for
+	// every kind of pod, since the reading is of the cause of the end and not of the kind of pod.
+	// An end of the pod's own that the daemon tells in plain words carries its cause beside it
+	// (endReading.death), read there because the kubelet's message it comes from leaves with the
+	// pod; a cause the verdict read off the container itself (markOutOfMemory) is the nearer one
+	// and stands.
 	if endsProcess(obs.Kind) {
-		if end, ok := r.podEndOf(loc.Sandbox.PodUID); ok {
+		if end, ok := r.endReadingOf(loc.Sandbox.PodUID); ok {
 			if end.reading != "" {
 				obs.EndReading = end.reading
 				obs.Detail += "; " + end.detail()
