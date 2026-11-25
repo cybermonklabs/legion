@@ -317,15 +317,19 @@ func TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			counted := &countingStore{Store: h.store}
+			var counted *countingStore
 			if lost {
+				counted = &countingStore{Store: h.store}
 				h.deps.Store = lostAnswerStore{counted}
 				h.start(h.store.load(h.token))
 			}
 			h.reach(StateReady)
 			h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: second,
 				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
-			attempted := counted.mark()
+			attempted := 0
+			if lost {
+				attempted = counted.mark()
+			}
 			_, err := h.m.ReleaseNames(h.ctx)
 			if (err != nil) != lost {
 				t.Fatalf("the release = %v, want an error only when its answer is lost", err)

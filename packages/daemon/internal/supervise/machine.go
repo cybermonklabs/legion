@@ -4599,10 +4599,12 @@ func (m *Machine) forgetSend() {
 
 // write runs one store write of a decision under the claim-write deadline (bounded), derived from
 // the decision's own context so the daemon's stop still ends the write at once. Every claim and
-// delivery write a decision makes while it holds the machine's lock goes through it, and those
-// are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
-// take no deadline: what they wait on is an advisory lock another transaction holds, so a
-// deadline there would fail a launch that was only queued behind its predecessor. So do the reads
+// delivery write a decision makes while it holds the machine's lock goes through it but one, and
+// those are the only calls that do: ReleaseNames makes ReleaseHolds once under bounded instead,
+// since a second try of a release answers the names it freed as none (the last paragraph).
+// Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and take no deadline: what they
+// wait on is an advisory lock another transaction holds, so a deadline there would fail a launch
+// that was only queued behind its predecessor. So do the reads
 // of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
 // the next write will say rather than hold the row, and whose failure costs the decision and
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
