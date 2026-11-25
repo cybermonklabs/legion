@@ -1,16 +1,22 @@
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
-import { CONTROL_LABELS, NODE_STATE_WORDS } from "../web/src/features/issue-page/page-words";
+import {
+  CONTROL_LABELS,
+  DECISIONS_WORDS,
+  NODE_STATE_WORDS,
+} from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
-import { decisionNodesOf, decisionSum, decisionSumOf } from "./issue-layout-seed-support";
-import { gotoIssue, issueRead, phase } from "./issue-page";
+import { decisionNodesOf, decisionSum, decisionSumOf, readTree } from "./issue-layout-seed-support";
+import { gotoIssue, issueRead, phase, presetCount } from "./issue-page";
 import {
   drawnRows,
   expectIssuePageDrawn,
+  focusRow,
   nodeRow,
   parentOfRow,
   rowOf,
@@ -20,9 +26,9 @@ import {
 import { waitingCount } from "./issue-page-p";
 import {
   type DrawnPart,
-  decisionsFoot,
   decisionsPartRows,
   decisionsPartsDrawn,
+  decisionsRows,
 } from "./issue-page-q";
 import { drawnRowReadings, fixtureSeed, keyedRows, seedKeys, steadily } from "./issue-page-t";
 import {
@@ -38,18 +44,24 @@ import {
   treeReads,
 } from "./issue-page-t-tree";
 import {
+  actsBesideWords,
   askOfNode,
   askRowId,
   blockRowId,
   decisionRowId,
+  decisionsPages,
   decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
   idReadsOf,
+  nextCount,
+  nextEntries,
+  type PagedPart,
   readFilter,
   releaseFilter,
   reviewWordOf,
+  rewordSecondDecision,
   rewordThirdDecision,
   type SentWrite,
   type SpecColumnRow,
@@ -58,9 +70,10 @@ import {
   THIRD_DECISION,
   viewNodesOf,
   watchWrites,
+  writeFootDecisions,
   writeThirdDecision,
 } from "./issue-page-u";
-import { type Browser, expect, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -76,11 +89,17 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * `e2e/issue-page-t.ts`, the reads of the tree read the rows share with the seeds
  * (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`).
  *
- * The rows are the two of the Verification document's browser checks, by their titles:
+ * The rows are the four of the Verification document's browser checks, by their titles:
  *
  * 1. `c-decisions`: "every decision the page draws is a node with the review state the model
  *    holds", on `seedDecisionsFilter` and `seedReviewList`.
  * 2. `c-keep-change`: "Keep and Change act on the decision node", on `seedReviewList`.
+ * 3. `c-one-component`: "the Decisions view draws the one card and the one ask body", on
+ *    `seedReviewList` and `seedDecisionsFilter`. Dashboard's part (dispatch://INFRA-5702), which
+ *    makes root R42's decision card and ask body, is not on this branch's base, so the row reads
+ *    the check's (3) and (4) alone and says so in an annotation (`ROW_THREE_CASE`).
+ * 4. `c-pages`: "each part of the Decisions view pages 20 entries at a time", on
+ *    `seedReviewList` with 25 decisions more at the foot (`writeFootDecisions`).
  *
  * Each row checks its gates first, each with `owedUnless`, and skips where one is not on the
  * base, with an `owed` annotation naming the gate and the decisions that make it owed; it never
@@ -91,9 +110,9 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  * issue whose documents are nodes of its tree (`convertedGate`), and the seeds written as
  * decision nodes of the tree read (`decisionNodesGate`, over the decisions read
  * `decisionsReadOf` keeps). The first three are read before anything else once the page is open,
- * the fourth once the page has received its decisions read, which the page sends only once
- * Decisions is pressed. Both rows are tagged `@owed`, and each skips on the first of its gates
- * the server on the base does not meet.
+ * the fourth once the page has received its decisions read, which the page sends once Decisions
+ * is pressed, or as it opens on the Decisions view, as rows 3 and 4 open it. Every row is tagged
+ * `@owed`, and each skips on the first of its gates the server on the base does not meet.
  */
 
 /** How long row 1 may take: two seeded issues, each read through all four filters. */
@@ -101,6 +120,14 @@ const ROW_ONE_MS = 480_000;
 
 /** How long row 2 may take. */
 const ROW_TWO_MS = 240_000;
+
+/** How long row 3 may take: two seeded issues, each with a Change and a Keep sent, and every row
+ *  of its Decisions view focused. */
+const ROW_THREE_MS = 360_000;
+
+/** How long row 4 may take: one seeded issue with 25 decisions more, its Decisions view loaded
+ *  twice, and its foot's pages drawn once by the pointer and once by the keyboard. */
+const ROW_FOUR_MS = 240_000;
 
 /** The four parts of the Decisions view, in the order it draws them (`data-decisions-part`). */
 const DECISIONS_PARTS = ["open_questions", "review", "yours", "agents"] as const;
@@ -126,6 +153,10 @@ const CHANGE = 'button[data-row-action="change"]';
 
 /** A decision row's state word once alice kept it. */
 const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
+
+/** A decision row's state word once alice asked to change it: "Changed by" and her name, where
+ *  the state token stays `change_requested` (R2, R3). */
+const CHANGED_BY_ALICE = new RegExp(`^${DECISIONS_WORDS.changed_by}\\b.*\\balice\\b`, "i");
 
 /** The words row 2's Change sends. */
 const CHANGE_WORDS = "Tie it to the second statement instead.";
@@ -214,6 +245,9 @@ interface RowOneWanted {
     readonly column: readonly ColumnEntry[];
     readonly counts: Readonly<Record<DecisionsPart, string>>;
   } | null;
+  /** The decision alice kept, which stands among her own decisions and reads "Kept by" alice;
+   *  null on a seed that keeps none. */
+  readonly kept: string | null;
   /** The rows each part holds, by the ids they carry. */
   readonly parts: Readonly<Record<DecisionsPart, readonly string[]>>;
 }
@@ -331,7 +365,9 @@ async function readRowOne(
   const tree = treeAnswerOf(page);
   const decisions = decisionsReadOf(page, key);
   const traffic = watchApiRequests(page);
-  await gotoIssue(page, `/issues/${key}`);
+  // Conversation at its own address: the bare address is Dashboard's once Dashboard's part is on
+  // the base, and its own `view=decisions` read is not this part's (root R39).
+  await gotoIssue(page, `/issues/${key}/conversation`);
   await expectIssuePageDrawn(page);
   await steadily(page, traffic, `${key} as the page opens`, async () => ({
     rows: await drawnRowReadings(page, { bodies: false }),
@@ -344,9 +380,10 @@ async function readRowOne(
   owedUnless(decisionNodesGate(answer, await heldDecisionsRead(key, decisions)));
   expect(answer.converted, "the tree read answers converted: true").toBe(true);
 
-  // (1) The decisions are the tree read's: the load sends no read of the decisions route, no
-  // document's blocks and no Decisions view, and Decisions pressed sends its view read once and no
-  // read of the decisions route or of any document's blocks.
+  // (1) The decisions are the tree read's: the load of Conversation sends no read of the
+  // decisions route, no document's blocks and no Decisions view, and Decisions pressed sends its
+  // view read once and no read of the decisions route or of any document's blocks. A second load,
+  // of the Decisions view's own address, is read after (4).
   const loadSent = decisionsSent(load, key);
   const pressSent = decisionsSent(pressed, key);
   expect(
@@ -361,7 +398,9 @@ async function readRowOne(
   });
 
   // (2) The four parts hold the seed's decisions in the view's order, each reading its state from
-  // its node in the Decisions view's read, with the foot unfolded so every decision is drawn.
+  // its node in the Decisions view's read, and the decision alice kept "Kept by" alice among her
+  // own. The foot is drawn unfolded as the view opens (R2), so nothing is pressed: its decisions
+  // are read as the view drew them.
   const reads = await idReadsOf(key);
   const idOf = treeIdOf(answer, reads);
   const wanted = wantedOf({
@@ -372,13 +411,6 @@ async function readRowOne(
     ),
     requirement: (block) => blockRowId(key, answer, "requirement", block),
   });
-  const foot = decisionsFoot(page);
-  // `readFilter` above read the view once its rows and count held still with the network quiet,
-  // so its foot is drawn by now or not at all, and one read says which.
-  if ((await foot.count()) > 0) {
-    await expect(foot, "the Decisions view's foot draws its control").toBeVisible();
-    await foot.click();
-  }
   const states = Object.fromEntries(
     (await viewNodesOf(key, "decisions")).flatMap((node) =>
       node.supertag === "decision" && node.issue === undefined && node.role !== "context"
@@ -389,16 +421,21 @@ async function readRowOne(
   const partsAndStates = async () => {
     const drawn = await decisionsPartsDrawn(page);
     const rows = await drawnRowReadings(page, { bodies: false });
+    const rowsOf = (part: string) => drawn.find((one) => one.part === part)?.rows ?? [];
     return {
       declined:
         wanted.declined === null
           ? null
           : (rows.find((row) => row.id === wanted.declined)?.state?.word ?? null),
+      kept:
+        wanted.kept === null
+          ? null
+          : {
+              own: rowsOf("yours").includes(wanted.kept),
+              word: rows.find((row) => row.id === wanted.kept)?.state?.word ?? null,
+            },
       parts: Object.fromEntries(
-        DECISIONS_PARTS.map((part) => [
-          part,
-          partOrder(part, drawn.find((one) => one.part === part)?.rows ?? []),
-        ])
+        DECISIONS_PARTS.map((part) => [part, partOrder(part, rowsOf(part))])
       ),
       states: Object.fromEntries(
         rows.flatMap((row) =>
@@ -411,6 +448,10 @@ async function readRowOne(
     .poll(partsAndStates, { message: "each part holds its decisions with their states" })
     .toEqual({
       declined: wanted.declined === null ? null : NODE_STATE_WORDS.ask.declined,
+      kept:
+        wanted.kept === null
+          ? null
+          : { own: true, word: `${NODE_STATE_WORDS.decision.kept} alice` },
       parts: Object.fromEntries(
         DECISIONS_PARTS.map((part) => [part, partOrder(part, wanted.parts[part])])
       ),
@@ -456,21 +497,41 @@ async function readRowOne(
     })
     .toBe(waitingWords(asks + decisionsWaitingOnAlice(answer)));
 
+  // (1), a second load: the Decisions view opened at its own address sends no request to the
+  // decisions route either.
+  const second = traffic.requests.length;
+  await gotoIssue(page, presetPath(key, "decisions"));
+  await expectIssuePageDrawn(page);
+  await steadily(page, traffic, `${key}'s Decisions view as it loads`, async () => ({
+    rows: await drawnRowReadings(page, { bodies: false }),
+    total: traffic.total(),
+  }));
+  expect(
+    decisionsSent(traffic.requests.slice(second), key).decisions,
+    "the page sends no decisions read, on a second load, of the Decisions view"
+  ).toEqual([]);
+
   // (5) Each filter's row ids and count are the rows fixture's for the seed, the four parts and
   // the Spec column are the values row 1 expects of the seed, and the header's count is alice's
-  // open questions and the review part's entries.
+  // open questions and the review part's entries. The fixture recorded the Decisions view with
+  // its foot folded, so that filter's rows are compared with the foot's left out, which (2)
+  // reads; its count counts the foot's either way.
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
+  const foot = new Set(parts.find((part) => part.part === "agents")?.rows ?? []);
   expect(
     recordedFilters(
       {
-        decisions: decisionsFilter,
+        decisions: {
+          ...decisionsFilter,
+          rows: decisionsFilter.rows.filter((row) => row.id === null || !foot.has(row.id)),
+        },
         plan: planFilter,
         spec: specFilter,
         verification: verificationFilter,
       },
       seedKeys(seeded, slugs)
     ),
-    "each filter's row ids and count equal the rows fixture for the seed"
+    "each filter's row ids and count equal the rows fixture for the seed, the Decisions view's foot left out"
   ).toEqual(fixtureSeed(name).filters);
   const { departure } = wanted;
   if (departure === null) return;
@@ -544,6 +605,7 @@ const ROW_ONE_SEEDS = [
         ],
         counts: { agents: "3", open_questions: "1", review: "2", yours: "4" },
       },
+      kept: names.decision(seeded.keptBlock),
       parts: {
         agents: [D(2), D(3), D(6)],
         open_questions: names.openAsks,
@@ -555,6 +617,7 @@ const ROW_ONE_SEEDS = [
   rowOneSeed("seedReviewList", seedReviewList, (seeded, names) => ({
     declined: null,
     departure: null,
+    kept: null,
     parts: {
       agents: [names.decision(seeded.tiedToNote), names.decision(seeded.untied)],
       open_questions: names.openAsks,
@@ -571,8 +634,8 @@ const ROW_ONE_SEEDS = [
 // (`convertedGate`), and on the seeds written as decision nodes of the tree read
 // (`decisionNodesGate`, read once Decisions is pressed). The check holds it owed until the server
 // on the base meets all four gates.
-// SLOW(>=2s): two seeded issues, each load waited out, and the four filters each pressed, read
-// until it holds still, and released.
+// SLOW(>=2s): two seeded issues, each load of Conversation waited out, the four filters each
+// pressed, read until it holds still, and released, and the Decisions view loaded again.
 test("every decision the page draws is a node with the review state the model holds @owed", async ({
   browser,
 }) => {
@@ -620,13 +683,15 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
 // server that lacks the view. It waits too on an issue whose documents are nodes of its tree
 // (`convertedGate`), and on the seeds written as decision nodes of the tree read
 // (`decisionNodesGate`, read once Decisions is pressed): the check holds it owed until the server
-// on the base meets those four gates. Its Change clause asserts `anchor.block_id` on the
-// captured comment request, which the page sends (`DecisionActions.tsx`' `ChangeComposer`); the
-// server finds the quote inside that block alone, and refuses with 400 a block that does not hold
-// it (`api/anchors.go`' `resolveAnchor`).
+// on the base meets those four gates. Its Change clause asserts `anchor.block_id` and
+// `anchor.occurrence` 0 on the captured comment request, which the page sends
+// (`DecisionActions.tsx`' `ChangeComposer`); the server finds the quote inside that block alone
+// and takes its first match there, and refuses with 400 a block that does not hold it
+// (`api/anchors.go`' `resolveAnchor`).
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
-// until the server's reads redraw the list, a reload, and a refused Keep under held tree reads,
-// after the reword's event reads have held still for `EVENT_READS_STILL_MS`.
+// until the server's reads redraw the list, a reload, a refused Keep under held tree reads,
+// after the reword's event reads have held still for `EVENT_READS_STILL_MS`, and a reword
+// waited on until the list draws it.
 test("Keep and Change act on the decision node @owed", async ({ browser }) => {
   test.setTimeout(ROW_TWO_MS);
   await phase(browser, seedReviewList, async (page, seeded) => {
@@ -697,7 +762,8 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     expect(loads, "the page reloaded to draw the Keep").toBe(0);
 
     // (2) Change on the second, `tiedOlder`, with words typed: the comment it sends is anchored
-    // to the node's own document and block, read from the request before anything drawn.
+    // to the node's own document and block, at the first match of its quote there
+    // (`occurrence` 0), read from the request before anything drawn.
     const olderRow = nodeRow(page, ids.older).first();
     const change = olderRow.locator(CHANGE);
     await expect(change, "the second decision, tiedOlder, draws its Change control").toBeVisible();
@@ -725,45 +791,76 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
         artifact: fieldOf(anchor, "artifact"),
         block_id: fieldOf(anchor, "block_id"),
         comments: sent.length,
+        occurrence: fieldOf(anchor, "occurrence"),
       },
       "the Change anchors to its decision's block"
     ).toEqual({
       artifact: older.document?.artifact_id,
       block_id: older.block_id ?? older.id,
       comments: 1,
+      occurrence: 0,
     });
+    // The changed decision reads "Changed by" and alice's name, leaves the review list and stands
+    // among her own decisions, in the Decisions view as the server's reads redraw it, and again
+    // after a reload (below).
+    const changedStanding = async () => ({
+      inReview: (await decisionsPartRows(page, "review")).includes(ids.older),
+      own: (await decisionsPartRows(page, "yours")).includes(ids.older),
+      state: await stateWordOf(page, ids.older),
+    });
+    const changedByAlice = {
+      inReview: false,
+      own: true,
+      state: expect.stringMatching(CHANGED_BY_ALICE),
+    };
     await expect
-      .poll(
-        async () => ({
-          inReview: (await decisionsPartRows(page, "review")).includes(ids.older),
-          state: await stateWordOf(page, ids.older),
-        }),
-        { message: 'the changed decision reads "Change requested" and leaves the review list' }
-      )
-      .toEqual({ inReview: false, state: NODE_STATE_WORDS.decision.change_requested });
+      .poll(changedStanding, {
+        message:
+          "the changed decision reads Changed by alice, leaves the review list and stands among her own decisions",
+      })
+      .toEqual(changedByAlice);
     const comment = (await listComments(key)).find((one) => one.body === CHANGE_WORDS);
     expect(comment, "the server holds no comment for the Change").toBeDefined();
     const commentId = comment?.id ?? "";
+    // In Conversation the tree read hangs the Change under its decision, whose row reads
+    // "Changed by" alice too, before a reload and after one.
     await releaseFilter(page, "decisions");
-    const parentOfChange = async () => {
+    const inConversation = async () => {
       await unfoldEveryBranch(page);
-      return parentOfRow(page, commentId);
+      return {
+        parent: await parentOfRow(page, commentId),
+        state: await stateWordOf(page, ids.older),
+      };
     };
+    const underItsDecision = { parent: ids.older, state: expect.stringMatching(CHANGED_BY_ALICE) };
     await expect
-      .poll(parentOfChange, { message: "the Change is a row under its decision" })
-      .toBe(ids.older);
+      .poll(inConversation, {
+        message:
+          "the changed decision reads Changed by alice in Conversation, with the Change a row under it",
+      })
+      .toEqual(underItsDecision);
     await page.reload();
     await issueRead(page);
     await expectIssuePageDrawn(page);
     await expect
-      .poll(parentOfChange, { message: "the Change is a row under its decision, after a reload" })
-      .toBe(ids.older);
+      .poll(inConversation, {
+        message:
+          "the changed decision reads Changed by alice in Conversation, with the Change a row under it, after a reload",
+      })
+      .toEqual(underItsDecision);
+    await readFilter(page, traffic, "decisions");
+    await expect
+      .poll(changedStanding, {
+        message:
+          "the changed decision reads Changed by alice, out of the review list and among her own decisions, after a reload",
+      })
+      .toEqual(changedByAlice);
 
     // (3) With the page's next tree reads held, the third decision's words change through the
     // API and its Keep sends the sum of the words the page drew: Dispatch refuses it, the row
     // still waits with its alert, the refused Keep sends a tree read of its own, and once the
-    // held reads go on the row draws the new words.
-    await readFilter(page, traffic, "decisions");
+    // held reads go on the row draws the new words. The Decisions view is on since (2) read it
+    // after the reload.
     const thirdRow = nodeRow(page, ids.third).first();
     const thirdKeep = thirdRow.locator(KEEP);
     await expect(thirdKeep, "the third decision draws its Keep control").toBeVisible();
@@ -835,5 +932,362 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
         { message: "once the held reads go on, the row draws the decision's new words" }
       )
       .toContain(THIRD_DECISION.reworded);
+
+    // (4) The second decision's words then change through the API, after its Change: the
+    // Change asks for nothing any more, so the decision waits for alice's review again and is
+    // back in the review list (root R35).
+    const changedSum = await decisionSum(key, seeded.tiedOlder);
+    await rewordSecondDecision(key, spec);
+    expect(
+      await decisionSum(key, seeded.tiedOlder),
+      "the edit leaves the second decision's sum as it was"
+    ).not.toBe(changedSum);
+    await expect
+      .poll(
+        async () => ({
+          inReview: (await decisionsPartRows(page, "review")).includes(ids.older),
+          state: await stateWordOf(page, ids.older),
+        }),
+        {
+          message:
+            'the second decision, its words changed after its Change, reads "Waiting for review" again and is back in the review list',
+        }
+      )
+      .toEqual({ inReview: true, state: NODE_STATE_WORDS.decision.waiting_review });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row 3: the Decisions view draws the one card and the one ask body.
+// ---------------------------------------------------------------------------------------------
+
+/** What row 3 says it read, in an annotation (c-one-component): the case of a base that does not
+ *  hold Dashboard's part, which makes root R42's decision card and ask body. */
+const ROW_THREE_CASE =
+  "dispatch://INFRA-5702 (Dashboard's part: root R42's decision card and ask body) is not on " +
+  "this branch's base, so the row reads (3) and (4), each row's acts beside the row's words, " +
+  "and passes on them; (1) `each agent decision is the one card` and (2) `each ask is the one " +
+  "ask body` are owed to INFRA-5702's check of root R42 under the pair rule (decision 424)";
+
+/** Row 3 on one seed, read from the page `phase` opened, at its Decisions view. */
+async function readRowThree(page: Page, seeded: SeededIssue): Promise<void> {
+  const { key } = seeded;
+  owedUnless(await treeReadGate(page, key));
+  owedUnless(await decisionsViewServedGate(page, key));
+  owedUnless(await convertedGate(page, key));
+  const decisions = decisionsReadOf(page, key);
+  const traffic = watchApiRequests(page);
+  const writes = watchWrites(page);
+  await gotoIssue(page, presetPath(key, "decisions"));
+  await expectIssuePageDrawn(page);
+  const opened = await steadily(page, traffic, `${key}'s Decisions view as it opens`, () =>
+    decisionsRows(page)
+  );
+  const answer = await readTree(key, null);
+  owedUnless(decisionNodesGate(answer, await heldDecisionsRead(key, decisions)));
+  expect(answer.converted, "the tree read answers converted: true").toBe(true);
+
+  // (3) Keep and Change stand on the decisions that wait for alice's review alone, in their own
+  // words, and write R4's Keep and R3's Change as row 2 reads them: the Change on the first of
+  // them, its words typed under "Your change" and sent with "Send change", anchored to its
+  // decision's block at `occurrence` 0, after which that decision reads "Changed by" alice and
+  // draws neither control; then the Keep on the second, by the node's own document, block and
+  // sum.
+  const said = "the row draws Changed by and the controls' words";
+  const review = opened.flatMap((row) => (row.part === "review" ? [row.id] : []));
+  expect(
+    review.length,
+    `${said}: the seed holds two decisions that wait for alice's review`
+  ).toBeGreaterThanOrEqual(2);
+  expect(
+    opened.flatMap(({ actions, id }) => (actions.length === 0 ? [] : [{ actions, id }])),
+    `${said}: Keep and Change stand on the decisions that wait alone`
+  ).toEqual(review.map((id) => ({ actions: ["keep", "change"], id })));
+  for (const id of review) {
+    await expect(
+      nodeRow(page, id).first().locator("button[data-row-action]"),
+      `${said}: ${id} draws Keep and Change in their words`
+    ).toHaveText([CONTROL_LABELS.keep_decision, CONTROL_LABELS.change_decision]);
+  }
+  const nodes = new Map<string, IssueTreeNode>();
+  for (const node of await viewNodesOf(key, "decisions")) {
+    if (node.supertag === "decision" && node.issue === undefined) {
+      nodes.set(decisionRowId(node), node);
+    }
+  }
+  const nodeOf = (id: string): IssueTreeNode => {
+    const node = nodes.get(id);
+    if (node === undefined) throw new Error(`${key}'s Decisions view read holds no node of ${id}`);
+    return node;
+  };
+  const [changedId = "", keptId = ""] = review;
+  const changedNode = nodeOf(changedId);
+  const keptNode = nodeOf(keptId);
+
+  const changedRow = nodeRow(page, changedId).first();
+  await changedRow.locator(CHANGE).click();
+  const field = changedRow.getByLabel(CONTROL_LABELS.your_change);
+  await expect(
+    field,
+    `${said}: the Change draws its "${CONTROL_LABELS.your_change}" field`
+  ).toBeVisible();
+  await field.fill(CHANGE_WORDS);
+  const send = changedRow.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+  await expect(
+    send,
+    `${said}: the Change draws its "${CONTROL_LABELS.send_change}" control`
+  ).toBeEnabled();
+  const changedFrom = writes.length;
+  await send.click();
+  await expect
+    .poll(() => commentsOf(writes.slice(changedFrom), key).length, {
+      message: "the Change sends no comment",
+    })
+    .toBeGreaterThan(0);
+  await expectLoadSettled(traffic);
+  const sent = commentsOf(writes.slice(changedFrom), key);
+  const anchor = fieldOf(sent[0]?.body, "anchor");
+  expect(
+    {
+      artifact: fieldOf(anchor, "artifact"),
+      block_id: fieldOf(anchor, "block_id"),
+      comments: sent.length,
+      occurrence: fieldOf(anchor, "occurrence"),
+    },
+    `${said}: the Change sends R3's comment, anchored to its decision's block at occurrence 0`
+  ).toEqual({
+    artifact: changedNode.document?.artifact_id,
+    block_id: changedNode.block_id ?? changedNode.id,
+    comments: 1,
+    occurrence: 0,
+  });
+  await expect
+    .poll(
+      async () => ({
+        acting: (await decisionsRows(page)).flatMap((row) =>
+          row.actions.length === 0 ? [] : [row.id]
+        ),
+        state: await stateWordOf(page, changedId),
+      }),
+      { message: said }
+    )
+    .toEqual({ acting: review.slice(1), state: expect.stringMatching(CHANGED_BY_ALICE) });
+
+  const keptFrom = writes.length;
+  await nodeRow(page, keptId).first().locator(KEEP).click();
+  await expect
+    .poll(() => keepsOf(writes.slice(keptFrom)).length, {
+      message: "Keep on the second decision that waits sends no request",
+    })
+    .toBeGreaterThan(0);
+  await expectLoadSettled(traffic);
+  expect(
+    keepsOf(writes.slice(keptFrom)),
+    `${said}: Keep sends R4's request, with the node's own document, block id and text_sha256`
+  ).toEqual([{ path: keepPath(keptNode), text_sha256: decisionSumOf(key, keptNode) }]);
+  await expect
+    .poll(() => stateWordOf(page, keptId), {
+      message: `${said}: the kept decision reads "Kept by" alice`,
+    })
+    .toMatch(KEPT_BY_ALICE);
+
+  // (4) Each row's acts (`RowActs`), which a row draws while it holds the focus, stand beside its
+  // words and outside them: with no card and no ask body on this branch's base, the row's words
+  // are what they stand beside.
+  const rows = await steadily(page, traffic, `${key}'s Decisions view after the Keep`, () =>
+    decisionsRows(page)
+  );
+  for (const { id } of rows) {
+    const row = await focusRow(page, id);
+    await expect
+      .poll(() => actsBesideWords(row), {
+        message: `the row's acts stand beside the card: ${id}'s, beside its words`,
+      })
+      .toEqual([]);
+  }
+}
+
+// c-one-component, owed as rows 1 and 2 are: on the gate of the server's tree read
+// (`treeReadGate`), of its Decisions view (`decisionsViewServedGate`), of an issue whose
+// documents are nodes of its tree (`convertedGate`), and of the seeds written as decision nodes of
+// the tree read (`decisionNodesGate`, read once the Decisions view has opened). Dashboard's part
+// (dispatch://INFRA-5702), which makes root R42's decision card and ask body, is not on this
+// branch's base, and no mark of the card is known before it lands, so the row reads the check's
+// (3) and (4) alone and records the case it read (`ROW_THREE_CASE`); where that part lands after
+// this one, it moves these rows onto the card and the ask body (the pair rule).
+// SLOW(>=2s): two seeded issues, each opened at its Decisions view and read until it holds still,
+// a Change and a Keep each waited on until the server's reads redraw the list, and every row of
+// the view focused and read.
+test("the Decisions view draws the one card and the one ask body @owed", async ({ browser }) => {
+  test.setTimeout(ROW_THREE_MS);
+  test.info().annotations.push({ description: ROW_THREE_CASE, type: "case" });
+  await phase(browser, seedReviewList, readRowThree);
+  await phase(browser, seedDecisionsFilter, readRowThree);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row 4: each part of the Decisions view pages 20 entries at a time.
+// ---------------------------------------------------------------------------------------------
+
+/** How many entries a part of the Decisions view draws as it opens, and how many a press of the
+ *  control under it draws at most (`DecisionsFilterBody.tsx`' `PAGE`, root R40). */
+const ENTRY_PAGE = 20;
+
+/** The most lines an entry may draw and still be within the six-line cut the view no longer
+ *  makes: each decision row 4 writes draws more. */
+const SIX_LINES = 6;
+
+/** The parts `seedReviewList` draws in the Decisions view, in the order it draws them: it holds
+ *  none of alice's own decisions. */
+const PAGED_PARTS = ["open_questions", "review", "agents"] as const;
+type PagedName = (typeof PAGED_PARTS)[number];
+
+/** What row 4 reads of each part `parts` (`decisionsPages`): its count, how many entries it draws,
+ *  which of them are cut or folded, which of the decisions the row wrote (`written`, by row id)
+ *  draw six lines or fewer, what each control under it says (`nextCount`), and what the foot's
+ *  control says of it. */
+function pagesRead(parts: readonly PagedPart[], written: ReadonlySet<string>) {
+  return parts.map((part) => ({
+    count: part.count,
+    cut: part.entries.flatMap((entry) => (entry.cut || entry.folded ? [entry.id] : [])),
+    drawn: part.entries.length,
+    next: part.next.map(nextCount),
+    part: part.part,
+    short: part.entries.flatMap((entry) =>
+      written.has(entry.id) && entry.lines <= SIX_LINES ? [entry.id] : []
+    ),
+    unfolded: part.unfolded,
+  }));
+}
+
+/** What `pagesRead` reads where each part holds `totals` entries: each headed part draws all of
+ *  them and no control; the foot, unfolded, draws its first `footPages` pages of `ENTRY_PAGE`,
+ *  and under them, while it draws fewer than it holds, one control that says how many are left
+ *  and draws a page more at most; no entry is cut or folded, and each decision the row wrote
+ *  draws more than six lines. */
+function pagesWanted(totals: Readonly<Record<PagedName, number>>, footPages: number) {
+  return PAGED_PARTS.map((part) => {
+    const total = totals[part];
+    const drawn = part === "agents" ? Math.min(total, ENTRY_PAGE * footPages) : total;
+    const left = total - drawn;
+    return {
+      count: String(total),
+      cut: [],
+      drawn,
+      next: left === 0 ? [] : [{ left, shows: Math.min(ENTRY_PAGE, left) }],
+      part,
+      short: [],
+      unfolded: part === "agents" ? "true" : null,
+    };
+  });
+}
+
+/** The ids of the entries the foot of `parts` draws, in the order it draws them. */
+function footOf(parts: readonly PagedPart[]): string[] {
+  return parts.find((part) => part.part === "agents")?.entries.map((entry) => entry.id) ?? [];
+}
+
+// c-pages, owed as row 1 is: on `treeReadGate`, `decisionsViewServedGate`, `convertedGate` and
+// `decisionNodesGate`. Before the page opens the row writes 25 decisions that no statement rests
+// on, each with words past six lines at 1440 px, so the foot holds more than a page and the
+// six-line cut would reach each of them. The foot is the one part of the seed past a page:
+// c-unit's `each part draws 20 entries at a time, with the count left` covers every part.
+// SLOW(>=2s): a seeded issue with 25 long decisions written, its Decisions view loaded twice and
+// read until it holds still as it opens and after each press of the foot's control, by the
+// pointer and then by the keyboard.
+test("each part of the Decisions view pages 20 entries at a time @owed", async ({ browser }) => {
+  test.setTimeout(ROW_FOUR_MS);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const { key } = seeded;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await decisionsViewServedGate(page, key));
+    owedUnless(await convertedGate(page, key));
+    // Before the page opens: the decisions the planner writes in the spec with no `shaped`
+    // pointer, so each stands at the foot.
+    const blocks = await writeFootDecisions(key);
+    const decisions = decisionsReadOf(page, key);
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, presetPath(key, "decisions"));
+    await expectIssuePageDrawn(page);
+    const answer = await readTree(key, null);
+    owedUnless(decisionNodesGate(answer, await heldDecisionsRead(key, decisions)));
+    expect(answer.converted, "the tree read answers converted: true").toBe(true);
+    const written = new Set((await decisionNodesOf(key, blocks)).map(decisionRowId));
+    const reads = await idReadsOf(key);
+    const totals = {
+      agents: written.size + [seeded.tiedToNote, seeded.untied].length,
+      open_questions: (reads.asks ?? []).filter(
+        (ask) => ask.state === "open" && ask.kind !== "approval"
+      ).length,
+      review: [seeded.tiedNewer, seeded.tiedOlder].length,
+    };
+    const every = String(totals.agents + totals.open_questions + totals.review);
+    const readPages = (what: string) =>
+      steadily(page, traffic, what, async () => ({
+        control: ((await presetCount(page, "decisions").textContent()) ?? "").trim(),
+        parts: await decisionsPages(page),
+      }));
+
+    // (1) As the view opens the foot draws its first 20 entries, each whole, and under them one
+    // control that says how many are left, the foot's entries less 20; each other part draws all
+    // of its entries and no control. (3) The Decisions control counts every entry.
+    const opening = await readPages(`${key}'s Decisions view as it opens`);
+    expect(pagesRead(opening.parts, written), "a part draws its first 20 entries").toEqual(
+      pagesWanted(totals, 1)
+    );
+    expect(
+      opening.control,
+      "the Decisions control's count counts every entry, before a press"
+    ).toBe(every);
+
+    // (2) Each press of the control draws the foot's next entries, at most 20, after the ones it
+    // drew, none cut and none folded, until none is left and the control goes. (3) The Decisions
+    // control's count stays every entry's.
+    const pressThrough = async (
+      by: string,
+      press: (control: Locator) => Promise<void>,
+      start: readonly string[]
+    ): Promise<void> => {
+      let before = start;
+      for (let footPages = 2; ENTRY_PAGE * (footPages - 1) < totals.agents; footPages += 1) {
+        const pressed = `press ${footPages - 1} by ${by}`;
+        const control = nextEntries(page, "agents");
+        await expect(control, `the foot draws its control before ${pressed}`).toBeVisible();
+        await press(control);
+        const reading = await readPages(`${key}'s Decisions view after ${pressed}`);
+        expect(
+          {
+            before: footOf(reading.parts).slice(0, before.length),
+            pages: pagesRead(reading.parts, written),
+          },
+          `the control draws the next entries, ${pressed}`
+        ).toEqual({ before, pages: pagesWanted(totals, footPages) });
+        expect(
+          reading.control,
+          `the Decisions control's count counts every entry, after ${pressed}`
+        ).toBe(every);
+        before = footOf(reading.parts);
+      }
+    };
+    await pressThrough("the pointer", (control) => control.click(), footOf(opening.parts));
+
+    // The same by the keyboard, from a new load: the control takes the focus, and Enter presses it.
+    await page.reload();
+    await issueRead(page);
+    await expectIssuePageDrawn(page);
+    const reloaded = await readPages(`${key}'s Decisions view after a reload`);
+    expect(
+      pagesRead(reloaded.parts, written),
+      "a part draws its first 20 entries, after a reload"
+    ).toEqual(pagesWanted(totals, 1));
+    await pressThrough(
+      "the keyboard",
+      async (control) => {
+        await control.focus();
+        await expect(control, "the foot's control takes the focus").toBeFocused();
+        await page.keyboard.press("Enter");
+      },
+      footOf(reloaded.parts)
+    );
   });
 });

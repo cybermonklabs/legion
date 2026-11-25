@@ -316,7 +316,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
 // view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
 // settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
-// still, its foot unfolded and read again until it holds still, and released.
+// still with its foot drawn unfolded as the view opens, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
   browser,
 }) => {
@@ -334,10 +334,13 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       await pressFilter(page, traffic, "decisions");
       const foot = decisionsFoot(page);
       // `pressFilter` above read the view once its rows and count held still with the network
-      // quiet, so its foot is drawn by now or not at all, and one read says which.
+      // quiet, so its foot is drawn by now or not at all, and one read says which. The foot is
+      // drawn unfolded as the view opens (part U's R2), so its rows are read with nothing pressed.
       if ((await foot.count()) > 0) {
-        await expect(foot, `${where}, the view's foot draws its control`).toBeVisible();
-        await foot.click();
+        await expect(
+          foot,
+          `${where}, the view's foot is drawn unfolded as the view opens`
+        ).toHaveAttribute("aria-expanded", "true");
       }
       const drawn = await steadily(page, traffic, `${where} with its foot open`, async () => ({
         count: await presetCount(page, "decisions").textContent(),

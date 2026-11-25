@@ -172,7 +172,8 @@ export function computedBorderWidth(page: Page, width: string): Promise<string> 
   }, width);
 }
 
-/** The control at the Decisions view's foot, which unfolds the agents' untied decisions. */
+/** The control at the Decisions view's foot, which folds the agents' untied decisions, drawn
+ *  unfolded as the view opens (`aria-expanded="true"`), and unfolds them again. */
 export function decisionsFoot(page: Page): Locator {
   return issuePage(page).locator("[data-decisions-foot] button");
 }
@@ -185,7 +186,8 @@ export function reviewFlag(page: Page): Locator {
 
 /** What `seedDecisionsLayout` wrote beside the whole issue. */
 export interface DecisionsLayoutSeed {
-  /** A question of 160 words alice answered, which the view cuts at six lines. */
+  /** A question of 160 words alice answered, which the view draws whole, as it draws every
+   *  entry. */
   readonly answered: string;
   readonly key: string;
   /** The slug of the issue's spec, which `rowLayouts` reads to tell a statement from a block. */
@@ -214,8 +216,8 @@ export async function seedDecisionsLayout(): Promise<DecisionsLayoutSeed> {
     { question: longWords("waits", 160), urgency: "high" },
     asPlanner
   );
-  // The view draws a question whole only where it waits on the reader, so the seed proves it
-  // does before a row reads the cut.
+  // The row reads this question as one that waits on the reader, so the seed proves it does
+  // before a row reads it.
   expect(
     (await getAsk(waiting.id)).ask.waiting_on_person,
     "the seeded open question does not wait on the reader"
