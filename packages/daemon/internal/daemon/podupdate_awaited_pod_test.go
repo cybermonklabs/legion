@@ -296,15 +296,16 @@ func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.Works
 }
 
 // wantReadThroughTheTester holds the replacement beside a waiting claim to one read of the
-// workspace, made through the tester, whose process the pod is replaced through, and named on the
-// line as found, which is "found work" or "found no work".
+// workspace, made through the tester's claim, whose process the pod is replaced through, and named
+// on the line by that claim as found, which is "found work" or "found no work".
 func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]any, found string) {
 	t.Helper()
-	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Role != claim.RoleTester {
-		t.Errorf("the workspace was read %+v, want one read of %s through the tester", reads, podUpdateIssue)
+	tester := rig.tokens[claim.RoleTester]
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Claim != tester {
+		t.Errorf("the workspace was read %+v, want one read of %s through the tester's claim %s", reads, podUpdateIssue, tester)
 	}
-	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(claim.RoleTester) {
-		t.Errorf("the replacement's line names the read %+v, want one the tester made that %s", line, found)
+	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(tester) {
+		t.Errorf("the replacement's line names the read %+v, want one the tester's claim %s made that %s", line, tester, found)
 	}
 }
 
