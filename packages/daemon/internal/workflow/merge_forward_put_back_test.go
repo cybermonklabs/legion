@@ -119,6 +119,28 @@ func TestAnAskRowEndedUndeliveredNeverPutsBackPastALaunchTold(t *testing.T) {
 	}
 }
 
+// A newer ask of the same head and role was made after the row was queued for launch 2 - the pull
+// request was reopened at that head, which drops the record's ask, and the conflict two reads
+// confirm asked the implementer again - and the newer ask's own row told launch 2. The older row
+// then ends undelivered while the claim is still at launch 2: launch 2 was told, by the newer
+// ask's row, so the end sends it nothing and the record keeps launch 2. An end that read the
+// newer ask as the row's own and took its launch back would send launch 2 the ask a second time.
+func TestAnOlderAskRowEndedUndeliveredLeavesANewerAskOfItsHeadAsItIs(t *testing.T) {
+	pool := sentAgainAtLaunch2(t)
+	pr := recordedPR(t, pool, "LEGION-208")
+	newer := *pr.MergeForward
+	newer.SentLaunch, newer.AskedAt = 2, newer.AskedAt.Add(time.Minute)
+	pr.MergeForward = &newer
+	seedPR(t, pool, pr)
+	askRowEndsUndelivered(t, pool, readsAfter(3*time.Minute), 2)
+	if got := toldWho(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, []string{"tester hold"}) {
+		t.Errorf("after the older row's end the merge-forward messages are %v, want [tester hold]: the newer ask's row told launch 2", got)
+	}
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || !mf.AskedAt.Equal(newer.AskedAt) || mf.SentLaunch != 2 {
+		t.Errorf("after the older row's end the record's ask is %+v, want the newer ask, told launch 2", mf)
+	}
+}
+
 // The pull request closes while the row sent again at launch 2 is queued, and the row ends
 // undelivered on the closed pull request. A reopen drops the record's ask (the reopened record
 // carries none), and the conflict two reads confirm on the reopened head asks again afresh: the

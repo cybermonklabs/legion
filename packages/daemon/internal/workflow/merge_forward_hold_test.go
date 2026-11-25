@@ -365,23 +365,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // tester to wait for the open merge of main onto the head the pull request stands at (Wait),
 // rather than to work at that head now, which words of its own say apart.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
-	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
-	confirmsConflict(t, pool, requiresCI)
-	landsMergeForward(t, pool)
-	again := conflictingRead(requiresCI)
-	again.HeadSHA = forwardHead
-	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
-	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
-	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2,
-		State: "approved", CommitID: forwardHead, HeadSHA: forwardHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(6 * time.Minute)})
-	if got := issuePhase(t, pool); got != phase.Testing {
-		t.Fatalf("after the approval of %s the issue is in %s, want testing", forwardHead, got)
-	}
-	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Landed != "" || asked.Phase != phase.Reviewing {
-		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in reviewing, not landed", asked, forwardHead)
-	}
+	pool := testerStartedWhileTheSecondMergeIsAsked(t)
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
 	if !fenced || fence.Role != claim.RoleTester || !fence.Wait || fence.Head != forwardHead || fence.Base != "main" ||
@@ -403,6 +387,58 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	}
 	if result.Refusal.Message != fence.Message() {
 		t.Errorf("the tester's completion at %s was answered %q, want the refusal of that fence, %q", conflictHead, result.Refusal.Message, fence.Message())
+	}
+}
+
+// testerStartedWhileTheSecondMergeIsAsked is the issue of
+// TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge on the steps implementer, reviewer,
+// tester: a first merge forward landed, the head it left conflicts in its turn and a second merge
+// forward of that head is asked in reviewing, and the reviewer's approval of that head started the
+// tester, in testing, while the second merge has not landed. It fails the test unless the issue
+// stands in testing and the record holds that second ask.
+func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
+	confirmsConflict(t, pool, requiresCI)
+	landsMergeForward(t, pool)
+	again := conflictingRead(requiresCI)
+	again.HeadSHA = forwardHead
+	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2,
+		State: "approved", CommitID: forwardHead, HeadSHA: forwardHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
+		SubmittedAt: firstConflictRead.Add(6 * time.Minute)})
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the approval of %s the issue is in %s, want testing", forwardHead, got)
+	}
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Landed != "" || asked.Phase != phase.Reviewing {
+		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in reviewing, not landed", asked, forwardHead)
+	}
+	return pool
+}
+
+// The pull request of that issue then closes without a merge while the second merge forward is
+// asked and has not landed. The close keeps the record's ask, but a closed pull request gets no
+// push and no landing, so nothing owes the merge and no worker waits for it: the held rule names
+// nobody, and the tester's completion at the head the first merge replaced is still refused, with
+// the refusal that tells it to work at the head the pull request stands at rather than to wait for
+// a landed message that cannot come (mergedForwardFence.Wait).
+func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
+	pool := testerStartedWhileTheSecondMergeIsAsked(t)
+	applyRefusingNothing(t, pool, readsAfter(8*time.Minute), closedAt(forwardHead, firstConflictRead.Add(8*time.Minute)))
+	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
+	if pr.State != record.PullRequestClosed || pr.MergeForward == nil || pr.MergeForward.Head != forwardHead || issue.Phase != phase.Testing {
+		t.Fatalf("after the close the pull request is %s with the ask %+v and the issue in %s, want it closed with the second ask kept, in testing",
+			pr.State, pr.MergeForward, issue.Phase)
+	}
+	if worker, held := heldWorker(issue, pr); held {
+		t.Errorf("on the closed pull request the held rule names the %s, want nobody: no landing can come", worker)
+	}
+	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
+	if !fenced || fence.Wait || fence.Replaced != conflictHead || fence.Landed != forwardHead {
+		t.Errorf("the fence of the tester's completion at %s on the closed pull request is %+v (fenced %t), want it refused and told to work at %s, not to wait",
+			conflictHead, fence, fenced, forwardHead)
 	}
 }
 
