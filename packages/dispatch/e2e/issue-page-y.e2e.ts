@@ -1,3 +1,5 @@
+/** A criterion the server writes into the issue's tree, a child's checks the parent's tree read
+ *  answers, and the issue room the server admits each editor to. */
 import type { Locator, Page } from "@playwright/test";
 
 import { agentRoleWord } from "../web/src/features/issue-page/agent-role";

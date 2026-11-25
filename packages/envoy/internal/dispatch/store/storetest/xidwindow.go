@@ -37,15 +37,16 @@ import (
 // own result says it wrote (xidAssigned). It runs to the end of its COMMIT. A transaction the
 // poller never saw - a write phase that is one batch can hold its xid for less than a poll
 // interval - is judged from its statements alone; one that wrote nothing by either source holds
-// no xid to judge (MayHoldNoXid). Inside the window the rig checks two things. Its shape, in
-// every build: the window holds at most the statements the measurement declared (XidShape), and
-// nothing else. And, where the build judges a window's time at all (XidJudgesGaps), D6 of the
-// INFRA-636 plan: every statement-free gap is at most its bound (XidGap.Bound), and the gaps
-// together take no longer than the statements do and the time their CPUs' device softirqs may
-// hold. A gap's bound is XidMaxGap, widened, on a kernel that charges interrupt time to the thread
-// it lands on, by the time the device softirqs its CPU ran may have put on its thread
-// (XidGap.SoftirqHold); a window's gaps hold at most XidSoftirqGapHold together for rule 2. Both
-// widenings come from one measurement (xidwindow_softirq.go).
+// no xid to judge, and an operation none of whose transactions held one is a rig problem. Inside
+// the window the rig checks two things. Its shape, in every build: the window holds at most the
+// statements the measurement declared (XidShape), and nothing else. And, where the build judges
+// a window's time at all (XidJudgesGaps), D6 of the INFRA-636 plan: every statement-free gap is at
+// most its bound (XidGap.Bound), and the gaps together take no longer than the statements do and
+// the time their CPUs' device softirqs may hold. A gap's bound is XidMaxGap, widened, on a kernel
+// that charges interrupt time to the thread it lands on, by the time the device softirqs its CPU
+// ran may have put on its thread (XidGap.SoftirqHold); a window's gaps hold at most
+// XidSoftirqGapHold together for rule 2. Both widenings come from one measurement
+// (xidwindow_softirq.go).
 //
 // A gap is judged by the time the code made in it (XidGap.Made), not by the time it took on the
 // clock. On a loaded machine the clock reads the machine: a thread kept waiting for a CPU, or a
@@ -118,17 +119,14 @@ const XidFaultGap = 20 * time.Millisecond
 // else. A document call put back inside a window that runs a statement of its own is caught
 // there by that rule, in either build. One that spends its time in Go alone - the rig's own
 // control, and its deliberate-fault self-tests, which inject a sleep - is caught only by a plain
-// run. So in CI a race lane checks a window's shape alone, and the gap bound is judged in plain
-// runs: the docs window tests run under -race in envoy-go-race-docs (shape) and without it in
-// envoy-go-docs-finalizers (shape and gaps); the api and delivery window tests are
-// `//go:build !race`, so no race lane runs them and envoy-go's step "Test what the race build
-// cannot run at all or at full size" runs them plain (shape and gaps); refs' runs plain in
-// envoy-go's unit step. envoy-go and envoy-go-docs-finalizers are among the slow suites the
-// changes job holds back on a pull request: each runs on a merge group (its first attempt only),
-// on a manual dispatch, and on a pull request only while it carries the `full-ci` label, and
-// only when its filter (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is
-// judged in the merge queue before every merge, not on every pull-request push. Under the race
-// detector the docs tests that inject a sleep skip their timing arm by name.
+// run. So in CI the gap bound is judged in plain runs, and no race lane runs a window test: the
+// api, delivery and docs window tests are `//go:build !race`, and envoy-go's step "Test what the
+// race build cannot run at all or at full size" runs them plain (shape and gaps); refs' runs
+// plain in envoy-go's unit step. envoy-go is among the slow suites the changes job holds back on
+// a pull request: it runs on a merge group (its first attempt only), on a manual dispatch, and on
+// a pull request only while it carries the `full-ci` or `lane:envoy_go` label, and only when its
+// filter (envoy_go) selects the change. So the gap bound is judged in the merge queue before
+// every merge, not on every pull-request push.
 func XidJudgesGaps() bool { return XidNoGapJudgment() == "" }
 
 // xidPollInterval is how often the poller reads pg_stat_activity: the plan's 0.5 ms. A poll's own
@@ -620,13 +618,8 @@ type XidReport struct {
 	// Problems are the reasons the rig cannot judge the operation: its verdict would be about the
 	// rig, not the code under test.
 	Problems []string
-	// MayHoldNoXid lets an operation that may write nothing - a read under an advisory lock, a
-	// write whose statements all matched no row - pass with no window at all. Unset, a report with
-	// no window is a rig problem: the operation wrote nothing a statement's result showed and no
-	// poll saw it hold an xid, so either it made no write or the wrong transaction was marked.
-	MayHoldNoXid bool
-	Duration     time.Duration
-	Polls        int
+	Duration time.Duration
+	Polls    int
 	// LongestPoll is the longest time between two polls' sends, how blind the poller was at its
 	// worst.
 	LongestPoll time.Duration
@@ -747,8 +740,8 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 			transaction.Unseen = sample.sent
 		}
 		// A transaction whose statements show no write of their own and that no poll saw took no
-		// xid to judge: an operation that may write nothing passes on MayHoldNoXid, and one that
-		// was to write is the report's own rig problem (problems).
+		// xid to judge: an operation with no window at all is the report's own rig problem
+		// (problems).
 		if transaction.Sighted.IsZero() && xidFirstWrote(transaction) < 0 {
 			report.Unsighted = append(report.Unsighted, transaction)
 			continue
@@ -888,11 +881,13 @@ func XidMillis(d time.Duration) string {
 	return fmt.Sprintf("%.3f ms", float64(d)/float64(time.Millisecond))
 }
 
-// problems are the report's rig problems: Problems, and a report that judged no window when the
-// operation was to hold an xid.
+// problems are the report's rig problems: Problems, and a report that judged no window, since
+// every operation the rig measures holds an xid: none that judged none wrote a row a statement's
+// result showed, and no poll saw one hold an xid, so either it made no write or the wrong
+// transaction was marked.
 func (r *XidReport) problems() []string {
 	problems := r.Problems
-	if len(r.Windows) == 0 && !r.MayHoldNoXid {
+	if len(r.Windows) == 0 {
 		problems = append(slices.Clone(problems), fmt.Sprintf(
 			"no transaction of the operation held an xid: none wrote a row a statement's result showed and no poll saw one hold an xid (%d polls, %d unsighted, %d unjudged transactions); the rig judged nothing",
 			r.Polls, len(r.Unsighted), len(r.Unjudged)))
@@ -900,10 +895,10 @@ func (r *XidReport) problems() []string {
 	return problems
 }
 
-// Err is the report's verdict: nil when every window keeps D6 and the rig judged one (or the
-// operation MayHoldNoXid). A rig problem comes first, worded so a red run cannot be mistaken for a
-// finding - unless a window broke D6 too: then the violations follow the problems, and the run is
-// not called free of a finding about the code.
+// Err is the report's verdict: nil when every window keeps D6 and the rig judged one. A rig
+// problem comes first, worded so a red run cannot be mistaken for a finding - unless a window
+// broke D6 too: then the violations follow the problems, and the run is not called free of a
+// finding about the code.
 func (r *XidReport) Err() error {
 	var b strings.Builder
 	for _, window := range r.Windows {

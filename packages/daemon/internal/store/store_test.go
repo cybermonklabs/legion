@@ -43,8 +43,9 @@ import (
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
 // cycle in this package's test binary. internal/testpg's own skip message holds the pinned
 // Postgres image to start, and testdb.Drop, which waits out an autovacuum worker and a backend
-// that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports nothing
-// of this module, so this package's own tests can take it where they cannot take internal/testpg.
+// that has not exited yet, is the one copy of that wait: internal/testpg/testdb imports no package
+// of this module except internal/testwait, which imports none, so this package's own tests can
+// take it where they cannot take internal/testpg.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
@@ -764,7 +765,7 @@ func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION")
 		return err
 	}); err != nil {
@@ -785,7 +786,7 @@ func TestTxRollsBackWhatTheFunctionWroteBeforeFailing(t *testing.T) {
 	store := migratedStore(t)
 	failure := errors.New("the phase gave up")
 
-	err := store.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION"); err != nil {
 			return err
 		}
@@ -830,7 +831,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 	t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(ctx, tx, issue)
 		return err
@@ -1101,7 +1102,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
+// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
 // main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
 // 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
@@ -1116,7 +1118,8 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261123212127: true,
 }
 
 const idleRelease = 20261101222956

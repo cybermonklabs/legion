@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  A stall notice or an architect notice whose idempotency key another sender's message already holds is read as not delivered: the stall notice as refused, and the architect notice clears its key so the next reminder sends it again under a new one.

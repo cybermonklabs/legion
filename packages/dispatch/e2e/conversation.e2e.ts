@@ -343,9 +343,10 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     await expect(composer.getByRole("link", { exact: true, name: "planner" })).toBeVisible();
     await expect(composer.getByRole("link", { name: "— Can this ship?" })).toBeVisible();
     const field = composer.getByLabel("Comment");
-    await expect(field).toHaveValue("[@planner](dispatch://agent/s1)");
+    // The prefill ends in one space, so the reply's first word is a word of its own.
+    await expect(field).toHaveValue("[@planner](dispatch://agent/s1) ");
     await field.press("End");
-    await field.pressSequentially(" It is green now - ship it.");
+    await field.pressSequentially("It is green now - ship it.");
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
@@ -1089,8 +1090,10 @@ test("a reply quotes the passage it names", async ({ browser }) => {
       removed: true,
       text: "Beta second.",
     });
+    // The quote names the parent's edit as every page that prints an edited post does
+    // (dispatch://INFRA-1523, R2): ` · edited` after the author, before the removed passage.
     await expect(commentQuote).toContainText(
-      "Replying to alice's passage — This passage was removed."
+      "Replying to alice's passage · edited — This passage was removed."
     );
     await expect(commentQuote).not.toContainText("Beta second.");
   } finally {
@@ -1175,8 +1178,10 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
         node: `comment/${comment.id}#b2`,
         ...cited,
       });
+      // Every call follows an edit of the parent, so the quote carries ` · edited` after the
+      // author, as every page that prints an edited post does (dispatch://INFRA-1523, R2).
       await expect(quote).toContainText(
-        `Replying to alice's passage — ${cited.removed ? "This passage was removed." : cited.text}`
+        `Replying to alice's passage · edited — ${cited.removed ? "This passage was removed." : cited.text}`
       );
     };
 
@@ -1337,7 +1342,10 @@ test("the editor keeps a cited passage's id when its whole text is typed over", 
       removed: false,
       text: "Other words entirely.",
     });
-    await expect(quote).toContainText("Replying to alice's passage — Other words entirely.");
+    // The parent was just edited, so the quote marks it (dispatch://INFRA-1523, R2).
+    await expect(quote).toContainText(
+      "Replying to alice's passage · edited — Other words entirely."
+    );
   } finally {
     await alice.close();
   }

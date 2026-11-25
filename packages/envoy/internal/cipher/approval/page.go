@@ -229,6 +229,9 @@ type pageView struct {
 // no record has. The record is read for the person (requests.Machine.ReadRecordFor), which reads
 // whether they may see it from its rows first and the record only after: so a record signed for
 // another broker address, which this broker cannot read, answers a person it hides from 404 too.
+// Each other pending record is read for the person the same way, though the list just showed it
+// them: a record whose secret the policy tagged with a private project since the list read it is
+// left off, never printed with a project nobody asked whether they may see.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
@@ -295,11 +298,11 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 			view.Unshown++
 			continue
 		}
-		other, err := p.cfg.Machine.ReadRecord(r.Context(), s.RecordID)
+		other, err := p.cfg.Machine.ReadRecordFor(r.Context(), s.RecordID, sess.Login)
 		switch {
-		case errors.Is(err, requests.ErrProjectAccessUnavailable):
-			// Listed a moment ago, and Dispatch could not answer for its secrets' projects
-			// since: left off, as the list itself leaves off such a request.
+		case errors.Is(err, pgx.ErrNoRows), errors.Is(err, requests.ErrProjectAccessUnavailable):
+			// Listed a moment ago, and since then hidden from the person, or Dispatch could not
+			// answer for its projects: left off, as the list itself leaves off such a request.
 			continue
 		case err != nil:
 			writeUnavailable(w, "read a pending request", err)

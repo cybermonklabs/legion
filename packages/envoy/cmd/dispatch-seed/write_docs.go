@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -92,22 +93,17 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	//
 	// The index the version is planned against is the one the document holds, which is empty:
 	// this is its first indexing, the rows being written here. The seed's transaction joins no
-	// write phase of anyone's, so each plan's statements run at once, as a batch of their own
-	// (store.RunWrite). The targets the plans move are counted by nobody: the seed appends no
+	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
+	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	blockIndex, err := refs.ReadBlockIndex(ctx, tx, document.ID)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
-	indexing, err := refs.PlanBlocks(blockIndex, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
-	if err != nil {
-		return fmt.Errorf("index blocks: %w", err)
-	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		indexing.Queue(b)
-		return nil
-	}); err != nil {
-		return fmt.Errorf("index blocks: %w", err)
+	// The seed records no event of a document's version, so what the index stated in the node
+	// and tuple store carries the sentinel, the cause of a write no event recorded.
+	if err := graphstore.Caused(ctx, tx, blockWrite, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("record what the block index stated: %w", err)
 	}
 	// The version write records the blocks and marks the document owed the windows that stand
 	// for them, which the block-index tick's window arm writes (refs.BlockIndexing.Queue), so

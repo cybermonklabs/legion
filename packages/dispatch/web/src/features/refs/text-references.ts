@@ -1,8 +1,7 @@
-import { isIdPrefix } from "@legion/contracts";
+import { isIdPrefix, referenceSpans } from "@legion/contracts";
 
-import { itemOfBlock } from "./block-reference";
+import { routeItem } from "./block-reference";
 import { codeRanges, isInCode } from "./code-ranges";
-import { referenceSpans } from "./reference-spans";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -385,14 +384,7 @@ function prefixIds(route: DispatchReferenceRoute): {
   if ("block" in route && route.block !== undefined && isIdPrefix(route.block.id)) {
     found.block = route.block.id;
   }
-  let item: { id: string; kind: ReferenceTargetKind } | undefined;
-  if (referenceTargetKind(route) === "block") {
-    item = itemOfBlock(route);
-  } else if (route.kind === "document") {
-    item = route.item === undefined ? undefined : { id: route.item.id, kind: route.item.kind };
-  } else if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-    item = { id: route.id, kind: route.kind };
-  }
+  const item = routeItem(route);
   if (item !== undefined && isIdPrefix(item.id)) {
     found.item = { id: item.id, kind: item.kind };
   }

@@ -17,9 +17,10 @@ import (
 var bootStates sync.Map
 
 // bootState is what bootBefore keeps of one pool. booted is whether the daemon of the scenario has
-// booted: the first pass is the boot, and opens what it finds. left is each issue's row as the
-// last fact (applyFacts, factTx) left it: an issue whose row differs from it at the next pass was
-// written by the test between the two facts, which the daemon's own facts never are.
+// booted: the first pass is the boot, and opens what it finds. left is each issue's row and plan
+// rows as the last fact (applyFacts, factTx) left them (issueRows): an issue whose rows differ from
+// them at the next pass was written by the test between the two facts, which the daemon's own
+// facts never are.
 type bootState struct {
 	mu     sync.Mutex
 	booted bool
@@ -120,9 +121,15 @@ func rebooted(t *testing.T, pool *pgxpool.Pool) {
 	state.booted = false
 }
 
-// issueRows is each issue's row, as a digest of all its columns, by key.
+// issueRows is each issue's row and its plan rows, the record the walk of its run reads
+// (Engine.walk), as a digest of all their columns, by key. A plan row names its issue by key alone,
+// and the store has plan rows of an issue it has not recorded (an owner's plan at generation 0),
+// which no issue row digests.
 func issueRows(ctx context.Context, pool *pgxpool.Pool) (map[string]string, error) {
-	return keyedRows(ctx, pool, `select key, md5(i::text) from issues i`)
+	return keyedRows(ctx, pool, `select key, md5(i::text
+		|| coalesce((select string_agg(p::text, ',' order by p::text) from issue_plans p where p.issue = i.key), '')
+		|| coalesce((select string_agg(p::text, ',' order by p::text) from plan_tasks p where p.issue = i.key), '')
+		|| coalesce((select string_agg(p::text, ',' order by p::text) from plan_steps p where p.issue = i.key), '')) from issues i`)
 }
 
 // startRows is each step_starts row's count and run, by its issue, task, kind and place.

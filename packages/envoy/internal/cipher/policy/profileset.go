@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // profileKeyPrefix opens the key a refused profile has in Set.Refused (profileKey). No secret's
@@ -26,11 +28,14 @@ func profileKey(name string) string { return profileKeyPrefix + name }
 //     profileKey, and serves nothing by its name, so a name a profile holds is never released as a
 //     stored value;
 //   - a stored secret a profile of another source names is refused too
-//     (ReasonProfileNameTaken), by its own id;
+//     (ReasonProfileNameTaken), by its own id, unless it is superseded by that profile's source
+//     (supersededBy): then the profile is served by the name and the stored secret is not;
 //   - a source profiles of other names use (Set.ProfilesOf) is served by its own name only where
 //     a profile holds that name, and otherwise only through them;
-//   - a github-app secret no profile names is refused by its own id (ReasonGitHubAppNoProfile),
-//     so every GitHub App token the broker mints is a profile's.
+//   - a secret released as GitHub installation tokens (ServesGitHubTokens: github-app or
+//     github-installations) that no profile names is refused by its own id
+//     (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile), so every GitHub token the
+//     broker hands over is a profile's.
 //
 // Each profile is checked against set's stored secrets alone, never against another profile, so
 // a profile is never the source of another. prefix is the namespace, from which a stored secret's
@@ -57,6 +62,12 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 			}
 			continue
 		}
+		if refusal.Reason == ReasonProfileMinted {
+			// A dpop profile is proxy configuration and no secret: it is served as nothing, a
+			// stored secret of its name with it (deleted above), and it is no refusal either, so
+			// it writes no refused line and counts in no broker_unservable_secrets series.
+			continue
+		}
 		refused[profileKey(profile.Name)] = refusal
 		byName[profile.Name] = refusal
 		if stored, taken := set.Secrets[profile.Name]; taken && refusal.Reason == ReasonProfileNameTaken {
@@ -70,12 +81,16 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		}
 	}
 	for name, secret := range set.Secrets {
-		if p.Lookup(name) != nil || p.Of(name) != nil || secret.Type() != TypeGitHubApp {
+		if p.Lookup(name) != nil || p.Of(name) != nil || !ServesGitHubTokens(secret.Type()) {
 			continue
 		}
 		delete(served, name)
 		delete(versions, name)
-		refusal := Refusal{Reason: ReasonGitHubAppNoProfile, Owner: secret.Owner, Detail: "no profile names it, and every GitHub App token is a profile's"}
+		reason := ReasonGitHubAppNoProfile
+		if secret.Type() == TypeGitHubInstallations {
+			reason = ReasonGitHubInstallationsNoProfile
+		}
+		refusal := Refusal{Reason: reason, Owner: secret.Owner, Detail: "no profile names it, and every GitHub token the broker hands over is a profile's"}
 		refused[prefix+slugOf(name)] = refusal
 		byName[name] = refusal
 	}
@@ -84,11 +99,11 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	return next
 }
 
-// servesAnApp reports whether set serves a github-app secret, which apply refuses unless a
-// profile names it.
+// servesAnApp reports whether set serves a secret released as GitHub installation tokens
+// (ServesGitHubTokens), which apply refuses unless a profile names it.
 func servesAnApp(set *Set) bool {
 	for _, secret := range set.Secrets {
-		if secret.Type() == TypeGitHubApp {
+		if ServesGitHubTokens(secret.Type()) {
 			return true
 		}
 	}
@@ -96,13 +111,20 @@ func servesAnApp(set *Set) bool {
 }
 
 // serve checks the profile at index i against its source among set's stored secrets and answers
-// the Secret it is served as, or the refusal of the first rule it fails, in R2's order: its source
-// is no stored secret set serves; its name is another stored secret's; its github or google block
-// does not fit the source; the tag rules (TagRules) refuse its tags, the profile's own over its
+// the Secret it is served as, or the refusal of the first rule it fails, in R2's order, after the
+// one rule that reads no source: a profile of kind dpop is never served. Then: its source is no
+// stored secret set serves; its name is another stored secret's; its github or google block does
+// not fit the source; the tag rules (TagRules) refuse its tags, the profile's own over its
 // source's, so a profile of an admin source is held to the admin rules; it is looser than its
 // source; or it has no proxy block on a source whose credential only the proxy can scope.
 func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	profile := &p.list[i]
+	if profile.Proxy != nil && profile.Proxy.Kind == proxyrules.KindDPoP {
+		// Proxy configuration for a capability the broker mints for a grant of its own and holds:
+		// no stored secret is ever its value, so a stored secret of its name is not served
+		// through it, and nothing of it can be requested or approved.
+		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + proxyrules.KindDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
+	}
 	source, ok := set.Secrets[profile.Source]
 	if !ok {
 		return Secret{}, p.sourceMissing(profile.Source, set, prefix)
@@ -110,7 +132,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	refuse := func(reason, detail string) (Secret, Refusal) {
 		return Secret{}, Refusal{Reason: reason, Owner: source.Owner, Detail: detail}
 	}
-	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) {
+	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) && !supersededBy(set, profile, prefix) {
 		return refuse(ReasonProfileNameTaken, "the stored secret "+profile.Name+" holds this name")
 	}
 	if detail := blockMismatch(profile, source); detail != "" {
@@ -176,15 +198,20 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 }
 
 // sourceMissing is the refusal of a profile whose source set does not serve, with the source's own
-// state as its detail: the reason the policy refuses it, its wait for a value, its being a
-// profile, which is never the source of another, or its absence.
+// state as its detail: the reason the policy refuses it and that refusal's own detail where it has
+// one (a value refusal's decoder words, such as the shapeVersion it read), its wait for a value,
+// its being a profile, which is never the source of another, or its absence.
 func (p Profiles) sourceMissing(source string, set *Set, prefix string) Refusal {
 	id := prefix + slugOf(source)
 	missing := func(owner, why string) Refusal {
 		return Refusal{Reason: ReasonProfileSourceMissing, Owner: owner, Detail: "source " + source + ": " + why}
 	}
 	if refusal, refused := set.Refused[id]; refused {
-		return missing(refusal.Owner, refusal.Reason)
+		why := refusal.Reason
+		if refusal.Detail != "" {
+			why += " (" + refusal.Detail + ")"
+		}
+		return missing(refusal.Owner, why)
 	}
 	if pending, waits := set.Pending[id]; waits {
 		return missing(pending.Owner, ReasonPendingValue)
@@ -207,14 +234,37 @@ func storeHolds(set *Set, name, prefix string) bool {
 	return refused || waits
 }
 
+// supersededBy reports whether the stored secret of profile's name is superseded by profile's
+// source: its superseded-by tag (TagSupersededBy) is exactly the source's name, whether set serves
+// it, refuses it or holds it waiting for its value (Secret.SupersededBy, Refusal.SupersededBy,
+// Pending.SupersededBy). Such a secret gives its name up to the profile, which is how a deployment
+// moves a name from a key the broker held to the minted tokens that replace it without a gap: a
+// profile of the name is refused while the stored secret holds it (ReasonProfileNameTaken), and
+// the stored secret is not served by its name once the profile is. The tag is honoured on a
+// refused secret too, so retiring the old key (a disabled or destroyed version, an unreadable
+// value) leaves the profile served; it gives nothing wider, since the tag must name the source of
+// a profile the deployment's own profiles file defines.
+func supersededBy(set *Set, profile *Profile, prefix string) bool {
+	if stored, served := set.Secrets[profile.Name]; served {
+		return stored.SupersededBy == profile.Source
+	}
+	id := prefix + slugOf(profile.Name)
+	if refusal, refused := set.Refused[id]; refused {
+		return refusal.SupersededBy == profile.Source
+	}
+	pending, waits := set.Pending[id]
+	return waits && pending.SupersededBy == profile.Source
+}
+
 // blockMismatch says how profile's github or google block does not fit source, and is "" when
-// it fits: a github block is a github-app source's, which must have one, on accounts the source's
-// github-owners names; a google block is a google-service-account source's, on scopes the
-// source's scopes tag names, so a profile narrows the account's scopes and never widens them.
+// it fits: a github block is the block of a source released as GitHub installation tokens
+// (ServesGitHubTokens), which must have one, on accounts the source's github-owners names; a
+// google block is a google-service-account source's, on scopes the source's scopes tag names, so
+// a profile narrows the account's scopes and never widens them.
 func blockMismatch(profile *Profile, source Secret) string {
 	sourceType := source.Type()
 	switch {
-	case profile.GitHub != nil && sourceType != TypeGitHubApp:
+	case profile.GitHub != nil && !ServesGitHubTokens(sourceType):
 		return "a github block on a " + kindOf(sourceType) + " source"
 	case profile.GitHub != nil:
 		owners := source.GitHubOwnerLogins()
@@ -223,8 +273,8 @@ func blockMismatch(profile *Profile, source Secret) string {
 				return fmt.Sprintf("github.accounts names %s, which the source's github-owners (%s) does not", account, source.GitHubOwners)
 			}
 		}
-	case sourceType == TypeGitHubApp:
-		return "no github block on a " + TypeGitHubApp + " source"
+	case ServesGitHubTokens(sourceType):
+		return "no github block on a " + sourceType + " source"
 	}
 	if profile.Google == nil {
 		return ""

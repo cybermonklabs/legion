@@ -49,9 +49,9 @@ const (
 // is what a closed tree keeps. The child still at admitted is handed over with the rest — its
 // tree closed and it never started, so nothing would start it where it stands — and this one was
 // the daemon's own to hold besides, since the root stands in merging, a phase the daemon has
-// already accepted (record.AcceptedAncestor), and its architect was told it starts once this
-// root closes. The linger keeps that promise whether the close followed the merge or a person
-// made it by hand (the workflow's unfinishedHandOvers). The close itself hands nothing over, so
+// already accepted (record.AcceptedAncestor). The linger hands it over whether the close followed
+// the merge or a person made it by hand (the workflow's unfinishedHandOvers). The close itself
+// hands nothing over, so
 // a root that comes back inside its linger resumes its children where they stood and hands none
 // over. The close here is a person's — parked, then closed — where a merged root's close waits
 // for the rest of its tree instead (the workflow's closeMerged) and leaves no child mid-run to
@@ -97,10 +97,10 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 //
 // One member does not hold the close: the released child that has never started a phase. It
 // stands at admitted beneath a root in merging, which is a root the daemon has already
-// accepted, so the daemon itself holds the child there until that root closes
-// (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
+// accepted, so the daemon itself holds the child there while that root stands in
+// merging (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
 // waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
-// root to close and the root waits for the child to leave, and no act of a person short of
+// root to leave merging and the root waits for the child to leave, and no act of a person short of
 // parking the child breaks it. This is the one recorded departure from the spec of
 // dispatch://INFRA-980, decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) {
@@ -111,9 +111,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
 		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
 	}
-	// A root that waits for its merge stands in merging, which is past its own review, so it
-	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
-	// children below say.
+	// A root that waits for its merge stands in merging, which keeps none of the cap's rows, so
+	// it holds none while it waits. Its tree runs on, which the untouched children below say.
 	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
@@ -168,9 +167,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	expireLinger(t, pool, admission, engine)
 	// The child the exclusion kept out of the close is the child the linger hands over. It is
 	// the other half of the departure above: leaving it where it stands would leave it todo at
-	// admitted in a closed tree for ever, with nobody told, though its architect was told it
-	// starts once this root closed. Nothing else of this tree is handed over — every member
-	// that ran was parked before the close.
+	// admitted in a closed tree for ever, with nobody told. Nothing else of this tree is handed
+	// over — every member that ran was parked before the close.
 	if got := handOvers(t, pool); len(got) != 1 || got[0] != unstarted {
 		t.Fatalf("hand-overs once the linger ended = %v, want %s alone: the child this root's close left at admitted runs as a root of its own, and every member that ran was parked", got, unstarted)
 	}
@@ -246,8 +244,8 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Fatalf("carried gate = %#v, %v", gate, err)
 				}
 				pr, err := records.PullRequest(context.Background(), tx, child)
-				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 2 {
-					t.Fatalf("carried pull request = %#v, %v", pr, err)
+				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 1 {
+					t.Fatalf("carried pull request = %#v, %v; want it at head-42 with its settlement's generation 1 kept", pr, err)
 				}
 				handover, err := records.Handover(context.Background(), tx, child)
 				if err != nil || handover != nil {
@@ -352,8 +350,8 @@ func TestAHandedOverChildWithNoGateToCarryIsNotMarkedCarried(t *testing.T) {
 		if gates, err := records.GatesOf(context.Background(), tx, child); err != nil || len(gates) != 0 {
 			t.Fatalf("gates = %#v, %v; want none, since the old root had none", gates, err)
 		}
-		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-			t.Fatalf("pull request = %#v, %v; want it carried at generation 2", pr, err)
+		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 1 {
+			t.Fatalf("pull request = %#v, %v; want it carried with its settlement's generation 1 kept", pr, err)
 		}
 		if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil || handedRoot.Generation != 2 || handedRoot.GateCarried {
 			t.Fatalf("handed-over root = %#v, %v; want generation 2 with no gate carried", handedRoot, err)
@@ -501,10 +499,11 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 			}
 			if tc.hold == nil {
 				// The merger is no longer told an approved head: Legion re-implements none of a
-				// repository's rules, so no role compares a head with the one a review approved
+				// repository's rules, so, outside a forward merge of the base, no role compares a head with
+				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Working copy: branch legion/" + child + ". Resume the existing phase work."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}

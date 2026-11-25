@@ -23,8 +23,9 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
+import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
+import type { PublishedReferences } from "../../refs/reference-names";
 import { useKeymapScope } from "../../shell/keymap";
 import { DocumentStage, DocumentStages } from "../document-stage";
 import type { OutlineRequest } from "../IssueTree";
@@ -33,7 +34,7 @@ import { type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -80,9 +81,10 @@ import type { DecisionsAsk } from "./decisions-parts";
  * What the Decisions filter's body draws, read as a reader reads it. Which entry stands in which
  * part is the model's, read in `decisions-parts.test.ts`; these rows read the drawing: the four
  * parts under their headings, the words each state reads, Keep and Change on the review list
- * alone, the person's answer character for character, and where the focus goes. How a row is
- * laid out and where a long question is cut are the browser's to say, which no DOM of a unit
- * test lays out, so the browser suite's c-row, c-decisions and c-review-list read them.
+ * alone, the person's answer paragraph by paragraph as the store holds it, and where the focus
+ * goes. How a row is laid out and where a long question is cut are the browser's to say, which
+ * no DOM of a unit test lays out, so the browser suite's c-row, c-decisions and c-review-list
+ * read them.
  */
 
 /** The page's line for an issue the view draws nothing for, which the slot hands the body. */
@@ -281,6 +283,7 @@ function changeOf(block: string, at: string, body: string): Comment {
     author: READER_ACTOR,
     body,
     created_at: at,
+    edited_at: null,
     id: `change-${block}`,
   } as Comment;
 }
@@ -433,26 +436,24 @@ function renderBody(
     return (
       <MemoryRouter>
         <AppProviders client={client}>
-          <ReferenceNamesProvider>
-            <DocumentStages>
-              <Publisher published={published} />
-              <IssueScope />
-              <Where />
-              {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+          <DocumentStages>
+            <Publisher published={published} />
+            <IssueScope />
+            <Where />
+            {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
                 page names one. */}
-              <NoTooltips>
-                {requests ? (
-                  <OutlineRequestProvider>
-                    <button type="button">Elsewhere</button>
-                    {held}
-                  </OutlineRequestProvider>
-                ) : (
-                  held
-                )}
-              </NoTooltips>
-              {editing === undefined ? null : <EditorStand held={editing.held} />}
-            </DocumentStages>
-          </ReferenceNamesProvider>
+            <NoTooltips>
+              {requests ? (
+                <OutlineRequestProvider>
+                  <button type="button">Elsewhere</button>
+                  {held}
+                </OutlineRequestProvider>
+              ) : (
+                held
+              )}
+            </NoTooltips>
+            {editing === undefined ? null : <EditorStand held={editing.held} />}
+          </DocumentStages>
         </AppProviders>
       </MemoryRouter>
     );
@@ -1580,6 +1581,62 @@ test("a declined ask says who declined it and draws no answer", () => {
   expect(row.querySelector("[data-answer-text]")).toBeNull();
 });
 
+// R6, R9: the note a person wrote as they declined is drawn by the renderer, as a person's answer
+// under an ask is (`RowText`), never as the characters they typed: its marks are drawn as what
+// they are, and a reference in it reads as its target's name from the page's one names read.
+test("a declined ask's note is drawn through the renderer, a reference in it read as its target", async () => {
+  await warmMarkdownRenderer();
+  const cited = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      ...wholeIssue(),
+      asks: [
+        closing("a-declined", {
+          at: "2026-11-13T09:00:00Z",
+          kind: "declined",
+          reason: `Ask about ${cited} **first**.`,
+        }),
+      ],
+    },
+    { published: publishedNames(new Map([[cited, name]])) }
+  );
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe(`Ask about ${name} first.`));
+    expect(note()?.querySelector("strong")?.textContent).toBe("first");
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// R6: where the asks read sends the server's reading of the note (`reason_tree`), the row draws
+// that tree rather than a parse of the stored text. The tree reads differently from the text
+// beside it, so a note drawn from a parse would read "the old words".
+test("a declined ask's note is drawn from the reading the asks read sends", async () => {
+  await warmMarkdownRenderer();
+  const view = renderBody({
+    ...wholeIssue(),
+    asks: [
+      closing("a-declined", {
+        at: "2026-11-13T09:00:00Z",
+        kind: "declined",
+        reason: "the **old** words",
+        reason_tree: displayTree("the **new** words, for now"),
+      }),
+    ],
+  });
+  const note = () => rowOf(view, "a-declined").querySelector("[data-declined-note]");
+  try {
+    await waitFor(() => expect(note()?.textContent).toBe("the new words, for now"));
+    expect(note()?.querySelector("strong")?.textContent).toBe("new");
+  } finally {
+    view.unmount();
+  }
+});
+
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three. Each entry links to the node that holds it."
 test("a decision reaches each statement it shaped, and every entry links to its node", async () => {
@@ -1634,6 +1691,37 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
   expect(parent?.getAttribute("data-parent-id")).toBe("q2");
   expect(words(parent)).toBe(NODE_TYPE_NAMES.ask);
+});
+
+// R2, R8: an entry's parent line is its parent's projected first line (`useNodeLine`), as the
+// outline's parent line is, so a reference in the parent's words reads as its target's name from
+// the page's one names read, and the line is cut at the first sentence; never the parent's words
+// as written.
+test("an entry's parent line reads a reference in its parent's words by its target's name", async () => {
+  await warmMarkdownRenderer();
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      children: [
+        statement("s1"),
+        openAsk("q2", true, {
+          children: [decisionNode("under")],
+          text: `Serve ${address} first. Then the rest.`,
+        }),
+      ],
+      made: [decision("under", { links: [shaped(specRef("s1"))] })],
+    },
+    { published: publishedNames(new Map([[address, "The rows hold"]])) }
+  );
+  const line = () =>
+    rowOf(view, D("under")).querySelector("[data-node-parent-line]")?.lastElementChild?.textContent;
+  try {
+    await waitFor(() => expect(line()).toBe("Serve The rows hold first."));
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
 });
 
 // R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says
@@ -2012,6 +2100,150 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(view.getByText(EMPTY_LINE)).toBeTruthy();
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** When the posts below were deleted, and when edited. */
+const DELETED_AT = "2026-11-12T10:00:00Z";
+const EDITED_AT = "2026-11-12T11:00:00Z";
+
+/** How the deleted line opens: the page's words, then the session nobody named as the page
+ *  names an author, never as the model's line holds it. */
+const DELETED_OPENING = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+
+/** A comment the session nobody named wrote and deleted, as the model holds it
+ *  (`tree-drafts.ts`'s `addTurns`): its delete, and the deleted line as its text, the actor
+ *  named as no registry knows it and the time as stored, with no reading. */
+function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNode {
+  return node({
+    at: "2026-11-12T09:00:00Z",
+    author: UNTITLED,
+    children,
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id,
+    reference: `dispatch://${KEY}/comment/${id}`,
+    text: `${CONTROL_LABELS.post_deleted_by} ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    type: "comment",
+  });
+}
+
+// R2 and R3 of dispatch://INFRA-1523: a comment an address named is drawn with the marks the
+// outline's row draws it with once its author corrected it. One its author deleted draws the
+// deleted line in place of its words, in the page's words, its actor named as the page names an
+// author and never as the model's text holds it, and its time as the page draws a time.
+test("a deleted comment an address named draws its deleted line, never the model's line", () => {
+  const gone = deletedComment("c-gone");
+  const children = [statement("s1"), gone];
+  const view = renderBody(
+    { children },
+    {
+      reveal: gone.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([gone.id])).root,
+    }
+  );
+  const row = rowOf(view, gone.id);
+  const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(row.textContent).not.toContain(DELETED_AT);
+});
+
+// R2 of dispatch://INFRA-1523: a message an address named that its author edited draws its
+// words as they read now, and says ` · edited` after its time, outside its words, in the page's
+// own words, as the outline's row says it in its margin.
+test("an edited message an address named draws its words and says · edited after them", () => {
+  const edited = node({
+    at: "2026-11-12T09:00:00Z",
+    author: READER_ACTOR,
+    editedAt: EDITED_AT,
+    id: "m-edited",
+    reference: `dispatch://${KEY}/message/m-edited`,
+    text: "The rail stays where it is, at 56 px.",
+    type: "message",
+  });
+  const children = [statement("s1"), edited];
+  const view = renderBody(
+    { children },
+    {
+      reveal: edited.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([edited.id])).root,
+    }
+  );
+  const row = rowOf(view, edited.id);
+  expect(words(row.querySelector("[data-node-words]"))).toBe(edited.text);
+  const mark = row.querySelector("[data-node-edited]");
+  expect([mark?.textContent, mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)]).toEqual([
+    ` · ${CONTROL_LABELS.post_edited}`,
+    true,
+  ]);
+  expect(mark?.closest("[data-node-words]")).toBeNull();
+});
+
+// R2 and R3 of dispatch://INFRA-1523: an entry's parent line is the outline's own
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// deleted is drawn as its deleted line, its actor named as the page names an author and never as
+// the model's line holds it, and it stays the link to the comment, out of the tab order as
+// everything inside a row is.
+test("an entry whose parent is a deleted comment draws the parent line as the deleted line", () => {
+  const view = renderBody({
+    children: [statement("s1"), deletedComment("c-gone", [decisionNode("under")])],
+    made: [decision("under", { links: [shaped(specRef("s1"))] })],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  const deletedLine = line?.querySelector("a [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(line?.textContent).not.toContain(DELETED_AT);
+  expect(
+    [...(line?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+      link.getAttribute("href"),
+      link.tabIndex,
+    ])
+  ).toEqual([[`/issues/${KEY}/comments/c-gone`, -1]]);
+});
+
+// R2 of dispatch://INFRA-1523: an entry whose parent is a comment its author edited says
+// ` · edited` after the parent's line, in the page's own words, inside the link to the comment;
+// a parent with no words of its own is named by its kind's word once, then the same mark.
+test("an entry whose parent is an edited comment draws · edited after the parent's line", () => {
+  const edited = node({
+    children: [decisionNode("under")],
+    editedAt: EDITED_AT,
+    id: "c-edited",
+    reference: `dispatch://${KEY}/comment/c-edited`,
+    text: "Where does the rail sit?",
+    type: "comment",
+  });
+  const wordless = node({
+    children: [decisionNode("bare")],
+    editedAt: EDITED_AT,
+    id: "c-wordless",
+    reference: `dispatch://${KEY}/comment/c-wordless`,
+    text: "",
+    type: "comment",
+  });
+  const view = renderBody({
+    children: [statement("s1"), edited, wordless],
+    made: [
+      decision("under", { links: [shaped(specRef("s1"))] }),
+      decision("bare", { links: [shaped(specRef("s1"))] }),
+    ],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  const link = line?.querySelector("a");
+  expect(link?.textContent).toBe(`${edited.text} · ${CONTROL_LABELS.post_edited}`);
+  expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
+    ` · ${CONTROL_LABELS.post_edited}`
+  );
+  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
+    `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
+  );
+});
+
 // R6: the page holds which of the Contents list's requests an outline or a view took
 // (`outline-request.tsx`), so a view drawn again, turned off and on, does not take the reader
 // back to the request it took before.
@@ -2247,6 +2479,54 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     list.mockRestore();
     text.mockRestore();
   }
+});
+
+// R6: what a person wrote in a Change is drawn by the renderer, as a person's answer under an
+// ask is (`RowText`), never as the characters they typed: its marks are drawn as what they are
+// and no asterisk or backtick shows.
+test("a Change's body is drawn through the renderer, its marks gone", async () => {
+  await warmMarkdownRenderer();
+  const body = "Name **the read**, and keep `x` as written.";
+  const view = renderBody(wholeIssue());
+  try {
+    await act(async () =>
+      view.client.setQueryData(
+        ["comments", KEY],
+        [changeOf("second", "2026-11-16T09:00:00Z", body)]
+      )
+    );
+    await waitFor(() =>
+      expect(rowOf(view, D("second")).querySelector("[data-change-words]")?.textContent).toBe(
+        "Name the read, and keep x as written."
+      )
+    );
+    expect(rowOf(view, D("second")).querySelector("[data-change-words] strong")?.textContent).toBe(
+      "the read"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
+// edited post: the person's words as stored, then ` · edited` in the page's own words
+// (`EditedMark`). A Change nobody edited draws its words and nothing after them.
+test("a Change its author edited draws its words, then · edited, and one nobody edited no mark", async () => {
+  const edited: Comment = {
+    ...changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please."),
+    edited_at: "2026-11-16T09:30:00Z",
+  };
+  const unedited = changeOf("first", "2026-11-16T10:00:00Z", "Keep it shorter.");
+  const view = renderBody({ ...wholeIssue(), comments: [edited, unedited] });
+  const changeWords = (block: string) => rowOf(view, D(block)).querySelector("[data-change-words]");
+  await waitFor(() =>
+    expect(changeWords("second")?.textContent).toBe("Name the read, please. · edited")
+  );
+  const mark = changeWords("second")?.lastElementChild;
+  expect(mark?.textContent).toBe(" · edited");
+  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
+  expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
 // R2: the view draws four parts. What another person answered is no part of its own: it stands

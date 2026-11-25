@@ -16,9 +16,11 @@ import (
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic), the stream
 // (its stored-message get, `bus.Client.NextStoredMessage`) and its own durable, then each bucket
-// in turn, then the interest bucket's purge. HostPermissions and DispatchPermissions are built on
-// it, so neither holds a session consumer's call. TestSessionPermissions's exact list holds none
-// of it: no session gets the stored-message read or a consumer.
+// in turn, then the interest bucket's purge and the known-session bucket's. HostPermissions and
+// DispatchPermissions are built on it, so neither holds a session consumer's call; the edge set
+// (EdgePermissions) and the auth service's edge answers (natsgrant.Edge) hold both purges too.
+// TestSessionPermissions's exact list holds none of it: no session gets the stored-message read or
+// a consumer.
 var listenerBasePublish = []string{
 	"notifications.>",
 	"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
@@ -93,6 +95,7 @@ var listenerBasePublish = []string{
 	"$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
 	"$JS.FC.KV_envoy_dpop_proofs.>",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
+	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }
 
 // sessionConsumerPublish are the session consumers' calls (create with and without a filter

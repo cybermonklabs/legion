@@ -23,6 +23,7 @@ func balanced(t *testing.T, fragment, want string) {
 // after the opener and ends it after the closer, so only the `**` after `anchor` survives, and
 // the balancer drops exactly that.
 func TestASnippetCutAfterABoldSpanOpenedLosesOnlyTheDelimiterTheCutLeftOpen(t *testing.T) {
+	t.Parallel()
 	balanced(t, "twenty anchor** after the mark twentyone", "twenty anchor after the mark twentyone")
 	balanced(t,
 		"stop the deploy before the cut and report back** eleven",
@@ -36,6 +37,7 @@ func TestASnippetCutAfterABoldSpanOpenedLosesOnlyTheDelimiterTheCutLeftOpen(t *t
 // A delimiter the author typed on purpose stays: one CommonMark would read as literal. `** ` is
 // not at either edge of a word and cannot open emphasis, so it is text, not a cut.
 func TestADelimiterCommonMarkReadsAsLiteralStays(t *testing.T) {
+	t.Parallel()
 	balanced(t, "Use ** for bold", "Use ** for bold")
 	balanced(t, "press the ` key then", "press the ` key then")
 	balanced(t, "2 * 3 is 6", "2 * 3 is 6")
@@ -45,6 +47,7 @@ func TestADelimiterCommonMarkReadsAsLiteralStays(t *testing.T) {
 // A tilde run pairs only with a closer its own length, as GFM's strikethrough does: remark-gfm
 // reads `~~a~` as plain text, and leaving `~a~` would strike out text the author never struck.
 func TestATildeRunPairsOnlyWithACloserItsOwnLength(t *testing.T) {
+	t.Parallel()
 	balanced(t, "keep ~~a~ here", "keep a here")
 	// A run of three or more is literal text to GFM (the third marker ends the sequence), so the
 	// `~~` closer is the only delimiter here, and the cut is what took its opener.
@@ -57,6 +60,7 @@ func TestATildeRunPairsOnlyWithACloserItsOwnLength(t *testing.T) {
 
 // Delimiters inside a code span are code, never counted.
 func TestDelimitersInsideACodeSpanAreNeverCounted(t *testing.T) {
+	t.Parallel()
 	balanced(t, "`code with ** inside` and **bold**", "`code with ** inside` and **bold**")
 	balanced(t, "call `f(**kwargs)` with", "call `f(**kwargs)` with")
 	balanced(t, "``a ` tick`` stays", "``a ` tick`` stays")
@@ -64,6 +68,7 @@ func TestDelimitersInsideACodeSpanAreNeverCounted(t *testing.T) {
 
 // A snippet cut inside a link keeps the link's words.
 func TestASnippetCutInsideALinkKeepsTheLinksWords(t *testing.T) {
+	t.Parallel()
 	balanced(t, "read it and [link", "read it and link")
 	balanced(t, "read [the docs](https://example.com/do", "read the docs")
 	balanced(t, "docs](https://example.com/docs) and then", "docs and then")
@@ -71,6 +76,7 @@ func TestASnippetCutInsideALinkKeepsTheLinksWords(t *testing.T) {
 
 // A fragment whose marks are balanced is left exactly as it is.
 func TestABalancedFragmentIsLeftExactlyAsItIs(t *testing.T) {
+	t.Parallel()
 	whole := "**Bold** then `code` and [a link](https://example.com) and ~~old~~ __u__ *i* _j_"
 	balanced(t, whole, whole)
 	balanced(t, "", "")
@@ -78,6 +84,7 @@ func TestABalancedFragmentIsLeftExactlyAsItIs(t *testing.T) {
 
 // A fragment cut inside a code span drops the open backtick.
 func TestAFragmentCutInsideACodeSpanDropsTheOpenBacktick(t *testing.T) {
+	t.Parallel()
 	balanced(t, "Before the cut `dispatch-deploy.y", "Before the cut dispatch-deploy.y")
 }
 
@@ -137,6 +144,7 @@ func snippetTextHolding(markdown, word string) (snippetText, bool) {
 // its source with search.go's headlineOptions, measured on PostgreSQL 18.6; the
 // check beside each is what the snippet must read as.
 func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, source, headline, want string
 		check                        func(t *testing.T, snippet string)
@@ -257,6 +265,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 // `bold and <<anchor>> here`, 4 words), so the author's `**` is theirs; a window of 24 words
 // around the match with the mark's opener left outside it loses the closer.
 func TestASearchSnippetNotInItsSourceIsReadAlone(t *testing.T) {
+	t.Parallel()
 	const elsewhere = "a source the headline was not cut from"
 	short := "bold and ** " + snippetStart + "anchor" + snippetStop + " here"
 	if got := SearchSnippet(short, elsewhere, snippetStart, snippetStop); got != short {

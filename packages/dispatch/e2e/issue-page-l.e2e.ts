@@ -1,3 +1,5 @@
+/** Each row writes from the box at the foot and then reads its own write: the comment, reply or
+ *  read mark Dispatch stored, and the row the outline draws from the server's reads. */
 import type { Locator, Page } from "@playwright/test";
 
 import type { ArtifactBlock } from "../web/src/api/types";
@@ -11,6 +13,7 @@ import {
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
   answerAsk,
+  createComment,
   createIssue,
   createIssueArtifact,
   createProject,
@@ -19,6 +22,7 @@ import {
   getMyState,
   listComments,
 } from "./api";
+import { updateBanner } from "./foot-floats";
 import { nextFrames } from "./frames";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { closeDetails, gotoIssue, openDetails, phase } from "./issue-page";
@@ -534,6 +538,52 @@ test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => 
   });
 });
 
+// The tester's red row (round 15), R4 and c-use step 4: Reply on an agent's reply writes a mention
+// of that agent into the box (`replyPrefill`), and a person types their words at once after it,
+// as a person does. Dispatch stores those words as the reply, and the outline draws it under the
+// agent's reply, with no refusal in the box. A send that `fill`s the field writes over the
+// mention, so the rows above never type after it.
+test("a reply typed at once after the mention the box writes for an agent is stored and drawn under the agent's reply", async ({
+  browser,
+}) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const agents = await createComment(
+      seeded.key,
+      { body: "An agent's answer to the first entry.", reply_to: seeded.head },
+      { actor: { id: "e2e-nesting-asker", kind: "session" }, as: "agent" }
+    );
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const row = await focusRow(page, agents.id);
+    await rowAct(row, "reply").click();
+    const field = composerField(page).first();
+    await expect(field, "Reply on the agent's reply put no caret in the box").toBeFocused();
+    await expect(field, "the box wrote no mention of the agent").toHaveValue(
+      /dispatch:\/\/agent\/e2e-nesting-asker/
+    );
+    const words = "Typed at once after the mention the box wrote.";
+    await page.keyboard.press("End");
+    await page.keyboard.type(words);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(
+        async () =>
+          (await listComments(seeded.key)).find((comment) => comment.body.includes(words))?.id ??
+          null,
+        { message: "Dispatch stored no reply holding the words typed at once after the mention" }
+      )
+      .not.toBeNull();
+    await expect(
+      composer(page).getByRole("alert"),
+      "the box shows a refusal of the reply typed at once after the mention"
+    ).toHaveCount(0);
+    const reply = (await listComments(seeded.key)).find((comment) => comment.body.includes(words));
+    await expect.poll(() => parentOfRow(page, reply?.id ?? "")).toBe(agents.id);
+  });
+});
+
 // c-replies (3). R4, R16 and the tester's F1: what the reader sends from the box at the foot is
 // drawn at once, its branch unfolded, on screen clear of the box and with the focus on it,
 // whether it is a reply under a thread the reader folded with its head's own fold control, a
@@ -833,6 +883,14 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
+    // Every live process serves a build the page does not run, so each load shows the update
+    // banner, the float that the foot's page layer publishes for (`routeFloats` in
+    // `e2e/foot-floats.ts`).
+    await page.route("**/api/v1/dashboard/builds", (route) =>
+      route.fulfill({
+        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
+      })
+    );
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width}x${size.height}`;
       const phone = size.width <= PHONE_FORM_MAX;
@@ -858,17 +916,19 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
         Math.round((foot?.y ?? 0) + (foot?.height ?? 0)),
         `the box does not stand at the foot of the screen at ${at}`
       ).toBe(size.height);
-      // Standing there, it publishes how far up from the screen's foot it reaches, which the
-      // shell's status corner rides above (`--foot-composer-inset`, `useFootInset`): the reach of
-      // its wrapper, the element its host marks as held at the foot (`data-foot-held`).
-      const wrapper = await page.locator("[data-foot-held]").boundingBox();
+      // Standing there, it is an element of the foot's page layer, which publishes how far up from
+      // the screen's foot it reaches for the update banner to ride above (`--foot-page-inset`,
+      // `useFootInset`): the reach of its wrapper, the box's parent.
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(updateBanner(page), `the update banner does not show at ${at}`).toBeVisible();
+      const wrapper = await composer(page).locator("..").boundingBox();
       const reach = size.height - (wrapper?.y ?? size.height);
       await expect
         .poll(
           async () =>
             Number.parseFloat(
               await page.evaluate(() =>
-                getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+                getComputedStyle(document.documentElement).getPropertyValue("--foot-page-inset")
               )
             ),
           { message: `the box does not publish its reach of ${reach.toFixed(1)} px at ${at}` }
@@ -1879,8 +1939,21 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
   const context = await asUser(browser, READER);
   try {
     const page = await context.newPage();
+    // Every live process serves a build the page does not run, so the load shows the update
+    // banner, the float that the foot's page layer publishes for (`routeFloats` in
+    // `e2e/foot-floats.ts`).
+    await page.route("**/api/v1/dashboard/builds", (route) =>
+      route.fulfill({
+        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
+      })
+    );
     await page.setViewportSize(DESKTOP);
     await page.goto(`/issues/${key}/conversation`);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(
+      updateBanner(page),
+      "today's Conversation tab shows no update banner"
+    ).toBeVisible();
     const docked = page.getByRole("form", { name: "Comment composer" });
     await expect(docked, "today's Conversation tab draws no docked composer").toBeVisible();
     // The window's foot on the composer's bottom edge, which is where the inset reads its box: the
@@ -1912,10 +1985,10 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
     ).toBeLessThanOrEqual(1);
     const inset = () =>
       page.evaluate(() =>
-        getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+        getComputedStyle(document.documentElement).getPropertyValue("--foot-page-inset")
       );
     // Two frames after the window met it: the resize and the composer's size observer have both
-    // run by then, so the inset read is the one the shell draws its status corner by.
+    // run by then, so the inset read is the one the shell draws its update banner by.
     await page.evaluate(
       () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
     );

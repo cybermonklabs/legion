@@ -203,7 +203,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // The send has landed once the box holds the issue's own mention of the session again: the
       // composer clears its draft to that seed as it calls `onSent`, which ends any reply. Reply
       // is pressed only then, so the landing cannot take back the reply it starts.
-      await expect(field).toHaveValue(SESSION_MENTION);
+      await expect(field).toHaveValue(`${SESSION_MENTION} `);
       // The reply under the message the row shows goes to that thread's target.
       await row.getByRole("button", { exact: true, name: "Reply" }).first().click();
       await expectRow(page, field, "agents-row-composer", "message-reply");

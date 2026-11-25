@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -61,6 +62,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 // the lock for the whole replay; the replay of facts already applied finishes anyway and applies
 // nothing again, and a claim's fact no daemon applied is still applied, once the lock is free.
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
@@ -72,7 +74,7 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 		t.Fatalf("the first replay applied %d facts, want %d", got, len(claims))
 	}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +123,56 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 	}
 }
 
+// The boot's replay counts each budget from the moment its transaction holds a connection: a
+// replay that waits in the pool's queue behind other work is not cut for the wait. Here the pool
+// has one connection, which another transaction holds for 1.5 s, three times the replay's 500 ms
+// budget, as the restored claims' live failures held a loaded boot's pool. Before, the budget
+// counted the wait too, and the replay's first read failed with "read which supervise facts are
+// applied: context deadline exceeded" (internal/daemon's
+// TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget on main's CI, job
+// 137780475678).
+func TestTheBootsReplayWaitingInThePoolsQueueIsNotCutForTheWait(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const budget, held = 500 * time.Millisecond, 1500 * time.Millisecond
+	config, err := store.PoolConfig(testpg.ClonePool(t, "legion_replay_queue_test").Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 1
+	raw, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := store.NewPool(raw)
+	t.Cleanup(pool.Close)
+	handler := &outboxFactHandler{}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
+	claims := terminalClaims(t, "legion", 4)
+
+	holding, ended := make(chan time.Time, 1), make(chan error, 1)
+	go func() {
+		ended <- store.Transact(store.ForConcurrentWorker(ctx), pool, func(ctx context.Context, tx pgx.Tx) error {
+			holding <- time.Now()
+			_, err := tx.Exec(ctx, "select pg_sleep($1)", held.Seconds())
+			return err
+		})
+	}()
+	heldAt := <-holding
+	if err := w.replayTerminal(ctx, claims, budget); err != nil {
+		t.Fatalf("a replay waiting %s behind the pool's one connection, on a %s budget = %v, want it done: the wait is not the budget's", held, budget, err)
+	}
+	if waited := time.Since(heldAt); waited < held {
+		t.Fatalf("the replay finished %s after the connection was taken, want after the %s it was held: it did not queue, so this proves nothing", waited, held)
+	}
+	if got := len(handler.facts()); got != len(claims) {
+		t.Fatalf("the replay applied %d facts, want %d", got, len(claims))
+	}
+	if err := <-ended; err != nil {
+		t.Fatalf("the transaction that held the connection: %v", err)
+	}
+}
+
 // slowFactHandler is a workflow handler each of whose facts takes delay to apply, as a handler's
 // reads and writes take time on a loaded database, and that counts the facts it applied.
 type slowFactHandler struct {
@@ -149,16 +201,24 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 
 // A boot must not die on the number of terminal facts no daemon applied. Those it replays one at a
 // time, each taking the fact lock, and each may wait there behind live facts: here 100 restored
-// claims fail while the replay runs, and their failures (terminal) apply beside it. The 300
-// replayed facts and the 100 live ones take several times the replay's budget between them; the
-// replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
-// applied exactly once.
+// claims fail while the replay runs, and their failures (terminal) apply beside it. The 800
+// replayed facts and the 100 live ones take more than the replay's budget between them (900 ×
+// 20 ms at the least); the replay still finishes, since the budget is each fact's own, and every
+// fact, replayed or live, is applied exactly once.
+//
+// One budget has to cover the longest single wait, which is the live burst: the 100 live facts
+// start first, and the first replayed fact takes its pool's turn behind all of them
+// (store.Pool.FactTurn), so its budget covers the whole burst, 100 facts one after another. The
+// read of which facts are applied waits for none of them: they wait for the turn outside the pool,
+// and the read takes a free connection. At 15 s a fact of the burst may cost 150 ms, more than
+// seven times its 20 ms, and the 900 facts still outlast the budget.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
-	const budget = 5 * time.Second
+	t.Parallel()
+	const budget = 15 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
-	replayed := terminalClaims(t, "legion", 300)
+	replayed := terminalClaims(t, "legion", 800)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {
 		issue := fmt.Sprintf("LEGION-%d", 1001+i)
@@ -237,6 +297,7 @@ func (r *bootReconcileHeld) ReconcileOrphans(ctx context.Context, known []runtim
 // fact. Here every one of 200 ready claims' shims has sent its hello before the boot's orphan
 // reconciliation returns, and each, as its hello_ack arrives, finds all 200 facts applied.
 func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
+	t.Parallel()
 	const n = 200
 	cfg := workflowConfig(t, workflowNATS(t))
 	project, err := claim.ProjectToken(cfg.Project)

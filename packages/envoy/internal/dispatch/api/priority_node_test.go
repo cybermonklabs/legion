@@ -41,6 +41,7 @@ var priorityTupleEnds = []string{
 }
 
 func TestPriorityNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 
@@ -259,6 +260,7 @@ func TestPriorityNode(t *testing.T) {
 // delete answered as a success writes history nobody can see and tells the caller a deleted
 // priority was changed.
 func TestPriorityGoneTakesNoWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestPriority(t, handler, map[string]any{"id": "retired-goal", "title": "Retired goal"}, "alice")
@@ -294,6 +296,7 @@ func TestPriorityGoneTakesNoWrite(t *testing.T) {
 // since a priority belongs to no project, and `notify` false, so it wakes nobody. A write the
 // route refuses rolls its transaction back and appends none.
 func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	var cursor int64
@@ -388,6 +391,7 @@ func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
 // under no priority, and no filter could ask for the work under it. An id that merely begins
 // with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	for name, body := range map[string]map[string]any{
@@ -424,6 +428,7 @@ func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
 // own page and row list the work under every priority, and no filter could ask for the work
 // under it. An id that merely begins with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	for name, body := range map[string]map[string]any{
@@ -460,6 +465,7 @@ func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
 // an id with no bound reached the insert and failed it as a 500. Each is refused 400
 // PRIORITY_INPUT naming its bound, and a refused write leaves the store as it was.
 func TestPriorityTitleAndIDAreBounded(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	refuse := func(what string, response *httptest.ResponseRecorder, bound int) {

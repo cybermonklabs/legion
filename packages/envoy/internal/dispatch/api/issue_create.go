@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -123,12 +124,22 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// which respondWithExistingExternalIssue would also record a related-check outcome on.
 	// Nothing is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
+	// exists today; the dependency lock step, the parent's read and writeBlockedBy below read it
+	// again, since neither a blocked_by target's project nor the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
+	}
+	// A scoped caller is refused a parent or a blocked_by target outside its project here too,
+	// with no lock held, before the near-copy gate and every other write before the transaction,
+	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
+	// The lock step and the reads under the locks refuse it again, the authoritative refusal.
+	if scoped && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
@@ -223,9 +234,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// `external` at each site.
 	//
 	// The gate's candidate set leaves out the new issue's whole ancestor chain, which is read
-	// here, before the transaction. A parent that does not exist or sits in another project
-	// yields an empty chain and still gets its own refusal inside the transaction, so no error
-	// changes order.
+	// here, before the transaction. A parent that does not exist yields an empty chain and still
+	// gets its own refusal inside the transaction, so no error changes order.
 	var outcome nearCopyOutcome
 	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
 	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
@@ -281,10 +291,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
-	// takes none. Only the blockers can name another project, since a parent is of the issue's own
-	// project.
+	// takes none. The blockers and the parent may each be an issue of another project, whose
+	// dependency lock the write takes too.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -301,9 +311,19 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
+		// A parent may be an issue of any project, but not for a credential that may write one
+		// project alone: the authoritative refusal, under the locks, of what the lock step
+		// refused before them.
+		if callerProject != "" && parentProject != callerProject {
+			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
+		}
+		// A parent of another project passes on no assignee, as it passes on no repository,
+		// components or legion label: the chain's parent step (defaultAssignee) reads only a
+		// parent of the new issue's own project, so such an issue falls to its own project's
+		// default.
+		if parentProject != input.Project {
+			parentAssignee = nil
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -383,7 +403,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -396,7 +416,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// is not written yet (writeAdviceBefore).
 	advice := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
-		adviceIssueRow{parent: parentRef, labels: labels}, adviceAsks{},
+		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
 
 	// The write phase: the statements from here on run back to back.
@@ -435,6 +455,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert. A close of the
+	// parent whose update ran first makes this read wait for its commit and read done. A close
+	// whose update comes after this read waits for this create to commit, and its second read
+	// sees the new child (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := tx.QueryRow(r.Context(), `
+			select title, status from issues where key = $1 for share
+		`, parentKey).Scan(&parentTitle, &parentStatus); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, conflict)
+			return
+		}
+	}
 
 	if _, err := tx.Exec(r.Context(), `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
@@ -518,6 +557,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the spec's block index stated waits for the issue's own event, queued right after it:
+	// that event is the cause every node and tuple of the pass carries (graphstore.QueueCaused).
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	nearCopyRecord.issue = key
 	// A near copy let in because its refusal's row could not be confirmed (recordInTx) writes its
 	// row in this transaction, under the id the refusal used: the create and the row that replaces
@@ -578,10 +626,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 // 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
 // 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
 // INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
-// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
-// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
-// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
-// read from near_copy_checks after it is deployed.
+// estimate, not a measurement: the rows written before read_ms and read_stage held no read time
+// past the bound. If production's reads are a uniform multiple of the replay's (about three times,
+// which puts the replay's 70th percentile at 500 ms), 2 s covers the replay's slowest read. How long
+// each read takes, and the step a read the bound cuts was in, is read from near_copy_checks'
+// read_ms and read_stage.
 const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
@@ -633,7 +682,7 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
 	refusals := gate.refusals()
-	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {
 	case !gate.answered():
 		check.outcome, check.reason = nearCopyNotMade, gate.NotMade

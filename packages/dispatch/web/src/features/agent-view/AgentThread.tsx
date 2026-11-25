@@ -17,6 +17,7 @@ import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useS
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -41,6 +42,8 @@ import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
@@ -137,6 +140,30 @@ function useTurnKey(): string {
   return useAuiState((state) => turnKey(state.message.metadata.custom, state.message.id));
 }
 
+/**
+ * The marks the turn's stored Dispatch message carries once its author corrected it. Three
+ * selectors, each returning a string or the stored row's own actor, for the `Object.is` reason
+ * `AssistantMessage` gives: a rebuild of the transcript writes a new mark object, and reading
+ * the mark itself would re-render every turn on every store update.
+ */
+function useCorrection(): { deleted: PostDeletion | null; edited: string | undefined } {
+  const at = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.at);
+  const by = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.by);
+  const edited = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).edited);
+  return { deleted: at === undefined ? null : { at, by: by ?? null }, edited };
+}
+
+/** A turn's own text, or the deleted line in its place once its author withdrew the Dispatch
+ *  message behind it: what `PostBody` is for a surface that renders a body itself, for the three
+ *  turns here whose text assistant-ui's own parts render. */
+function CorrectedParts({ deleted }: { deleted: PostDeletion | null }): ReactNode {
+  return deleted === null ? (
+    <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+  ) : (
+    <DeletedBody deleted={deleted} />
+  );
+}
+
 function UserMessage(): ReactNode {
   // A message someone other than the viewer sent the session, stored or taken as its own turn
   // (AgentRuntimeThread names them): it sits on the session's side of the thread with its author,
@@ -151,6 +178,7 @@ function UserMessage(): ReactNode {
   const issue = useAuiState(
     (state) => readDispatchMarks(state.message.metadata.custom).author?.issue
   );
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (actor !== undefined) {
     return (
@@ -162,8 +190,9 @@ function UserMessage(): ReactNode {
         <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
           <AgentName actor={actor} inline />
           {issue === undefined ? null : ` · ${issue}`}
+          <EditedMark at={edited} deleted={deleted} />
         </p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -172,7 +201,7 @@ function UserMessage(): ReactNode {
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     </div>
   );
@@ -196,6 +225,7 @@ function AssistantMessage(): ReactNode {
   // that calls a tool shows the tool card's own `running…`; this is the mark every other turn
   // has, including one that writes nothing but prose.
   const running = useAuiState((state) => state.message.status?.type === "running");
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (fromDispatch) {
     return (
@@ -204,8 +234,11 @@ function AssistantMessage(): ReactNode {
         data-message-id={turn}
         data-testid="agent-dispatch-reply"
       >
-        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>Reply via Dispatch</p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
+          Reply via Dispatch
+          <EditedMark at={edited} deleted={deleted} />
+        </p>
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -491,6 +524,17 @@ export function AgentThread({
   // The keys the reference doors serve that assistant-ui does not (`ReferenceTriggers`), handed
   // to them before the composer reads the key.
   const referenceKeys = useRef<ReferenceKeys | null>(null);
+  // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
+  // under it, and `Jump to latest` floats just above it while the reader is back in the
+  // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's
+  // layers and the elements in each), so the floats of the layers above keep clear of their
+  // bands. The rows under the composer are an element of that layer of their own
+  // (`AgentConversationPage`). Only the view in front: one the shell keeps behind it is laid
+  // over the page, invisible.
+  const composerRef = useRef<HTMLFormElement>(null);
+  useFootInset(composerRef, front, "page");
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  useFootInset(jumpRef, front && !follow.atEnd, "page");
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -558,6 +602,7 @@ export function AgentThread({
               className={`absolute bottom-3 left-1/2 z-10 min-h-11 -translate-x-1/2 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg ${primaryButtonBg} ${primaryButtonHoverBg}`}
               data-testid="jump-to-latest"
               onClick={follow.jumpToEnd}
+              ref={jumpRef}
               type="button"
             >
               Jump to latest{follow.newCount === 0 ? "" : ` · ${follow.newCount} new`}
@@ -573,6 +618,7 @@ export function AgentThread({
         <ComposerPrimitive.Root
           className={`relative mt-3 flex flex-col gap-1 border-t pt-3 ${borderDefault}`}
           data-testid="agent-composer"
+          ref={composerRef}
         >
           {commands === undefined || commands.length === 0 ? null : (
             <SlashCommands commands={commands} />
@@ -580,8 +626,12 @@ export function AgentThread({
           {/* The three reference doors, beside the `/` above: one input, four triggers. */}
           <ReferenceTriggers keys={referenceKeys} />
           <div className="flex items-end gap-2">
+            {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
+                the textarea's autosize can leave it far taller than its text (a load at a
+                phone's width, then a desktop's, left it 636px tall), and the composer then lay
+                over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
-              className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""

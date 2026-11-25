@@ -98,19 +98,15 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				code   int
 			}
 			done := make(chan result, 1)
+			meter := startStallMeter(t)
 			start := time.Now()
 			go func() {
 				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 				done <- result{stderr, code}
 			}()
-			var got result
-			select {
-			case got = <-done:
-			case <-time.After(10 * time.Second):
-				releaseOnce()
-				got = <-done
-				t.Fatalf("the create waited on a store call the store never answered for more than 10s, past the 300ms deadline; once the store answered: exit %d, stderr %q", got.code, got.stderr)
-			}
+			// The store never answers until the test ends (releaseOnce, a cleanup), so the create
+			// ends by its deadline or not at all; endsByItsDeadline fails a deadline that came late.
+			got := endsByItsDeadline(t, meter, "the create whose store call the store never answers", start, 300*time.Millisecond, done)
 			if got.code != 1 {
 				t.Fatalf("exit %d after %s, stderr %q; want 1", got.code, time.Since(start), got.stderr)
 			}

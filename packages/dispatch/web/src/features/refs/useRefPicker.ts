@@ -457,13 +457,15 @@ export function useRefPicker({
   );
   const ordered = useMemo(() => orderedRows(groups), [groups]);
   const active = ordered.find((row) => row.id === activeId) ?? ordered[0];
-  // Each read the open depends on, with whether this open asked for it: a read nobody asked for
-  // is neither pending nor failed, whatever its own query says while it is disabled.
+  // Each Dispatch read the open depends on, with whether this open asked for it: a read nobody
+  // asked for is neither pending nor failed, whatever its own query says while it is disabled.
+  // The agent list is not one of them. It is Envoy's list, and its failure - refilling, or the
+  // listener unreachable - is said by its own line alone (`parties` below, drawn where its rows
+  // would be), never as Dispatch unreachable; a Dispatch that is down fails the reads here as
+  // well, since every open asks for its people. While the list is on its way, the picker waits
+  // for it as for any read.
   const reads = [
     { asked: searching, failed: search.isError, pending: search.isPending },
-    // An agent list that is refilling is a list not ready yet, not a failure to report; what
-    // it is instead is `parties` below, which the reader is told where its rows would be.
-    { asked: open, failed: live.isError && !live.refilling, pending: live.isPending },
     { asked: readsCollaborators, failed: collaborators.isError, pending: collaborators.isPending },
     { asked: readsUsers, failed: users.isError, pending: users.isPending },
     {
@@ -482,6 +484,7 @@ export function useRefPicker({
   ];
   const waiting =
     (open && typing && query.length >= REF_PICKER_QUERY_MIN) ||
+    (open && live.isPending) ||
     reads.some((read) => read.asked && read.pending);
   const failed = reads.some((read) => read.asked && read.failed);
   const state: RefPickerState =

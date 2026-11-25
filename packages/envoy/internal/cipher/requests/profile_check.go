@@ -55,17 +55,18 @@ const (
 	DefaultNarrowingCheckMint   = 5 * time.Second
 )
 
-// DefaultNarrowingChecks bounds, per enrollment, the checks that reach GitHub: five at once,
+// DefaultNarrowingChecks bounds, per enrollment, the checks made before an approval: five at once,
 // refilled one every twelve seconds. A refused request writes no row, so the guards inside
 // Create's transaction (lockPendingNames, pendingRequests) never see it, and a caller in a loop
 // could otherwise drive the App into a rate limit at GitHub, which would turn the check off for
-// everybody. Past it the GitHub part is skipped and the request goes to its approver, which is
-// what it did before this check existed. The budget is per process, as DefaultMissRereads' is,
-// and for the same reason: it bounds load rather than authority.
+// everybody; a check of a github-installations profile reads the secret store alone, and is
+// counted alike so one bound holds every check. Past it the check is skipped and the request goes
+// to its approver, which is what it did before this check existed. The budget is per process, as
+// DefaultMissRereads' is, and for the same reason: it bounds load rather than authority.
 var DefaultNarrowingChecks = ratelimit.Limit{Every: 12 * time.Second, Burst: 5}
 
 // narrowingCheckLimiter is the per-enrollment buckets NarrowingChecks names, built on the first
-// check that reaches GitHub.
+// check.
 func (m *Machine) narrowingCheckLimiter() *ratelimit.Keyed {
 	m.narrowingChecksOnce.Do(func() {
 		m.narrowingChecks = ratelimit.NewKeyed(limitOr(m.NarrowingChecks, DefaultNarrowingChecks))
@@ -135,13 +136,8 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 	if err != nil || e.state != "pending" {
 		return nil
 	}
-	mint := m.Minters[policy.TypeGitHubApp]
-	if mint == nil {
-		skippedNarrowingCheck(enr.ID, "", "this broker has no github-app minter", nil)
-		return nil
-	}
 	if !m.narrowingCheckLimiter().Allow(enr.ID) {
-		skippedNarrowingCheck(enr.ID, "", "this enrollment has reached GitHub for more checks than its bound allows", nil)
+		skippedNarrowingCheck(enr.ID, "", "this enrollment has made more checks than its bound allows", nil)
 		return nil
 	}
 	budget, cancel := context.WithTimeout(ctx, m.narrowingCheckBudget())
@@ -152,8 +148,15 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 	for _, d := range e.decisions {
 		served := set.Secrets[d.Name]
 		secretType, source, minted, err := policy.ParseTypeSource(d.Source)
-		if err != nil || !minted || secretType != policy.TypeGitHubApp || !gitHubProfile(served) {
+		if err != nil || !minted || !policy.ServesGitHubTokens(secretType) || !gitHubProfile(served) {
 			continue
+		}
+		// The minter of the profile's own type: github-app's asks GitHub, and
+		// github-installations' reads the tokens its minter stored, as the release does.
+		mint := m.Minters[secretType]
+		if mint == nil {
+			skippedNarrowingCheck(enr.ID, d.Name, "this broker has no "+secretType+" minter", nil)
+			return nil
 		}
 		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served, target)
 		if !checked {
@@ -192,7 +195,7 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 	// the names (checkTarget), which is after this check. This check runs only for a request the
 	// policy sends to a person, so no name here is denied, and a target gitHubScope refuses is
 	// answered now, as the refusal checkTarget would make, before GitHub is asked anything.
-	scope, err := gitHubScope(name, served.Profile, target)
+	scope, err := gitHubScope(name, served, target)
 	if err != nil {
 		return true, err
 	}
@@ -211,9 +214,12 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
 		// An empty cut, a bare token of several installations, or a scope the minter refuses
 		// before it asks GitHub anything, is its own answer: every probe below would meet it
-		// again and blame the first repository it asks about. GitHub's 422 to a scope of one
-		// account's repositories is what the search reads.
-		if errors.Is(err, secrets.ErrMintEmptyCut) || errors.Is(err, secrets.ErrMintSeveralInstallations) || len(scope.Accounts) != 1 || len(scope.Repositories) == 0 {
+		// again and blame the first repository it asks about. So is every refusal of a
+		// github-installations profile, whose minter asks GitHub nothing and names what differs
+		// between the stored token and the profile. GitHub's 422 to a scope of one account's
+		// repositories is what the search reads.
+		if errors.Is(err, secrets.ErrMintEmptyCut) || errors.Is(err, secrets.ErrMintSeveralInstallations) || len(scope.Accounts) != 1 || len(scope.Repositories) == 0 ||
+			served.Type() == policy.TypeGitHubInstallations {
 			return true, fmt.Errorf("%s: %w", name, err)
 		}
 		return true, m.narrowingCause(ctx, mint, name, served, value, scope)
@@ -234,11 +240,22 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 		skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub answered", err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintStoredValue):
-		// The stored value was read and the minter cannot mint from it: it is no JSON object of
-		// an app_id and a private_key, or the key does not parse. The secret's owner stores a
-		// new value, and the release says the same thing again. GitHub said nothing here
-		// either, and the error holds no part of the value (secrets' GitHubApp.Mint).
-		skippedNarrowingCheck(enrollmentID, name, "the stored value is not an App id and private key the minter can read", err)
+		// The stored value was read and the minter cannot mint from it: for a github-app secret
+		// it is no JSON object of an app_id and a private_key, or the key does not parse; for a
+		// github-installations one it is no installation tokens the decoder reads. The secret's
+		// owner stores a new value, and the release says the same thing again. GitHub said nothing
+		// here either, and the error holds no part of the value.
+		why := "the stored value is not an App id and private key the minter can read"
+		if served.Type() == policy.TypeGitHubInstallations {
+			why = "the stored value is not installation tokens the minter can read"
+		}
+		skippedNarrowingCheck(enrollmentID, name, why, err)
+		return false, nil
+	case errors.Is(err, secrets.ErrMintTokenStale):
+		// The token a github-installations secret stores lapses within the margin, and its minter
+		// has not stored a newer one yet. That says nothing of the profile, and the minter's next
+		// write may serve the release a person approves, so the request goes to its approver.
+		skippedNarrowingCheck(enrollmentID, name, "the stored installation token is within the margin of its expiry", err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintRefused):
 		// GitHub refused the call rather than the scope: the App's JWT was not accepted (a clock
@@ -273,9 +290,9 @@ func (m *Machine) checkMint(ctx context.Context, mint Minter, name string, serve
 	}
 	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
-	// The check runs for github-app names alone (checkProfiles), so that is the type its minter
-	// counts this attempt under, as the release it stands for would.
-	request := mintRequest(name, policy.TypeGitHubApp, served, value, scope)
+	// The request the release of this name would make, of the name's own type, which its minter
+	// counts this attempt under.
+	request := mintRequest(name, served.Type(), served, value, scope)
 	request.Check = true
 	_, err := mint(bounded, request)
 	if err != nil && bounded.Err() != nil {

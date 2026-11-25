@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -58,8 +59,10 @@ const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
 // stdinIsTerminal says whether this process's stdin is a terminal; a test replaces it.
 var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
-// newControllerStartCommand is `legion controller start` (controllerStart).
-func newControllerStartCommand(stderr io.Writer) *cobra.Command {
+// newControllerStartCommand is `legion controller start` (controllerStart). stderr takes the
+// command's own lines, through the URL rule (newRoot), and attempts is the process's stderr as it
+// is, which the Oh My Pi probe hands each foreground attempt as that child's own.
+func newControllerStartCommand(stderr, attempts io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start --config <controller.yaml>",
 		Short: "start the operator's controller from controller.yaml",
@@ -71,7 +74,7 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 		if *configPath == "" {
 			return refuse(cmd, "--config is required")
 		}
-		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr)
+		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr, attempts)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
 			return 1
@@ -119,8 +122,9 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 // daemon.ControllerStartMessage as LEGION_CONTROLLER_START_MESSAGE in its environment for that
 // pi-legion command to send as the first turn — in the foreground with the same environment, and
 // answer its exit code. A refusal before the secret is written removes the directories made for
-// the probe, so the state directory is as it was.
-func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
+// the probe, so the state directory is as it was. attempts is the stderr each foreground attempt
+// of the probe writes to as its own (newControllerStartCommand).
+func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, attempts io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
 		absolute, err = filepath.Abs(absolute)
@@ -255,7 +259,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
-		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
+		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
 		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
@@ -498,7 +502,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {

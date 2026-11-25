@@ -7,11 +7,12 @@
 // serves announces nothing.
 //
 // The announcement is a row of server_build_announcements before it is an envelope: whichever
-// process finds the fleet agreeing on a commit the latest row does not name inserts the row, and
-// whichever process has a connected bus publishes every row not yet published. So a process
-// whose NATS is down announces into the table and leaves the publish to the first process whose
-// bus answers. It goes directly through the bus client rather than the outbox: it is no issue's,
-// document's or project's event, and the outbox publishes only those.
+// process finds the fleet agreeing on the commit it serves itself, and the latest row does not
+// name, inserts the row with the relation kinds its build writes as tuples; whichever process
+// has a connected bus publishes every row not yet published. So a process whose NATS is down
+// announces into the table and leaves the publish to the first process whose bus answers. It
+// goes directly through the bus client rather than the outbox: it is no issue's, document's or
+// project's event, and the outbox publishes only those.
 package startup
 
 import (
@@ -97,6 +98,18 @@ type Deps struct {
 	// Publisher publishes announcements; nil where NATS is disabled, and such a process announces
 	// into the table and publishes nothing.
 	Publisher Publisher
+	// Commit is the commit this process serves, the one it registers under (processes.Instance).
+	// A process announces a commit only where it is this one, since the kinds it announces are
+	// its own build's.
+	Commit string
+	// TupleKinds answers the relation kinds this build writes as tuples, read when the
+	// announcement is inserted: the list graph_edges' tuple arm renders (refs.TupleKinds), which
+	// names the installed block schema's pointer kinds and so can change while the process runs.
+	// The announcement stores it as tuple_kinds, which is how the release that deletes an old arm
+	// of the view reads whether the release a rollback would reach writes that arm's kinds as
+	// tuples too; a build of the release before this one inserts no list, and its announcement
+	// lists none.
+	TupleKinds func() []string
 }
 
 // Announcer announces the fleet's build (Run) and remembers the latest announcement's commit
@@ -154,13 +167,16 @@ func (a *Announcer) pass(ctx context.Context) {
 }
 
 // announce reads the latest announcement and, holding announceLock, inserts a new one when every
-// live process serves one non-empty commit that the latest does not name: a fleet that serves two
-// builds is mid-roll, a fleet any of whose processes carries no stamp has no build to name, and a
-// fleet still on the announced build has nothing new to say. A rollback to a build announced
-// before is a change too, and is announced again under a new seq. Without the lock it only reads,
-// since the holder decides. FleetCommit is updated once the transaction has committed. It reports
-// whether an announcement awaits publishing: one this pass inserted, or one its read found
-// unpublished, which a pass that missed the lock learns as well.
+// live process serves one non-empty commit that is this process's own and that the latest does
+// not name: a fleet that serves two builds is mid-roll, a fleet any of whose processes carries no
+// stamp has no build to name, and a fleet still on the announced build has nothing new to say.
+// The commit must be this process's own because the row carries the relation kinds this build
+// writes as tuples: a process whose heartbeat lapsed is no live process, so the fleet can agree
+// on a commit it does not serve, and its row would name that commit with another build's kinds.
+// A rollback to a build announced before is a change too, and is announced again under a new
+// seq. Without the lock it only reads, since the holder decides. FleetCommit is updated once the
+// transaction has committed. It reports whether an announcement awaits publishing: one this pass
+// inserted, or one its read found unpublished, which a pass that missed the lock learns as well.
 func (a *Announcer) announce(ctx context.Context) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, statementTimeout)
 	defer cancel()
@@ -183,9 +199,10 @@ func (a *Announcer) announce(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if commit, agreed := servedByEvery(live); agreed && (latest == nil || *latest != commit) {
+		if commit, agreed := servedByEvery(live); agreed && commit == a.deps.Commit && (latest == nil || *latest != commit) {
 			var seq int64
-			if err := tx.QueryRow(ctx, `insert into server_build_announcements (commit) values ($1) returning seq`, commit).Scan(&seq); err != nil {
+			if err := tx.QueryRow(ctx, `insert into server_build_announcements (commit, tuple_kinds) values ($1, $2) returning seq`,
+				commit, a.deps.TupleKinds()).Scan(&seq); err != nil {
 				return false, fmt.Errorf("insert the announcement of %s: %w", commit, err)
 			}
 			slog.Info("dispatch: every live server process serves one build; announced it", "commit", commit, "seq", seq, "processes", len(live))

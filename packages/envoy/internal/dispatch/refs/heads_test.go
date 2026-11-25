@@ -59,13 +59,14 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 // a cut named in a comment is not a call.
 func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
 	exempt := map[string]string{
-		"api/messages.go messageReplyPreview": "the parent's text a reply's event and delivery frame carry, which an agent reads as written",
-		"api/results.go cut":                  "a check's line in the pull request body, which GitHub draws, not Dispatch",
-		"api/results_ci.go ciObserved":        "a CI run's output, a check result's observed text drawn as the characters it is",
-		"api/results_ci.go ciUnreadDetail":    "the server's own words on a CI read it could not make, quoting GitHub's error",
-		"embed/embed.go boundBatch":           "the input of an embedding, which no person reads",
-		"itemblocks/windows.go windowText":    "the text of an embedding window, which no person reads",
-		"outbox/publisher.go payloadSummary":  "an envelope's one-line summary, which an agent's notification carries",
+		"api/messages.go messageReplyPreview":     "the parent's text a reply's event and delivery frame carry, which an agent reads as written",
+		"api/results.go cut":                      "a check's line in the pull request body, which GitHub draws, not Dispatch",
+		"api/results_ci.go ciObserved":            "a CI run's output, a check result's observed text drawn as the characters it is",
+		"api/results_ci.go ciUnreadDetail":        "the server's own words on a CI read it could not make, quoting GitHub's error",
+		"api/status_change.go claimedSessionName": "a session id a request's body named, which the comment Dispatch signs quotes as an inline code span, so every reader draws it as its characters and reads no reference in it",
+		"embed/embed.go boundBatch":               "the input of an embedding, which no person reads",
+		"itemblocks/windows.go windowText":        "the text of an embedding window, which no person reads",
+		"outbox/publisher.go payloadSummary":      "an envelope's one-line summary, which an agent's notification carries",
 	}
 	plain := map[string]map[string]bool{
 		"text":      {"HeadRunes": true, "HeadWords": true},

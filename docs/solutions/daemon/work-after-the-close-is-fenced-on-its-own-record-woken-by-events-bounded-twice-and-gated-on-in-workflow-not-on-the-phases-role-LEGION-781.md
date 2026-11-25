@@ -10,7 +10,7 @@ tags:
   - untrusted-input
   - predicate-writers
 date: 2026-10-21
-status: active
+status: superseded in part — The production check after the merge is the tester's session unless production_check is off, not the implementer's. The build check it names, `compareBuilds`, is gone from packages/.
 module: packages/daemon/internal/workflow
 related_issues:
   - "LEGION-781"

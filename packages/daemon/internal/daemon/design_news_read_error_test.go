@@ -25,6 +25,7 @@ import (
 // text. The whole error is in the log beside the row (storetext.LogWhole), its last words
 // included, and with no token either.
 func TestAReadGivenUpOnRecordsDispatchsErrorWithItsNULAsAFarSidesErrorAndLogsItWhole(t *testing.T) {
+	t.Parallel()
 	const planted = "planted-reconcile-token"
 	failure := errors.New("dispatch: 502 BAD_GATEWAY from https://dispatch.example/api/v1/artifacts/" + reconcileDoc + "?token=" + planted +
 		" after \x00 a reset \xff, " + strings.Repeat("the upstream answer goes on. ", 100) + "these are the last words")

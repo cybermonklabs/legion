@@ -1,5 +1,8 @@
 package tmux
 
+//ci:builds packages/daemon ./cmd/legion standins go build .../daemon/cmd/legion
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/** TestRealTmuxPaneResolvesThisDaemonsLegionCLI
+
 // The real-tmux tests. Each test gets a private tmux server of its own (its own socket name under
 // its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
 // from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a
@@ -78,7 +81,10 @@ func requireTmux(t *testing.T) {
 }
 
 // standins builds the real `legion` (whose worker-shim every pane runs) and the stand-in OMP (as
-// `omp`), once per run.
+// `omp`), once per run. The `legion` links leakguardtest.NoCurl as its guards' curl
+// (leakguardtest.NoCurlLinked): a pane's `legion gh` here runs a stand-in gh, and a guard whose
+// bound stopped that gh's REST read would otherwise read through the system's /usr/bin/curl, with
+// a token of the rig's bundle (INFRA-3904).
 func standins(t *testing.T) (legion, omp string) {
 	t.Helper()
 	standinOnce.Do(func() {
@@ -86,7 +92,11 @@ func standins(t *testing.T) (legion, omp string) {
 			return
 		}
 		for name, source := range map[string]string{"legion": "github.com/sjawhar/legion/daemon/cmd/legion", "omp": "testdata/omp-standin.go"} {
-			if out, err := exec.Command("go", "build", "-o", filepath.Join(standinDir, name), source).CombinedOutput(); err != nil {
+			args := []string{"build", "-o", filepath.Join(standinDir, name)}
+			if name == "legion" {
+				args = append(args, "-ldflags", leakguardtest.NoCurlLinked)
+			}
+			if out, err := exec.Command("go", append(args, source)...).CombinedOutput(); err != nil {
 				standinErr = fmt.Errorf("build %s: %v\n%s", source, err, out)
 				return
 			}
@@ -419,10 +429,6 @@ func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.D
 
 func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 	return errors.New("the stream stub does not compact sessions")
-}
-
-func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
-	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
 }
 
 func (c *stubConn) WorkspaceWork(context.Context, string, time.Duration) (runtime.WorkspaceWork, error) {

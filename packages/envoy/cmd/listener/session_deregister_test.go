@@ -76,6 +76,7 @@ func (rig *sessionConsumerRig) requireConsumer(t *testing.T, sessionID string) {
 // is left to deliver to: its session consumer goes with it rather than holding a slot of the
 // stream's consumer cap until the server's inactivity threshold reaches it.
 func TestDeregistrationWithNoConditionDeletesTheSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_deregister_plain"
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
@@ -93,6 +94,7 @@ func TestDeregistrationWithNoConditionDeletesTheSessionsConsumer(t *testing.T) {
 // The deregistration a client sends for its own instance deletes the consumer too: the answer
 // says the registration is gone, and nothing stands behind it.
 func TestDeregistrationOfTheSessionsOwnInstanceDeletesItsConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const (
 		sessionID  = "ses_deregister_own_instance"
@@ -113,6 +115,7 @@ func TestDeregistrationOfTheSessionsOwnInstanceDeletesItsConsumer(t *testing.T) 
 // A deregistration another client instance sends leaves a live registration standing, and that
 // registration's session still reads its consumer: the consumer stays, as the entry does.
 func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const (
 		sessionID = "ses_deregister_other_instance"
@@ -147,6 +150,7 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 // session is live again and must be delivered to. What must not happen is the listener's own
 // retry bringing back the consumer of a session that registered no more.
 func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) {
+	t.Parallel()
 	// The relay's windows are shortened to a tenth of production's, so the row spends its own
 	// wait over several of the relay's retries rather than seconds of the clock.
 	const window = 100 * time.Millisecond
@@ -176,6 +180,7 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 // The rows are the listener's own lanes themselves (bus.ListenerOwnLanes), so a lane the stream
 // gains is covered here rather than waiting for somebody to name it.
 func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	lanes := bus.ListenerOwnLanes()
 	if len(lanes) == 0 {
@@ -256,6 +261,7 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 // the session would be live with no consumer, and its relay paused on
 // bus.ErrSessionConsumerNotFound until it registered again.
 func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_deregister_races_registration"
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
@@ -332,6 +338,7 @@ func (kv laggingFollowerBucket) Get(string) (natsgo.KeyValueEntry, error) {
 // keeps the consumer, and makes no direct get at all. That the leader read is really answered
 // by the stream's leader is read off the wire in bus's own row (internal/bus, GetFromLeader).
 func TestTheConsumerDeleteReadsTheSessionBucketsLeader(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_delete_reads_the_leader"
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],

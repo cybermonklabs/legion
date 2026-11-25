@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 
-import { jump, realClock } from "../../__tests__/fake-clock";
+import { jump, onRealTurns, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
@@ -93,6 +93,11 @@ const PLANNER: Actor = { id: "planner-session", kind: "session" };
  *  address, worded as the page names an author, by the title the registry lists. The reference
  *  picker writes the same link for a pick of the planner. */
 const PLANNER_SEED = PLANNER_MENTION.replace("[@Old]", "[@Planner]");
+
+/** The draft a Reply on the planner's comment starts the box with: its mention of the planner,
+ *  and the one space after it that a seed ends with (`replyPrefill`), so the reader's words
+ *  typed at once follow that space. */
+const PLANNER_PREFILL = `${PLANNER_SEED} `;
 
 /** The reads the box and the writer draw from: each case's own (`composer-fixture.tsx`). */
 let reads: BoxReads;
@@ -586,7 +591,7 @@ async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
   await page.press(user, "comment-3", "r");
   await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
-  expect(writeField().value).toBe(PLANNER_SEED);
+  expect(writeField().value).toBe(PLANNER_PREFILL);
 }
 
 // The reviewer's finding 5942007779: a Reply on an agent's comment writes the agent's mention into
@@ -662,12 +667,13 @@ const KEPT_FOR_PLANNER = { held: "", kept: [keptReplyLine("Planner")] };
 // a person's comment is a move of the page's, which carries nothing: it keeps them for the
 // agent's comment with the mention, and its Reply brings them back as they were; the reader's own
 // end of the reply then keeps them on the issue and takes out the mention the box wrote, even
-// with the words typed straight after its link and no space between them.
+// with the words typed straight after its link and no space between them: the reader deletes the
+// space the box wrote after it.
 test("ending a reply to an agent's comment keeps the words typed straight after the agent's mention, and takes the mention out", async () => {
   const user = userEvent.setup();
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
-  await user.keyboard("please look again");
+  await user.keyboard("{Backspace}please look again");
   expect(writeField().value).toBe(`${PLANNER_SEED}please look again`);
 
   expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
@@ -690,9 +696,9 @@ test("a mention of the agent the reader wrote stays when the reader ends the rep
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
   // The reader picks the planner after their own word, which writes the link the box wrote.
-  await user.keyboard(" cc ");
+  await user.keyboard("cc ");
   await user.paste(PLANNER_SEED);
-  const written = `${PLANNER_SEED} cc ${PLANNER_SEED}`;
+  const written = `${PLANNER_PREFILL}cc ${PLANNER_SEED}`;
   expect(writeField().value).toBe(written);
 
   expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
@@ -800,23 +806,23 @@ test("a reply carried to the issue with the reader's words before the agent's me
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
   await user.keyboard("{Home}cc ");
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  expect(writeField().value).toBe(`cc ${PLANNER_PREFILL}`);
   await user.click(
     within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
   );
   await waitFor(() => expect(targetWords()).toBeNull());
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  expect(writeField().value).toBe(`cc ${PLANNER_PREFILL}`);
 
   page.view.unmount();
   const kept = unsentDraftsOf(page.client).readAway(composerNameOf(["issue-composer", KEY]), null);
-  expect(kept?.draft.body).toBe(`cc ${PLANNER_SEED}`);
+  expect(kept?.draft.body).toBe(`cc ${PLANNER_PREFILL}`);
   expect(kept?.seeds).toBeUndefined();
 });
 
 /** The draft of the refused reply to the planner's comment in the grid below, by who wrote its
  *  link: the planner's link the Reply wrote, then the reader's words; or the reader's own link to
  *  the planner in its place, in the words the reader wrote it in, then theirs. */
-const PLANNER_HELLO = `${PLANNER_SEED} hello`;
+const PLANNER_HELLO = `${PLANNER_PREFILL}hello`;
 const OWN_HELLO = `${PLANNER_MENTION} hello`;
 
 /** What Send says on bob's row while the refused reply, let go, is held for the issue. */
@@ -862,7 +868,7 @@ async function afterRefusedPlannerReply(
     await user.keyboard("{Control>}a{/Control}{Backspace}");
     await user.paste(OWN_HELLO);
   } else {
-    await user.keyboard(" hello");
+    await user.keyboard("hello");
   }
   const written = ownLink ? OWN_HELLO : PLANNER_HELLO;
   expect(writeField().value).toBe(written);
@@ -1070,7 +1076,7 @@ test("a link to the agent the reader writes at the front over a refused reply, i
   );
   const first = renderWithPlannerComment();
   await replyToPlanner(user, first);
-  await user.keyboard(" hello{Enter}");
+  await user.keyboard("hello{Enter}");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
   );
@@ -1923,6 +1929,61 @@ test("a stopped reply let go with the target line's control is sent under a new 
   } finally {
     realClock();
   }
+});
+
+// A comment or a message its author deleted takes no reply (`409 POST_DELETED`), and its row
+// offers no Reply, so the box answers one only where the delete came while it was open. The box
+// reads the post as the outline's comments read holds it now (`MentionComposer`'s `replyParent`),
+// so Send refuses the reply before it goes, in the composer's words with the box's own control
+// for Cancel reply (`OutlineLook.cancelReply`), on a line under the box that Send's refusal
+// names; neither Send nor Enter sends anything, and the words and the target stay.
+test("a reply open when its comment is deleted is refused before Send, and a press sends nothing", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "Ship it."))
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Ship it.");
+
+  // bob deletes his comment: the comments read answers it with the marks of his delete, and the
+  // outline draws its row as the deleted line from that same read.
+  const deletedAt = "2026-11-05T12:00:00Z";
+  reads.comments = [
+    commentRecord("comment-1", BOB, "", { deleted_at: deletedAt, deleted_by: BOB }),
+    commentRecord("comment-2", ALICE, "My own words"),
+  ];
+  const drawn = outline();
+  page.redrawOutline({
+    ...drawn,
+    children: drawn.children.map((child) =>
+      child.id === "comment-1"
+        ? { ...child, deletedAt, deletedBy: BOB, text: `Deleted by bob · ${deletedAt}` }
+        : child
+    ),
+  });
+  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+
+  const refused =
+    "The comment this reply answers was deleted, so it takes no reply. " +
+    `Press ${CONTROL_LABELS.write_on_issue} to send it as a message that answers none.`;
+  const line = await within(composerBox()).findByText(refused);
+  const send = within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send });
+  expect({
+    describedBy: send.getAttribute("aria-describedby"),
+    disabled: send.getAttribute("aria-disabled"),
+    offScreen: line.closest(".sr-only") !== null,
+  }).toEqual({ describedBy: line.id, disabled: "true", offScreen: false });
+
+  await user.click(send);
+  await user.click(writeField());
+  await user.keyboard("{Enter}");
+  await onRealTurns(() => createComment.mock.calls.length > 0, 100);
+  expect(createComment).not.toHaveBeenCalled();
+  expect(writeField().value).toBe("Ship it.");
+  expect(targetWords()).toBe(replyingTo("bob", "comment"));
 });
 
 // R3: the target line names the entry a reply answers by its author and the page's word for its

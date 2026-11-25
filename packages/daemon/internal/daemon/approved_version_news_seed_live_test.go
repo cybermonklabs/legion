@@ -26,9 +26,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -93,7 +93,7 @@ func (r *versionNewsLive) standingEntry(c *versionNewsClaimant) int64 {
 // claimEntries reads the entry role's phases row on issue names and the entry token's claim was
 // given, each 0 where its row does not exist: the two numbers whose comparison decides whether a
 // holder takes its news directly (newsClaimTakes).
-func claimEntries(ctx context.Context, db record.RowQuerier, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
+func claimEntries(ctx context.Context, db *store.Pool, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
 	err = db.QueryRow(ctx, `select coalesce((select entry from phases where issue = $1 and role = $2), 0),
 		coalesce((select given_entry from claims where token = $3), 0)`, issue, string(role), string(token)).Scan(&entry, &given)
 	return entry, given, err
@@ -112,18 +112,19 @@ func entryRefusal(name string, entry, given int64) string {
 }
 
 // seed records every member of every tree as the daemon holds it mid-run, and starts each claim
-// the fixture names through the daemon's own start path (seedTree), in one transaction under a
-// commit scope (intake.WithCommitHooks), as a fact the daemon applies writes them. Each member is
-// recorded in its tree, in its phase, holding an admission slot, on an open pull request unless it
-// stands in admitted, and its tree's lifecycle is opened under the workflow. Every role's prompt
-// is on disk, as the daemon's own launch writes it, so a launch the run makes later starts too.
+// the fixture names through the daemon's own start path (seedTree), in one transaction whose
+// commit runs the hooks its writes register (store.Transact), as a fact the daemon applies writes
+// them. Each member is recorded in its tree, in its phase, holding an admission slot, on an open
+// pull request unless it stands in admitted, and its tree's lifecycle is opened under the
+// workflow. Every role's prompt is on disk, as the daemon's own launch writes it, so a launch the
+// run makes later starts too.
 // Where the schema holds the told record, each member in a phase with work takes a holder row
 // written by hand and checked against the row the start path writes for it (seedHolderRow): a
 // difference fails the run in setup, and the FAIL line names the issue, the field and both values.
 func (r *versionNewsLive) seed() {
 	t := r.t
 	t.Helper()
-	ctx, committed := intake.WithCommitHooks(context.Background())
+	ctx := context.Background()
 	number, err := strconv.ParseInt(randomSuffix(t)[:5], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +138,7 @@ func (r *versionNewsLive) seed() {
 	engine := workflow.New(record.NewStore(), engineConfig(r.cfg, "", nil), quietLogger())
 	names := slices.Sorted(maps.Keys(r.trees))
 	var differences []string
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		differences = nil
 		for _, name := range names {
 			differs, err := r.seedTree(ctx, tx, engine, r.trees[name], told, &number)
@@ -150,7 +151,6 @@ func (r *versionNewsLive) seed() {
 	}); err != nil {
 		t.Fatalf("seed the trees through the daemon's start path: %v", err)
 	}
-	committed()
 	if len(differences) > 0 {
 		r.fail("%s", strings.Join(differences, "; "))
 	}

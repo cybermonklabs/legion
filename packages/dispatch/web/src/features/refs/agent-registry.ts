@@ -30,6 +30,22 @@ export type AgentState = "running" | "unresponsive" | "not-running" | "unknown";
 /** The poller's cadence while anything shows an agent. */
 export const AGENT_REGISTRY_POLL_MS = 15_000;
 
+declare global {
+  interface Window {
+    /** The browser suite's cadence for the poller, in milliseconds, set before the page loads
+     *  (`e2e/agents.ts`, `pollAgentListEvery`): the rows that wait for the list to change on an open
+     *  page then wait one short poll rather than a 15 s one. Unset in production. */
+    __dispatchAgentRegistryPollMs?: number;
+  }
+}
+
+/** The poller's cadence: `AGENT_REGISTRY_POLL_MS`, or the browser suite's own where it set a
+ *  positive one (`window.__dispatchAgentRegistryPollMs`). Read at each render of the poller. */
+export function agentRegistryPollMs(): number {
+  const set = typeof window === "undefined" ? undefined : window.__dispatchAgentRegistryPollMs;
+  return typeof set === "number" && Number.isFinite(set) && set > 0 ? set : AGENT_REGISTRY_POLL_MS;
+}
+
 /** The registry query every reader shares. */
 export const agentsQuery = () =>
   queryOptions({
@@ -116,13 +132,14 @@ export function useRegistryPolling(active: boolean): void {
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
 export function AgentRegistryPoller(): null {
   const wanted = useSyncExternalStore(subscribePolling, pollingWanted, pollingWanted);
+  const pollMs = agentRegistryPollMs();
   useQuery({
     ...agentsQuery(),
     enabled: wanted,
-    refetchInterval: wanted ? AGENT_REGISTRY_POLL_MS : false,
+    refetchInterval: wanted ? pollMs : false,
     // Coming back on after a pause refetches only data at least one poll old, so a reader that
     // remounts moments after the last one unmounted does not add a request inside the cadence.
-    staleTime: AGENT_REGISTRY_POLL_MS,
+    staleTime: pollMs,
   });
   return null;
 }

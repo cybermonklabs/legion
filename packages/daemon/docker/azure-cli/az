@@ -9,9 +9,8 @@
 # either wins. They are set here rather than by an ENV of the image because Oh My Pi's Python tool
 # starts its kernel with an allowlisted environment, which a default the image's ENV set would not
 # reach (docs/kubernetes.md, "Per-deployment toolchains layer on top", says such a variable goes
-# in a wrapper). REQUESTS_CA_BUNDLE holds azure-cli's HTTP client to Debian's root bundle, which
-# the image's TLS probe holds `az` to, and AZURE_CORE_COLLECT_TELEMETRY=no stops its telemetry
-# upload.
+# in a wrapper). REQUESTS_CA_BUNDLE holds azure-cli's HTTP client to Debian's root bundle, and
+# AZURE_CORE_COLLECT_TELEMETRY=no stops its telemetry upload.
 #
 # azure-cli 2.93.0 has no setting that stops its version check, read in its source
 # (azure/cli/core/__init__.py and azure/cli/core/util.py): AzCli.__init__ calls

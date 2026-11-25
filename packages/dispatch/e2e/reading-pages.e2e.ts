@@ -10,13 +10,27 @@
  * the characters written. Every host here is a page a reader reads, not a link or a button, so
  * each reference is a link there.
  *
+ * A person's page is walked here too: each of its rows draws a node by the first line of its
+ * text, which is a record, so that line carries every form, a `#id` among them.
+ *
  * Each row writes `readingText` where its page reads it from: into the component model file the
- * fake GitHub serves, whose body is the component's prose, and into the priority's description
- * and the issue's reason through the API.
+ * fake GitHub serves, whose body is the component's prose, into the priority's description and
+ * the issue's reason through the API, and into comments a person writes through the API.
  */
-import { createPriority, patchIssue, putArchitectureSource, syncArchitectureSource } from "./api";
+import {
+  createComment,
+  createPriority,
+  patchIssue,
+  putArchitectureSource,
+  syncArchitectureSource,
+} from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { expectReadsReferences, readingText, seedReadingWorld } from "./reading-rows";
+import {
+  expectReadsReferences,
+  firstLineForms,
+  readingText,
+  seedReadingWorld,
+} from "./reading-rows";
 import { COMPONENT_ID, COMPONENT_REPO, COMPONENT_TITLE, RENDERED_BODY } from "./reference-surfaces";
 import { expect, test } from "./test";
 
@@ -106,4 +120,38 @@ test("issue-components-reason: the issue header's Components line draws every fo
   const line = page.getByTestId("issue-components");
   await expect(line).toContainText("None —");
   await expectReadsReferences(line.locator(RENDERED_BODY), world, "link");
+});
+
+// SLOW(>=2s): the reading world, a comment alice writes for each group of forms a first line
+// holds, and her person page drawn.
+test("person-node-title: a person page's node line draws every form of a stored reference through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // Each comment alice writes is a node she authored (`authored_by`), which her page lists by the
+  // first line of its text, cut by the server to 240 runes: one comment for each group of forms a
+  // first line holds whole (`firstLineForms`, whose groups fit the shorter cut of a thread's
+  // subject, so each fits this one too).
+  const groups = firstLineForms(world);
+  const comments: string[] = [];
+  for (const forms of groups) {
+    const comment = await createComment(
+      world.host.key,
+      { body: readingText(world, forms) },
+      { login: "alice" }
+    );
+    comments.push(comment.id);
+  }
+
+  await page.goto("/people/alice");
+  const rows = page.getByRole("list", { name: "Person nodes" }).getByRole("listitem");
+  for (const [index, forms] of groups.entries()) {
+    // Each row is found by its Open link, which opens the comment the row lists. The line above
+    // it is the row's one preview, a text a reader reads and no control, so its references are
+    // links.
+    const row = rows.filter({
+      has: page.locator(`a[href="/issues/${world.host.key}/comments/${comments[index] ?? ""}"]`),
+    });
+    await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "link", forms);
+  }
 });

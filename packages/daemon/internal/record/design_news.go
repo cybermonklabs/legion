@@ -260,8 +260,9 @@ const (
 	UntoldAdmitted UntoldReason = "admitted"
 	// UntoldAwaitingPerson is a member that waits on a person, whose phase no worker holds.
 	UntoldAwaitingPerson UntoldReason = "awaiting-person"
-	// UntoldHeld is a member that stands in held: the restart that moves it back into its phase
-	// carries what it is owed then.
+	// UntoldHeld is a member that stands in held, whatever holds it (its stopped task, the issues
+	// beneath it or its failed worker): the release that moves it back into a phase carries what it
+	// is owed then.
 	UntoldHeld UntoldReason = "held"
 	// UntoldHeldBack is a member none of the reasons above explains: its holder has not taken a
 	// version that concerns it, and OwedNews holds that news back, because the tree's standing gate

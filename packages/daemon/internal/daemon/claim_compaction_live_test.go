@@ -48,6 +48,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -331,10 +332,11 @@ func (r *claimCompactionLive) overrides() overrides {
 }
 
 // seed records the issues as the daemon would hold them at the moment each one's worker began: a
-// root handed to Legion, in the phase its worker works, holding its tree's admission slot with
-// its lifecycle open, and that worker's claim mid-launch, which this boot relaunches. The one
-// claim that runs no pane is the Claude Code role's, seeded stopped so nothing ever launches it:
-// the compaction refuses such a claim on its backend before it reads any state at all.
+// root handed to Legion, in the phase its worker works, with its lifecycle open, an admission
+// slot the seed writes (liveProof.admit), and that worker's claim mid-launch, which this boot
+// relaunches. The one claim that runs no pane is the Claude Code role's, seeded stopped so
+// nothing ever launches it: the compaction refuses such a claim on its backend before it reads
+// any state at all.
 //
 // Each phase worker's claim also holds the task its phase's start left pending, because a start
 // writes the relaunch and the task together (workflow's StartOrOwe) and a slotted worker holding
@@ -350,7 +352,9 @@ func (r *claimCompactionLive) overrides() overrides {
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
 // planner a planning issue names, find no claim at all and start one. Accepting is the phase
 // whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
-// passes over it as it passes over every architect.
+// passes over it as it passes over every architect. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *claimCompactionLive) seed() {
 	t := r.t
 	t.Helper()
@@ -358,7 +362,7 @@ func (r *claimCompactionLive) seed() {
 	for _, seeded := range r.seededPanes() {
 		r.board.show(seeded.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.seededPanes() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.issue,
@@ -585,6 +589,11 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
 	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	// Six refused turns in a row, twice launch_failure_limit's default, fail no claim: a 529 can
+	// clear, so each turn's task went to the same session again (dispatch://INFRA-4508).
+	if held := r.claim(token); held.State == string(supervise.StateFailed) {
+		t.Fatalf("%s failed after six refused turns whose 529 can clear: %+v", token, held)
+	}
 
 	from := r.daemon.count()
 	answer := r.compactedByController(r.notice, claim.RoleImplementer)
@@ -696,7 +705,10 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		// --wait past both of the summary's held passes: `legion claims compact` waits one minute
+		// by default, and Oh My Pi writes a split turn's summary in two passes, each held for
+		// compactHeldSummary, so the compaction answers after about 70 s.
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", (4 * compactHeldSummary).String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
@@ -861,13 +873,13 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 // own `fresh_session`, and reads back what each worker is given in the session it starts in: a
 // phase worker its issue's current phase task, and the root architect its catch-up.
 //
-// The phase worker is the one step 6 stopped, and the daemon starts such a worker again on its
-// own: its issue holds a slot in a worker phase and its claim owes no task, which is the state
-// admission repairs (internal/admit/admit.go's resumeSlottedWorkers). So this step asks for the
-// fresh session through retryFreshSession, which waits out a claim the daemon is in the middle
-// of starting, and what it reads back afterwards is the same either way: the fresh session is
-// the operator's, and the task in it is the one the issue's phase owes (api's
-// restartWorkedPhase).
+// The phase worker is the one step 6 stopped, and the daemon does not start such a worker again
+// on its own: its issue holds a slot in a worker phase and its claim owes no task, but admission's
+// slot repair passes over a retired claim on purpose (internal/admit/admit.go's owedOf, under
+// resumeSlottedWorkers). This step asks for the fresh session through
+// retryFreshSession, which also waits out a claim the daemon is in the middle of starting, and
+// what it reads back afterwards is the fresh session the operator asked for, with the task the
+// issue's phase owes (api's restartWorkedPhase).
 func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	t := r.t
 	planner := r.token(r.ladder, claim.RolePlanner)
@@ -1807,16 +1819,57 @@ func (s *paneStandin) turnsHolding(marker string) int {
 }
 
 // isSideQuestion is whether a Messages request is the plugin's own side question rather than a
-// turn of the task: its last message carries the `<btw>` tag, which is how the plugins' own pane
-// harness tells the two apart (packages/pi-shared/test/omp-harness.ts:528-531, `isSelfCheck`).
-// Such a question rides beside the task's turns, so a proof that counts how often a task was put
-// in front of the agent counts turns and not requests.
+// turn of the task: its newest message, past the host's own date/cwd reminders
+// (isDateCwdReminder), carries the `<btw>` tag, which is how the plugins' own pane harness tells
+// the two apart (packages/pi-shared/test/omp-harness.ts, `isSelfCheck`). Such a question rides
+// beside the task's turns, so a proof that counts how often a task was put in front of the agent
+// counts turns and not requests.
 func isSideQuestion(body string) bool {
 	var request struct {
 		Messages []json.RawMessage `json:"messages"`
 	}
-	if json.Unmarshal([]byte(body), &request) != nil || len(request.Messages) == 0 {
+	if json.Unmarshal([]byte(body), &request) != nil {
 		return false
 	}
-	return strings.Contains(string(request.Messages[len(request.Messages)-1]), "<btw>")
+	for i := len(request.Messages) - 1; i >= 0; i-- {
+		var message struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(request.Messages[i], &message) == nil && isDateCwdReminder(message.Content) {
+			continue
+		}
+		return strings.Contains(string(request.Messages[i]), "<btw>")
+	}
+	return false
+}
+
+// dateCwdReminder is Oh My Pi's date/cwd reminder when it sends it as a message of its own: the
+// whole text of the message is the reminder. The host sends it so, after a request's newest
+// message, when the local date or the working directory has changed since the session's previous
+// request and that request holds no new user turn to prefix it to, as on a run that crosses
+// midnight; ownMessages in packages/pi-shared/test/omp-harness.ts says where that was measured.
+var dateCwdReminder = regexp.MustCompile(`^<system-reminder>\nToday: [^\n]*\n</system-reminder>$`)
+
+// isDateCwdReminder is whether a message's content is one of the host's own date/cwd reminders:
+// all of it is text, and that text is the reminder and nothing else.
+func isDateCwdReminder(content json.RawMessage) bool {
+	var plain string
+	if json.Unmarshal(content, &plain) == nil {
+		return dateCwdReminder.MatchString(plain)
+	}
+	var blocks []struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if json.Unmarshal(content, &blocks) != nil || len(blocks) == 0 {
+		return false
+	}
+	var text strings.Builder
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == nil {
+			return false
+		}
+		text.WriteString(*block.Text)
+	}
+	return dateCwdReminder.MatchString(text.String())
 }

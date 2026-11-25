@@ -309,6 +309,7 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // inside that one forward, so each role send makes one attempt, where a refused forward counted
 // as one that failed makes a second.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const target, holder = "ses_in_process_target", "ses_in_process_holder"
 	if err := rig.harness.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -366,6 +367,7 @@ const inProcessForwardWindow = 300 * time.Millisecond
 // The rig's forward seam shortens the resend's first forward to inProcessForwardWindow, so its
 // window ends while the routes are frozen, and the thaw comes once it has ended.
 func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const holder = "ses_in_process_next_holder"
 	role := "in-process-next-" + id.New()[:8]
@@ -378,7 +380,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	first := make(chan ended, 1)
 	var forwards atomic.Int32
 	forward := rig.d.delivery.forwardRole
-	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		n := forwards.Add(1)
 		if n != 2 {
 			return forward(subject, item, msgID, timeout)
@@ -389,10 +391,10 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 			first <- ended{err, time.Since(started)}
 			return nil, err
 		}
-		return func() error {
-			err := wait()
+		return func() (bus.StoredAck, error) {
+			ack, err := wait()
 			first <- ended{err, time.Since(started)}
-			return err
+			return ack, err
 		}, nil
 	}
 	rig.requireLeader(t)
@@ -454,6 +456,7 @@ const inProcessBudget = time.Second
 // ends that send. A role send whose window ends while its forward is still in process costs one,
 // as main charges its 504 (sendToRole).
 func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMaybeStored(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const target, holder = "ses_in_process_budget_target", "ses_in_process_budget_holder"
 	if err := rig.harness.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -551,6 +554,7 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMa
 // until an answer names the copy, as the keep's own does (publishPastInProcess): a copy refused
 // twice and then stored is a copy made, under takenFrameMsgID each time.
 func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	role := "taken-in-process-" + id.New()[:8]
 	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
@@ -591,6 +595,7 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 // the members' routes, waits until the leader holds the other listener's publish, and raises the
 // exception through applyDeliveryOutcome before the thaw, so the refusal comes by events.
 func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
 	lane := bus.ExceptionTopicPrefix + topic

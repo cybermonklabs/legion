@@ -14,6 +14,7 @@ import (
 // served the same bytes. The read mints no block id, so a second read of one text is the same
 // bytes without a generator being held still for it.
 func TestDisplayJSONIsTheDisplayReadsTreeAndIsKept(t *testing.T) {
+	t.Parallel()
 	const markdown = "A **bold** line nothing else in this package reads.\n"
 	tree := DisplayJSON(markdown, DisplayLatest)
 	want, err := json.Marshal(ReadForDisplay(markdown, DisplayLatest).toDisplayJSON())
@@ -31,11 +32,13 @@ func TestDisplayJSONIsTheDisplayReadsTreeAndIsKept(t *testing.T) {
 	}
 }
 
-// The cache the display trees are kept in holds at most what it is given room for, counted as
-// the bytes of the JSON it holds, and the least recently read entry is the one that leaves. The
-// cache itself is shared (bytelru), which has its own tests; this one holds the trees to the
-// bound DisplayCacheBytes promises, under the key this package builds.
+// The cache the display trees are kept in holds at most what it is given room for, and the least
+// recently read entry is the one that leaves. The cache itself is shared (bytelru), which has its
+// own tests; this one holds the trees to the bound DisplayCacheBytes promises, under the key this
+// package builds. What each tree is charged against that bound, its array, its key and its entry
+// (displayCacheEntrySize), is TestTheDisplayCacheHoldsNoMoreLiveHeapThanItsBound's.
 func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
+	t.Parallel()
 	const limit int64 = 64
 	cache := bytelru.New[displayCacheKey, json.RawMessage](limit)
 	first := displayCacheKey{sum: [32]byte{1}}
@@ -66,6 +69,7 @@ func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
 // A search snippet's tree is the snippet read for display with the match marked: the sentinels
 // are gone from the text and the words between them carry DisplayHighlightMark.
 func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	tree := DisplaySnippetJSON("Keep the "+start+"astrolabe"+stop+" here", start, stop)
 	var root struct {
@@ -105,6 +109,7 @@ func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 // the palette is shown no delimiter the parser would have paired across the cut. The headline is
 // ts_headline's for this source (fragment_test.go, "a long body cut in the middle of prose").
 func TestDisplaySnippetJSONReadsTheBalancedSnippet(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	source := "Some words open the comment before the bold part. **one two three four five six seven eight nine " +
 		"ten eleven twelve thirteen fourteen fifteen sixteen the new anchor build today** and then more words " +
@@ -174,6 +179,7 @@ func snippetRuns(t *testing.T, tree []byte) []snippetRun {
 // the browser still reads it as a reference, and the sentinels in it start and stop nothing, so
 // the words after the link stay plain.
 func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	marked := start + "CORE" + stop
 	for _, test := range []struct {
@@ -229,6 +235,7 @@ func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {
 // language, inline HTML, a footnote's label - is shown the reader as something other than marked
 // words, so the highlight is taken out of it rather than drawn.
 func TestNoSentinelReachesASnippetsAttributes(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	marked := start + "CORE" + stop
 	for _, markdown := range []string{

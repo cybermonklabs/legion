@@ -1135,6 +1135,9 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 	broker.delaySettings(500 * time.Millisecond)
 	r := newChainRig(t, binary, broker)
 	r.withMetadata()
+	// The processes run side by side, each on one P: one left to size GOMAXPROCS to the host starts
+	// a thread for each P its collector's idle mark workers take, about 80 on a 288-CPU host.
+	r.env["GOMAXPROCS"] = "1"
 
 	const processes = 4
 	failures := make(chan string, processes)

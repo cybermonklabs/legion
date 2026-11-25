@@ -1,6 +1,8 @@
 import { beforeAll, expect, test } from "bun:test";
 import { referenceReading } from "@legion/contracts";
 
+import { replyPrefill, seededDraft } from "../conversation/composer-draft";
+
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
 import { draftReading, parsedLinkWords } from "./parsed-references";
 import {
@@ -105,9 +107,10 @@ test("a party written only in code is mentioned nowhere", () => {
 
 // A reference names an agent by the wider rule the Agents page shows session ids under, where a
 // delivery route is `session:[A-Za-z0-9_-]+` (the server's `model.ParseRoute`). A body can
-// therefore write an agent address no route reaches, and the server refuses such a write
-// (`api.checkMentionRoute`): the composer says the same of the draft in front of the reader
-// rather than listing a party who is told and then showing a refusal that says otherwise.
+// therefore write an agent address no route reaches. The server stores such a write as its
+// author wrote it, counts that party as somebody named and delivers to nobody for it
+// (`api.commentPartiesOf`): the composer says the same of the draft in front of the reader
+// rather than listing a party who is never told.
 test("an agent address no delivery route reaches names the draft and is delivered to nobody", () => {
   expect(draftParties("[x](dispatch://agent/a.b) please look.")).toEqual({
     named: true,
@@ -141,6 +144,40 @@ test("a party's mention is written as the mention sign and its name", () => {
   expect(partyMention("role:reviewer", " reviewer ")).toBe("[@reviewer](dispatch://role/reviewer)");
   // A party with no name that fits on one line is mentioned by its address.
   expect(partyMention(`session:${SESSION}`, "two\nlines")).toBe(`[@session:${SESSION}](${AGENT})`);
+});
+
+// What the composer writes in front of the reader - a channel's seed into an empty draft, and a
+// new reply's prefill - ends in one space after its last mention (`composer-draft.ts`), so a word
+// the reader types at once is a word of its own rather than more of that mention's address, which
+// would name another party. A seed that mentions nobody writes nothing, and the reader's own words
+// under a seed are kept as they stand.
+test("a seed and a reply's prefill end in one space, so a word typed at once names no other party", () => {
+  const owner = { issueKey: "CORE-1", kind: "issue" } as const;
+  const reviewer = { target: "role:reviewer", title: "reviewer" };
+  const planner = { target: `session:${SESSION}`, title: "Planner" };
+  const prefill = (mentions: readonly { target: string; title: string }[]) =>
+    replyPrefill({
+      actor: { id: "alice", kind: "user" },
+      excerpt: "Can this ship?",
+      id: "comment-1",
+      mentions,
+      parentKind: "comment",
+    }).body;
+  const both = `[@reviewer](dispatch://role/reviewer) [@Planner](${AGENT}) `;
+
+  expect(prefill([planner])).toBe(`[@Planner](${AGENT}) `);
+  expect(prefill([reviewer, planner])).toBe(both);
+  expect(seededDraft([reviewer, planner], "", owner)).toBe(both);
+  expect(prefill([])).toBe("");
+  expect(seededDraft([], "", owner)).toBe("");
+  expect(seededDraft([planner], "hello", owner)).toBe(`[@Planner](${AGENT}) hello`);
+  for (const [seed, carried] of [
+    [prefill([planner]), [planner]],
+    [prefill([reviewer, planner]), [reviewer, planner]],
+    [seededDraft([reviewer, planner], "", owner), [reviewer, planner]],
+  ] as const) {
+    expect(draftParties(`${seed}hello`).targets).toEqual(carried.map((party) => party.target));
+  }
 });
 
 // A worded link reads as a party's current name only where its words start with the mention

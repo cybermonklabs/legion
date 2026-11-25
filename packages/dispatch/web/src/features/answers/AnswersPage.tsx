@@ -3,10 +3,12 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
+import { nextOffsetPage } from "../../api/queries";
+import type { MyAnswerRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { ShowMore } from "../../components/ShowMore";
 import {
   borderDefault,
   card,
@@ -20,6 +22,9 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -115,8 +120,13 @@ function AnswerRow({
       ) : null}
       {row.kind === "reply" && row.reply !== undefined ? (
         <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody
+          {/* The reply's own edit, on its label: the row has no byline of the reply's. */}
+          <span className={`font-medium ${textMutedOnCanvas}`}>
+            Replied
+            <EditedMark at={row.reply.edited_at} deleted={postDeletion(row.reply)} />:
+          </span>{" "}
+          <PostBody
+            deleted={postDeletion(row.reply)}
             markdown={row.reply.body}
             source={source}
             surface="answers-reply"
@@ -153,10 +163,7 @@ export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
-    getNextPageParam: (last: MyAnswersResponse) =>
-      last.offset + (last.rows ?? []).length < last.total
-        ? last.offset + (last.rows ?? []).length
-        : undefined,
+    getNextPageParam: nextOffsetPage,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["me", "answers"],
@@ -219,16 +226,11 @@ export function AnswersPage(): ReactNode {
           })}
         </ul>
       )}
-      {answers.hasNextPage ? (
-        <button
-          className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-          disabled={answers.isFetchingNextPage}
-          onClick={() => void answers.fetchNextPage()}
-          type="button"
-        >
-          {answers.isFetchingNextPage ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
+      <ShowMore
+        fetching={answers.isFetchingNextPage}
+        hasMore={answers.hasNextPage}
+        onFetch={() => void answers.fetchNextPage()}
+      />
     </section>
   );
 }

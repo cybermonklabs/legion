@@ -148,7 +148,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -225,7 +225,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -295,7 +295,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		located := NewReader(ctx, tx, "comment", test.source, resolverServer).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, resolverServer).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -461,7 +461,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	logged := &countingHandler{}
 	logtest.SetDefault(t, logged)
 
-	located := NewReader(ctx, failingQueryer{}, "comment", source, resolverServer).Mentions(body)
+	located := NewReader(ctx, failingQueryer{}, prefixAuthor, "comment", source, resolverServer).Mentions(body)
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
@@ -478,6 +478,120 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	for _, record := range logged.records {
 		if !strings.Contains(record, "["+source+"]") {
 			t.Errorf("a logged failure does not name its source: %q", record)
+		}
+	}
+}
+
+// failingScanQueryer is a database whose every read answers one row no scan reads: the failure a
+// candidate reader meets after its query has run rather than at it.
+type failingScanQueryer struct{ failingQueryer }
+
+func (failingScanQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return &failingRows{}, nil
+}
+
+// failingRows is one row whose scan fails with errResolverRead. The methods no candidate reader
+// calls are those of the nil pgx.Rows it embeds.
+type failingRows struct {
+	pgx.Rows
+	read bool
+}
+
+func (r *failingRows) Next() bool {
+	next := !r.read
+	r.read = true
+	return next
+}
+
+func (*failingRows) Scan(...any) error { return errResolverRead }
+func (*failingRows) Close()            {}
+func (*failingRows) Err() error        { return nil }
+
+// A short id whose read fails is logged (Reader.failed), and the error it logs, like the one
+// ResolvePrefix answers the API with, names the kind and the length of the prefix and quotes
+// nothing of the reference a body wrote: neither the prefix nor the owner. It still wraps the
+// database's failure, met at the query or at the scan of each kind's reader.
+func TestAFailedPrefixReadNamesThePrefixLengthAndQuotesNothingTheBodyWrote(t *testing.T) {
+	ctx := context.Background()
+	databases := []struct {
+		name string
+		q    Queryer
+	}{
+		{"failing its query", failingQueryer{}},
+		{"failing its scan", failingScanQueryer{}},
+	}
+	// Each body writes one short id: a reader whose read fails resolves no later short id of
+	// the body and asks for none, so each kind's reader is reached by a body of its own.
+	bodies := []struct {
+		kind, body string
+		written    []string
+	}{
+		{"ask", "See dispatch://ACME-1/ask/1a2b3c4d.", []string{"1a2b3c4d", "ACME-1"}},
+		{"comment", "See dispatch://ACME/artifact/handbook/comment/0c1d2e3f-0000.", []string{"0c1d2e3f-0000", "ACME/handbook"}},
+		{"message", "See dispatch://ACME-1/message/5c6d7e8f-9a.", []string{"5c6d7e8f-9a", "ACME-1"}},
+		{"block", "See dispatch://ACME-1/artifact/notes#b-cafef00d.", []string{"cafef00d", "ACME-1/notes"}},
+	}
+	for _, database := range databases {
+		for _, body := range bodies {
+			t.Run(body.kind+" with the database "+database.name, func(t *testing.T) {
+				recorder := &logtest.Recorder{}
+				logtest.SetDefault(t, recorder)
+				NewReader(ctx, database.q, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body.body)
+				logged := 0
+				for _, record := range recorder.Records() {
+					record.Attrs(func(attr slog.Attr) bool {
+						if attr.Key != "error" {
+							return true
+						}
+						logged++
+						if err, ok := attr.Value.Any().(error); ok {
+							requireQuotesNone(t, err, body.written)
+						} else {
+							t.Errorf("a logged failure's error is %v, which is no error", attr.Value)
+						}
+						return true
+					})
+				}
+				if logged == 0 {
+					t.Errorf("the failed read of %q logged no error", body.body)
+				}
+			})
+		}
+	}
+
+	resolves := []struct {
+		kind   string
+		scope  Scope
+		prefix string
+	}{
+		{"ask", Scope{IssueKey: "ACME-1"}, "1a2b3c4d"},
+		{"comment", Scope{Document: "ACME/handbook"}, "0c1d2e3f-0000"},
+		{"message", Scope{IssueKey: "ACME-1"}, "5c6d7e8f-9a"},
+		{"artifact", Scope{IssueKey: "ACME-1"}, "8a9b0c1d"},
+		{"block", Scope{Document: "ACME-1/notes", Version: 2}, "cafef00d"},
+	}
+	for _, database := range databases {
+		for _, resolve := range resolves {
+			_, err := ResolvePrefix(ctx, database.q, prefixAuthor, resolve.kind, resolve.scope, resolve.prefix, Viewer{})
+			if err == nil {
+				t.Errorf("the %s %q resolved with the database %s", resolve.kind, resolve.prefix, database.name)
+				continue
+			}
+			requireQuotesNone(t, err, []string{resolve.prefix, cmp.Or(resolve.scope.IssueKey, resolve.scope.Document)})
+		}
+	}
+}
+
+// requireQuotesNone fails t where err does not wrap errResolverRead or its text quotes any of
+// written, the text a reference wrote.
+func requireQuotesNone(t *testing.T, err error, written []string) {
+	t.Helper()
+	if !errors.Is(err, errResolverRead) {
+		t.Errorf("%q does not wrap the database's failure", err)
+	}
+	for _, quoted := range written {
+		if strings.Contains(err.Error(), quoted) {
+			t.Errorf("%q quotes %q, which a reference wrote", err, quoted)
 		}
 	}
 }
@@ -515,7 +629,7 @@ func TestAResolverResolvesEachPrefixOnce(t *testing.T) {
 
 	cite := "dispatch://ACME-1/ask/" + resolverAsk[:8]
 	reads := 0
-	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, "comment", resolverSource(1), resolverServer)
+	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, prefixAuthor, "comment", resolverSource(1), resolverServer)
 	if located := resolve.Mentions("See " + cite + "."); len(located) != 1 || located[0].ID != resolverAsk {
 		t.Fatalf("the first text read %#v; want the whole id of %s", located, resolverAsk)
 	}

@@ -56,7 +56,8 @@ export type FallbackCooldownInput =
   /** The session is back on the arming's `restoreTo`. */
   | { readonly kind: "restored" }
   /** A model change that is not this arming's: the operator's `/model`, the host's own restore,
-   * another session. Nothing the fallback did is undone. */
+   * another session, or a launch that started the session on another model and wrote no
+   * `model_change`. Nothing the fallback did is undone. */
   | { readonly kind: "superseded" }
   /** A turn on `selector` that ended with no provider error. A turn that ended in a provider
    * error which is no content filter is no input: it changes nothing here. */

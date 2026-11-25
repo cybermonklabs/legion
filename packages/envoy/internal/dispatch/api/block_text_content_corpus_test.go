@@ -34,6 +34,7 @@ import (
 // holds its shapes. Every count of each corpus is pinned, so a text that moves from one count to
 // another fails too.
 func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
+	t.Parallel()
 	for _, corpus := range []struct {
 		name  string
 		texts []string

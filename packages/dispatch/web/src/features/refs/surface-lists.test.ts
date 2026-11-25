@@ -148,8 +148,12 @@ interface ReadingConstruct {
 }
 
 const READING_CONSTRUCTS: readonly ReadingConstruct[] = [
+  // `PostBody` and `PostPreview` are the renderer for a comment's or an issue message's text,
+  // which draw the deleted line in its place once its author deleted it (`refs/PostBody.tsx`,
+  // with the marks in `refs/PostMarks.tsx`), and hand their caller's `surface` on to the
+  // renderer they are made of.
   {
-    elements: ["MarkdownBody", "MarkdownPreview"],
+    elements: ["MarkdownBody", "MarkdownPreview", "PostBody", "PostPreview"],
     hooks: [],
     name: "a mount of the body or the preview renderer",
   },
@@ -192,6 +196,8 @@ const SOURCE_TAKERS: ReadonlySet<string> = new Set([
   "MarkdownBody",
   "MarkdownPreview",
   "PlainText",
+  "PostBody",
+  "PostPreview",
   "Unfurl",
   "usePlainHeadline",
 ]);
@@ -2232,9 +2238,21 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "sessionCountSentence(model.summary)",
   },
   {
+    file: `${FEATURES}/plan/PlanTab.tsx`,
+    holds:
+      "a block pointer's name by the naming rule (`useReferenceLabel`): its target's title, which a block of a document holds, never a post's",
+    written: "text",
+  },
+  {
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
+  },
+  {
+    file: `${FEATURES}/refs/RefLink.tsx`,
+    holds:
+      "a reference's name by the naming rule (`useReferenceLabel`): its target's title, cut and marked edited, or the page's own deleted line",
+    written: "named",
   },
   {
     file: `${FEATURES}/refs/RefPickerList.tsx`,
@@ -2294,6 +2312,8 @@ const TREE_TAKERS: ReadonlySet<string> = new Set([
   "MarkdownBody",
   "MarkdownPreview",
   "PlainText",
+  "PostBody",
+  "PostPreview",
   "usePlainHeadline",
 ]);
 
@@ -2338,6 +2358,10 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
   {
     surface: "margin-suggestion-diff",
     why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
+  },
+  {
+    surface: "person-node-title",
+    why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to cybermonklabs/legion#4105.",
   },
 ];
 
@@ -2773,47 +2797,103 @@ function handsWithTree(tree: ts.SourceFile, field: string, written: string): boo
   return found;
 }
 
-/** The workflow whose `changes` job decides which jobs a pull request runs. */
-const CI_WORKFLOW = ".github/workflows/ci.yaml";
+/** The gate that holds the `dispatch_references` filter, which starts the reference rows on a
+ *  pull request: an EXCLUDED filter, kept by hand (`excluded(filter, why, patterns)`), whose
+ *  patterns CI's filter engine writes as they are written there into the filters file the
+ *  `changes` job's paths-filter step reads, a file made at run time that no commit holds. */
+const REFERENCE_GATE = ".github/ci-gates/dispatch-references.py";
+
+/** The script that runs the reference rows' lane, which names its spec files (`lane_files`). */
+const REFERENCE_LANE_SCRIPT = ".github/scripts/dispatch-browser-shard-suite.sh";
+
+/** A quoted string of Python source at `start`, whose quote is `source[start]`, read to its
+ *  closing quote with each escape taken as written: the string's characters and where the source
+ *  goes on after it, or `undefined` where `start` holds no quote or the string never closes. */
+function pythonString(
+  source: string,
+  start: number
+): { readonly value: string; readonly end: number } | undefined {
+  const quote = source[start];
+  if (quote !== "'" && quote !== '"') return undefined;
+  let value = "";
+  for (let at = start + 1; at < source.length; at++) {
+    const character = source[at];
+    if (character === "\\") {
+      value += source[at + 1] ?? "";
+      at++;
+    } else if (character === quote) {
+      return { end: at + 1, value };
+    } else {
+      value += character;
+    }
+  }
+  return undefined;
+}
 
 /**
- * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. The job's dorny/paths-filter step names the file
- * that holds its filters (`.github/ci-filters.yaml`), so the file the input names is read from
- * the repository. An input that is no file's path - filters written inline, which the action
- * also takes - is read as no filters at all, so the guard row below that reads the filter fails
- * rather than this reading YAML the job does not. The filter is read from whichever step
- * declares it, and a reading that finds it in none or in more than one finds no filter. A
- * filter may name a group of others through its anchor, so the list is flattened, as
- * dorny/paths-filter flattens it. The step reads its patterns with the `some-with-excludes`
- * quantifier, so a `!` pattern is an exclusion: a file is in the filter when a pattern without
- * `!` matches it and no `!` pattern does.
+ * The patterns of `dispatch_references`, read from its gate (`REFERENCE_GATE`): the quoted
+ * strings of the list that is the third argument of its `excluded('dispatch_references', why,
+ * [...])` call, its comments skipped, as CI's filter engine writes them. A gate that is absent,
+ * that holds no such call, or whose call the reading cannot follow reads as no filter at all, so
+ * the guard row below that reads the filter fails rather than this passing over nothing. The
+ * paths-filter step reads its patterns with the `some-with-excludes` quantifier, so a `!` pattern
+ * is an exclusion: a file is in the filter when a pattern without `!` matches it and no `!`
+ * pattern does.
  */
 function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
-  const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
-    jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
-  };
-  const declaring = (workflow.jobs?.changes?.steps ?? [])
-    .map((step) => step.with?.filters?.trim())
-    .filter((input): input is string => input !== undefined)
-    .map((input) =>
-      /^[\w./-]+\.ya?ml$/u.test(input)
-        ? (Bun.YAML.parse(readFileSync(join(REPO_ROOT, input), "utf8")) as Record<
-            string,
-            unknown
-          > | null)
-        : null
-    )
-    .filter((groups) => groups?.dispatch_references !== undefined);
-  const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
-    .flat(Number.POSITIVE_INFINITY)
-    .filter((pattern): pattern is string => typeof pattern === "string");
+  let source = "";
+  try {
+    source = readFileSync(join(REPO_ROOT, REFERENCE_GATE), "utf8");
+  } catch {
+    source = "";
+  }
+  const call = /\bexcluded\(\s*(['"])dispatch_references\1\s*,\s*/u.exec(source);
+  const why = call === null ? undefined : pythonString(source, call.index + call[0].length);
+  const opening = why === undefined ? null : /^\s*,\s*\[/u.exec(source.slice(why.end));
+  const patterns: string[] = [];
+  if (why !== undefined && opening !== null) {
+    let at = why.end + opening[0].length;
+    let closed = false;
+    while (at < source.length && !closed) {
+      const character = source[at] ?? "";
+      if (character === "]") {
+        closed = true;
+      } else if (character === "#") {
+        const lineEnd = source.indexOf("\n", at);
+        at = lineEnd === -1 ? source.length : lineEnd;
+        continue;
+      } else if (character === "'" || character === '"') {
+        const pattern = pythonString(source, at);
+        if (pattern === undefined) break;
+        patterns.push(pattern.value);
+        at = pattern.end;
+        continue;
+      }
+      at++;
+    }
+    if (!closed) patterns.length = 0;
+  }
   return {
     include: patterns.filter((pattern) => !pattern.startsWith("!")).map((p) => new Bun.Glob(p)),
     exclude: patterns
       .filter((pattern) => pattern.startsWith("!"))
       .map((pattern) => new Bun.Glob(pattern.slice(1))),
   };
+}
+
+/** The spec files the reference rows' lane runs, as its script names them (`lane_files`, which
+ *  every other lane sets empty), from the repository root; none where the script names none. */
+function referenceLaneFiles(): string[] {
+  let script = "";
+  try {
+    script = readFileSync(join(REPO_ROOT, REFERENCE_LANE_SCRIPT), "utf8");
+  } catch {
+    script = "";
+  }
+  return [...script.matchAll(/\blane_files="([^"]*)"/gu)]
+    .flatMap((assignment) => (assignment[1] ?? "").split(/\s+/u))
+    .filter((file) => file !== "")
+    .map((file) => `packages/dispatch/${file}`);
 }
 
 const REFERENCE_FILTER = referenceFilter();
@@ -2920,10 +3000,14 @@ describe("the walk reads the dashboard's source", () => {
     expect(READER_MODULES.filter((file) => !SCANNED_FILES.includes(file))).toEqual([]);
   });
 
-  test("reads the reference rows' filter in ci.yaml", () => {
-    // A guard on the reading of the workflow: were it to find no filter, no covered row's file
-    // would be in it, and every covered row below would fail for a reason none of them has.
+  test("reads the reference rows' filter in its gate", () => {
+    // A guard on the reading of the gate: were it to find no filter, no covered row's file would
+    // be in it, and every covered row below would fail for a reason none of them has. The filter
+    // the reading found names every spec file the reference rows' lane runs.
     expect(REFERENCE_FILTER.include.length).toBeGreaterThan(20);
+    const lane = referenceLaneFiles();
+    expect(lane.length).toBeGreaterThan(10);
+    expect(lane.filter((file) => !inReferenceFilter(file))).toEqual([]);
   });
 });
 
@@ -4142,14 +4226,14 @@ describe("every row of the writing list is a box the dashboard still draws", () 
       expect(
         picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
       ).toBe(label);
-      // A pull request runs the reference rows only where it changes a path ci.yaml's
-      // `dispatch_references` filter names, so a covered box's file the filter misses is one a
-      // pull request can take the picker out of with none of those rows run.
+      // A pull request runs the reference rows only where it changes a path the
+      // `dispatch_references` filter names (`REFERENCE_GATE`), so a covered box's file the filter
+      // misses is one a pull request can take the picker out of with none of those rows run.
       for (const file of row.files) {
         expect(
           inReferenceFilter(file)
             ? file
-            : `${file} (named by ${label}) is not in the dispatch_references filter ${CI_WORKFLOW}'s changes job reads`
+            : `${file} (named by ${label}) is not in the dispatch_references filter of ${REFERENCE_GATE}`
         ).toBe(file);
       }
     }

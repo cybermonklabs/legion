@@ -25,7 +25,7 @@ import {
   type Writes,
   writesOf,
 } from "../writes/write-store";
-import type { ReplyTarget } from "./composer-model";
+import { commentListKey, type ReplyTarget } from "./composer-model";
 import {
   type Address,
   type CarriedAddress,
@@ -138,12 +138,7 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
     void client.invalidateQueries({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
     return;
   }
-  void client.invalidateQueries({
-    queryKey:
-      owner.kind === "issue"
-        ? ["comments", owner.issueKey]
-        : ["artifact", owner.artifactId, "comments"],
-  });
+  void client.invalidateQueries({ queryKey: commentListKey(owner) });
   void client.invalidateQueries({ queryKey: ["inbox"] });
   if (anchor !== undefined) {
     void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });

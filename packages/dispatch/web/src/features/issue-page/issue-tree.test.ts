@@ -404,6 +404,8 @@ function comment(id: string, createdAt: string): Comment {
     author: { id: "alice", kind: "user" },
     body: `Comment ${id}.`,
     created_at: createdAt,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -425,7 +427,10 @@ function thread(id: string, createdAt: string): MessageRead {
     body: `Message ${id}.`,
     broadcast_id: null,
     created_at: createdAt,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
+    edited_at: null,
     id,
     in_reply_to: null,
     issue_key: KEY,
@@ -649,7 +654,7 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
 // a reading for neither (`targetNaming`'s `readings`); it publishes the ambiguous one among the
 // references it read as ambiguous (its `ambiguous`) and the gone one among those it read as gone
 // (its `gone`), by the chip's own rule, so a surface draws each as written, links nothing for
-// the first, and reads no target of its own for either (INFRA-1196 decision 350).
+// the first, and reads no target of its own for either (issue page decision 350).
 test("the page publishes an ambiguous short reference as ambiguous, and a gone target as gone", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -1210,7 +1215,7 @@ test("a node's line from a stored heading leaves out its marker once", () => {
 // node's line keeps it there too, the projection naming none in code: in a reading, a text run
 // marked as inline code and a code block's text keep their address, and in a stored text a code
 // span keeps its address. A bare address outside code reads as the words its author wrote until
-// it is named, and as its target's name once it is (INFRA-1196 decision 350, which replaces
+// it is named, and as its target's name once it is (issue page decision 350, which replaces
 // decision 95's short form). The reading the read sent is left as it was, and the node's words
 // keep every address.
 test("an address in code stays as written in a node's line, from a reading and from stored text", async () => {
@@ -1404,7 +1409,7 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
 });
 
 /** Titles as an issue stores them, each with the words its line is projected to, every address
- *  in them as written until it is named (INFRA-1196 decision 350), and, where they differ from
+ *  in them as written until it is named (issue page decision 350), and, where they differ from
  *  those, the words it is named by elsewhere, which read each address as its short form, since a
  *  name is a title over one record and reads no other name (`ReferenceNaming.readsNone`). */
 const TITLES: readonly (readonly [title: string, line: string, name?: string])[] = [
@@ -1438,7 +1443,7 @@ function childIssue(key: string, title: string): IssueChild {
 // children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
 // child issue is projected from its text read as one text run (`titleReading`), so it is its
 // text as written, each run of white space one space, and a bare address in it reads as the
-// words its author wrote until it is named (INFRA-1196 decision 350, which replaces decisions 95
+// words its author wrote until it is named (issue page decision 350, which replaces decisions 95
 // and 327). Read as markdown, `1. Migrate the table` would be a list item with no label,
 // ``Add `x` flag`` would lose its backticks and `Fix <script> handling` its tag, and a title with
 // a line feed or a blank line would lose what follows it.
@@ -1478,7 +1483,7 @@ test("the issue's own line reads a label after its key, and names nothing in its
 // naming the issue or a child of it, the name the page publishes for it and the link a row draws
 // for it by that name read the whole title the issue read holds, as a title over one record: its
 // white space collapses and a bare address in it reads as its target's short form, since a name
-// reads no other name (INFRA-1196 decision 350), so a comment citing `dispatch://CORE-2`, titled
+// reads no other name (issue page decision 350), so a comment citing `dispatch://CORE-2`, titled
 // `Follow dispatch://CORE-3 up`, links `CORE-2` and `Follow CORE-3 up`. A title longer than that
 // cut is named whole too, so an address the cut would end inside, and one past it, read short.
 test("a chip, a published name and a row's link name a child issue by its whole title", () => {
@@ -1927,6 +1932,319 @@ test("a question of the issue is drawn among the turns, by the time it was asked
   ]);
 });
 
+/** A delete of a post, as the read of a deleted comment or message carries it: when, and by whom. */
+const DELETION: Pick<Comment, "deleted_at" | "deleted_by"> = {
+  deleted_at: "2026-11-05T12:00:00Z",
+  deleted_by: { id: "alice", kind: "user" },
+};
+
+/** The words a deleted post's author wrote, which the fixtures below leave on the read, though the
+ *  server sends an empty body, so a node that read them would show it. */
+const DELETED_WORDS = "Hold the deploy until Friday.";
+
+/** What a node of a turn holds that a view draws: its marks, its text and reading, and the line
+ *  and the words every place that reads a node reads from it (`nodeLineOf`, `nodeWords`). */
+function turnMarks(node: TreeNode | undefined) {
+  return {
+    deletedAt: node?.deletedAt,
+    deletedBy: node?.deletedBy,
+    editedAt: node?.editedAt,
+    line: node === undefined ? undefined : nodeLineOf(node),
+    text: node?.text,
+    tree: node?.tree,
+    words: node === undefined ? undefined : nodeWords(node),
+  };
+}
+
+// R3 of dispatch://INFRA-1523: a comment its author deleted keeps its place among the turns, and
+// its node holds the deleted line in place of its body and no reading of it, so no line, body or
+// filter reads a word its author wrote, even where the read still carries one. It carries no
+// edit mark: the deleted line already says what became of the text.
+test("a deleted comment keeps its place and holds the deleted line, and no word of its body", () => {
+  const root = buildIssueTree({
+    comments: [
+      comment("c0", "2026-11-04T09:00:00Z"),
+      {
+        ...comment("c1", "2026-11-04T10:00:00Z"),
+        ...DELETION,
+        body: DELETED_WORDS,
+        body_tree: readingOf(DELETED_WORDS),
+        edited_at: "2026-11-05T11:00:00Z",
+      },
+      comment("c2", "2026-11-04T11:00:00Z"),
+    ],
+    issue: issueDetails([]),
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2"]);
+  const line = "Deleted by alice · 2026-11-05T12:00:00Z";
+  const deleted = turnMarks(nodeOf(root, "c1"));
+  expect(deleted).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    deletedBy: { id: "alice", kind: "user" },
+    editedAt: undefined,
+    line,
+    text: line,
+    tree: undefined,
+    words: line,
+  });
+  expect(nodeOf(root, "c0")?.text).toBe("Comment c0.");
+});
+
+// R3 of dispatch://INFRA-1523: a message its author deleted is the same: its place, the deleted
+// line, no reading. A session's delete names the session as `AgentName` does before the agent
+// registry answers, by its short id, never by its raw id; a delete whose read names nobody says
+// so with no name.
+test("a deleted message keeps its place and holds the deleted line, and no word of its body", () => {
+  const sent = thread("m1", "2026-11-04T10:00:00Z");
+  const unnamed = thread("m2", "2026-11-04T11:00:00Z");
+  const root = buildIssueTree({
+    issue: issueDetails([]),
+    messages: [
+      thread("m0", "2026-11-04T09:00:00Z"),
+      {
+        ...sent,
+        message: {
+          ...sent.message,
+          body: DELETED_WORDS,
+          body_tree: readingOf(DELETED_WORDS),
+          deleted_at: "2026-11-05T12:00:00Z",
+          deleted_by: { id: "planner", kind: "session" },
+        },
+      },
+      {
+        ...unnamed,
+        message: { ...unnamed.message, deleted_at: "2026-11-05T13:00:00Z", deleted_by: null },
+      },
+    ],
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual(["m0", "m1", "m2"]);
+  const line = "Deleted by session:planner… · 2026-11-05T12:00:00Z";
+  const deleted = turnMarks(nodeOf(root, "m1"));
+  expect(deleted).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    deletedBy: { id: "planner", kind: "session" },
+    editedAt: undefined,
+    line,
+    text: line,
+    tree: undefined,
+    words: line,
+  });
+  const nobody = nodeOf(root, "m2");
+  expect(nobody?.text).toBe("Deleted · 2026-11-05T13:00:00Z");
+  expect(nobody !== undefined && "deletedBy" in nobody).toBe(false);
+  expect(nodeOf(root, "m0")?.text).toBe("Message m0.");
+});
+
+// R2 of dispatch://INFRA-1523: a comment its author edited keeps its words and their reading,
+// and says when it was last edited; one nobody edited carries no mark.
+test("an edited comment keeps its words and its reading, and carries when it was edited", () => {
+  const root = buildIssueTree({
+    comments: [
+      {
+        ...comment("c1", "2026-11-04T10:00:00Z"),
+        body_tree: readingOf("Comment c1."),
+        edited_at: "2026-11-05T11:00:00Z",
+      },
+      comment("c2", "2026-11-04T11:00:00Z"),
+    ],
+    issue: issueDetails([]),
+  });
+
+  expect(turnMarks(nodeOf(root, "c1"))).toEqual({
+    deletedAt: undefined,
+    deletedBy: undefined,
+    editedAt: "2026-11-05T11:00:00Z",
+    line: "Comment c1.",
+    text: "Comment c1.",
+    tree: readingOf("Comment c1."),
+    words: "Comment c1.",
+  });
+  const unedited = nodeOf(root, "c2");
+  expect(unedited !== undefined && "editedAt" in unedited).toBe(false);
+});
+
+// R2 of dispatch://INFRA-1523: a message its author edited is the same.
+test("an edited message keeps its words and its reading, and carries when it was edited", () => {
+  const sent = thread("m1", "2026-11-04T10:00:00Z");
+  const root = buildIssueTree({
+    issue: issueDetails([]),
+    messages: [
+      {
+        ...sent,
+        message: {
+          ...sent.message,
+          body_tree: readingOf("Message m1."),
+          edited_at: "2026-11-05T11:00:00Z",
+        },
+      },
+      thread("m2", "2026-11-04T11:00:00Z"),
+    ],
+  });
+
+  expect(turnMarks(nodeOf(root, "m1"))).toEqual({
+    deletedAt: undefined,
+    deletedBy: undefined,
+    editedAt: "2026-11-05T11:00:00Z",
+    line: "Message m1.",
+    text: "Message m1.",
+    tree: readingOf("Message m1."),
+    words: "Message m1.",
+  });
+  const unedited = nodeOf(root, "m2");
+  expect(unedited !== undefined && "editedAt" in unedited).toBe(false);
+});
+
+// R3 of dispatch://INFRA-1523: a chip naming a comment or a message its author deleted draws
+// the deleted line, as a link to it does (`useReferenceLabel`), and carries the delete's marks,
+// and the page publishes that line as its name, never the words of its body, even where the
+// read still carries them. It says nothing of an edit: the deleted line says what became of the
+// text.
+test("a chip naming a deleted comment or message draws the deleted line and carries its marks", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const reads = {
+      decisions: decisions([{ ...decision("d1", "Keep it.", []), links: [linkTo(ref, kind)] }]),
+      issue: issueDetails([spec, made]),
+      targets: [
+        {
+          deleted_at: "2026-11-05T12:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-11-05T11:00:00Z",
+          gone: false,
+          kind,
+          name: DELETED_WORDS,
+          ref,
+        },
+      ],
+    };
+
+    const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+    expect(chips?.map(drawnChip), kind).toEqual([
+      {
+        answered: true,
+        deletedAt: "2026-11-05T12:00:00Z",
+        deletedBy: { id: "alice", kind: "user" },
+        gone: false,
+        name: "Deleted by alice",
+        ref,
+        stale: false,
+      },
+    ]);
+    expect([...namesOf(reads)], kind).toEqual([[ref, "Deleted by alice"]]);
+  }
+});
+
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: beside the deleted line it publishes
+// as a deleted post's name, the page publishes the delete itself (`targetNaming`'s `deleted`), so
+// a row's words draw that line with its actor named as the page names an author, where the name
+// holds the actor as no registry knows it. A post that stands is not among them, and neither is
+// a block of a deleted post, which is gone and named by nothing.
+test("the page publishes a deleted comment or message by its delete, and no post that stands", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const deletion = { at: "2026-11-05T12:00:00Z", by: { id: "alice", kind: "user" } };
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const block = `${ref}#b-p1`;
+    const standing = `dispatch://${KEY}/${kind}/${kind}-8`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(block, "block"), linkTo(standing, kind)],
+        },
+      ]),
+      issue: issueDetails([spec, made]),
+      targets: [
+        { deleted_at: deletion.at, deleted_by: deletion.by, gone: false, kind, name: "", ref },
+        {
+          deleted_at: deletion.at,
+          deleted_by: deletion.by,
+          gone: true,
+          kind: "block",
+          name: "",
+          ref: block,
+        },
+        { gone: false, kind, name: "Ship it.", ref: standing },
+      ],
+    };
+
+    const naming = targetNaming(reads);
+    expect([...namesOf(reads)], kind).toEqual([
+      [ref, "Deleted by alice"],
+      [standing, "Ship it."],
+    ]);
+    expect([...naming.deleted], kind).toEqual([[ref, deletion]]);
+  }
+});
+
+// R2 of dispatch://INFRA-1523: a chip naming a comment or a message its author edited, or a
+// block of one, is named by its words alone and carries when it was edited; the page publishes
+// those words as its name and the reference among the edited ones, so a link cuts the words to
+// its own length and marks what the cut left ` · edited`, as a link to it does
+// (`useReferenceLabel`). A post nobody edited carries no mark.
+test("a chip naming an edited comment, message or block of one carries its words and when it was edited", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const block = `dispatch://${KEY}/comment/comment-9#b-p1`;
+  const unedited = `dispatch://${KEY}/comment/comment-8`;
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(block, "block"), linkTo(unedited, "comment")],
+        },
+      ]),
+      issue: issueDetails([spec, made]),
+      targets: [
+        { edited_at: "2026-11-05T11:00:00Z", gone: false, kind, name: "**Hold** it.", ref },
+        {
+          edited_at: "2026-11-05T11:00:00Z",
+          gone: false,
+          kind: "block",
+          name: "Hold the deploy.",
+          ref: block,
+          text_tree: readingOf("Hold the deploy."),
+        },
+        { gone: false, kind: "comment", name: "Ship it.", ref: unedited },
+      ],
+    };
+
+    const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+    expect(
+      chips?.map((chip) => ({ editedAt: chip.editedAt, name: nameOf(chip), ref: chip.ref })),
+      kind
+    ).toEqual([
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold it.", ref },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold the deploy.", ref: block },
+      { editedAt: undefined, name: "Ship it.", ref: unedited },
+    ]);
+    expect(
+      chips?.some((chip) => chip.ref === unedited && "editedAt" in chip),
+      kind
+    ).toBe(false);
+    const naming = targetNaming(reads);
+    expect([...namesOf(reads)], kind).toEqual([
+      [ref, "Hold it."],
+      [block, "Hold the deploy."],
+      [unedited, "Ship it."],
+    ]);
+    expect([...naming.edited], kind).toEqual([ref, block]);
+    // A row's link draws the published words, then the mark (`rowReferenceWords`).
+    const [link] = rowReferences(`see ${ref}`, [], naming.ambiguous);
+    if (link === undefined) throw new Error("the text holds one reference");
+    expect(rowReferenceWords(link, namesOf(reads), undefined, naming.edited).words, kind).toBe(
+      "Hold it. · edited"
+    );
+  }
+});
+
 // R1, R12: the group of children sits before the conversation however many children there are.
 // A child's place in the issue's order is a fraction of one past the group's, as a block's is in
 // its document, so a thousandth child never reaches the conversation's orders, which are ordered
@@ -2231,6 +2549,8 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
       type: "doc",
     },
     created_at: "2026-11-16T11:12:42.406314Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "66fd1e9f-1adb-4c92-b7db-a731dcf223c1",
@@ -3145,7 +3465,7 @@ function planTasks(words: readonly string[], read: boolean): TreeNode {
   });
 }
 
-// R8 and INFRA-1196 decision 350, which replaces decision 95's short form: the server's reading
+// R8 and issue page decision 350, which replaces decision 95's short form: the server's reading
 // keeps a bare `dispatch://` address in a node's words as a plain text run, and a node's one
 // line reads it as the projection reads one: as the words its author wrote until it is named, and
 // as its target's name once it is, from the reading and, where the read sent none, from the
@@ -3195,7 +3515,7 @@ test("a bare address in a node's line reads as written until it is named, from a
   }
 });
 
-// R22 and INFRA-1196 decision 350: a comment's body is stored markdown, which a chip naming the
+// R22 and issue page decision 350: a comment's body is stored markdown, which a chip naming the
 // comment draws as the plain-text projection of its reading, a name and so a title over one
 // record: a bare address in the body reads as its target's short form in the chip's name and in
 // the name the page publishes for it (`targetNaming`), since a name reads no other name. A link
@@ -3276,7 +3596,7 @@ test("a stored text read to plain words holds the words of the server's reading 
 // The body draws a node's whole words, the words filter matches them and the batched reference
 // read is asked to name each address they cite (`useIssueTree.ts`), so a node's words
 // (`nodeWords`) keep every address as written, from a reading and from stored text alike, as its
-// line beside them does until the address is named (INFRA-1196 decision 350).
+// line beside them does until the address is named (issue page decision 350).
 test("a node's words keep the bare address its line reads", () => {
   const words = "Do it as dispatch://CORE-2 says. Then more.";
   for (const [sent, read] of [

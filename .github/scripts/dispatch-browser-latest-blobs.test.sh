@@ -41,12 +41,13 @@ fixture() {
   echo "$root"
 }
 
-# leg <root> <leg> <attempt> <mark> [<prefix>]: the artifact one leg's upload leaves at one
-# attempt - a directory named for the artifact, holding the leg's blob report and the row count
-# beside it. <mark> is written into both files, so the output says which attempt's copy arrived.
-# <prefix> is the lane's artifact prefix, `dispatch-browser-blob-` unless a case names another.
+# leg <root> <leg> <attempt> <mark>: the artifact one leg's upload leaves at one attempt - a
+# directory named for the artifact, holding the leg's blob report and the row count beside it.
+# <mark> is written into both files, so the output says which attempt's copy arrived. The
+# artifact's name starts with $caller, the id of the job that calls dispatch-browser.yaml.
+caller=dispatch-browser
 leg() {
-  local dir="$1/down/${5:-dispatch-browser-blob-}$2-$3"
+  local dir="$1/down/$caller-blob-$2-$3"
   mkdir -p "$dir/blob-report" "$dir/rows"
   printf '%s\n' "$4" > "$dir/blob-report/report-$2.zip"
   printf '%s\n' "$4" > "$dir/rows/$2.txt"
@@ -62,12 +63,12 @@ lone_leg() {
   printf '%s\n' "$3" > "$1/down/rows/$2.txt"
 }
 
-# run_select <root> [<prefix>]: runs the script under test over that case's directories with the
-# lane's artifact prefix, `dispatch-browser-blob-` unless a case names another, setting `out` to
-# its combined output and `status` to its exit code. Not a subshell, so both survive the call.
+# run_select <root>: runs the script under test over that case's directories for $caller, setting
+# `out` to its combined output and `status` to its exit code. Not a subshell, so both survive the
+# call.
 run_select() {
   set +e
-  out=$("$select_script" "$1/down" "$1/out" "${2:-dispatch-browser-blob-}" 2>&1)
+  out=$("$select_script" "$1/down" "$1/out" "$caller" 2>&1)
   status=$?
   set -e
 }
@@ -176,17 +177,6 @@ run_select "$root"
 check "the same artifact in a directory named for it writes the same files" \
   "$(diff -r "$lone_out" "$root/out" > /dev/null && echo true || echo false)"
 
-echo "case: the references lane's lone artifact is taken whole as well"
-# The layout of one artifact is the download's, not the lane's: the references lane's merge job
-# downloads its own prefix's blobs, and one matched is extracted at the top as the other lanes'
-# is, with no prefix on disk to read.
-root=$(fixture one-artifact-references)
-lone_leg "$root" shard-3 refs
-run_select "$root" dispatch-references-blob-
-check "exits 0" "$(is "$status" 0)"
-check "the output holds that artifact's blob" "$(is "$(held "$root" blob-report/report-shard-3.zip)" refs)"
-check "and its rows" "$(is "$(held "$root" rows/shard-3.txt)" refs)"
-
 echo "case: a lone artifact that holds no blob report keeps its rows"
 # A leg whose browser step wrote its row count and no blob uploads rows/ alone. Read in either
 # layout, the count is copied and the blob directory stays empty.
@@ -252,6 +242,40 @@ check "for every leg" \
 check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
+echo "case: the pull-request caller's artifacts read under its own id"
+# ci.yaml calls dispatch-browser.yaml three times, and one run of a pull request can run several
+# of those callers, so every artifact name starts with the caller's id: the pull-request lane's
+# merge job reads dispatch-browser-pr-blob-<leg>-<attempt>.
+caller=dispatch-browser-pr
+root=$(fixture pr-caller)
+leg "$root" shard-1 1 first-attempt
+leg "$root" shard-1 2 second-attempt
+run_select "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" second-attempt)"
+check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+caller=dispatch-browser
+
+echo "case: the other caller's artifact is refused, never merged"
+# The download step's pattern takes only this caller's artifacts. One of the other caller's that
+# reached the directory anyway would merge that lane's rows into this one's report, so it fails
+# by name, as any name that does not read does.
+root=$(fixture other-caller)
+leg "$root" shard-1 1 full-lane
+caller=dispatch-browser-pr leg "$root" shard-1 1 pull-request-lane
+run_select "$root"
+check "fails" "$(is "$status" 1)"
+check "names the other caller's directory" "$(contains "$out" 'down/dispatch-browser-pr-blob-shard-1-1 is not a leg')"
+check "and merges nothing" "$(is "$(find "$root/out" -type f | wc -l)" 0)"
+
+root=$(fixture other-caller-reversed)
+leg "$root" shard-1 1 full-lane
+caller=dispatch-browser-pr
+run_select "$root"
+check "the pull-request caller refuses the full lane's artifact too" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
+caller=dispatch-browser
+
 echo "case: a leg name holding a space is one leg"
 # This script never sees the merge job's capture: a leg reaches it as the tail of an artifact
 # directory name, which dispatch-browser.yaml builds from the project alone
@@ -270,30 +294,32 @@ check "its blob lands under its own name" \
 check "and its rows travel with it" \
   "$(is "$(held "$root" 'rows/alone-chromium hidpi.txt')" spaced)"
 
-echo "case: the references lane's prefix reads its own blobs and refuses the other lanes'"
-# ci.yaml's dispatch-browser and dispatch-references jobs can both call dispatch-browser.yaml in
-# one run, and an artifact name is unique within a run, so the references lane names its blobs
-# under a prefix of its own and its merge job passes that prefix here. A blob of the other
-# prefix in its download directory is a download pattern that took another lane's rows, which
-# fails rather than merging them into this lane's report.
-root=$(fixture references-prefix)
-leg "$root" shard-1 1 references-first dispatch-references-blob-
-leg "$root" shard-1 2 references-second dispatch-references-blob-
-leg "$root" shard-4 1 references-shard-4 dispatch-references-blob-
-run_select "$root" dispatch-references-blob-
+echo "case: the references caller reads its own blobs and refuses the pull-request caller's"
+# ci.yaml's dispatch-browser-pr and dispatch-references jobs both call dispatch-browser.yaml on a
+# pull request that changes what the reference rows test, and an artifact name is unique within a
+# run, so the references lane's blobs are named under its caller's id and its merge job passes
+# that id here. A blob of the pull-request caller in its download directory is a download pattern
+# that took another lane's rows, which fails rather than merging them into this lane's report.
+caller=dispatch-references
+root=$(fixture references-caller)
+leg "$root" shard-1 1 references-first
+leg "$root" shard-1 2 references-second
+leg "$root" shard-4 1 references-shard-4
+run_select "$root"
 check "exits 0" "$(is "$status" 0)"
 check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" references-second)"
 check "and the other leg's" "$(is "$(held "$root" blob-report/report-shard-4.zip)" references-shard-4)"
 check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
 
-root=$(fixture references-prefix-other-lane)
-leg "$root" shard-1 1 references-blob dispatch-references-blob-
-leg "$root" shard-1 1 pull-request-blob
-run_select "$root" dispatch-references-blob-
-check "a blob of the other lanes' prefix fails" "$(is "$status" 1)"
-check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
+root=$(fixture references-caller-pull-request-blob)
+leg "$root" shard-1 1 references-blob
+caller=dispatch-browser-pr leg "$root" shard-1 1 pull-request-blob
+run_select "$root"
+check "a blob of the pull-request caller fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-pr-blob-shard-1-1 is not a leg')"
 check "and the name it must have" "$(contains "$out" 'dispatch-references-blob-<leg>-<attempt>')"
 check "and merges nothing" "$(is "$(grep -rl references-blob "$root/out" | wc -l)" 0)"
+caller=dispatch-browser
 
 echo "case: a call that names no directories"
 set +e
@@ -301,6 +327,17 @@ out=$("$select_script" 2>&1)
 status=$?
 set -e
 check "fails" "$(is "$status" 1)"
-check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <prefix>')"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <job>')"
+
+echo "case: a call that names the directories and no caller"
+root=$(fixture no-caller)
+leg "$root" shard-1 1 lone
+set +e
+out=$("$select_script" "$root/down" "$root/out" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <job>')"
+check "and merges nothing" "$(is "$(find "$root/out" -type f 2>/dev/null | wc -l)" 0)"
 
 summary "dispatch-browser-latest-blobs.sh"

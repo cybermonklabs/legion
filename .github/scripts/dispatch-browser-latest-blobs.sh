@@ -19,15 +19,22 @@
 # attempt of a leg wins, and a leg the re-run did not run keeps the artifact of the attempt that
 # ran it, since a failed-only re-run uploads nothing for the legs that were green.
 #
-# It takes the directory `actions/download-artifact` filled, the directory to write and the
-# artifact prefix of the lane whose blobs these are:
-#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>
+# It takes the directory `actions/download-artifact` filled, the directory to write, and the id
+# of the job that calls the workflow, the merge job's `${{ inputs.job }}`:
+#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>
+# Every artifact name of the workflow starts with that id, so the blob artifacts of ci.yaml's
+# callers that share a run are told apart by it: a pull request labelled full-ci runs
+# dispatch-browser beside dispatch-browser-pr, and one that changes what the reference rows test
+# runs dispatch-references beside dispatch-browser-pr (`dispatch-browser-blob-shard-1-1`,
+# `dispatch-browser-pr-blob-shard-1-1` and `dispatch-references-blob-shard-1-1`); the download
+# step's pattern already takes only this caller's.
+#
 # That directory comes in one of two layouts, and which one is the run's, not this job's: it is
 # how many artifacts the download's pattern matches that decides it, and a run's artifact list
 # holds every attempt's artifacts.
 #
 # Several artifacts matched: each entry of <download-dir> must be a directory named
-# `<prefix><leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
+# `<job>-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
 # everything between the prefix and it (`shard-1`, `alone-webkit-alone`). A name that does not
 # read is a failure, not a file passed over: a blob silently dropped is a merged report short of
 # a leg's rows, which reads as a shorter suite rather than as an error.
@@ -42,16 +49,8 @@
 # either of those at the top is this layout, and any other entry beside them is a failure. One
 # artifact is one leg at one attempt, so there is nothing to choose and it is taken whole; its
 # name, which holds the attempt, is not on disk, so the line this prints names the files it took.
-# This layout reads no prefix: the merge job's download pattern is its own lane's
-# (`<prefix>*`), so the one artifact it matched is that lane's.
-#
-# The prefix is an argument because two lanes can run in one workflow run: ci.yaml's
-# dispatch-browser job and its dispatch-references job both call dispatch-browser.yaml on a pull
-# request that changes what the reference rows test, and an artifact name is unique within a
-# run. So the `pull-request` and `full` lanes name their blobs `dispatch-browser-blob-` and the
-# `references` lane names its blobs `dispatch-references-blob-`, and the merge job passes the
-# prefix of its own lane. A directory under any other prefix is refused like any other name
-# that does not read.
+# This layout reads no prefix: the merge job's download pattern is its own caller's
+# (`<job>-blob-*`), so the one artifact it matched is that caller's.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
 # and no other's. Where several artifacts matched it prints one line per leg saying which attempt
@@ -62,22 +61,23 @@
 # and says so. The merge step after it already fails when there is nothing to merge, and the
 # merge job's reading one names the legs that owed a blob.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>
+# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Take the newest attempt of each
 # leg's blob report", and its tests in ci.yaml's test job, at "Test the browser lane's blob
 # attempt selection".
 set -euo pipefail
 shopt -s inherit_errexit
 
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 3 ] || [ -z "$3" ]; then
   echo "::error::dispatch-browser-latest-blobs.sh takes the download directory, the directory" \
-    "to write and the lane's artifact prefix, and was given $# argument(s):" \
-    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <prefix>"
+    "to write and the id of the job that calls dispatch-browser.yaml, and was given $#" \
+    "argument(s):" \
+    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>"
   exit 1
 fi
 download_dir=$1
 out_dir=$2
-prefix=$3
+prefix=$3-blob-
 
 mkdir -p "$out_dir/blob-report" "$out_dir/rows"
 

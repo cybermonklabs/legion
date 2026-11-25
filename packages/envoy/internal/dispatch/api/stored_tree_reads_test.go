@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
+
+// unshownTexts counts the texts unshownText has made, so each one differs from every text this
+// process read before it.
+var unshownTexts atomic.Int64
+
+// unshownText is text with this process's next number on it, which makes it a text no reader of
+// this process has been shown: the state a restart leaves every text in. The process's display
+// cache is keyed by the text itself (pmdoc.TextSum and the mode) and keeps every tree it is
+// handed for the process's life, so a test that read a fixed text would find, when it runs again
+// in the same process (go test -count), the tree its first run left there: the read would build
+// nothing, read no stored tree and store none, whatever the test counts.
+func unshownText(text string) string {
+	return text + " (" + strconv.FormatInt(unshownTexts.Add(1), 10) + ")"
+}
 
 // storedTreeOf is the table's display tree of text, in the mode and at the version a read serves,
 // and whether the table holds one at all. It reads no markdown of its own, so a test can ask
@@ -81,11 +96,11 @@ func commentingIssue(t *testing.T, handler http.Handler, project, body string) s
 // The restart is the cache's state for this text and not the process's age: the cache is keyed by
 // the text itself (its SHA-256 and the mode), so a text no reader of this process has been shown
 // stands in exactly the state a restart leaves every text in. The body below is written by this
-// test alone, and the write that stored its tree read it through pmdoc.DisplayTreeToStore, which
-// fills no cache.
+// test alone and made unshown (unshownText), and the write that stored its tree read it through
+// pmdoc.DisplayTreeToStore, which fills no cache.
 func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	const commentBody = "The **restart** read's own body: stored once, read back as bytes."
+	commentBody := unshownText("The **restart** read's own body: stored once, read back as bytes.")
 	key := commentingIssue(t, handler, "RSTRT", commentBody)
 	if _, held := storedTreeOf(t, database, commentBody); !held {
 		t.Fatalf("the write stored no display tree of %q, so the read has nothing to copy", commentBody)
@@ -105,7 +120,7 @@ func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 // every text on the server is until the backfill reaches it.
 func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	const commentBody = "A body *no* row holds a tree of yet, read the long way."
+	commentBody := unshownText("A body *no* row holds a tree of yet, read the long way.")
 	key := commentingIssue(t, handler, "UNSTR", commentBody)
 	if _, err := database.Pool.Exec(context.Background(), `delete from text_trees`); err != nil {
 		t.Fatalf("drop the stored trees: %v", err)
@@ -141,7 +156,7 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 // row it would not take (texttrees.Read keys by pmdoc.DisplayTreeVersionNow).
 func TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	const commentBody = "A body whose stored tree another **parser** version read."
+	commentBody := unshownText("A body whose stored tree another **parser** version read.")
 	key := commentingIssue(t, handler, "OLDVR", commentBody)
 	if _, held := storedTreeOf(t, database, commentBody); !held {
 		t.Fatalf("the write stored no display tree of %q", commentBody)
@@ -181,6 +196,7 @@ func countedTreesRead(t *testing.T, handler http.Handler, target string) *httpte
 // it answers, and stores nothing when the table held every one of them: the cost of the trees on
 // a cold list is one round trip, not one per comment and not one markdown parse per comment.
 func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -194,11 +210,11 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 		settle: time.Hour,
 	})
 	bodies := []string{
-		"The **first** of several bodies this list answers.",
-		"The *second*, with a `code span` in it.",
-		"The third, which [links](https://example.test) somewhere.",
-		"The fourth, whose body is plain words.",
-		"The fifth and last, ending the page.",
+		unshownText("The **first** of several bodies this list answers."),
+		unshownText("The *second*, with a `code span` in it."),
+		unshownText("The third, which [links](https://example.test) somewhere."),
+		unshownText("The fourth, whose body is plain words."),
+		unshownText("The fifth and last, ending the page."),
 	}
 	issue := createInteractionIssue(t, handler, "ONEQ", "One query for the whole page", "A spec")
 	for _, body := range bodies {
@@ -237,6 +253,7 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 // always did. Outside the transaction the same store writes, which is what makes the skip the
 // held connection's doing and not the text's.
 func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	served := directServer(deps)
 	const body = "A body shaped inside a **read-only** transaction."
@@ -272,10 +289,8 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 // first read leaves its body's tree in this process's display cache, which stands in front of
 // the table for every later read of that text.
 func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
-	const (
-		storedBody   = "The **deploy** is held: send status, please."
-		unstoredBody = "The *rollback* is rehearsed: carry on, all of you."
-	)
+	storedBody := unshownText("The **deploy** is held: send status, please.")
+	unstoredBody := unshownText("The *rollback* is rehearsed: carry on, all of you.")
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	send := func(body string) string {
@@ -324,8 +339,9 @@ func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
 // no write stores that mode: the first read of a version is where its tree reaches the table,
 // and the latest mode's row of the same text is a row of its own.
 func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	issue := createInteractionIssue(t, handler, "VRTR", "A version's own tree", "# Head\n\nIts *own* text.")
+	issue := createInteractionIssue(t, handler, "VRTR", "A version's own tree", unshownText("# Head\n\nIts *own* text."))
 	target := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/versions/1"
 
 	first := treesRequest(t, handler, target, true)
@@ -354,6 +370,7 @@ func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
 // the reads answer both trees under the header and write no text_trees row, where the request's
 // reader would have asked the table for each and stored one row for every distinct cut.
 func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CUTS", "A cut stores no tree", "A spec")
 	question := strings.Repeat("Should the *cut* be stored? ", 12)

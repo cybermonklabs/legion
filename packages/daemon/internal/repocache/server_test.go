@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -737,22 +738,37 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 // A fetch that fails is logged, and the cache stays ready on its last good state: the head it had.
 func TestAFailedFetchKeepsTheCacheReady(t *testing.T) {
 	remote := newRemote(t)
-	opts := testOptions(t, newTestRunner(t, remote))
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
 	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
+	c.ready(t)
+	// Each tick's fetch that succeeds publishes its own lastFetchAt, so the last good state is
+	// read while the next tick's fetch is held: the refresh before it has published, and none
+	// publishes again until the release, which comes once the remote is gone. Read while the ticks
+	// ran, that state was overtaken whenever a fetch landed between the read and the removal.
+	started, release := run.hold()
+	testwait.Receive(t, "the next tick's fetch", started)
 	before := c.ready(t)
 	if err := os.RemoveAll(remote); err != nil {
 		t.Fatal(err)
 	}
+	release()
 
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "fetch failed; serving the clone as it was: ") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no failed fetch was logged: %q", c.log.all())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, testTimeout), testwait.Poll, func() bool {
+		return logged(c.log.all(), "fetch failed; serving the clone as it was: ")
+	}) {
+		t.Fatalf("no failed fetch was logged: %q", c.log.all())
 	}
-	if status, health := c.health(t); status != http.StatusOK || !health.Ready || health.Head != before.Head || health.LastFetchAt != before.LastFetchAt {
+	// Serve logs the failure and only then takes its next tick, so the health is read with that
+	// tick's fetch held: whatever Serve does after the failure it logged, a publish among them,
+	// has happened by then, and no fetch publishes until the release. The fetch holds the clone's
+	// write lock, which /tar waits on, so it is released before /tar is asked.
+	started, release = run.hold()
+	testwait.Receive(t, "the fetch of the tick after the failed one", started)
+	status, health := c.health(t)
+	release()
+	if status != http.StatusOK || !health.Ready || health.Head != before.Head || health.LastFetchAt != before.LastFetchAt {
 		t.Fatalf("/healthz after a failed fetch answers %d %+v, want ready on %+v", status, health, before)
 	}
 	if status, _ := c.getTar(t); status != http.StatusOK {
@@ -984,7 +1000,7 @@ func TestAnIssuePodsFetchFillsItsFeedFromTheCache(t *testing.T) {
 	var logged []string
 	report, err := workspace.Fetch(context.Background(), run, workspace.FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { logged = append(logged, line) }, Clock: workspace.WallClock{}, CacheURL: c.url, CacheToken: testCacheToken,
+		Log: func(line string) { logged = append(logged, line) }, Clock: clock.Real(), CacheURL: c.url, CacheToken: testCacheToken,
 	})
 	if err != nil {
 		t.Fatalf("Fetch from the cache: %v", err)
@@ -1073,7 +1089,7 @@ func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	fetch := func(cache *running, bearer string) (workspace.FetchReport, string, error) {
 		request := workspace.FetchRequest{
 			Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-			Log: func(string) {}, Clock: workspace.WallClock{}, CacheURL: cache.url, CacheToken: bearer,
+			Log: func(string) {}, Clock: clock.Real(), CacheURL: cache.url, CacheToken: bearer,
 		}
 		report, err := workspace.Fetch(context.Background(), run, request)
 		return report, request.Feed, err
@@ -1239,19 +1255,54 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 		return workspace.Result{ExitCode: 128, Stderr: "fatal: killed\n"}, nil
 	})
 	advance(t, remote, "moved")
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "removed the partial pack tmp_pack_Ab12Cd, which a killed git left") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the partial pack's removal was never logged: %q", c.log.all())
+	// removePartialPacks removes the partial files one after another, in os.ReadDir's name order
+	// (.tmp-123-pack-0a1b.pack, tmp_pack_Ab12Cd, tmp_rev_Ef34Gh), and logs each removal once it is
+	// done, so one file's line says nothing of the files after it: on #4457's CI run the stat read
+	// tmp_rev_Ef34Gh in the moment after tmp_pack_Ab12Cd's line. The wait is for what the test
+	// checks, every partial file gone and its removal logged. A file gone is not enough alone: the
+	// next tick's fetch removes every tmp_ file the repack left (workspace.RemoveStaleFeedLocks),
+	// logging it another way. The wait's one bound is the test binary's deadline less testTimeout,
+	// the time start's cleanup gives Serve to end: a loaded machine is slow, not wrong, and a file
+	// the removal leaves fails by name below.
+	partials := append([]string{partial}, others...)
+	removal := func(path string) string {
+		return "removed the partial pack " + filepath.Base(path) + ", which a killed git left"
+	}
+	settled := testwait.Holds(testwait.Bounded(t, 1<<60, testTimeout), testwait.Poll, func() bool {
+		lines := c.log.all()
+		for _, path := range partials {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) || !logged(lines, removal(path)) {
+				return false
+			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		return true
+	})
+	// A removal line is no proof by itself that the file went: the next tick's fetch removes every
+	// tmp_ file left in objects/pack before it transfers anything (workspace.RemoveStaleFeedLocks),
+	// so a file the repack logged and left is gone by the time the wait above holds. The log is
+	// therefore read with the next tick's fetch held at its transfer, after its sweep: a sweep
+	// that found one of the repack's files has named it by then. A wait that did not hold has a
+	// file to name already, and no time left to hold anything.
+	lines := c.log.all()
+	if settled {
+		started, release := run.hold()
+		testwait.Receive(t, "the fetch of the tick after the failed repack", started)
+		lines = c.log.all()
+		release()
 	}
-	if !logged(c.log.all(), "repack failed; tried again in ") {
-		t.Errorf("the failed repack was not logged: %q", c.log.all())
+	// repack logs its failure before it calls removePartialPacks, so the line is there once any
+	// removal's is.
+	if !logged(lines, "repack failed; tried again in ") {
+		t.Errorf("the failed repack was not logged: %q", lines)
 	}
-	for _, path := range append([]string{partial}, others...) {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+	for _, path := range partials {
+		switch _, err := os.Stat(path); {
+		case !errors.Is(err, os.ErrNotExist):
 			t.Errorf("the partial file %s is still there (%v)", filepath.Base(path), err)
+		case !logged(lines, removal(path)):
+			t.Errorf("the partial file %s is gone, but the failed repack logged no removal of it: %q", filepath.Base(path), lines)
+		case logged(lines, "removed the partial pack "+path+", last written "):
+			t.Errorf("the failed repack logged the removal of the partial file %s, but the next fetch found it there and removed it: %q", filepath.Base(path), lines)
 		}
 	}
 	for _, path := range kept {

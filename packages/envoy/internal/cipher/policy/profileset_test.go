@@ -635,7 +635,7 @@ func TestEveryPublishedSetHoldsTheProfiles(t *testing.T) {
 	}
 	holds("a reread", "")
 
-	cur.RefuseValue(t.Context(), "GITHUB_READ", cur.Get().ValueVersion("GITHUB_READ"), policy.TypeGitHubApp)
+	cur.RefuseValue(t.Context(), "GITHUB_READ", cur.Get().ValueVersion("GITHUB_READ"), policy.TypeGitHubApp, nil)
 	if refusal := cur.Get().Refused[policytest.ID(appSourceName)]; refusal.Reason != policy.ReasonValueMalformed {
 		t.Fatalf("RefuseValue(GITHUB_READ) left its source's refusal %+v; want %s", refusal, policy.ReasonValueMalformed)
 	}

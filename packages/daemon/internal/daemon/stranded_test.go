@@ -52,7 +52,7 @@ func putPreviousRun(t *testing.T, cfg config.Config, run previousRun) {
 	}
 	records := record.NewStore()
 	now := time.Now().UTC()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// A slot's index is unique across every project's slots, so this run's take indices above
 		// any the shared database already holds.
 		taken, err := records.Slots(ctx, tx)
@@ -208,6 +208,7 @@ func keysOf(state map[string]json.RawMessage) []string {
 // start is still queued. A slot whose worker has neither is not stranded but repaired, since
 // admission starts that worker's phase again on its first pass (admit's resumeSlottedWorkers).
 func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	implementing, reviewing, tested, lingering, lingeringChild, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
@@ -293,6 +294,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 // phase was over or before it began, and the members of a lingering tree, its architect included —
 // reports nothing: no line, and an empty list in the state.
 func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	root, lingering, lingeringChild := key("1"), key("2"), key("3")
@@ -352,6 +354,7 @@ func awaitStrandedReport(t *testing.T, reported <-chan struct{}) {
 // the same boot-cycle deadlock unfinished relaunches used to cause. Holding `issues` exclusively
 // makes the report's read wait on a real Postgres connection; /healthz must still answer.
 func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.PostgresDSN)
@@ -362,7 +365,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	lock, err := st.Pool().Begin(ctx)
+	lock, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the report lock: %v", err)
 	}
@@ -417,6 +420,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 // worker view says `retired` and the report names it, since only a start of its phase relaunches
 // it and no rule queues one.
 func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	retiredIssue := cfg.Project + "-2"

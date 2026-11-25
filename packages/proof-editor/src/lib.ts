@@ -68,6 +68,7 @@ import { libraryRemarkFrontmatterPlugin } from './lib-remark-frontmatter-plugin'
 import { libraryRemarkDirectivePlugin } from './lib-remark-directive-plugin';
 import { libraryRemarkHtmlBlockPlugin, libraryRemarkHtmlFlowPlugin } from './html-blocks';
 import { libraryRemarkNestedLinksPlugin } from './nested-links';
+import { libraryRemarkKeepAddressesWholePlugin } from './whole-addresses';
 import { liveTypedBlocksRemarkPlugin } from './read-only-directives';
 import { brokenAskInputGuards, keepUnselectedAskBlocks, relaxAskContentCheck } from './ask-content';
 import { remarkProofMarksPlugin } from 'proof-sdk-upstream/src/editor/schema/remark-proof-marks-plugin';
@@ -431,6 +432,10 @@ export async function createProofEditor(
     .config(nord)
     .use(commonmark)
     .use(gfm)
+    // After remark-gfm, whose two readers of bare addresses may start an email or a URL inside a
+    // `dispatch://` address: each such link is text again, so a paste and `setMarkdown` keep the
+    // address whole (./whole-addresses.ts), as the headless engine and Go's reader keep it.
+    .use(libraryRemarkKeepAddressesWholePlugin)
     // Frontmatter and typed directives register before their node schemas claim their AST nodes.
     .use(libraryRemarkFrontmatterPlugin)
     .use(libraryRemarkDirectivePlugin)

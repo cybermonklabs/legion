@@ -56,10 +56,10 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 0 {
 		t.Fatalf("drift after recording = %#v, %v; want none", drifted, err)
 	}
-	if stored, err := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
+	if stored, err := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
 		t.Fatalf("stored = %#v, %v; want %#v", stored, err, excerpt)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-2"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-2"); len(stored) != 0 {
 		t.Fatalf("a mention in no block stored %#v; want none", stored)
 	}
 
@@ -102,7 +102,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
 		t.Fatalf("drift after an older binary's version = %#v, %v; want the document at version 2", drifted, err)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); len(stored) != 0 {
 		t.Fatalf("a mention owed an excerpt serves %#v; want no stored excerpt", stored)
 	}
 	if marked, err := MarkStaleExcerpts(ctx, database.Pool); err != nil || marked != 0 {

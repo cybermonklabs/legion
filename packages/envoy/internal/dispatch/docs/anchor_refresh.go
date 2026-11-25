@@ -420,12 +420,16 @@ type anchorArtifactPlace struct{ name, projectKey, slug string }
 
 // loadAnchorRefreshedComments reads each comment of ids with its mentions and deliveries, by id,
 // and the place of the artifact each anchored comment's anchor is on, by comment id, for the
-// comments whose anchor names an artifact that exists. Every id must name a comment.
+// comments whose anchor names an artifact that exists. Every id must name a comment. A deleted
+// comment carries its delete mark (model.DeletedPostMark), as every other read of it does: the
+// event this builds is stored as built, and a reader that takes the stored payload unmasked
+// would otherwise read a comment with an empty body and no mark as one that stands.
 func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (map[string]model.Comment, map[string]anchorArtifactPlace, error) {
 	comments := make(map[string]model.Comment, len(ids))
 	places := make(map[string]anchorArtifactPlace, len(ids))
 	rows, err := tx.Query(ctx, `
 		select c.id::text, c.issue_key, c.artifact_id::text, c.author, c.body, c.anchor, c.reply_to::text, c.ask_id::text, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at,
+			c.deleted_at, c.deleted_by,
 			aa.name, coalesce(aa.project_key, ''), aa.slug
 		from comments c
 		left join artifacts aa on aa.id = `+store.CastableUUID(`c.anchor->>'artifact_id'`)+`
@@ -437,18 +441,21 @@ func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (
 	defer rows.Close()
 	for rows.Next() {
 		var comment model.Comment
-		var author, anchor, resolvedBy, suggestion []byte
-		var resolvedAt, editedAt *time.Time
+		var author, anchor, resolvedBy, suggestion, deletedBy []byte
+		var resolvedAt, editedAt, deletedAt *time.Time
 		var anchorName, anchorSlug *string
 		var anchorProject string
 		if err := rows.Scan(
 			&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt,
+			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &deletedAt, &deletedBy,
 			&anchorName, &anchorProject, &anchorSlug,
 		); err != nil {
 			return nil, nil, fmt.Errorf("load refreshed comments: %w", err)
 		}
 		id := comment.ID
+		if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return nil, nil, fmt.Errorf("refreshed comment %q: %w", id, err)
+		}
 		if err := json.Unmarshal(author, &comment.Author); err != nil {
 			return nil, nil, fmt.Errorf("decode refreshed comment %q author: %w", id, err)
 		}

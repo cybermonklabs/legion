@@ -79,6 +79,7 @@ func shareLivePod(claimName, server, exportPath string) config.PodConfig {
 // server standing in for the kind cluster; the launch passes the spawn-spec checks. Every step is
 // the one the driver takes before it reaches the cluster.
 func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })

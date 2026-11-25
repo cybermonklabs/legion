@@ -89,6 +89,7 @@ func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
 // out the caller's deadline and returns ctx's error. These are the three answers the send route
 // reads a session's connection from: connected, stopped and connected.
 func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
+	t.Parallel()
 	client, responder := requestCoreClient(t)
 	heard := make(chan *nats.Msg, 1)
 	if _, err := responder.Subscribe(DeliverSubject("ses_answers"), func(msg *nats.Msg) {
@@ -182,6 +183,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 }
 
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pattern, subject string
 		want             bool
@@ -210,6 +212,7 @@ func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 }
 
 func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
+	t.Parallel()
 	for subject, refused := range map[string]bool{
 		"notifications.dispatch.issue.KEY-1.>": false,
 		"notifications.*.ses_a":                false,
@@ -234,6 +237,7 @@ func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
 // side by side. Only a literal lane of the family pairs: a wildcard, a bare prefix, an issue
 // notice and a longer subject name no role.
 func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
+	t.Parallel()
 	for topic, want := range map[string]string{
 		"notifications.legion.ACME.controller":      "legion-ACME-controller",
 		"notifications.legion.omp.controller":       "legion-omp-controller",
@@ -267,6 +271,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // by both on the next test run and neither can drift from a hand copy. Each case is a session id,
 // a topic, the roles that session holds and the answer.
 func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

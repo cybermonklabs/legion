@@ -1,7 +1,7 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -33,9 +33,7 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep", "sh", "perl");
-// Only the unreadable-environment case needs an interpreter.
-const withoutPython = skipWithout("python3");
+const host = hostGate({ programs: ["bash", "sleep", "sh", "perl"] });
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -65,7 +63,7 @@ const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   mkdirSync(work);
   copyFileSync(tool("bash"), join(work, "legion"));
   mkdirSync(claudeDir);
@@ -112,6 +110,10 @@ scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
 started=()
 # The shell's own notice of each job the trap stops goes nowhere: it is no output of a row.
 trap '{ for p in \${started[@]+"\${started[@]}"}; do stop_tree "$p"; done; } 2>/dev/null' EXIT
+# args_laid_out PID holds once PID's command line reads: the kernel names an exec's program
+# (/proc/<pid>/exe) before it lays out that program's arguments, and /proc/<pid>/cmdline reads
+# nothing until then (environ_laid_out, lib/process-tree.sh, tells why).
+args_laid_out() { local -a words; process_args "$1" words; }
 spawn() {
   "$@" </dev/null >/dev/null 2>&1 &
   pid=$!
@@ -134,8 +136,9 @@ await_child() {
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
     { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
 }
-# await_below EXE sets below to the process anywhere below pid that runs EXE once one does, read
-# through every process's children and the kernel's record of what each runs, never a name.
+# await_below EXE sets below to the process anywhere below pid that runs EXE, once one does and its
+# command line, which the rows read, is laid out (args_laid_out); read through every process's
+# children and the kernel's record of what each runs, never a name.
 await_below() {
   local want i p queue
   want=$(realpath -e -- "$1")
@@ -144,7 +147,7 @@ await_below() {
     queue=("$pid")
     while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
       for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
-        if [ "$(readlink "/proc/$p/exe" 2>/dev/null || :)" = "$want" ]; then below=$p; else queue+=("$p"); fi
+        if [ "$(readlink "/proc/$p/exe" 2>/dev/null || :)" = "$want" ] && args_laid_out "$p"; then below=$p; else queue+=("$p"); fi
       done
       queue=("\${queue[@]:1}")
     done
@@ -167,7 +170,7 @@ await_below() {
 
 const slow = 60_000;
 
-describe.skipIf(skip)("bridged", () => {
+host.describe("bridged", () => {
   test(
     "accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument",
     () => {
@@ -220,7 +223,7 @@ if bridged "$child"; then echo "other claude: accepted"; else echo "other claude
   );
 });
 
-describe.skipIf(skip)("claude_pid", () => {
+host.describe("claude_pid", () => {
   // A pane stand-in: bash for the pane's own `sh -c`, the run's legion running pane-shim for its
   // `legion worker-shim`, and the run's legion running claude-bridge, whose one child is the run's
   // claude.
@@ -302,7 +305,7 @@ esac`);
   );
 });
 
-describe.skipIf(skip)("endpoint_mismatch", () => {
+host.describe("endpoint_mismatch", () => {
   const rig = [
     "DISPATCH_URL=http://127.0.0.1:1",
     "DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token",
@@ -345,7 +348,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test.skipIf(withoutPython)(
+  test(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
@@ -355,6 +358,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
       // environment and passed as data, not the first python3 on PATH: under `env -i` a version
       // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      requireHostTools("python3");
       const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
       const python = resolved.stdout.toString().trim();
       if (resolved.exitCode !== 0 || !isAbsolute(python)) {

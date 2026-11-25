@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -16,7 +17,8 @@ import (
 // nothing else: the ask that the implementer, or in merging the merger, merge the base forward and
 // push, the hold that tells the worker of the phase the issue stays in to stop writing the
 // workspace while it does, and, once the merge lands, the landed to that worker and the review to
-// the reviewer of an issue past its review (payload.Message). It stops nothing it reaches.
+// the reviewer of an issue whose task's reviewer step already ran (payload.Message,
+// composed from the pull request as this attempt reads it). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
@@ -50,7 +52,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var issue *record.Issue
 	var pr *record.PullRequest
 	var left string
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Role, payload.Step, payload.Head)
 		return err
@@ -66,7 +68,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		return nil
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
-		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, pr.Repo),
+		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered"})
