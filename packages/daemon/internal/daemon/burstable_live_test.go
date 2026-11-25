@@ -101,9 +101,10 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 }
 
 // launchBurstableLiveRoot runs the cluster check, builds the Agent Sandbox runtime from cfg
-// (burstableLiveRuntime) on a worker stream at cfg's bind, launches the root architect of an issue
-// of cfg's project through the runtime's Spawn, and returns the issue pod as the API server holds
-// it once the launch returned.
+// (burstableLiveRuntime) on a worker stream at cfg's bind, creates the project's providers Secret
+// (burstableLiveProvidersSecret), launches the root architect of an issue of cfg's project through
+// the runtime's Spawn, and returns the issue pod as the API server holds it once the launch
+// returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
 	t.Helper()
 	k := *cfg.Runtime.Kubernetes
@@ -142,6 +143,11 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 	if err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
+	clients, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	burstableLiveProvidersSecret(ctx, t, clients, k, string(project))
 	prompt := filepath.Join(t.TempDir(), "role.md")
 	if err := os.WriteFile(prompt, []byte("You are the architect.\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -149,10 +155,6 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 	loc, err := rt.Spawn(ctx, burstableLiveSpec(project, issue, token, bootToken, prompt))
 	if err != nil {
 		t.Fatalf("Spawn %s: %v", token, err)
-	}
-	clients, err := kubernetes.NewForConfig(rc)
-	if err != nil {
-		t.Fatal(err)
 	}
 	pods, err := clients.CoreV1().Pods(k.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -165,6 +167,30 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 	}
 	t.Fatalf("no pod in %s has the launched uid %s", k.Namespace, loc.Sandbox.PodUID)
 	return nil
+}
+
+// burstableLiveProvidersSecret creates the project's providers Secret (sandbox.ProvidersSecretName)
+// in the runtime's namespace, holding the session store's key (session_dsn_secret) with a
+// placeholder URL, and deletes it when the test ends. The proof's configuration names a postgres
+// session store, which the loader requires of an issue pod (an omitted store or `pvc` is refused),
+// so the issue pod mounts that Secret, and a deployment creates it outside the daemon: with no
+// Secret the kubelet never sets the pod's volumes up and the launch waits out its bound. The sleep
+// stub reads no session store, so the URL is never dialled.
+func burstableLiveProvidersSecret(ctx context.Context, t *testing.T, clients kubernetes.Interface, k config.Kubernetes, project string) {
+	t.Helper()
+	name := sandbox.ProvidersSecretName(project)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: k.Namespace},
+		StringData: map[string]string{k.SessionStore.DSNSecret: "postgres://legion:legion@127.0.0.1:1/sessions"},
+	}
+	if _, err := clients.CoreV1().Secrets(k.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create the providers Secret %s/%s: %v", k.Namespace, name, err)
+	}
+	t.Cleanup(func() {
+		if err := clients.CoreV1().Secrets(k.Namespace).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
+			t.Errorf("delete the providers Secret %s/%s: %v", k.Namespace, name, err)
+		}
+	})
 }
 
 func liveContainer(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
