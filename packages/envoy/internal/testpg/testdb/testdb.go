@@ -111,17 +111,20 @@ func otherPairs(rawQuery string, names ...string) []string {
 // t's deadline, the test binary's own (go test's -timeout), less testwait.Margin, rounded down and
 // at least 1, in place of any connect_timeout the URL names. pgx bounds the whole of a new
 // connection (the dial, the authentication and the server's startup answer) by connect_timeout,
-// through pgx.Connect and every pool; a URL that names none gets two minutes. On a loaded machine
-// Postgres can take longer than that to answer a new connection, and a test then failed on its
-// connect, whatever it checked (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused
-// failed after 120.68 s). With the binary's deadline less the margin as the bound, a slow server
-// only slows a test, and one that never answers fails it on pgx's own error with the margin left
-// for the failure and the test's cleanups, as a testwait wait gives up, before go test's alarm
-// would end the binary with neither. A shorter connect_timeout in the URL would make the test
-// depend on load again, so it is replaced. Where t names no deadline (-timeout 0, or a testing.TB
-// with no Deadline method) it is the longest connect_timeout pgx holds. Every other pair of the
-// query is kept byte for byte (otherPairs), as databaseURL keeps them, so an options pair still
-// connects. A failure prints only what url.Parse wraps, since the URL carries a credential.
+// through pgx.Connect and every pool. A URL that names none has no bound through pgx.Connect,
+// which bounds a connect only by the connect_timeout it is given (pgconn's connectPreferred), and
+// two minutes in a pgxpool pool, which sets them where its config has none (pgxpool's
+// constructor; both at pgx v5.13.0). On a loaded machine Postgres can take longer than two
+// minutes to answer a new connection, and a test then failed on its connect, whatever it checked
+// (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused failed after 182.44 s). With the
+// binary's deadline less the margin as the bound, a slow server only slows a test, and one that
+// never answers fails it on pgx's own error with the margin left for the failure and the test's
+// cleanups, as a testwait wait gives up, before go test's alarm would end the binary with neither.
+// A shorter connect_timeout in the URL would make the test depend on load again, so it is
+// replaced. Where t names no deadline (-timeout 0, or a testing.TB with no Deadline method) it is
+// the longest connect_timeout pgx holds. Every other pair of the query is kept byte for byte
+// (otherPairs), as databaseURL keeps them, so an options pair still connects. A failure prints
+// only what url.Parse wraps, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)

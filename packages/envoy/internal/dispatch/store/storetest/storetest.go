@@ -95,14 +95,15 @@ func migrateWithThisTree(databaseURL string) error {
 // bound of this package's (shared.server), so no connect inherits the bound of the test that opened
 // the pool. Each connect string this package hands out instead takes, when it is made, the seconds
 // left until the test binary's deadline less testwait's margin (testdb.WithConnectDeadline), not
-// pgx's two minutes: a clone's store, Empty's URL, and the URL each template's migrate is given,
-// made by the test that asks for the template when it asks (OpenFrom). The admin pool's connections
-// take that bound as each is made (openAdmin). A pool opened from such a string measures its bound
-// from when the string was made: a connection it makes s seconds later can end s seconds past the
-// binary's deadline less the margin, which a migrate, made and run at once, and a test's own store
-// keep within the margin unless the test runs on for longer than it. The admin URL is read before
-// the Once, so a URL that cannot be read fails each test that asks, and never leaves the Once done
-// with no admin pool for a later test to call.
+// pgx's default (two minutes in a pool, no bound through pgx.Connect): a clone's store, Empty's
+// URL, and the URL each template's migrate is given, made by the test that asks for the template
+// when it asks (OpenFrom). The admin pool's connections take that bound as each is made
+// (openAdmin). A pool opened from such a string measures its bound from when the string was made:
+// a connection it makes s seconds later can end s seconds past the binary's deadline less the
+// margin, which a migrate, made and run at once, and a test's own store keep within the margin
+// unless the test runs on for longer than it. The admin URL is read before the Once, so a URL that
+// cannot be read fails each test that asks, and never leaves the Once done with no admin pool for
+// a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {

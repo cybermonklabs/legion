@@ -900,8 +900,9 @@ func TestLoopSeedWriteResumes(t *testing.T) {
 
 // loopTestPG is the Postgres a test that needs one writes to: $LEGION_TEST_PG_DSN, the pod's own
 // test server, with connect_timeout set to the test binary's deadline (testdb.WithConnectDeadline),
-// so every connect to it and to the databases made from it waits that long, not pgx's two minutes.
-// A test skips without it, since this package's checks run where there is none.
+// so every connect to it and to the databases made from it waits that long, not pgx's default
+// (two minutes in a pool, no bound through pgx.Connect). A test skips without it, since this
+// package's checks run where there is none.
 func loopTestPG(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
