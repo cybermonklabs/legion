@@ -374,7 +374,7 @@ func TestALostRoleClaimIsNotPutBackByARecordTheWatcherStillHeld(t *testing.T) {
 	roleCopy.Remove(role)
 	guard.Unlock()
 	release()
-	waitFor(t, 10*time.Second, "control: the record the watcher held to put the removed claim back in the copy", func() bool {
+	testwait.Eventually(t, "control: the record the watcher held to put the removed claim back in the copy", func() bool {
 		return inCopy() == holder
 	})
 	if now := rig.deps.registry.RoleClaimRepair().Completed; now != completed {
@@ -388,9 +388,12 @@ func TestALostRoleClaimIsNotPutBackByARecordTheWatcherStillHeld(t *testing.T) {
 	readsBefore := watcher.StreamReads()
 	var returned atomic.Bool
 	began := make(chan bool, 1)
+	// Eventually's bound, a minute or what the binary's deadline leaves less a second, for a read
+	// that must begin; the goroutine answers rather than fails, and the row reads the answer.
+	bound := testwait.Bounded(t, time.Minute, time.Second)
 	go func() {
 		// A read reads the bucket's stream before it waits for the applying (kvwatch's watch).
-		testwait.Holds(10*time.Second, testwait.Poll, func() bool { return watcher.StreamReads() > readsBefore || returned.Load() })
+		testwait.Holds(bound, testwait.Poll, func() bool { return watcher.StreamReads() > readsBefore || returned.Load() })
 		began <- watcher.StreamReads() > readsBefore
 		release()
 	}()
