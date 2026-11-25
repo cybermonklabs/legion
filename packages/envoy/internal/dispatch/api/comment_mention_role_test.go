@@ -27,6 +27,7 @@ import (
 // passing the event that the role-topic record exists to stop - so the rule reads which key the
 // record holds, and the case row is not passing by accident.
 func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
+	t.Parallel()
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	ctx := context.Background()
 	listener, _ := newMentionListener(t)
@@ -85,6 +86,7 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 // while A's two wait, since an earlier event of A holds no event of B (heldLane). Once A's earlier
 // event is sent, A's two go in the order they were accepted.
 func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	var sent []string
@@ -121,12 +123,13 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	}
 
 	enqueue("a-first", "A-1")
-	waitUntil(t, 5*time.Second, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
+	waitUntil(t, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
 	enqueue("b-only", "B-1")
 	enqueue("a-second", "A-1")
-	waitUntil(t, 5*time.Second, "B's mention of s1 sent while A's wait", func() bool {
+	waitUntil(t, "B's mention of s1 sent while A's wait", func() bool {
 		return slices.Contains(sentNow(), "b-only")
 	})
+
 	if got := sentNow(); !slices.Equal(got, []string{"b-only"}) {
 		t.Fatalf("sent %v while A's earlier event was owed, want B's alone", got)
 	}
@@ -134,9 +137,10 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	mu.Lock()
 	open = true
 	mu.Unlock()
-	waitUntil(t, 5*time.Second, "A's two sends once its earlier event was sent", func() bool {
+	waitUntil(t, "A's two sends once its earlier event was sent", func() bool {
 		return len(sentNow()) == 3
 	})
+
 	t.Logf("sent in the order %v", sentNow())
 	if got := sentNow(); !slices.Equal(got, []string{"b-only", "a-first", "a-second"}) {
 		t.Fatalf("sent %v, want B's, then A's first and A's second", got)
@@ -151,6 +155,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 // mentions s1. s1 follows no topic family, so it takes the earlier event only when the outbox
 // sends it to s1 as the route on its retry; the mention's send waits until then.
 func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing.T) {
+	t.Parallel()
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	listener, state := newMentionListener(t)
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
@@ -171,7 +176,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	state.landed = view.mentionLanded
 	state.mu.Unlock()
 	runOutboxBeside(t, deps, view)
-	waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
+	waitUntil(t, "the issue's first events published", func() bool {
 		return unpublishedEvents(t, database, issue.Key) == 0
 	})
 
@@ -182,7 +187,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": "the earlier event, by a person",
 	}))
 	earlier := commentEventID(t, database, earlierComment.ID)
-	waitUntil(t, 10*time.Second, "the earlier event's route send backed off", func() bool {
+	waitUntil(t, "the earlier event's route send backed off", func() bool {
 		attempts, _ := eventAttempts(t, database, earlier)
 		return attempts > 0
 	})
@@ -193,13 +198,14 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 		"body": body, "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	comment := commentEventID(t, database, mention.ID)
-	waitUntil(t, 60*time.Second, "every event of the issue published and the mention settled", func() bool {
+	waitUntil(t, "every event of the issue published and the mention settled", func() bool {
 		settled := true
 		for _, attempt := range waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true }) {
 			settled = settled && attempt.State != "pending"
 		}
 		return settled && unpublishedEvents(t, database, issue.Key) == 0
 	})
+
 	taken, own := view.order([]int64{earlier, comment}, map[string]int64{body: comment}, comment)
 	t.Logf("s1 takes %v (want %v), the comment's copies on s1's own channels: %v", taken, []int64{earlier, comment}, own)
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
@@ -217,6 +223,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 // given back - the delivery sweep sends it later, asking the rule again - and the first parks
 // within the capacity. Nothing of A-1 is sent before the first: the order holds.
 func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -266,7 +273,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	<-started
 	second := enqueue("second", "A-1")
 	close(release)
-	waitUntil(t, 5*time.Second, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
+	waitUntil(t, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
 	queued, inflight := queuedAndInFlight(sender)
 	mu.Lock()
 	defer mu.Unlock()
@@ -285,6 +292,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 // The held gauge counts every send that waits on a held lane: the one that waited for an earlier
 // event of its issue and each send of that issue to the same recipient queued behind it.
 func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	sender := newMentionSender(lifetime, time.Hour,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
@@ -304,11 +312,12 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		})
 	}
 	held := heldLane(laneKey{recipient: "session:s1"}, "A-1")
-	waitUntil(t, 5*time.Second, "the three sends on A's held lane, parked", func() bool {
+	waitUntil(t, "the three sends on A's held lane, parked", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return parks.Load() == 1 && len(sender.lanes[held]) == 3
 	})
+
 	count, _ := sender.heldSamples(time.Now())
 	t.Logf("the held gauge reads %d", count)
 	if count != 3 {
@@ -323,6 +332,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 // change. The renewal still answers 200: the request stood as asked. A second unchanged renewal by
 // the same session adds nothing and records nothing.
 func TestAnUnchangedApprovalRenewalThatAddsAFollowerRecordsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Approval followers", "A spec")

@@ -85,8 +85,11 @@ dispatch_events() {
   jq -s -c 'add' <<<"$pages"
 }
 dispatch_status_is() { dispatch_get "issues/$1" | jq -e --arg status "$2" '.status == $status'; }
+# review_cap_posted ISSUE: whether a standing message of ISSUE names review_round_cap=3
+# (lib/review-cap-posted.jq, which passes over a message its author deleted). workflow_lib, this
+# file's own directory, is set below, before any caller runs it.
 review_cap_posted() {
-  dispatch_events "$1" | jq -e 'any(.[]; .type == "message.created" and (.payload.body | contains("review_round_cap=3")))'
+  dispatch_events "$1" | jq -e -f "$workflow_lib/review-cap-posted.jq"
 }
 # session_actor_body SESSION BODY prints the JSON object BODY with SESSION as its actor: the shape a
 # bearer caller must name, or Dispatch refuses the write (ACTOR_KIND).
@@ -233,8 +236,9 @@ claim_pending_phase() {
   claims_list | jq -r --arg issue "$1" --arg role "$2" '[.claims[] | select(.issue == $issue and .role == $role)] | last | .pending.phase // empty'
 }
 # claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, one for each of the agents
-# of an issue whose plan keys no step and whose deployment defines no role, the architect's and
-# the five phase roles', each named for its role: ROLE's in one of the states STATES names
+# of an issue whose plan keys no step, names each role at most once and whose deployment defines
+# no role, the architect's and the five phase roles', each named for its role, and no claim of a
+# numbered agent such as implementer-2: ROLE's in one of the states STATES names
 # (space-separated) and every other in one of OTHERS. That is how a close, which reaches each
 # stored claim of the issue, leaves it, whose production check keeps the role the project's
 # `production_check` names apart from the rest (live at a look, suspended between looks, retired
@@ -332,8 +336,8 @@ architect_registers_gate() {
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
 # answeredAt, and the root keeps the admission slot it took when the daemon started it (.slot is
 # there and admission.active names it), while its architect stays live. The person's review
-# answers the wait (waitingOn.answeredAt), and the answered root
-# waits in the line among the issues whose work came back, oldest first: at planning when an
+# answers the wait (waitingOn.answeredAt), and the answered root waits in the line
+# within its priority, among the issues whose work came back, oldest first: at planning when an
 # approval opened the gate, at admitted with the same architect session given its task when
 # changes were requested. The resume takes no slot, since the root holds one throughout, so it
 # comes on the pass that reads the answer however full the cap is, and the answer reads either as
@@ -511,9 +515,10 @@ pull_request_legion_only_commits() {
   done
 }
 # request_changes_as_reviewer ISSUE ROUND BODY [NOTE] has the reviewer pane post a round's
-# changes-requested review and complete its phase. A review ends when its reviewer completes it —
-# the reviewer's handoff is part of the phase — so the round is driven through the reviewer worker,
-# as the final approval is, rather than posted from the proof's own gh. BODY is the review's text;
+# changes-requested review and complete its phase. The review ends the round whether or not the
+# reviewer has completed, and its completion names the round's handoff record, so the round is
+# driven through the reviewer worker, as the final approval is, rather than posted from the
+# proof's own gh. BODY is the review's text;
 # the reviewer ends it with the Legion footer naming its own session, as its role ends every review,
 # since the daemon sets aside a review-App review whose footer does not name the session recorded on
 # the reviewer's claim (workflow.Engine.DecidesRound). NOTE, when given, is a further step for the
@@ -1039,18 +1044,19 @@ implementer_pull_request() {
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
-# The record keeps each role's phase row: what the role's `handoff_complete` reported at the
-# completion the daemon accepted — for a file-backed phase (planning, implementing, testing,
-# reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
-# session, its id and version, which the daemon read back from Dispatch and held to the claim's
-# session, and the head that record's body names, which the `legion` tool holds to be the commit
-# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
-# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
-# and the merger the commit the workspace stands on — emptied when the role's next phase starts,
-# and, on the implementer's row, the review round (its returns to implementing). The issue moves
+# The record keeps a phases row for each step a role runs, and one for the implementer's retro:
+# what the role's `handoff_complete` reported at the completion the daemon accepted — for a
+# file-backed phase (planning, implementing, testing, reviewing) the Dispatch handoff record the
+# role wrote with `dispatch handoff-write` under its own session, its id and version, which the
+# daemon read back from Dispatch and held to the claim's session, and the head that record's body
+# names, which the `legion` tool holds to be the commit the workspace stands on, pushed to
+# `legion/<issue>@origin`, for the implementer's implementing round and which a planner's, a
+# tester's or a reviewer's record naming none leaves out; for retro and the merger the commit the
+# workspace stands on — emptied when that row's step runs again, and, on the implementer's one row
+# of an issue with no plan rows, the review round (its returns to implementing). The issue moves
 # out of every phase but merging on that phase's completion, and out of merging on the daemon's
 # read of the merged pull request, so a checker reads the row right after the transition it
-# follows, before the role's next phase can empty it. A production check's look is no phase: its
+# follows, before the step's next run can empty it. A production check's look is no phase: its
 # report moves no phase and writes no handoff (a verdict and a summary, no commit, no record), so
 # it is read from the daemon's state's `check`, below, never from this record.
 
@@ -1065,14 +1071,21 @@ role_handoff() {
   db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
     where p.issue = '$issue' and p.role = '$role' and p.handoff_commit <> ''${phases:+ and i.phase in ($phases)}"
 }
-# review_round ISSUE prints the implementer's review round: 0 before its first return. The count is
-# its task's (plan_tasks.rounds) for an issue with plan rows, and its implementer's one phases row's
-# for an issue with none; the implementer has a row for each step it runs and one for the retro, so
-# no read of all its rows names one round.
+# review_round ISSUE prints the issue's review round (its returns to implementing): 0 before its
+# first return. The daemon keeps it where it keeps every count of returns (record.ReturnCounts): on
+# the task the plan runs, for an issue with plan rows at its generation, and on the implementer's
+# one phases row for one with none; the implementer has a row for each step it runs and one for the
+# retro, so no read of all its rows names one round.
 review_round() {
-  db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
-      where t.issue = '$1'),
-    (select rounds from phases where issue = '$1' and role = 'implementer' and step_task = ''), 0)"
+  local planned
+  planned=$(db_value "select exists (select 1 from issue_plans p join issues i on i.key = p.issue and i.generation = p.generation
+    where p.issue = '$1')")
+  if [ "$planned" = t ]; then
+    db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
+      where t.issue = '$1' and t.state = 'running'), 0)"
+  else
+    db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer' and step_task = ''), 0)"
+  fi
 }
 # handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
 # with (the daemon's phase.HandoffFile): plan, implement, test or review.
@@ -1091,12 +1104,21 @@ handoff_word() {
 role_handoff_record() {
   daemon_state | jq -r --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].handoffRecord // empty | "\(.id) \(.version)"'
 }
-# role_handoff_recorded ISSUE ROLE: ROLE's completion of its current file-backed phase has named a
-# Dispatch handoff record (role_handoff_record prints one). A review round ends on the reviewer's
-# decision, whether or not the reviewer has completed (the daemon's roundRejected and
-# roundApproved, workflow/review.go), so a check of the reviewer's record first waits for it with
-# this, bounded (until_true), rather than reading it at the move the decision made.
-role_handoff_recorded() { [ -n "$(role_handoff_record "$1" "$2")" ]; }
+# role_handoff_recorded ISSUE ROLE [BEFORE]: ROLE's completion of its current file-backed phase has
+# named a Dispatch handoff record (role_handoff_record prints one) other than BEFORE, the
+# `<id> <version>` role_handoff_record printed before the round's review was asked for. A review
+# round ends on the reviewer's decision, whether or not the reviewer has completed (the daemon's
+# roundRejected and roundApproved, workflow/review.go), so a check of the reviewer's record first
+# waits for it with this, bounded (until_true), rather than reading it at the move the decision
+# made. The transition that starts a role on a phase empties the record the role named for its
+# previous phase (workflow's clearHandoff, engine.go), so from the move into reviewing until the
+# round's completion the state shows no reviewer record, and a BEFORE read in reviewing is empty;
+# a BEFORE read before that move is the earlier round's record, which the wait does not take.
+role_handoff_recorded() {
+  local now
+  now=$(role_handoff_record "$1" "$2")
+  [ -n "$now" ] && [ "$now" != "${3:-}" ]
+}
 # assert_handoff_record ISSUE ROLE PHASE ROUND: ROLE's completion of that phase round named a
 # Dispatch handoff record, and Dispatch holds that record (GET /api/v1/handoffs/<id>) as ISSUE's
 # handoff of the phase's word at the version the completion reported, written by the session ROLE's

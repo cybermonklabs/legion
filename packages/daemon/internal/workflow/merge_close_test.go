@@ -21,7 +21,7 @@ import (
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
 // production check, under a project whose `production_check` names the tester, in the tester's
 // live session: the child is done on the record and on Dispatch, the architect above it is told
-// child-closed, five of its six claims are closed — the implementer's with the rest — and the
+// child-closed, every claim of it but the tester's is closed — the implementer's with the rest — and the
 // tester's is handed the check's first look, a start with no phase, fenced on the check's
 // look 1, whose task opens with the line a resumed session tells the check by, with no
 // IssueSuspend at the close, since the check's close writes the release and the issue's pod
@@ -326,8 +326,8 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 // A root's merge while a child runs records the merge and waits: the root stays in merging
 // with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
 // is told once, by name, which issue the close waits for. The merged root holds no slot while it
-// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
-// the running child.
+// waits, since merging keeps none (record.KeepsSlot), and the merge takes none from the running
+// child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Merging)
@@ -482,7 +482,7 @@ func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T)
 //
 // A released child that has not started a phase holds it no longer. It stands at admitted
 // beneath a root in merging, a root the daemon has already accepted, so the daemon itself
-// pins the child there until that root closes (record.AcceptedAncestor), and a child the daemon
+// pins the child there while that root stands in merging (record.AcceptedAncestor), and a child the daemon
 // pins is left out of the set the close waits on (record.OpenBeneath). Counting it would
 // deadlock the pair. This is the one recorded departure from the spec of dispatch://INFRA-980,
 // decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
@@ -628,8 +628,10 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 }
 
 // assertWaitNotice checks that the architect was told the close waits exactly once: one pr-merged
-// notice, naming the pull request and waiting, the keys the close is waiting for. The architect's
-// other notices — a child's close or park among them — are not this one's business.
+// notice, naming the pull request and waiting, the keys the close is waiting for, then the
+// sentence on a status the daemon has not taken yet and the rule that ends a child. The
+// architect's other notices — a child's close or its move out of the workflow among them — are not
+// this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
@@ -638,7 +640,8 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
+	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow. LEGION-208 closes once the last of them leaves the workflow.", waiting) +
+		" " + record.StatusNotTakenYet + " " + record.EndChildRule
 	if len(got) != 1 || got[0].Reason != want {
 		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
 	}

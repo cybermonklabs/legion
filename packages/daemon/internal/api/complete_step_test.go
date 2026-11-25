@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -38,12 +39,12 @@ func seedOwnerPlan(t *testing.T, h *harness, key, words string, place record.Tas
 			Type: roles[step.Role].Type, AgentKey: step.Key}
 	}
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps)); err != nil {
 			return err
 		}
 		return records.MoveTask(ctx, tx, key, generation, "a", place, record.TaskRunning)
@@ -289,7 +290,7 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 		at := recorded(t)
 		seedTree(t, at.h, "LEGION-1", "LEGION-2")
 		parent := "LEGION-2"
-		if err := at.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), at.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutIssue(context.Background(), tx, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main",
 				GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: testProject, Title: "LEGION-3", Parent: &parent, Phase: phase.Retro,
 				Generation: 1, Status: "in_progress"})

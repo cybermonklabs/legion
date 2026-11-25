@@ -1,13 +1,13 @@
 // Package rulehost is the one grammar an airlock rules host is written in, with the reason each
 // host outside it is refused. Every reader of a host that can name a reason reads it here: the
-// broker's validation of its rules file (cmd/cipherd's validateRulesFile, which runs at start and
-// in airlock-check) and the local stack's stand-in token authority
+// broker's validation of its profiles file's proxy blocks (policy.ParseProfiles, which runs at
+// start and in `profiles check`) and the local stack's stand-in token authority
 // (config's BROKER_AIRLOCK_TEST_AZURE_AUTHORITY).
 //
-// It serves a host only where proxyrules.HostShapeOK, the Lean-proved shape proxyrules.Validate holds
-// every host to, accepts it: Refusal returns "" only on why's branch for such a host, so the
-// refusals the grammar adds to HostShapeOK only add to it. It lives outside the airlock package so
-// the Lean model of that package is untouched.
+// It serves a host only where proxyrules.HostShapeOK, the Lean-proved shape proxyrules.Validate
+// holds every host to, accepts it: Refusal returns "" only on why's branch for such a host, so the
+// refusals the grammar adds to HostShapeOK only add to it. It lives outside the proxyrules package
+// so the Lean model of that package is untouched.
 package rulehost
 
 import (

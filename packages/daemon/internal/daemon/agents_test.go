@@ -151,6 +151,7 @@ var implementCompletion = api.HandoffCompleteRequest{Summary: "implemented", Com
 // The control takes the key off step 2 (`implementer:a tester reviewer`): step 2 then gets an agent
 // of its own, `…-tester`, in a session of its own, which the same reads must show.
 func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -161,8 +162,8 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAgentsRig(t)
-			if steps := r.walkOneKey(tc.steps, tc.keyed); oneKeyHolds(r, steps, tc.keyed) != nil {
-				t.Fatal(oneKeyHolds(r, steps, tc.keyed))
+			if err := oneKeyHolds(r, r.walkOneKey(tc.steps, tc.keyed), tc.keyed); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -259,6 +260,7 @@ func oneKeyHolds(r *ownerStepsRig, steps [3]stepRecordRead, keyed bool) error {
 // so no task the claim is handed falls at or below one it was handed before. The reviewer's row
 // stays its own. The task then walks to done again in the same two agents.
 func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer:a", "tester:a", "reviewer")
 	r.openGate(phase.Implementing)
@@ -298,13 +300,15 @@ func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
 	}
 }
 
-// phaseRow is what entryRose reads of one phases row: the claim it names and its entry.
+// phaseRowNow is what entryRose reads of one phases row: the claim it names and its entry.
 type phaseRowNow struct {
 	claim string
 	entry int64
 }
 
-// phaseRowsNow is each phases row of the walk's issue, by role, as the store holds it now.
+// phaseRowsNow is the phases rows of the walk's issue, by role, as the store holds them now. It
+// keeps one row of each role, so it reads only walks whose roles each stand at one step, as
+// `implementer:a tester:a reviewer`'s do.
 func (r *ownerStepsRig) phaseRowsNow() map[claim.Role]phaseRowNow {
 	t := r.t
 	t.Helper()
@@ -344,15 +348,16 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // An issue that ran under the release before keeps its claims (R20). The plan `implementer
 // reviewer` reaches reviewing on this release; the daemon stops, and the store is taken back to the
 // schema the release before leaves by the way backs its migrations' headers give, newest first: the
-// agent of a claim's session, the claim of each backstop, the key of a phases row by its step,
-// whose way back writes the key (issue, role) that release writes its phases rows by
-// (docs/kubernetes.md, "Rolling back the release that keys a phases row by its step"), the claim of
-// each resume, whose way back also puts back one open resume per role, and the name of each step's
+// agent of a claim's session, the key of a phases row by its step, whose way back writes the key
+// (issue, role) that release writes its phases rows by (docs/kubernetes.md, "Rolling back the
+// release that keys a phases row by its step"), the claim of each backstop, the claim of each
+// resume, whose way back also puts back one open resume per role, and the name of each step's
 // agent, so its plan rows name no agent, as that release wrote them. This release then boots,
 // migrates the key, the columns and the indexes again, the column naming each step for its role
-// (20261117213545), and the issue reaches done with the claims `…-implementer` and `…-reviewer` of
+// (20261124213820), and the issue reaches done with the claims `…-implementer` and `…-reviewer` of
 // its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer", "reviewer")
 	r.openGate(phase.Implementing)
@@ -360,7 +365,7 @@ func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)
 	r.restartWith(func() {
-		for _, migration := range []string{"_claim_session_agent.up.sql", "_pod_wake_backstop_claim.up.sql", phaseStepKeyMigration,
+		for _, migration := range []string{"_claim_session_agent.up.sql", phaseStepKeyMigration, "_pod_wake_backstop_claim.up.sql",
 			"_pod_resume_claim.up.sql", planStepAgentMigration} {
 			r.exec(strings.ReplaceAll(r.headerTransaction(migration), "<PROJECT>", r.cfg.Project))
 		}
@@ -444,6 +449,7 @@ func (r *stepRecordsRig) holdsClaimsOf(roles ...claim.Role) {
 // step 3 the session of step 2, not of step 1: `…-reviewer` is relaunched with the role
 // implementer, resuming its own session, which the same reads must show.
 func TestARoleTwoTimesInATask(t *testing.T) {
+	t.Parallel()
 	t.Run("one key at steps 1 and 3, through a failed review", func(t *testing.T) {
 		r := newAgentsRig(t)
 		if err := roleTwiceHolds(r, r.walkRoleTwice()); err != nil {
@@ -718,6 +724,7 @@ func (r *stepRecordsRig) runsRecorded(runs []stepRun) []stepRecordRead {
 // step 1, which still names the record step 1's first run wrote, and walks to done again with the
 // claims of its steps and no other.
 func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan(oneKeyPlan...)
 	r.openGate(phase.Implementing)
@@ -726,7 +733,6 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	launched := len(launchSpecsOf(r.rt, implementer.token))
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Testing)
 	r.relaunchedAs(implementer, launched, claim.RoleTester)
-	launched++
 	implementer.takeTask()
 	r.finish(implementer, "test", testCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)

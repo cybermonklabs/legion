@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `dev-airlock-stands` names an installation of its stand-in GitHub App with
+  `--installation <owner>=<installation id>`, in place of its own `--github-owner`, and the
+  broker's guides describe a GitHub App credential as a profile narrowed with `--target`.

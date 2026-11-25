@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The daemon's ActsAs is the owner's step: LEGION-1 stands at step 1 of `implementer:owner
@@ -39,7 +40,7 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 			Title: key, Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
 	}
 	retro := record.TaskPlace{Kind: record.PlaceRetro}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			putPlannedIssue(t, ctx, tx, records, issue("LEGION-1", phase.Implementing), record.TaskPlace{Kind: record.PlaceStep, Position: 1}, now,
 				"implementer:owner", "reviewer"),
@@ -121,7 +122,7 @@ func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *test
 			State: record.PullRequestOpen, HeadSHA: "c0de", Failing: []string{},
 			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Reviewing, Agent: implementer, Why: record.ConflictCheckNotGreen, AskedAt: now}})
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := seed(tx, "LEGION-7", "implementer:owner", "reviewer"); err != nil {
 			return err
 		}
@@ -139,7 +140,7 @@ func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *test
 	acts(t, "LEGION-7", claim.RoleImplementer, true, "while the merge forward asked of it is open")
 	acts(t, "LEGION-8", "", false, "while the merge forward asked of its implementer is open")
 
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := records.PullRequest(ctx, tx, "LEGION-7")
 		if err != nil || pr == nil {
 			return fmt.Errorf("read LEGION-7's pull request: %+v, %w", pr, err)

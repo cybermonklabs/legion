@@ -38,7 +38,7 @@ func seedProberVersion(t *testing.T, pool *store.Pool, records record.Store, v i
 func seedProberVersionAt(t *testing.T, pool *store.Pool, records record.Store, v int, typ, model, prompt string, givenAt time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		version := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: v, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: givenAt}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: v, BlockText: "Probe the widget.", State: record.TaskWaiting}
@@ -65,7 +65,7 @@ func poolPlanRole(pool *store.Pool, records record.Store) func(context.Context, 
 	return func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
 		var defined record.PlanRole
 		var found bool
-		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			defined, found, err = records.PlanRoleOf(ctx, tx, issue, string(role))
 			return err
@@ -344,7 +344,7 @@ func TestARestartedDaemonRelaunchesAPlanRolesAgentWhoseLaunchRanAnotherDefinitio
 			case "after":
 				seedProberVersionAt(t, pool, records, 2, "implementation", "m-b", p2, base.Add(-30*time.Minute))
 			case "":
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 					return records.PutPhase(ctx, tx, record.PhaseRow{Issue: stepStartKey, Role: relaunchProber, Entry: 2,
 						EntryTask: "Probe it again. Issue: LEGION-208. Phase: step.", EntryRaisedAt: time.Now()})
 				}); err != nil {

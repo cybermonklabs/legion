@@ -2,12 +2,17 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_READ_ONLY_TOKEN,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -539,7 +544,6 @@ beforeEach(() => {
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 function environment(
@@ -582,13 +586,13 @@ async function run(
 function nextProcess(sessionId: string): void {
   resetAdviceMemory();
   forgetShownPictures(sessionId);
-  forgetKeyedLayerMemory();
 }
 
 /**
  * The test server behind Dispatch's keyed layer: every answer to a write carries its
- * `Idempotency-Key` back, the first `failing` message posts fail in transport before they reach it,
- * and `/healthz` never answers within its bound, as under the load that stalls a write.
+ * `Idempotency-Key` back, and the first `failing` message posts fail in transport before they
+ * reach it. A `/healthz` read is recorded in `probes` and never answers within any bound, as under
+ * the load that stalls a write.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
@@ -846,9 +850,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
-  // because an argument is missing exits 2: a script reading the code alone tells it from a write
-  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
+  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
+  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1094,99 +1098,34 @@ describe("the dispatch CLI", () => {
     expect(second.stdout).not.toContain("is still in triage");
   });
 
-  // Every `dispatch` command is a process of its own, so what one call saw of Dispatch's keyed
-  // layer reaches the next only through the session's state. A later call's write whose attempt
-  // fails is asked again under its key on that alone, without /healthz, which the load that
-  // stalled the write can keep from answering in time.
-  test("a failed write is asked again under its key when an earlier call of the session saw the keyed layer", async () => {
-    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const first = keyedDispatch(0);
-    expect((await run(message, omp, "", first.fetchImpl)).code).toBe(0);
-    const state = JSON.parse(
-      readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
-    );
-    expect(Object.keys(state.keyedLayer)).toEqual([`http://127.0.0.1:${server.port}`]);
-    nextProcess("ses-1");
-    const stalled = keyedDispatch(1);
-    const second = await run(message, omp, "", stalled.fetchImpl);
-    expect(second.code).toBe(0);
-    expect(stalled.keys).toHaveLength(2);
-    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
-    expect(stalled.probes).toEqual([]);
-  });
-
-  // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
-  // within one. One older than that, one dated ahead of the clock, and anything that is not a
-  // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
-  // than sent twice.
-  test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
-    const origin = `http://127.0.0.1:${server.port}`;
-    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const dir = join(stateDir, "sessions", "ses-1");
-    mkdirSync(dir, { recursive: true });
-    const sighting = (ago: number) => ({ [origin]: new Date(Date.now() - ago).toISOString() });
-    const call = async (keyedLayer: unknown) => {
-      writeFileSync(
-        join(dir, "state.json"),
-        JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer })
-      );
-      nextProcess("ses-1");
-      const stalled = keyedDispatch(1);
-      const { code } = await run(message, omp, "", stalled.fetchImpl);
-      return { code, posts: stalled.keys.length, probes: stalled.probes.length };
-    };
-    expect(await call(sighting(60_000))).toEqual({ code: 0, posts: 2, probes: 0 });
-    for (const keyedLayer of [
-      sighting(KEYED_LAYER_MEMORY_MS + 1_000),
-      sighting(-60_000),
-      { [origin]: "yesterday" },
-      { [origin]: Date.now() },
-      "garbage",
-    ]) {
-      expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
-        code: 1,
-        posts: 1,
-        probes: 1,
-      });
-    }
-  });
-
-  // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
-  // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
-  // again, and the call's save leaves the sighting out of state.json, so the next call trusts
-  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
-  test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
+  // Every `dispatch` command is a process of its own and carries nothing of Dispatch's keyed layer
+  // from an earlier call. Every Dispatch that carries `b1c42d1d7d` runs that layer, so a later
+  // call's write whose attempt fails is asked again under its key with no /healthz read, which the
+  // load that stalled the write can keep from answering in time. The state.json here is one an
+  // earlier release wrote, whose `keyedLayer` remembered a sighting of the layer too old for that
+  // release to trust: it is not read, and the call's save writes no such member back.
+  test("a failed write is asked again under its key with no /healthz read, whatever an earlier call of the session saw", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");
     mkdirSync(join(stateDir, "sessions", "ses-1"), { recursive: true });
-    const keyedLayer = { [origin]: new Date(Date.now() - 60_000).toISOString() };
+    const keyedLayer = { [origin]: new Date(Date.now() - 10 * 60_000).toISOString() };
     writeFileSync(file, JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer }));
     nextProcess("ses-1");
-    let posts = 0;
-    let probes = 0;
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const { pathname } = new URL(request.url);
-      if (pathname === "/healthz") {
-        probes++;
-        throw new DOMException("The operation timed out.", "TimeoutError");
-      }
-      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-        posts++;
-        return Response.json({ code: "INTERNAL", error: "database is down" }, { status: 503 });
-      }
-      return fetch(request);
-    }) as typeof fetch;
+    const stalled = keyedDispatch(1);
+
     const { code } = await run(
       ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
       omp,
       "",
-      fetchImpl
+      stalled.fetchImpl
     );
-    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
-    expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
-  }, 30_000);
+
+    expect(code).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
+    expect(stalled.probes).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf-8"))).not.toHaveProperty("keyedLayer");
+  });
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
@@ -1393,6 +1332,10 @@ describe("the dispatch CLI", () => {
         [
           ["--ref", "dispatch://DSP-4/children", "--events", "5"],
           dropped("--events", "the issue's children"),
+        ],
+        [
+          ["--ref", "dispatch://DSP-4/comments", "--events", "5"],
+          dropped("--events", "the issue's comments"),
         ],
         [["--ref", `dispatch://DSP-4/ask/${id}`, "--events", "5"], dropped("--events", "an ask")],
         [
@@ -1648,6 +1591,47 @@ describe("the dispatch CLI", () => {
     });
   });
 
+  // A replace with no with was sent and read as an empty one, which deleted the text its find
+  // matched; one whose new text stood under markdown did the same. Both exit 2 before anything is
+  // sent, naming the operation and the field.
+  describe("doc-edit replace", () => {
+    test("refuses a replace with no with before it sends anything", async () => {
+      const { code, stdout } = await run(
+        [
+          "doc-edit",
+          "--issue",
+          "DSP-2",
+          "--ops-json",
+          JSON.stringify([{ op: "replace", find: "old" }]),
+        ],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        'ops[0] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.'
+      );
+      expect(requests).toEqual([]);
+    });
+
+    test("refuses a replace carrying a field replace does not take, naming it", async () => {
+      const ops = [
+        { op: "replace", find: "old", with: "new" },
+        { op: "replace", find: "old", markdown: "new" },
+      ];
+      const { code, stdout } = await run(
+        ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify(ops)],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        "ops[1] is a replace carrying markdown, which replace does not take: it takes find, with and occurrence, and its new text goes in with."
+      );
+      expect(stdout).toContain("ops[1] is a replace with no with");
+      expect(stdout).not.toContain("ops[0]");
+      expect(requests).toEqual([]);
+    });
+  });
+
   test("dispatch project prints the created project, and a taken key exits 1 naming PROJECT_EXISTS", async () => {
     const created = await run(["project", "--key", "SMOKE684", "--name", "Smoke"], omp);
     expect(created.code).toBe(0);
@@ -1681,6 +1665,73 @@ describe("the dispatch CLI", () => {
     expect(code).toBe(0);
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
+  });
+
+  // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
+  // command prints that refusal as a line of its own, its code first and then Dispatch's message,
+  // and exits 1, as for every write Dispatch refused. The credential is the read trade
+  // DISPATCH_TOKEN_BROKER_READ asks for, over the DISPATCH_TOKEN the shell also holds.
+  test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
+    const readToken = fixtureSecret("read");
+    const trades: URLSearchParams[] = [];
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        trades.push(new URLSearchParams(await request.text()));
+        return Response.json({
+          access_token: readToken,
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 600,
+          scope: "read",
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const refusal =
+      "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran";
+    const sent: { method: string; path: string; authorization: string }[] = [];
+    // The stand-in Dispatch: the test server answers every read, and every write is refused as
+    // Dispatch refuses a read-only token's.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (request.method === "GET") return await fetch(request);
+      return Response.json({ code: DISPATCH_READ_ONLY_TOKEN, error: refusal }, { status: 403 });
+    }) as typeof fetch;
+    let ran: { code: number; stdout: string };
+    try {
+      ran = await run(
+        ["message", "--issue", "DSP-1", "--body", "hello"],
+        {
+          ...omp,
+          DISPATCH_TOKEN_BROKER_READ: "1",
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+        },
+        "",
+        fetchImpl
+      );
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+
+    expect(ran.stdout.split("\n")).toContain(`${DISPATCH_READ_ONLY_TOKEN}: ${refusal}`);
+    expect(ran.code).toBe(1);
+    expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
+    expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    // Every request presented the read-only token, never the bearer the shell holds.
+    expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
   });
 });
 
@@ -1722,8 +1773,9 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
-  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
+  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
+  // the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
@@ -2314,6 +2366,57 @@ describe("the dispatch CLI's subscription note", () => {
         /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues\/DSP-1\/messages was made, but its answer was lost on the way back \(KEY_COMMITTED\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
       ),
     ]);
+  });
+
+  // A replayed 2xx reading ANSWER_NOT_KEPT says Dispatch gives no copy of the first answer. The
+  // issue create wrote, so it is the create's landing, which exits 0 and says to read it back; the
+  // related-item check wrote nothing, so the command asks it under a second key, and when that is
+  // answered the same way it exits 1 saying the call wrote nothing and to run it again.
+  test("an answer Dispatch kept no copy of is a landing for a write, and for a call that writes nothing a line to run it again", async () => {
+    const notKept = (status: number) =>
+      Response.json(
+        { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+        { status, headers: { "Idempotency-Replayed": "?1" } }
+      );
+    const checkKeys: (string | null)[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);
+      if (request.method === "POST" && pathname === "/api/v1/projects/DSP/related") {
+        checkKeys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER));
+        return notKept(200);
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const created = await run(
+      ["issue", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(created.code).toBe(0);
+    expect(created.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
+      ),
+    ]);
+
+    const checked = await run(
+      ["related", "--project", "DSP", "--title", "Retry webhook deliveries"],
+      withListener,
+      "",
+      fetchImpl
+    );
+    expect(checked.code).toBe(1);
+    expect(checked.stdout.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/projects\/DSP\/related wrote nothing, and Dispatch kept no copy of its answer \(ANSWER_NOT_KEPT\), so this command has no answer to print: run it again, which asks under a new key\.$/
+      ),
+    ]);
+    expect(checkKeys).toHaveLength(2);
+    expect(new Set(checkKeys).size).toBe(2);
   });
 
   // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made

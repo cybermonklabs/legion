@@ -59,7 +59,11 @@ func TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return engine.mergeForward(ctx, tx, issue, stored, record.ConflictCheckNotGreen)
+				w, err := engine.walk(ctx, tx, issue)
+				if err != nil {
+					return err
+				}
+				return engine.mergeForward(ctx, tx, issue, w, stored, record.ConflictCheckNotGreen)
 			})
 			asked := mergeForwardMessages(t, pool)
 			if got, want := sentOf(asked), []sent{{step: record.MergeForwardAsk, role: claim.RoleImplementer, claim: claim.Token(treeRoleToken(t, root.Key, claim.RoleImplementer))},

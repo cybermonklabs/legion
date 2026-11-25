@@ -61,10 +61,13 @@ pods mount `legion-operator-route` in that namespace reads the same copy.
 ## Changing a role's model
 
 The two files in that directory are the operator's, and `apply.sh` writes the ConfigMap from them.
-To change the model an Oh My Pi role uses, edit that role's line under `modelRoles` in
-`overlay.yml` and run the same `apply.sh` command. Nothing in this repository changes. Pods
-started after that read the new file. A running pod keeps the files it started with until it
-restarts, because `pod.yml` mounts both by `subPath`, which the kubelet never refreshes.
+To change the model of one of Oh My Pi's model roles (`default`, `review`, `smol` and the rest), edit
+its line under `modelRoles` in `overlay.yml` and run the same `apply.sh` command. Nothing in this
+repository changes. Pods started after that read the new file.
+A running pod keeps the files it started with until it restarts, because `pod.yml` mounts both by
+`subPath`, which the kubelet never refreshes.
+A role whose settings or plan block name a `model` runs on that model, named in `legion.yaml` or
+the issue's plan, in place of the `default` line.
 
 `modelRoles.default` is the model of every role's session that names no model of its own, a resumed
 session included: such a launch names `--model @default`, Oh My Pi's own name for that role, so the
@@ -80,9 +83,10 @@ family the new pin catalogues (`omp models anthropic` on the new build) and the 
 serves, never to another family, and adds that model to `enabledModels` and to `models.yml` and
 `models-key-file.yml`. A gateway serves only the ids it was set up for and answers any other with
 404, so on the gateway route run one `omp -p --model @<role> "Reply ok."` turn through the new
-`models.yml` for each new model id before applying. The older models stay in all three. A role
-whose settings or plan name an older model still starts on it. A resumed session needs no older
-model: every launch names its model, so the pinned Oh My Pi restores no saved one
+`models.yml` for each new model id before applying.
+An older model can leave all three once no role, no plan and no fallback chain names it.
+A resumed session does not need it, since each launch names its model with `--model`.
+The pinned Oh My Pi restores a session's saved model only for a launch that names none
 (`docs/kubernetes.md`).
 
 `apply.sh` writes with a server-side apply under its own field manager,

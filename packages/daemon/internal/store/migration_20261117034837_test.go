@@ -109,7 +109,7 @@ func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStep(t *testing.T) {
 		t.Fatalf("migrate through the issue plans: %v", err)
 	}
 	var implementer record.PhaseRow
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(ctx, tx, "LEGION-208")
 		if err != nil {
 			return err

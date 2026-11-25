@@ -11,6 +11,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An append's writes are queued on the transaction's write phase, so the tables they write hold
@@ -48,7 +49,7 @@ func appendCredit(t *testing.T, service *Service, artifactID string, authors []m
 	state.inflight[record.seq] = record
 	service.unlockState(artifactID, state)
 	credit := &UpdateCredit{service: service, room: artifactID, state: state, record: record, askAuthors: askAuthors}
-	t.Cleanup(credit.landed)
+	testcleanup.Add(t, credit.landed)
 	return credit
 }
 
@@ -58,6 +59,7 @@ func appendCredit(t *testing.T, service *Service, artifactID string, authors []m
 // author the append queued, which the table holds no row of until the write phase has run, and
 // the commit leaves the row.
 func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -95,6 +97,7 @@ func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 // has stored the room's updates (transactionPendingAuthors) - finds the author the append queued,
 // which the table holds no row of until the write phase has run, and the commit leaves the row.
 func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -141,6 +144,7 @@ func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 // one author, so an overlay that kept the later row's mark as it stood fails where the table does
 // not.
 func TestAQueuedPendingAuthorIsProvenOnlyWhenEveryRowIs(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	ctx := context.Background()
 	claimed := model.Actor{Kind: "session", ID: "judge-session"}

@@ -82,10 +82,12 @@ func TestNoCheckTaskNamesADeployWakeOrTellsItsReaderToWait(t *testing.T) {
 	}
 }
 
-// A pending on a look that is not the check's last names when the next look is due: nothing else
-// starts one, and the route refuses a pending without it (CHECK_WAKE_REQUIRED). On the bound's
-// look no look follows, the pending closes the check as not run, and a time there is refused
-// (CHECK_WAKE_UNEXPECTED), so that task asks for none and says what to write before reporting it.
+// A pending on a look that is not the check's last names when the next look is due, and the route
+// refuses a pending without it (CHECK_WAKE_REQUIRED). Besides that wake, only the bound's look and
+// the retry of a look nobody reported start one (checkBound, endLook), and the task says so. On the
+// bound's look no look follows, the pending closes the check as not run, and a time there is
+// refused (CHECK_WAKE_UNEXPECTED), so that task asks for none and says what to write before
+// reporting it.
 func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 	const asks = "A pending report also carries wake_at, an RFC 3339 time: when you want your next look."
 	task := checkTaskFor(wakeMerge, "merge-43", false)
@@ -93,12 +95,16 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 		t.Errorf("the task of a look that is not the last = %q, want it to ask %q", task, asks)
 	}
 	for _, want := range []string{
+		"Besides it, only the look at the check's bound and the retry of a look nobody reported start one.",
 		"the daemon stops this process and keeps this session",
 		"a task naming the summary you gave as what woke it",
 	} {
 		if !strings.Contains(task, want) {
 			t.Errorf("the task of a look that is not the last = %q, want it to say %q", task, want)
 		}
+	}
+	if retired := "Nothing else starts one."; strings.Contains(task, retired) {
+		t.Errorf("the task of a look that is not the last still says %q, though the bound and a retry start a look too", retired)
 	}
 	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
 	if strings.Contains(last, asks) {

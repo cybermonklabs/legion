@@ -15,13 +15,11 @@ create table pod_wake_marks (
   primary key (project, issue, kind, key)
 );
 
--- One row per released claim a backstop is armed for: the backstop that wakes it
--- backstop_minutes after its release, whatever else happens. The claim is the worker of the
--- issue's open phase, or the issue's own architect at a step or a retro of its own other than its
--- acceptance. Any other architect gets none. It is a stored row with a due time rather than a
--- timer, so a daemon restart keeps it and one that came due while the daemon was down fires once
--- the daemon is back. fired is set by the pass that takes it, under a conditional update, so one
--- backstop fires once however many passes read it.
+-- One row per phase worker a release left with its phase open: the backstop that wakes it
+-- backstop_minutes after the release whatever else happens. It is a stored row with a due time
+-- rather than a timer, so a daemon restart keeps it and one that came due while the daemon was
+-- down fires once the daemon is back. An architect gets none. fired is set by the pass that takes
+-- it, under a conditional update, so one backstop fires once however many passes read it.
 create table pod_wake_backstops (
   id bigserial primary key,
   project text not null,

@@ -61,6 +61,7 @@ func keysOf(set map[string]struct{}) []string { return slices.Sorted(maps.Keys(s
 // OpenP0Keys is every open P0 across every project: a P0 in any status but done, and no P1, no
 // unset priority and no done P0.
 func TestOpenP0KeysListsOpenP0sOnly(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	p0, p1 := 0, 1
 	seedIssues(t, ctx, pool, "LIVEP", []issueSeed{
@@ -107,6 +108,7 @@ func TestOpenP0KeysListsOpenP0sOnly(t *testing.T) {
 // IssueAncestors walks every key's parent chain to its root: a three-deep chain returns each
 // ancestor, keys that share a chain return it once, and a root or an unknown key adds nothing.
 func TestIssueAncestorsReturnsEveryAncestor(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedIssues(t, ctx, pool, "LIVEA", []issueSeed{
 		{key: "LIVEA-1"},
@@ -146,6 +148,7 @@ func TestIssueAncestorsReturnsEveryAncestor(t *testing.T) {
 // it, and a cycle, which the API refuses to write but a raced reparent could commit, ends at the
 // cap too. In a cycle a key is its own ancestor, so it is in the answer.
 func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedIssues(t, ctx, pool, "LIVEC", []issueSeed{
 		{key: "LIVEC-0"},
@@ -180,6 +183,47 @@ func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
 		want := map[int][]string{1: {"LIVED-1"}, 2: {"LIVED-1", "LIVED-3"}, 32: {"LIVED-1", "LIVED-2", "LIVED-3"}}[maxDepth]
 		if got := keysOf(ancestors); !slices.Equal(got, want) {
 			t.Fatalf("IssueAncestors(LIVED-2) over a cycle, maxDepth %d = %v, want %v", maxDepth, got, want)
+		}
+	}
+}
+
+// IssueAncestors answers the issues whose component choice a key can inherit, and a key inherits
+// only from ancestors of its own project: the walk ends at the first ancestor of another project
+// as at a root. BETA-1 under ALPHA-1 has none, BETA-3 under ALPHA-2 under BETA-4 has none, and
+// ALPHA-2 under BETA-4 has none, while BETA-2 under BETA-1 has BETA-1 and ALPHA-5 under ALPHA-1
+// has ALPHA-1. Keys of two projects read together each keep to their own.
+func TestIssueAncestorsStopsAtTheProjectEdge(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedIssues(t, ctx, pool, "ALPHA", []issueSeed{
+		{key: "ALPHA-1"},
+		{key: "ALPHA-2"},
+		{key: "ALPHA-5", parent: "ALPHA-1"},
+	})
+	seedIssues(t, ctx, pool, "BETA", []issueSeed{
+		{key: "BETA-1", parent: "ALPHA-1"},
+		{key: "BETA-2", parent: "BETA-1"},
+		{key: "BETA-4"},
+		{key: "BETA-3", parent: "ALPHA-2"},
+	})
+	setParent(t, ctx, pool, "ALPHA-2", "BETA-4")
+
+	for _, tc := range []struct {
+		keys []string
+		want []string
+	}{
+		{keys: []string{"BETA-1"}, want: nil},
+		{keys: []string{"BETA-3"}, want: nil},
+		{keys: []string{"ALPHA-2"}, want: nil},
+		{keys: []string{"BETA-2"}, want: []string{"BETA-1"}},
+		{keys: []string{"ALPHA-5"}, want: []string{"ALPHA-1"}},
+		{keys: []string{"BETA-2", "ALPHA-5"}, want: []string{"ALPHA-1", "BETA-1"}},
+	} {
+		ancestors, err := IssueAncestors(ctx, pool, tc.keys, 32)
+		if err != nil {
+			t.Fatalf("IssueAncestors(%v): %v", tc.keys, err)
+		}
+		if got := keysOf(ancestors); !slices.Equal(got, tc.want) {
+			t.Errorf("IssueAncestors(%v) = %v, want %v", tc.keys, got, tc.want)
 		}
 	}
 }

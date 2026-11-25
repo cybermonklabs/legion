@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -43,6 +44,8 @@ const (
 // unchanged) and the daemon re-asserts its own status through the outbox. Any other session —
 // another tree's agent, or one outside Legion that took the issue for its own — cannot end or park
 // the tree either: the daemon re-asserts its status, and the tree's architect is told who wrote what.
+// The tree's own architect is a session of the tree too. A root leaves the workflow only by the
+// architect's sign-off or close_root, so its done or backlog on its own root is set back as well.
 func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -51,6 +54,8 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 		outcome statusWriteOutcome
 	}{
 		{name: "the tree's implementer closes it", actor: "ses-impl", status: "done", outcome: setBack},
+		{name: "the tree's architect closes it", actor: "ses-arch", status: "done", outcome: setBack},
+		{name: "the tree's architect moves it to backlog", actor: "ses-arch", status: "backlog", outcome: setBack},
 		{name: "another tree's session closes it", actor: "ses-other", status: "done", outcome: setBackAndTold},
 		{name: "a session outside Legion closes it", actor: "ses-outsider", status: "done", outcome: setBackAndTold},
 		{name: "a session outside Legion parks it", actor: "ses-outsider", status: "backlog", outcome: setBackAndTold},
@@ -75,13 +80,14 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if err := records.PutIssue(ctx, tx, *root); err != nil {
 					t.Fatalf("put root: %v", err)
 				}
-				for _, c := range []struct{ token, tree, issue, session string }{
-					{"legion-legion-legion-1-implementer", "LEGION-1", "LEGION-1", "ses-impl"},
-					{"legion-legion-legion-9-implementer", "LEGION-9", "LEGION-9", "ses-other"},
+				for _, c := range []struct{ token, tree, issue, role, session string }{
+					{"legion-legion-legion-1-implementer", "LEGION-1", "LEGION-1", "implementer", "ses-impl"},
+					{"legion-legion-legion-1-architect", "LEGION-1", "LEGION-1", "architect", "ses-arch"},
+					{"legion-legion-legion-9-implementer", "LEGION-9", "LEGION-9", "implementer", "ses-other"},
 				} {
 					if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 						launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-						values ($1, 'legion', $2, $3, 'implementer', 1, $4, '/tmp/impl.jsonl', 'working', 0, 0, 0, 0)`, c.token, c.tree, c.issue, c.session); err != nil {
+						values ($1, 'legion', $2, $3, $4, 1, $5, '/tmp/impl.jsonl', 'working', 0, 0, 0, 0)`, c.token, c.tree, c.issue, c.role, c.session); err != nil {
 						t.Fatalf("put claim: %v", err)
 					}
 				}
@@ -92,7 +98,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 			var reasserted int
 			var told []record.Notice
 			for _, effect := range effects(t, pool) {
-				if write, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-1" && write == record.ReassertStatusWrite("retro", tc.status) {
+				if write, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-1" && write == record.ReassertStatusWrite("retro", tc.status, 2) {
 					reasserted++
 				}
 				if notice, ok := effect.payload.(record.Notice); ok && notice.Kind == "status-reasserted" {
@@ -109,10 +115,9 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
 					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
 				}
-				// The root stands in merging, which is past its own review, so it holds none of
-				// the cap's rows whoever wrote on it; what the write must not do is end its
-				// tree, which the kept phase, the absent linger and LEGION-9's slot beside it
-				// say.
+				// The root stands in merging, which keeps none of the cap's rows, so it holds none
+				// whoever wrote on it; what the write must not do is end its tree, which the kept
+				// phase, the absent linger and LEGION-9's slot beside it say.
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 				wantTold := 0
 				if tc.outcome == setBackAndTold {
@@ -132,8 +137,11 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 // Where no tree runs — on a child of a running tree, a root still waiting for its slot, or a
 // lingering root — a session with no claim there writes a status as a person does: the child parks
 // and its architect is told, the waiting root leaves the line, the lingering root is re-admitted.
-// Each case compares the outside session's write with a person's on the same record: the issue, its
-// root, the slots and every queued effect must come out the same.
+// A session that holds a claim only in another tree, that tree's architect among them, is such a
+// session. So is an earlier session of the tree's own architect, which a fresh session replaced:
+// the claims row names the later session alone. Each case compares the session's write with a
+// person's on the same record: the issue, its root, the slots and every queued effect must come
+// out the same.
 func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 	until := fixedNow.Add(time.Hour)
 	parent := "LEGION-1"
@@ -143,6 +151,10 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 		slots  []string
 		key    string
 		status string
+		// actor is the session that writes, ses-outsider when empty, and claims the claims rows the
+		// record holds beside the issues.
+		actor  string
+		claims []ownerClaim
 		// taken says what the person's write did, so the comparison is not of two no-ops.
 		taken func(t *testing.T, pool *pgxpool.Pool)
 	}{
@@ -173,6 +185,30 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 					t.Fatalf("lingering root after a person's todo = %#v, want it re-admitted at generation 2", got)
 				}
 			}},
+		{name: "another tree's architect closes a running tree's child", key: "LEGION-2", status: "done",
+			issues: []record.Issue{
+				{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1},
+				{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-2", Tree: "LEGION-1", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1},
+			},
+			slots: []string{"LEGION-1"}, actor: "ses-architect-of-9",
+			claims: []ownerClaim{{tree: "LEGION-9", issue: "LEGION-9", role: claim.RoleArchitect, session: "ses-architect-of-9", state: supervise.StateWorking}},
+			taken: func(t *testing.T, pool *pgxpool.Pool) {
+				if got := issue(t, pool, "LEGION-2"); got.Phase != phase.Done || got.Status != "done" {
+					t.Fatalf("child after a person's done = %#v, want it closed", got)
+				}
+			}},
+		{name: "an earlier session of the tree's architect closes its child", key: "LEGION-2", status: "done",
+			issues: []record.Issue{
+				{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1},
+				{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-2", Tree: "LEGION-1", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1},
+			},
+			slots: []string{"LEGION-1"}, actor: "ses-architect-before",
+			claims: []ownerClaim{{tree: "LEGION-1", issue: "LEGION-1", role: claim.RoleArchitect, session: "ses-architect-now", state: supervise.StateWorking}},
+			taken: func(t *testing.T, pool *pgxpool.Pool) {
+				if got := issue(t, pool, "LEGION-2"); got.Phase != phase.Done || got.Status != "done" {
+					t.Fatalf("child after a person's done = %#v, want it closed", got)
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			type result struct {
@@ -194,6 +230,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 						}
 					}
 				})
+				seedSessionClaims(t, pool, tc.claims...)
 				apply(t, pool, admission, "written", intake.DispatchIssue{Key: tc.key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: tc.status, Title: tc.key,
 					Parent: deref(tc.issues[len(tc.issues)-1].Parent), Rank: "B", HandedOver: true, ActorSession: actor}, engine)
 				var got result
@@ -205,9 +242,13 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			}
 			personPool, person := write("")
 			tc.taken(t, personPool)
-			_, outsider := write("ses-outsider")
-			if !reflect.DeepEqual(outsider, person) {
-				t.Fatalf("an outside session's %s on %s = %+v, want what a person's did: %+v", tc.status, tc.key, outsider, person)
+			actor := tc.actor
+			if actor == "" {
+				actor = "ses-outsider"
+			}
+			_, session := write(actor)
+			if !reflect.DeepEqual(session, person) {
+				t.Fatalf("session %s's %s on %s = %+v, want what a person's did: %+v", actor, tc.status, tc.key, session, person)
 			}
 		})
 	}
@@ -242,13 +283,13 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 			steps: []step{{"ses-outsider", "in_progress", "renamed"}}},
 		{name: "an outside session's rename before its backlog is set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"ses-outsider", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog")}, notices: 1},
+			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog", 3)}, notices: 1},
 		{name: "a person's rename before an outside backlog is set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog")}, notices: 1},
+			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog", 3)}, notices: 1},
 		{name: "an outside session's backlog while the daemon's testing is on its way", queued: inFlight,
 			steps: []step{{"ses-outsider", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{*inFlight, record.ReassertStatusWrite("testing", "backlog")}, notices: 1},
+			rows:  []record.StatusWrite{*inFlight, record.ReassertStatusWrite("testing", "backlog", 3)}, notices: 1},
 		{name: "a person parks the tree after two outside writes were set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"ses-outsider", "icebox", "LEGION-1"}, {"", "backlog", "renamed"}},
 			ends:  true, notices: 2},

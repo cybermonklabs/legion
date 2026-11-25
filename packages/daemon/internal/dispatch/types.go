@@ -32,9 +32,12 @@ type Client interface {
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
-	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
-	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
-	// issue lists no document under (messageArtifact).
+	// Dispatch filed it under. It names no token, so it is meant as a first upload, and the outbox
+	// uploads only a name the issue lists no document under (messageArtifact). Since
+	// legion-envoy-v32.36.1 Dispatch stores an upload naming no token over a name the issue already
+	// holds, as it did before it began to ask for one, and counts it
+	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
+	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
@@ -44,6 +47,15 @@ type Client interface {
 	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
 	// Dispatch that predates the read with blocks answers ErrNoBlocks.
 	PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error)
+	// ArtifactChanges is what changed in a document between two of its stored versions, as
+	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404
+	// ARTIFACT_NOT_FOUND there is ErrDocumentNotFound, and its router's 404 `no route for …` or a
+	// 405 is ErrNoChangesRoute.
+	ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error)
+	// ApprovedVersionBefore is the highest version of the document below version that a review
+	// approved (GET /api/v1/artifacts/{id}/reviews), 0 when no review approved one. A Dispatch
+	// that answers 404 ARTIFACT_NOT_FOUND there is ErrDocumentNotFound.
+	ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
@@ -74,20 +86,24 @@ type Client interface {
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
-// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, and ArtifactID the
-// document that step's gate recorded. The step is a string here rather than the record's own
-// type, because this package names Dispatch's wire shapes and imports no record of the daemon's.
+// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, ArtifactID the
+// document that step's gate recorded, and Holds whether the issue's tree is gated on that step,
+// which Dispatch's advice reads in place of the project's gated steps. Holds is sent as null only
+// for an entry an older daemon queued without it, which Dispatch answers by the project's list.
+// The step is a string here rather than the record's own type, because this package names
+// Dispatch's wire shapes and imports no record of the daemon's.
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+	Holds      *bool  `json:"holds"`
 }
 
 // RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
-// is a role of the issue, Session the session that holds it, Claim the token of the claim that
-// session runs, and WorksStep whether that claim is the worker on the role's step as the record
-// gives it (record.WorkerClaim). Two claims of one issue can hold one role — the agent of a key on
-// a step of another role, beside that role's own claim of an earlier version of the plan — so a
-// role can be named for several sessions, each by its own claim; Dispatch keeps the session of the
+// is a role of the issue, one of the six Legion roles or a role the deployment defines, Session the
+// session that holds it, Claim the token of the claim that session runs, and WorksStep whether that
+// claim is the worker on the role's step as the record gives it (record.WorkerClaim). Two claims of
+// one issue can hold one role, so a role can be named for several sessions, each by its own claim;
+// Dispatch keeps the session of the
 // step's worker where its way back folds a role to one session. The role is a string here rather
 // than claim.Role, because this package names Dispatch's wire shapes.
 type RoleHolder struct {
@@ -186,6 +202,9 @@ type IssueSummary struct {
 	Parent     *string
 	Rank       string
 	HandedOver bool
+	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
+	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
+	Priority *int
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -216,7 +235,7 @@ func (s IssueSummary) Issue() Issue {
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -234,6 +253,8 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	LastSeq           int64
+	// Priority is IssueSummary.Priority.
+	Priority *int
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -386,6 +407,114 @@ type DocumentBlock struct {
 // assumed.
 var ErrNoBlocks = errors.New("Dispatch answered the document version without its blocks: it predates the version read with ?blocks=true")
 
+// ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
+// GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
+// stands, as DesignGateDocument names its route's shape. Both versions are compared with their
+// decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
+// section and no block. Dispatch makes exactly one of three things true of an answer:
+// DecisionOnly, the cut is the whole change (the stored texts differ and cut to the same text);
+// Unchanged, the two versions differ in nothing any section, run or block holds (their stored
+// texts are the same, or what differs is in none of them); or Sections or Blocks names at least
+// one item. So an answer that names nothing says which of the first two it is. A Dispatch from
+// before Unchanged sends no such field, so an identical version from it decodes as an answer that
+// names nothing and is neither. Two versions of a document never change, so the answer for one
+// pair never goes stale.
+type ArtifactChanges struct {
+	ArtifactID   string `json:"artifact_id"`
+	From         int    `json:"from"`
+	To           int    `json:"to"`
+	DecisionOnly bool   `json:"decision_only"`
+	Unchanged    bool   `json:"unchanged"`
+	// Sections are the document's top-level units whose text differs, that moved, or that one
+	// version alone holds: each `##` section, and each run of the text outside every `##`
+	// section, which carries the place it stands at (SectionChange). They are in the later
+	// version's order, and then the units only the earlier version holds, in its order.
+	Sections []SectionChange `json:"sections"`
+	// Blocks are the typed blocks other than ask blocks whose text or any attribute differs.
+	Blocks []BlockChange `json:"blocks"`
+}
+
+// SectionChange is one top-level unit of a document that changed, and how it changed:
+// ChangeChanged, ChangeAdded, ChangeRemoved or ChangeMoved. A `##` section is named by its
+// heading's text and by how many sections before it carry that heading, 0 for the first; a `##`
+// heading with no words is counted from 1. The heading "" with occurrence 0 is one run of the text
+// outside every `##` section, and Place says where it stands: PlaceBeforeFirstSection, or
+// PlaceAfterSection with AfterHeading and AfterOccurrence naming the `##` section directly before
+// it. The place is the run's in the later version for a changed, added or moved run, and in the
+// earlier version for a removed one. A `##` section carries no place, and neither does a run from
+// a Dispatch that predates the place. AfterHeading and AfterOccurrence decode to "" and 0 where
+// Dispatch leaves them out, which they are only beside a place other than PlaceAfterSection.
+type SectionChange struct {
+	Heading         string `json:"heading"`
+	Occurrence      int    `json:"occurrence"`
+	Change          string `json:"change"`
+	Place           string `json:"place,omitempty"`
+	AfterHeading    string `json:"after_heading,omitempty"`
+	AfterOccurrence int    `json:"after_occurrence,omitempty"`
+}
+
+// PlaceBeforeFirstSection and PlaceAfterSection are the two places a run of the text outside
+// every `##` section stands at (SectionChange's Place): above the first `##` section, or directly
+// after the one AfterHeading and AfterOccurrence name. They are as Dispatch spells them (its
+// api.placeBeforeFirstSection and api.placeAfterSection). No mechanism shares a value between this
+// module and Dispatch's, so the spellings change together.
+const (
+	PlaceBeforeFirstSection = "before_first_section"
+	PlaceAfterSection       = "after_section"
+)
+
+// BlockChange is one typed block that changed: its `#id`, its type in the later version (in the
+// earlier one for a removed block), and how it changed.
+type BlockChange struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Change string `json:"change"`
+}
+
+// ChangeChanged, ChangeAdded and ChangeRemoved are the three ways a top-level unit or a block
+// stands between two versions of a document, and ChangeMoved a fourth that a unit alone takes: both
+// versions hold it with the same text, at another place among the document's top-level units (its
+// `##` sections and the runs of text outside them). They are as Dispatch spells them (its
+// api.changeChanged and the three beside it). No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
+const (
+	ChangeChanged = "changed"
+	ChangeAdded   = "added"
+	ChangeRemoved = "removed"
+	ChangeMoved   = "moved"
+)
+
+// ErrNoChangesRoute is a Dispatch build that cannot say what changed between two versions: it
+// answered GET /api/v1/artifacts/{id}/changes with its router's 404 `no route for <METHOD> <path>`
+// (NoRoute), or with a 405, which is what a build without the route answers. ArtifactChanges wraps
+// it around Dispatch's own refusal, so errors.Is finds it and the message keeps what Dispatch
+// said. It is no reason to stop asking: while a release of Dispatch rolls out, two builds serve,
+// and the next attempt can reach the one with the route (packages/envoy/cmd/dispatch/README.md,
+// two builds at once), so a caller retries it as any failure of the read, and records the pair
+// unreadable only once its bounded attempts have all failed.
+var ErrNoChangesRoute = errors.New("dispatch has no changes route")
+
+// ErrDocumentNotFound is a Dispatch that holds no document of the id a read of one document
+// names, GET /api/v1/artifacts/{id}/changes or GET /api/v1/artifacts/{id}/reviews: it answered
+// 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a document deleted since its gate recorded it. A
+// build without a route answers its router's own 404, whose code is not this one (NoRoute), so
+// the two stay apart and the reason recorded says which it was. ArtifactChanges and
+// ApprovedVersionBefore wrap it around Dispatch's own refusal, and a caller records what it asked
+// unreadable at once: a deleted document does not come back with a wait.
+var ErrDocumentNotFound = errors.New("dispatch holds no such document")
+
+// ArtifactNotFound is Dispatch's own spelling of the 404 its artifact routes answer for an id
+// that names no artifact (packages/envoy/internal/dispatch/api/artifacts.go,
+// scanArtifactOrNotFound). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
+
+// artifactNotFound says whether refusal is Dispatch answering that it holds no document of the id
+// a read of one document names: 404 under the code ArtifactNotFound (ErrDocumentNotFound).
+func artifactNotFound(refusal *Error) bool {
+	return refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound
+}
+
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its
 // version among that phase's records, and the actor that wrote it. The record's text is not read
@@ -472,8 +601,9 @@ const IssueNotFound = "ISSUE_NOT_FOUND"
 // NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
 // older build while a release rolls out, so no handler ran and the request is taken once the
 // release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
-// know, says "not found" instead, and is not this answer. No mechanism shares a value between
-// this module and Dispatch's, so the spellings change together.
+// hold, carries another message ("the document has no version 5" among them), so the message is
+// what tells the router's answer apart. No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 func NoRoute(err error) bool {
 	var refusal *Error
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&

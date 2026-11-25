@@ -26,4 +26,4 @@ body: |-
   `covers`: the ask covers the hold, and the review covers the landed. Where an ask or a review of
   a merge forward cannot reach an agent other than the owner, because that agent's claim failed or
   retired, the architect is told in the new `merge-forward-lost` notice. An issue with no plan rows
-  walks today's steps as before. Daemon API contract 227.
+  walks today's steps as before. Daemon API contract 302.

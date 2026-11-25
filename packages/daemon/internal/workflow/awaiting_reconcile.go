@@ -11,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -128,7 +128,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 				"declared_seq", root.DeclaredSeq)
 			changed = true
 		default:
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				e.log.Debug("workflow: a root that handed work to a person starts no wait on that person", "issue", root.Key, "why", decision.Why)
 			})
 		}
@@ -281,7 +281,7 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// and it stands in a phase that keeps a slot (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
@@ -446,7 +446,9 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // architect reads whether or not the root waits — entering the wait leaves the architect running.
 // So it holds neither the wait nor the telling of a person's act, which would otherwise wait
 // behind that sentence for as long as the agent's own turns kept it unread
-// (dispatch://INFRA-3276 R3).
+// (dispatch://INFRA-3276 R3). Nor is news of the approved design alone, queued as a start
+// (startsWork) or held as a task (supervise.HoldsWork): it hands the architect no work of the
+// root's, and the start can wait on its backoff for as long as the architect's turn runs.
 func owed(run record.RoleRun) (string, bool) {
 	if queuedStart(run) {
 		return "has a start still queued", true
@@ -458,7 +460,7 @@ func owed(run record.RoleRun) (string, bool) {
 	case slices.Contains([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 		supervise.StateShimConnected, supervise.StateRegistered}, held.State):
 		return fmt.Sprintf("is still starting (%s)", held.State), true
-	case supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero():
+	case supervise.HoldsWork(held.Pending) && held.Pending.ConfirmedAt.IsZero():
 		return "has not taken its task yet", true
 	}
 	return "", false
@@ -610,15 +612,16 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 // step the person was asked about (classify.StandingGate), which is the one the resume answers
 // for; else the first required step that is not open, which nobody has registered and whose
 // document the architect has still to register; and when every required step is open the first
-// required step, whose version the resume says the work runs at. The row is nil for the
-// unregistered step, as a root nobody has registered a gate for holds none.
+// required step, whose version the resume says the work runs at. The required steps are the
+// ones the tree is gated on (classify.TreeSteps), as in the two rules it reads. The row is nil
+// for the unregistered step, as a root nobody has registered a gate for holds none.
 func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, *record.DesignGate) {
 	if gate, standing := classify.StandingGate(steps, gates); standing {
 		return gate.Step, &gate
 	}
 	step, _, closed := classify.FirstClosedStep(steps, gates)
 	if !closed {
-		step = classify.RequiredSteps(steps)[0]
+		step = classify.RequiredSteps(classify.TreeSteps(steps, gates))[0]
 	}
 	gate, ok := gates[step]
 	if !ok {

@@ -34,8 +34,8 @@ var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 
 // Every start that hands a claim work it was not on raises its phase entry, writes the work of that
 // entry and the moment it was raised on the role's phases row, and carries the number on the
-// start's payload, all in the transition's own transaction: one above the row's own entry and above
-// the highest entry of each row that names the same claim. The issue's run cannot
+// start's payload, all in the transition's own transaction: one above the highest entry of every
+// phases row of the issue (Engine.enter), one counter for the issue. The issue's run cannot
 // do this work: one run holds every phase entry, so the testing phase the tester is given after a
 // failed round and an implementing pass has to be told from the testing phase before it by
 // something the run does not carry (api/handoff.go).
@@ -74,13 +74,13 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 	}
 	firstTask := entryRow(t, pool, claim.RoleImplementer).EntryTask
 
-	// The implementer's completion sends the issue to testing and starts the tester, whose own
-	// record counts from its own first entry.
+	// The implementer's completion sends the issue to testing and starts the tester, whose entry
+	// is one above the implementer's: one counter for the issue's rows.
 	apply("implement-1", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "fix-1",
 		HandoffRecord: "implement-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Testing)
-	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 1 {
-		t.Fatalf("the tester's first start is of entry %d, want 1: an entry counts the entries handed on the rows of the step's claim, the tester's own here", got)
+	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 2 {
+		t.Fatalf("the tester's first start is of entry %d, want 2: an entry is one above every entry of the issue's rows, the implementer's 1 here", got)
 	}
 	// The implementer's own entry is its row's still: a completion keeps it, and only its next
 	// start raises it.
@@ -90,14 +90,14 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 	}
 
 	// The tester fails this round too and the issue goes back to implementing, the second entry of
-	// that role: the number is raised again and the row carries the work of this entry, not of
-	// the one before it. The verdict is the tester's second record, so the two tasks differ in
-	// the handoff they name as well as in the entry they are of.
+	// that role: the number is raised again, above the tester's, and the row carries the work of
+	// this entry, not of the one before it. The verdict is the tester's second record, so the two
+	// tasks differ in the handoff they name as well as in the entry they are of.
 	apply("test-1", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
 		HandoffRecord: "test-1", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Implementing)
-	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 2 {
-		t.Fatalf("the implementer's second start is of entry %d, want 2: nothing else tells the two implementing phases apart", got)
+	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 3 {
+		t.Fatalf("the implementer's second start is of entry %d, want 3: nothing else tells the two implementing phases apart", got)
 	}
 	secondTask := entryRow(t, pool, claim.RoleImplementer).EntryTask
 	if secondTask == firstTask {
@@ -106,8 +106,8 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 	apply("implement-2", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "fix-2",
 		HandoffRecord: "implement-2", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Testing)
-	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 2 {
-		t.Fatalf("the tester's second start is of entry %d, want 2: nothing else tells the two testing phases apart", got)
+	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 4 {
+		t.Fatalf("the tester's second start is of entry %d, want 4: nothing else tells the two testing phases apart", got)
 	}
 
 	// The issue never left run 1, which is why the run alone cannot tell these two testing phases
@@ -272,14 +272,14 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	// The tester's failed verdict sends testing back to implementing, which is a move back, and
-	// the implementer's first entry is raised by it.
+	// the implementer's first entry is raised by it, one above the tester's seeded entry.
 	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester,
 		Claim: "test-claim", Verdict: "fail", HandoffRecord: "test-1", HandoffVersion: 1})
 
 	assertPhase(t, pool, phase.Implementing)
-	if row := entryRow(t, pool, claim.RoleImplementer); row.Entry != 1 || !row.EntryMovedBack {
-		t.Fatalf("the implementer's row after the tester's fail = entry %d, moved back %t; want entry 1 raised by a move back: testing came back to implementing",
-			row.Entry, row.EntryMovedBack)
+	if row := entryRow(t, pool, claim.RoleImplementer); row.Entry != seededEntry+1 || !row.EntryMovedBack {
+		t.Fatalf("the implementer's row after the tester's fail = entry %d, moved back %t; want entry %d raised by a move back: testing came back to implementing",
+			row.Entry, row.EntryMovedBack, seededEntry+1)
 	}
 
 	// The implementer's completion moves the issue forward into testing. The entry that start
@@ -288,9 +288,9 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 		Claim: "implement-claim", Commit: "fix-1", HandoffRecord: "implement-1", HandoffVersion: 1})
 
 	assertPhase(t, pool, phase.Testing)
-	if row := entryRow(t, pool, claim.RoleTester); row.Entry != seededEntry+1 || row.EntryMovedBack {
+	if row := entryRow(t, pool, claim.RoleTester); row.Entry != seededEntry+2 || row.EntryMovedBack {
 		t.Fatalf("the tester's row after the implementer's completion = entry %d, moved back %t; want entry %d raised by no move back: implementing moves forward into testing, and the reading the row stood at is written over",
-			row.Entry, row.EntryMovedBack, seededEntry+1)
+			row.Entry, row.EntryMovedBack, seededEntry+2)
 	}
 }
 

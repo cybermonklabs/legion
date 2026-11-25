@@ -457,62 +457,77 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 }
 
 // What the runtime holds of a launcher Secret is its Sandbox's alone: a failed read's hold-off does
-// not keep a later Sandbox of the same name from reading at once, and neither a failed read nor a
-// read's credential undoes the credential a binding write of the same Sandbox holds.
+// not keep a later Sandbox of the same name from reading at once, it lifts once credentialRetry has
+// passed, and a read's credential does not undo the credential a binding write of the same Sandbox
+// holds.
 func TestALauncherSecretsHoldOffAndCredentialAreItsSandboxsAlone(t *testing.T) {
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
-	c.fail(name, "uid-old", rigNow)
-	if _, held, readFrom := c.lookup(name, "uid-new"); held || !readFrom.IsZero() {
-		t.Fatalf("a later Sandbox's lookup: held %t, read from %s, want nothing held and a read at once", held, readFrom)
+	at := rigNow
+	now := func() time.Time { return at }
+	reads := 0
+	read := func(fails bool) func() (any, error) {
+		return func() (any, error) {
+			reads++
+			if fails {
+				return nil, errors.New("etcdserver: request timed out")
+			}
+			return launcherCredential{}, nil
+		}
 	}
-	if _, _, readFrom := c.lookup(name, "uid-old"); !readFrom.Equal(rigNow.Add(credentialRetry)) {
-		t.Fatalf("the failed Sandbox's lookup reads from %s, want %s", readFrom, rigNow.Add(credentialRetry))
+	old, later := credentialKey(name, "uid-old"), credentialKey(name, "uid-new")
+	if _, err := c.reads.do(context.Background(), now, old, old, read(true)); err == nil {
+		t.Fatal("the failing read answered no error")
+	}
+	if _, err := c.reads.do(context.Background(), now, later, later, read(false)); err != nil || reads != 2 {
+		t.Fatalf("a later Sandbox's read: %v after %d reads, want it read at once", err, reads)
+	}
+	if _, err := c.reads.do(context.Background(), now, old, old, read(false)); err == nil || reads != 2 {
+		t.Fatalf("the failed Sandbox's next read: %v after %d reads, want it refused without a read", err, reads)
+	}
+	at = rigNow.Add(credentialRetry)
+	if _, err := c.reads.do(context.Background(), now, old, old, read(false)); err != nil || reads != 3 {
+		t.Fatalf("the failed Sandbox's read after credentialRetry: %v after %d reads, want it read", err, reads)
 	}
 	c.bind(name, "uid-new", launcherCredential{podUID: "uid-pod-bound"})
-	c.fail(name, "uid-new", rigNow)
 	if got := c.store(name, "uid-new", launcherCredential{podUID: "uid-pod-stale"}); got.podUID != "uid-pod-bound" {
 		t.Fatalf("a read stored over the binding: holds pod %q, want %q", got.podUID, "uid-pod-bound")
 	}
-	if got, held, _ := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-bound" {
-		t.Fatalf("after a failed read and a read: held %t, pod %q, want the bound credential", held, got.podUID)
+	if got, held := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-bound" {
+		t.Fatalf("after a read: held %t, pod %q, want the bound credential", held, got.podUID)
 	}
 }
 
 // A read still in flight for a deleted Sandbox never drops the credential its same-name successor's
-// launch bound: neither that read's failure nor its credential replaces it, so a hello of the
-// successor's pod whose read began before the binding finds the binding afterwards, not the
-// unbound Secret it read.
+// launch bound: that read's credential does not replace it, so a hello of the successor's pod whose
+// read began before the binding finds the binding afterwards, not the unbound Secret it read.
 func TestAReadOfADeletedSandboxNeverEvictsItsSuccessorsBinding(t *testing.T) {
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-new", launcherCredential{podUID: "uid-pod-bound"})
-	c.fail(name, "uid-old", rigNow)
 	c.store(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
 	if got := c.store(name, "uid-new", launcherCredential{podUID: ""}); got.podUID != "uid-pod-bound" {
 		t.Fatalf("the successor's read of its unbound Secret returned pod %q, want the bound %q", got.podUID, "uid-pod-bound")
 	}
-	if got, held, _ := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-bound" {
-		t.Fatalf("after the deleted Sandbox's failed and stale reads: held %t, pod %q, want the successor's binding", held, got.podUID)
+	if got, held := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-bound" {
+		t.Fatalf("after the deleted Sandbox's stale read: held %t, pod %q, want the successor's binding", held, got.podUID)
 	}
 }
 
 // A read for a deleted Sandbox that lands after the runtime forgot it leaves nothing its same-name
-// successor reads: the successor's failed read still holds off the next, and its read is still
-// held, before any launch of it binds.
-func TestASuccessorHoldsOffAndHoldsItsOwnReadsWhateverALateReadOfItsPredecessorLeft(t *testing.T) {
+// successor reads: the successor holds nothing until its own read, which it then holds, before any
+// launch of it binds.
+func TestASuccessorHoldsItsOwnReadsWhateverALateReadOfItsPredecessorLeft(t *testing.T) {
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
 	c.forgetSandbox("legion-legion-legion-208")
 	c.store(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
-	c.fail(name, "uid-old", rigNow)
-	c.fail(name, "uid-new", rigNow)
-	if _, held, readFrom := c.lookup(name, "uid-new"); held || !readFrom.Equal(rigNow.Add(credentialRetry)) {
-		t.Fatalf("the successor's lookup after its failed read: held %t, read from %s, want a hold-off to %s", held, readFrom, rigNow.Add(credentialRetry))
+	if _, held := c.lookup(name, "uid-new"); held {
+		t.Fatal("the successor holds a credential before its own read")
 	}
 	c.store(name, "uid-new", launcherCredential{podUID: "uid-pod-new"})
-	if got, held, _ := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-new" {
+	if got, held := c.lookup(name, "uid-new"); !held || got.podUID != "uid-pod-new" {
 		t.Fatalf("the successor's lookup after its read: held %t, pod %q, want its read held", held, got.podUID)
 	}
 }

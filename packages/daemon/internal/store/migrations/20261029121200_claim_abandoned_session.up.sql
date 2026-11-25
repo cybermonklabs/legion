@@ -1,8 +1,10 @@
 -- 20261029121200_claim_abandoned_session.up.sql — the session a claim stopped resuming, and why.
 --
--- A claim leaves a session behind in three ways: the provider refused it out of the launch failure
+-- A claim leaves a session behind in four ways: the provider refused it out of the launch failure
 -- budget and the retry starts a new one, an operator asked for a new one (`legion claims retry
--- --fresh-session`, `legion claims forget-session`), or no session store holds it any more. The
+-- --fresh-session`, `legion claims forget-session`), no session store holds it any more, or the
+-- claim starts a step of another agent than the one whose session it holds, which begins a session
+-- of its own (supervise's revive, 20261125053850_claim_session_agent). The
 -- session itself is never deleted, so until now the only record of where it went was a line in the
 -- daemon's log: the claim's own session column was blanked and nothing said that an older session
 -- existed (dispatch://INFRA-714, item 4 of the refusal section).

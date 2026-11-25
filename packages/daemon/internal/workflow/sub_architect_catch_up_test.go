@@ -59,9 +59,9 @@ func catchUpIssues(t *testing.T, pool *pgxpool.Pool) []string {
 	return issues
 }
 
-// seedArchitectClaimIn records the architect claim of issue in state, suspended by by when it is
-// suspended, as the claim store holds it.
-func seedArchitectClaimIn(t *testing.T, pool *pgxpool.Pool, issue string, state supervise.ClaimState, by supervise.SuspendSource) {
+// seedArchitectClaimIn records the architect claim of issue, a member of tree at generation, in
+// state, suspended by by when it is suspended, as the claim store holds it.
+func seedArchitectClaimIn(t *testing.T, pool *pgxpool.Pool, tree, issue string, generation uint64, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	token, err := claim.NewToken("legion", issue, claim.RoleArchitect)
 	if err != nil {
@@ -69,8 +69,8 @@ func seedArchitectClaimIn(t *testing.T, pool *pgxpool.Pool, issue string, state 
 	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-		values ($1, 'legion', 'LEGION-1', $2, 'architect', 1, 'ses', '/sessions/ses.jsonl', $3, 0, 0, 0, 0, $4)`,
-		string(token), issue, string(state), string(by)); err != nil {
+		values ($1, 'legion', $2, $3, 'architect', $4, 'ses', '/sessions/ses.jsonl', $5, 0, 0, 0, 0, $6)`,
+		string(token), tree, issue, int64(generation), string(state), string(by)); err != nil {
 		t.Fatalf("seed the architect claim of %s: %v", issue, err)
 	}
 }
@@ -192,9 +192,9 @@ func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedSubArchitectTree(t, pool, nil, accepting)
-			seedArchitectClaimIn(t, pool, "LEGION-1", supervise.StateWorking, "")
+			seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-1", 1, supervise.StateWorking, "")
 			if tc.state != "" {
-				seedArchitectClaimIn(t, pool, "LEGION-2", tc.state, tc.by)
+				seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-2", 2, tc.state, tc.by)
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)

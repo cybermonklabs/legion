@@ -29,18 +29,23 @@ const (
 // dispatch://INFRA-714/spec R1). The listener publishes a settlement for every settled commit of
 // a pull request, its current head or not, and the daemon takes one only for the head itself
 // (SettlementFor), since a settlement stands only for the head it names; a settlement of another
-// head than the recorded one starts the fence afresh. A check still running is in no settlement
-// at all - the listener settles a commit only once every check it has seen there is terminal - so
-// it is no verdict rather than a failure. A check_run delivery the listener lost is recovered
-// only by Dispatch's webhook redelivery sweep
-// (packages/envoy/internal/dispatch/redeliver: it runs only where Dispatch has the App key and
-// NATS, every two minutes, and asks GitHub again for each delivery GitHub recorded as failed until
-// GitHub records it OK or 72 hours after its first failed attempt; its listing starts at the last
-// hour while it runs without a gap, at its stored cursor after one, and 72 hours back on a first
-// sweep with no cursor) or by the check's next run. Nothing on the Go path corrects the rest: a
-// check_run with no pull_requests yields no observation, a deleted check's failure stands for the
-// life of the head, and a rerun whose completion is never observed holds the last verdict until
-// the check runs again.
+// head than the recorded one is applied to the fence the pull request remembers for that head, or
+// to an empty one. A check still running is in no settlement at all - the listener settles a
+// commit only once every check it has seen there is terminal - so it is no verdict rather than a
+// failure. A check_run delivery the listener lost is recovered by Dispatch's webhook redelivery
+// sweep (packages/envoy/internal/dispatch/redeliver: it runs only where Dispatch has the App key
+// and NATS, every two minutes, and asks GitHub again for each delivery GitHub recorded as failed
+// until GitHub records it OK or 72 hours after its first failed attempt; its listing starts an
+// hour and six minutes back (redeliver.Lookback) while it runs without a gap, two minutes before
+// its stored cursor after one, and 72 hours back on a first sweep with no cursor), by Dispatch's
+// CI reconcile once the run has completed (packages/envoy/internal/dispatch/cireconcile: where
+// Dispatch has NATS and the App key, a pass every five minutes records each completed check run
+// of an open pull request's head that the listener's record of that head lacks), or by the
+// check's next run. The listener attributes a check_run with no pull_requests only by its check
+// suite's refs/pull/<n>/head branch, and the CI reconcile records any other such run on an open
+// pull request's head once it has completed. Nothing on the Go path corrects the rest: a deleted
+// check's failure stands until a newer run of that name, and a rerun whose completion neither the
+// listener nor the CI reconcile observes holds the last verdict until the check runs again.
 type SettlementCandidate struct {
 	// Head is the commit the settlement is for, which need not be the pull request's head
 	// (SettlementFor).

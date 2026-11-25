@@ -1,7 +1,7 @@
--- 0049_accepting_and_production_checks.up.sql — the architect accepted before the merge, the
--- merge closed the issue, and the production check became work after the close (LEGION-781).
+-- 0049_accepting_and_production_checks.up.sql — the architect accepts before the merge, the merge
+-- closes the issue, and the production check becomes work after the close (LEGION-781).
 --
--- Phases. `accepting` came between `reviewing` and `retro`; `production_check` is no phase. An
+-- Phases. `accepting` sits between `reviewing` and `retro`; `production_check` is no phase. An
 -- issue the old daemon left in production_check has its pull request merged (that phase began at
 -- the merge), so it stands where the new daemon closes it: awaiting_merge, whose merged pull
 -- request the boot's sweep closes. The same for a hold taken from production_check. The move runs
@@ -23,14 +23,14 @@ alter table issues add constraint issues_held_from_check check (held_from in (
 -- it, since the check outlives the pull request's row (below).
 alter table pull_requests add column merge_sha text not null default '';
 
--- The production check, one per issue its merge closed, fenced on itself rather than on the tree
--- generation: it copies the repository, pull request number and merge commit, since
--- ClearTreeGeneration deletes a merged pull_requests row at re-admission and leaves this table
--- alone. looks counts the implementer's looks; look_open is whether the latest is still running,
--- and look_wake_at when it woke. last_wake_* is what woke the latest look and pending_cause_* a
--- wake that arrived while a look was open, which the next look starts with. last marks the bound's
--- look, the last one. A closed check has closed_at and its outcome: recorded (pass), defect (fail)
--- or not_run (pending at the last look, or a look that could not run).
+-- The production check, one per closed issue, fenced on itself rather than on the tree generation:
+-- it copies the repository, pull request number and merge commit, since ClearTreeGeneration
+-- deletes a merged pull_requests row at re-admission and leaves this table alone. looks counts the
+-- implementer's looks; look_open is whether the latest is still running, and look_wake_at when it
+-- woke. last_wake_* is what woke the latest look and pending_cause_* a wake that arrived while a
+-- look was open, which the next look starts with. last marks the bound's look, the last one. A
+-- closed check has closed_at and its outcome: recorded (pass), defect (fail) or not_run (pending
+-- at the last look, or a look that could not run).
 create table production_checks (
   issue text primary key references issues (key) on delete cascade,
   project text not null,

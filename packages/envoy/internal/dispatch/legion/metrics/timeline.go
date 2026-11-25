@@ -37,11 +37,12 @@ const (
 )
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on its children (segment 4). `done` is none of them: a child in `done` before
+// of them is waiting on its children (segment 4), `step` among them, where a role the deployment
+// defines works a step of the child's task. `done` is none of them: a child in `done` before
 // its close is out of the workflow, whose hours are outside its own work time too (the spec's "Out
 // of the workflow before the close", outOfWorkflowSpans), so its root waits on it through none.
 var childWorkingPhases = []string{
-	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
+	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseStep,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
 }
 
@@ -76,13 +77,63 @@ const (
 // `needs_review` or `retro` (a send-back) is implementing" is read by.
 var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 
-// phaseOrder is the workflow's order of the phases a fallback timeline names, the order the
-// daemon's table moves an issue of the default steps through (a plan in another order moves by its
-// own). One rule reads it: a role's first event starts that role's phase only where the issue has
-// not reached that phase already (phaseSteps).
+// phaseOrder is the order of the default steps' phases a fallback timeline names, the order the
+// daemon's table of today's line (phase.Order) moves an issue with no plan rows through. It is the
+// line of a moment whose run has no plan this reading can place (Issue.phaseLine).
 var phaseOrder = []string{
 	phaseDesign, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting,
 	legion.PhaseReviewing, legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging,
+}
+
+// stepPhase is the phase the role of each step a plan names runs as (the daemon's
+// plan.BuiltinRoles): the planner's planning, the implementer's implementing, the tester's
+// testing, the reviewer's reviewing, and the owner's acceptance, accepting. Every other role a
+// step names is one the deployment defines, whose step runs as `step` (ownRole, phaseLine).
+var stepPhase = map[string]string{
+	"planner":     legion.PhasePlanning,
+	"implementer": legion.PhaseImplementing,
+	"tester":      legion.PhaseTesting,
+	"reviewer":    legion.PhaseReviewing,
+	"acceptance":  legion.PhaseAccepting,
+}
+
+// phaseLine is the order of the phases a fallback timeline names at the moment at: design, then
+// the phase of each step of the task the issue's plan names, in the task's order, `step` for a
+// step of a role the deployment defines, then retro and merging. The plan is the one of the
+// newest run whose node was made at or before at, or the first run's where at falls before every
+// plan, since a run's design comes before its plan is written. An issue with no plan, or a plan
+// whose steps this reading cannot place, reads the default steps' order (phaseOrder). Three rules
+// read it: which phase a handoff starts (handoffStart), the rank that keeps a role's first event
+// from starting a phase the issue has passed (phaseSteps), and the phase `needs_review` names
+// (statusPhase). Where a step of a role the deployment defines stands is where its run (Issue.Runs)
+// starts it, which names its role.
+func (i *Issue) phaseLine(at time.Time) []string {
+	if len(i.Plans) == 0 {
+		return phaseOrder
+	}
+	plan := i.Plans[0]
+	for _, run := range i.Plans[1:] {
+		if run.Made.After(at) {
+			break
+		}
+		plan = run
+	}
+	if len(plan.Steps) == 0 {
+		return phaseOrder
+	}
+	line := make([]string, 0, len(plan.Steps)+3)
+	line = append(line, phaseDesign)
+	for _, step := range plan.Steps {
+		phase, placed := stepPhase[step]
+		switch {
+		case !placed && ownRole(step):
+			return phaseOrder
+		case !placed:
+			phase = legion.PhaseStep
+		}
+		line = append(line, phase)
+	}
+	return append(line, legion.PhaseRetro, legion.PhaseMerging)
 }
 
 // rolePhase is the phase each role's first event on the issue starts, until the issue is first
@@ -104,26 +155,51 @@ var rolePhase = map[string]string{
 	"merger":      legion.PhaseMerging,
 }
 
-// handoffStarts is the phase each handoff word starts in the default steps' order, the one order
-// the fallback timeline reads: the planner's `plan` starts implementing, the implementer's
-// `implement` starts testing, the tester's `test` starts reviewing and the reviewer's `review`
-// starts accepting ("Accepting starts at the `review` handoff"), each word the one the daemon's
-// phase.Handoff pairs with the phase it ends. The spec's "a handoff starts the next phase" is this
-// map: a handoff ends the phase it names and leaves no hour between the two. Retro and merging
-// write none, since each reports the commit it stands on, and accepting ends at the owner's
-// sign-off or at the verdict of a fresh agent of acceptance, neither of which is a handoff (the
-// daemon's phase.Handoff); a word Legion never writes names no phase. A plan in another order
-// moves on to its own next step, which this map does not read.
-var handoffStarts = map[string]string{
-	"plan":      legion.PhaseImplementing,
-	"implement": legion.PhaseTesting,
-	"test":      legion.PhaseReviewing,
-	"review":    legion.PhaseAccepting,
+// ownRole says whether role is one of Legion's own: a role whose first event starts a phase of its
+// own (rolePhase), or the owner's `acceptance`, which runs as accepting. Every other role a step
+// names is one the deployment defines, which runs as `step` (StepRun, PhaseSpan.Role).
+func ownRole(role string) bool {
+	_, own := rolePhase[role]
+	return own || role == "acceptance"
 }
 
-// PhaseSpan is one stretch of one phase.
+// handoffPhase is the phase each handoff word (the daemon's phase.Handoff names them) ends: the
+// planner's `plan` ends planning, the implementer's `implement` implementing, the tester's `test`
+// testing and the reviewer's `review` reviewing. Retro and merging write none, since each reports
+// the commit it stands on, accepting ends at the owner's sign-off or at the verdict of a fresh
+// agent of acceptance, neither of which is a handoff (the daemon's phase.Handoff), and a step of a
+// role the deployment defines writes none either. A word Legion never writes ends no phase.
+var handoffPhase = map[string]string{
+	"plan":      legion.PhasePlanning,
+	"implement": legion.PhaseImplementing,
+	"test":      legion.PhaseTesting,
+	"review":    legion.PhaseReviewing,
+}
+
+// handoffStart is the phase a handoff of word starts on line (Issue.phaseLine): the phase after
+// the one the word ends. In the default steps the planner's `plan` starts implementing, the
+// implementer's `implement` testing, the tester's `test` reviewing and the reviewer's `review`
+// accepting ("Accepting starts at the `review` handoff"), and the handoff of a task's last step
+// starts its retro. The spec's "a handoff starts the next phase" is this rule: a handoff ends the
+// phase it names and leaves no hour between the two. A phase the line does not hold starts
+// nothing, and neither does a handoff whose next step is a step of a role the deployment
+// defines: that step starts at its run, which names its role (fallbackMarks), where `step` alone
+// would name none.
+func handoffStart(line []string, word string) (string, bool) {
+	ends, known := handoffPhase[word]
+	at := slices.Index(line, ends)
+	if !known || at < 0 || at+1 >= len(line) || line[at+1] == legion.PhaseStep {
+		return "", false
+	}
+	return line[at+1], true
+}
+
+// PhaseSpan is one stretch of one phase. Role is the role of the step a `step` span is of, a role
+// the deployment defines, whose bar holds its hours (barsOf); "" for every other phase, whose
+// role the phase itself names.
 type PhaseSpan struct {
 	Phase string
+	Role  string
 	Span  Span
 }
 
@@ -196,7 +272,7 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 	laid := make([]PhaseSpan, 0, cap(timeline)+2*len(out))
 	for _, step := range timeline {
 		for _, kept := range subtract([]Span{step.Span}, out) {
-			laid = append(laid, PhaseSpan{Phase: step.Phase, Span: kept})
+			laid = append(laid, PhaseSpan{Phase: step.Phase, Role: step.Role, Span: kept})
 		}
 		for _, left := range intersect([]Span{step.Span}, out) {
 			laid = append(laid, PhaseSpan{Phase: legion.PhaseDone, Span: left})
@@ -207,7 +283,8 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 }
 
 // observedPhases is the timeline the sampler's `phase` observations draw, with each admitted
-// stretch split into the design the issue held a slot through and the queue it did not.
+// stretch split into the design the issue held a slot through and the queue it did not, and each
+// `step` stretch split by the role of the step it ran (stepRoleSpans).
 func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 	end := p.issueEnd(issue)
 	var timeline []PhaseSpan
@@ -215,7 +292,12 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 		if stretch.Span.Duration() == 0 {
 			continue
 		}
-		if stretch.Phase != legion.PhaseAdmitted {
+		switch stretch.Phase {
+		case legion.PhaseStep:
+			timeline = append(timeline, stepRoleSpans(issue, stretch.Span)...)
+			continue
+		case legion.PhaseAdmitted:
+		default:
 			timeline = append(timeline, stretch)
 			continue
 		}
@@ -229,6 +311,40 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 	}
 	slices.SortFunc(timeline, func(a, b PhaseSpan) int { return a.Span.From.Compare(b.Span.From) })
 	return timeline
+}
+
+// stepRoleSpans is the observed `step` stretch span cut where the issue's step role changed
+// (legion.FieldStepRole), each part a `step` span of the role the daemon reported through it. The
+// role the stretch starts in is the newest step_role mark at or before its start, `null` where
+// the issue left its last step since; where the read that named the role landed a moment after
+// the stretch began, it is the first role named in the stretch. Inside the stretch a `null` mark
+// ends no step, as a `null` phase mark ends no phase (phaseStretches): it is a read that no longer
+// carried the issue. A stretch no read named a role for keeps the role "".
+func stepRoleSpans(issue *Issue, span Span) []PhaseSpan {
+	role := ""
+	var cuts []PhaseSpan
+	for _, mark := range issue.Observed[legion.FieldStepRole] {
+		named := legion.JSONString([]byte(mark.Value))
+		if !mark.At.After(span.From) {
+			role = named
+			continue
+		}
+		if !mark.At.Before(span.To) {
+			break
+		}
+		if named == "" {
+			continue
+		}
+		if role == "" && len(cuts) == 0 {
+			role = named
+			continue
+		}
+		if named != role {
+			cuts = append(cuts, PhaseSpan{Phase: legion.PhaseStep, Role: role, Span: Span{From: span.From, To: mark.At}})
+			span.From, role = mark.At, named
+		}
+	}
+	return append(cuts, PhaseSpan{Phase: legion.PhaseStep, Role: role, Span: span})
 }
 
 // phaseStretches is each stretch the issue's `phase` marks hold a phase through, in time order:
@@ -348,24 +464,32 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
 // sendBack is statusPhase's own decision that a status change sends the issue back to
-// implementing; a role's first event and a handoff never do.
+// implementing, or a failed run's return (fallbackMarks); a role's first event and a handoff
+// never do. role is the role of a `step` mark, the role the deployment defines whose run it is.
+// rank is the phase's place on the issue's line at that moment (Issue.phaseLine, phaseRank).
 type phaseMark struct {
 	at       time.Time
 	source   markSource
 	phase    string
+	role     string
 	sendBack bool
+	rank     int
 }
 
-// markSource is which of the three sources wrote a mark. It is also the order two marks of one
-// moment are read in, and the last of them is the phase: a role's first event is the earliest
-// word on a change, the handoff that starts the phase is the next, and the status the workflow
-// wrote with it is the last.
+// markSource is which of the sources wrote a mark. It is also the order two marks of one moment
+// are read in, and the last of them is the phase: a role's first event is the earliest word on a
+// change, the handoff that starts the phase is the next, the status the workflow wrote with it the
+// next, and the run of a step of a role the deployment defines, which Dispatch records itself
+// (Issue.Runs), the last: its end before its start, so a run that starts where another ended is
+// the phase from then.
 type markSource int
 
 const (
 	sourceRole markSource = iota
 	sourceHandoff
 	sourceStatus
+	sourceRunEnd
+	sourceRunStart
 )
 
 // appendStepSpans appends the timeline the event log's steps draw up to until: the phase the
@@ -377,7 +501,7 @@ const (
 // starts the next phase, and no hour between phases is left over ... After a send-back, the
 // Dispatch status sets the phase". The three sources are therefore one list of marks and the
 // timeline is the step function they draw, with no gap between one phase and the next — which is
-// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds
+// what lets the bars of metric 2 add up to the work time while the no-role bar holds
 // `awaiting_person` and `held` alone.
 func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) []PhaseSpan {
 	for index, step := range steps {
@@ -388,22 +512,23 @@ func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) [
 		if span.Duration() == 0 {
 			continue
 		}
-		timeline = append(timeline, PhaseSpan{Phase: step.phase, Span: span})
+		timeline = append(timeline, PhaseSpan{Phase: step.phase, Role: step.role, Span: span})
 	}
 	return timeline
 }
 
 // fallbackMarks is every mark the event log holds of an issue's phase, in time order: each role's
-// first event on the issue, each handoff, and each change of its Dispatch status.
+// first event on the issue, each handoff, each change of its Dispatch status, and each run of a
+// step of a role the deployment defines.
 func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 	architect, hasArchitect := issue.FirstRoleEvent["architect"]
 	var marks []phaseMark
-	add := func(source markSource, at time.Time, phase string) {
-		marks = append(marks, phaseMark{at: at, source: source, phase: phase})
+	add := func(source markSource, at time.Time, phase, role string, sendBack bool) {
+		marks = append(marks, phaseMark{at: at, source: source, phase: phase, role: role, sendBack: sendBack, rank: phaseRank(issue.phaseLine(at), phase)})
 	}
 	for role, at := range issue.FirstRoleEvent {
 		if phase, works := rolePhase[role]; works && role != "architect" {
-			add(sourceRole, at, phase)
+			add(sourceRole, at, phase, "", false)
 		}
 	}
 	// "An issue has a design phase when a session titled `Legion architect · <its own key>` wrote
@@ -415,11 +540,11 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if slots := p.slotSpans(issue, p.issueEnd(issue)); len(slots) > 0 && slots[0].From.Before(architect) {
 			architect = slots[0].From
 		}
-		add(sourceRole, architect, phaseDesign)
+		add(sourceRole, architect, phaseDesign, "", false)
 	}
 	for _, handoff := range issue.Handoffs {
-		if phase, starts := handoffStarts[handoff.Phase]; starts {
-			add(sourceHandoff, handoff.At, phase)
+		if phase, starts := handoffStart(issue.phaseLine(handoff.At), handoff.Phase); starts {
+			add(sourceHandoff, handoff.At, phase, "", false)
 		}
 	}
 	previous := ""
@@ -427,10 +552,20 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if mark.Value == previous {
 			continue
 		}
-		if phase, sendBack, named := statusPhase(previous, mark.Value); named {
-			marks = append(marks, phaseMark{at: mark.At, source: sourceStatus, phase: phase, sendBack: sendBack})
+		if phase, sendBack, named := statusPhase(previous, mark.Value, issue.phaseLine(mark.At)); named && !issue.stepStatus(mark) {
+			add(sourceStatus, mark.At, phase, "", sendBack)
 		}
 		previous = mark.Value
+	}
+	// A run of a step of a role the deployment defines starts that role's time at `step`, and a
+	// run that failed and returned its task sends the issue back to implementing as it ends. No
+	// handoff says either, and no status does: the workflow writes `in_progress` for `step` as for
+	// implementing (stepStatus), so the run is the one word of where the issue stands.
+	for _, run := range issue.Runs {
+		add(sourceRunStart, run.Start, legion.PhaseStep, run.Role, false)
+		if run.Returned && run.End != nil {
+			add(sourceRunEnd, *run.End, legion.PhaseImplementing, "", true)
+		}
 	}
 	slices.SortFunc(marks, func(a, b phaseMark) int {
 		if at := a.at.Compare(b.at); at != 0 {
@@ -439,7 +574,7 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if source := int(a.source) - int(b.source); source != 0 {
 			return source
 		}
-		return phaseRank(a.phase) - phaseRank(b.phase)
+		return a.rank - b.rank
 	})
 	return marks
 }
@@ -451,7 +586,7 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 	reached := -1
 	sentBack := false
 	for _, mark := range marks {
-		rank := phaseRank(mark.phase)
+		rank := mark.rank
 		// A role's first event starts that role's phase only where the issue has not reached
 		// that phase already: the boundary the spec draws is "the next role's first event", so a
 		// role that speaks again after its phase has passed — an implementer answering during
@@ -471,13 +606,13 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 		}
 		reached = max(reached, rank)
 		last := len(steps) - 1
-		if last >= 0 && steps[last].phase == mark.phase {
+		if last >= 0 && steps[last].phase == mark.phase && steps[last].role == mark.role {
 			continue
 		}
 		if last >= 0 && steps[last].at.Equal(mark.at) {
 			// Two marks of one moment are one change, and the last word on it is the phase.
-			steps[last].phase = mark.phase
-			if last > 0 && steps[last-1].phase == mark.phase {
+			steps[last].phase, steps[last].role = mark.phase, mark.role
+			if last > 0 && steps[last-1].phase == mark.phase && steps[last-1].role == mark.role {
 				steps = steps[:last]
 			}
 			continue
@@ -487,17 +622,20 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 	return steps
 }
 
-// phaseRank is a phase's place in the workflow's order, and -1 for one the fallback never names.
-func phaseRank(phase string) int {
-	return slices.Index(phaseOrder, phase)
+// phaseRank is a phase's place on line (Issue.phaseLine), and -1 for one the line does not hold.
+func phaseRank(line []string, phase string) int {
+	return slices.Index(line, phase)
 }
 
-// statusPhase is the phase a status change sets before observations exist, and whether that
-// change is a send-back: the spec's "After a send-back, the Dispatch status sets the phase:
-// `in_progress` after `testing`, `needs_review` or `retro` is implementing, `testing` is testing,
-// and `needs_review` is reviewing until the `review` handoff of that round, then accepting until
-// the status changes" — the handoff mark is what turns that last stretch into accepting. This is
-// the one place the timeline decides a send-back, which phaseSteps reads off the mark.
+// statusPhase is the phase a status change sets before observations exist, on the issue's line
+// at that moment (Issue.phaseLine), and whether that change is a send-back: the spec's "After a
+// send-back, the Dispatch status sets the phase: `in_progress` after `testing`, `needs_review` or
+// `retro` is implementing, `testing` is testing, and `needs_review` is reviewing until the
+// `review` handoff of that round, then accepting until the status changes". The workflow writes
+// `needs_review` for both reviewing and accepting, so it names the first of the two the line
+// holds: reviewing in the default steps, where the handoff mark turns the rest into accepting,
+// and accepting on a task whose acceptance comes before its review or that has no reviewer step.
+// This is the one place the timeline decides a send-back, which phaseSteps reads off the mark.
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
 // `done` — leave the phase as it was. The work time leaves out the hours of all of them but
@@ -514,29 +652,52 @@ func phaseRank(phase string) int {
 // planning"). The design mark is `fallbackMarks`' own, from the issue's first slot or its
 // architect's first event, and planning starts at the first planner event, so an `in_progress`
 // here names the send-back alone.
-func statusPhase(previous, status string) (phase string, sendBack, named bool) {
+func statusPhase(previous, status string, line []string) (phase string, sendBack, named bool) {
 	switch status {
 	case statusTesting:
 		return legion.PhaseTesting, false, true
 	case statusNeedsReview:
+		for _, held := range line {
+			if held == legion.PhaseReviewing || held == legion.PhaseAccepting {
+				return held, false, true
+			}
+		}
 		return legion.PhaseReviewing, false, true
 	case statusRetro:
 		return legion.PhaseRetro, false, true
 	case statusImplementing:
-		// The workflow writes `in_progress` wherever a move enters planning, implementing or a
-		// step from a phase of another status (workflow/table.go's phaseStatus): where it admits
-		// an issue out of the queue or out of parked, on every send-back to implementing
-		// (TriggerTesterFailed, TriggerReviewRejected and TriggerBackward each write the status of
-		// the phase they enter, and before cybermonklabs/legion#4464 a conflict's move did too),
-		// and, in a plan of another order, on a move on or back into planning or a step. Only a
-		// move out of `testing`, `needs_review` or `retro` names a phase here, read as the
-		// send-back to implementing that it is in the default steps.
+		// The workflow writes `in_progress` three times over: where it admits an issue out of the
+		// queue or out of parked, for every send-back to implementing, whatever phase the issue
+		// comes back from (workflow/table.go's TriggerTesterFailed, TriggerReviewRejected and
+		// TriggerBackward all write it, and before cybermonklabs/legion#4464 a conflict's move did
+		// too), and for every start of a step of a role of the deployment (`step`). Only a move out
+		// of `testing`, `needs_review` or `retro` names a phase here, and it is read as a send-back;
+		// the start of such a step is told from it by the step's run (stepStatus), which its
+		// readers ask first.
 		if slices.Contains(sentBackStatuses, previous) {
 			return legion.PhaseImplementing, true, true
 		}
 		return "", false, false
 	}
 	return "", false, false
+}
+
+// stepStatus is whether mark is the `in_progress` the workflow writes as a step of a role the
+// deployment defines starts (the daemon's status of `step`): one written while a run of such a
+// step is open, from its start to its end (Issue.Runs). It names no phase of its own and is no
+// send-back, whatever status came before it, since the run itself says whose time it is
+// (fallbackMarks). Both readers of a status before observations ask it: the phase marks and the
+// send-backs of metric 3 (sentBackOnce).
+func (i *Issue) stepStatus(mark Mark) bool {
+	if mark.Value != statusImplementing {
+		return false
+	}
+	for _, run := range i.Runs {
+		if !mark.At.Before(run.Start) && (run.End == nil || !mark.At.After(*run.End)) {
+			return true
+		}
+	}
+	return false
 }
 
 // enteredStatus is whether the mark at index of a status history is where the status became
@@ -627,7 +788,7 @@ func outOfWorkflowSpans(timeline []PhaseSpan) []Span {
 // time to merge and every bar of phase time subtract the same queue time. A root in `admitted`
 // that holds a slot is in design, not in the queue" (the spec's "Rule details — Queue time, one
 // definition"). It is the phase timeline's own `queued` spans, so the work time and the bars
-// cannot read it two ways and the seven bars of an issue add up to its work time on either
+// cannot read it two ways and the bars of an issue add up to its work time on either
 // timeline. Whether the issue holds a slot is slotSpans' answer, in which the daemon dropping the
 // issue from its state releases nothing: an issue keeps through a drop the phase and the slot it
 // was last seen with, so one that held a slot when it dropped is not in the queue until a read

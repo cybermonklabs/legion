@@ -31,14 +31,14 @@ flowchart TB
 
   people -->|file issues, answer asks, approve specs| dispatch
   people -->|approve secret requests| approve
-  people -->|merge| github
+  people -->|review, and set the rules a merge lands under| github
   dispatch -->|events| envoy
   github -->|pull request and CI events| envoy
   envoy -->|events| coordinator
   envoy -->|messages| agents
   coordinator -->|runs| agents
   agents -->|specs, comments, asks, status| dispatch
-  agents -->|pull requests| github
+  agents -->|pull requests, merges| github
   agents -->|request a secret| broker
   broker -->|pending requests, each linking its page| inbox
   inbox -->|link| approve
@@ -47,8 +47,7 @@ flowchart TB
 ## Dispatch: the record of work and decisions
 
 Dispatch is a web dashboard and an HTTP API over one store of projects and issues. Each issue has a
-lifecycle status, from Triage, Icebox, Backlog and Todo through In Progress, Testing, Needs Review
-and Retro to Done.
+lifecycle status: Triage, Icebox, Backlog, Todo, In Progress, Testing, Needs Review, Retro or Done.
 
 An issue carries documents, the first of which is its spec. People and agents comment on a
 document, suggest exact replacements for its text, and ask questions. An **ask** is a decision put
@@ -72,13 +71,13 @@ files it for Legion only when none does, and a
 problem that needs a decision goes to a person in a Dispatch ask.
 
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
-large work into child issues, and runs each change through the steps of the issue's plan in turn:
-by default a **planner**, an **implementer**, a **tester**, a **reviewer** and its own acceptance,
-then a **merger** where the steps opened a pull request. The architect can do any step itself.
-The agents of an issue share its one workspace. Each planning, implementation, test and review
-step records a structured handoff on the issue in Dispatch, which the next step reads and a
-restarted agent recovers from. The coordinator writes the issue's status back to Dispatch as the
-work moves (In Progress, Testing, Needs Review, Retro).
+large work into child issues, and runs each change through the phase workers its plan names, in the
+order it names them — in the default steps a **planner**, an **implementer**, a **tester** and a
+**reviewer**, then its own acceptance — then a **merger** where the steps opened a pull request.
+The architect can do any step itself. The phase workers of an issue share its one workspace, and
+each planning, implementation, test and review step records a structured handoff on the issue in
+Dispatch, which the next step reads and a restarted agent recovers from. The coordinator writes
+the issue's status back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
 
 Two decisions stay with people:
 
@@ -92,8 +91,9 @@ Two decisions stay with people:
   whether and when it lands, so a check it requires, or a review a person must give, stays
   theirs; the coordinator submits no merge and turns auto-merge on nowhere.
 
-The coordinator runs its agents as Oh My Pi sessions, either in tmux panes on one host or as Agent
-Sandbox pods in a Kubernetes cluster.
+The coordinator runs its agents as Oh My Pi sessions, or a phase worker on Claude Code where the
+deployment puts it there, either in tmux panes on one host or, in a Kubernetes cluster, in one
+Agent Sandbox pod for each issue.
 
 ## Secrets Broker: credentials a person approved
 
@@ -143,15 +143,16 @@ business.
 3. The coordinator admits it and starts its architect, which writes the spec.
 4. The architect requests approval. The request reaches the approver's Inbox, they approve that
    version, and Dispatch publishes the approval on Envoy. The coordinator opens the design gate.
-5. The steps of the issue's plan take the change in turn: by default the planner, implementer,
-   tester and reviewer. In the default steps, a review that requests changes sends it back to the
-   implementer, and through the tester again.
-6. Once the steps before it pass, the acceptance reads the evidence and accepts the change (or
-   sends it back): by default the architect's own, or a fresh agent's where the plan asks for one.
-   Then the retrospective runs. Where the issue has a pull request, the merger then reads it and
-   merges it itself, at the head it read, under a message it writes rather than GitHub's default;
-   it lands under the repository's own rules, and the coordinator closes the issue when it reads
-   that merge: it is Done. An issue with no pull request is Done when its retrospective ends.
+5. The steps of the architect's plan take the change in the order it names them: in the default
+   steps, the planner, implementer, tester and reviewer. A review that requests changes sends it
+   back to the implementer, and through the steps after it again.
+6. Where the plan has an acceptance step (in the default steps, once the reviewer approves), the
+   architect, or a fresh agent where the plan asks for one, reads the evidence and accepts the
+   change (or sends it back); once the plan's last step passes, the retrospective runs. Where the
+   issue has a pull request, the merger then reads it and merges it itself, at the head it read,
+   under a message it writes rather than GitHub's default; it lands under the repository's own
+   rules, and the coordinator closes the issue when it reads that merge: it is Done. An issue with
+   no pull request is Done when its retrospective ends.
 7. After a merge's close, the role `projects.<KEY>.production_check` names — the tester, by
    default — drives the change in production and records what it observed on the pull request.
    The merge itself starts the first look; after that the agent names its own next look on each

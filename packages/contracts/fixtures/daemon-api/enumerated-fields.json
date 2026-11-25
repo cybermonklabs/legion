@@ -49,7 +49,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -167,47 +167,47 @@
     "values": [
       {
         "value": "failed",
-        "since": 222
+        "since": 259
       },
       {
         "value": "idle",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_uncertain",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launching",
-        "since": 222
+        "since": 259
       },
       {
         "value": "queued",
-        "since": 222
+        "since": 259
       },
       {
         "value": "ready",
-        "since": 222
+        "since": 259
       },
       {
         "value": "registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "retired",
-        "since": 222
+        "since": 259
       },
       {
         "value": "shim_connected",
-        "since": 222
+        "since": 259
       },
       {
         "value": "suspended",
-        "since": 222
+        "since": 259
       },
       {
         "value": "working",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -217,19 +217,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "asked",
-        "since": 222
+        "since": 259
       },
       {
         "value": "none",
-        "since": 222
+        "since": 259
       },
       {
         "value": "open",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -239,31 +239,31 @@
     "values": [
       {
         "value": "died",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_refused",
-        "since": 222
+        "since": 259
       },
       {
         "value": "never_registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "prompt_retires_exhausted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "provider_error",
-        "since": 222
+        "since": 259
       },
       {
         "value": "stale_plugin",
-        "since": 222
+        "since": 259
       },
       {
         "value": "unrecorded",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -273,31 +273,31 @@
     "values": [
       {
         "value": "died",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_refused",
-        "since": 222
+        "since": 259
       },
       {
         "value": "never_registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "prompt_retires_exhausted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "provider_error",
-        "since": 222
+        "since": 259
       },
       {
         "value": "stale_plugin",
-        "since": 222
+        "since": 259
       },
       {
         "value": "unrecorded",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -307,55 +307,55 @@
     "values": [
       {
         "value": "accepting",
-        "since": 222
+        "since": 259
       },
       {
         "value": "admitted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "awaiting_person",
-        "since": 222
+        "since": 259
       },
       {
         "value": "done",
-        "since": 222
+        "since": 259
       },
       {
         "value": "held",
-        "since": 222
+        "since": 259
       },
       {
         "value": "implementing",
-        "since": 222
+        "since": 259
       },
       {
         "value": "integrating",
-        "since": 222
+        "since": 259
       },
       {
         "value": "merging",
-        "since": 222
+        "since": 259
       },
       {
         "value": "planning",
-        "since": 222
+        "since": 259
       },
       {
         "value": "retro",
-        "since": 222
+        "since": 259
       },
       {
         "value": "reviewing",
-        "since": 222
+        "since": 259
       },
       {
         "value": "step",
-        "since": 222
+        "since": 259
       },
       {
         "value": "testing",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -696,7 +696,7 @@
         "since": 46
       }
     ],
-    "until": 221
+    "until": 258
   },
   {
     "answer": "state",
@@ -727,7 +727,7 @@
         "since": 53
       }
     ],
-    "until": 221
+    "until": 258
   },
   {
     "answer": "state",
@@ -758,7 +758,7 @@
         "since": 178
       }
     ],
-    "until": 221
+    "until": 258
   },
   {
     "answer": "state",
@@ -807,6 +807,10 @@
       {
         "value": "boot",
         "since": 46
+      },
+      {
+        "value": "caches",
+        "since": 213
       },
       {
         "value": "configuration",
@@ -942,7 +946,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -1136,7 +1140,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -1194,7 +1198,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -1300,7 +1304,7 @@
       },
       {
         "value": "children_before_retro",
-        "since": 211
+        "since": 219
       },
       {
         "value": "children_first",
@@ -1324,7 +1328,7 @@
       },
       {
         "value": "task_stopped",
-        "since": 211
+        "since": 219
       },
       {
         "value": "tree_closed",
@@ -1346,7 +1350,7 @@
     "values": [
       {
         "value": "children",
-        "since": 211
+        "since": 219
       },
       {
         "value": "escalated",
@@ -1354,7 +1358,33 @@
       },
       {
         "value": "task-stopped",
-        "since": 211
+        "since": 219
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
       }
     ]
   },
@@ -1408,7 +1438,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -1526,47 +1556,47 @@
     "values": [
       {
         "value": "failed",
-        "since": 222
+        "since": 259
       },
       {
         "value": "idle",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_uncertain",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launching",
-        "since": 222
+        "since": 259
       },
       {
         "value": "queued",
-        "since": 222
+        "since": 259
       },
       {
         "value": "ready",
-        "since": 222
+        "since": 259
       },
       {
         "value": "registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "retired",
-        "since": 222
+        "since": 259
       },
       {
         "value": "shim_connected",
-        "since": 222
+        "since": 259
       },
       {
         "value": "suspended",
-        "since": 222
+        "since": 259
       },
       {
         "value": "working",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -1576,19 +1606,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "asked",
-        "since": 222
+        "since": 259
       },
       {
         "value": "none",
-        "since": 222
+        "since": 259
       },
       {
         "value": "open",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -1598,31 +1628,31 @@
     "values": [
       {
         "value": "died",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_refused",
-        "since": 222
+        "since": 259
       },
       {
         "value": "never_registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "prompt_retires_exhausted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "provider_error",
-        "since": 222
+        "since": 259
       },
       {
         "value": "stale_plugin",
-        "since": 222
+        "since": 259
       },
       {
         "value": "unrecorded",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -1632,31 +1662,31 @@
     "values": [
       {
         "value": "died",
-        "since": 222
+        "since": 259
       },
       {
         "value": "launch_refused",
-        "since": 222
+        "since": 259
       },
       {
         "value": "never_registered",
-        "since": 222
+        "since": 259
       },
       {
         "value": "prompt_retires_exhausted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "provider_error",
-        "since": 222
+        "since": 259
       },
       {
         "value": "stale_plugin",
-        "since": 222
+        "since": 259
       },
       {
         "value": "unrecorded",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -1666,55 +1696,55 @@
     "values": [
       {
         "value": "accepting",
-        "since": 222
+        "since": 259
       },
       {
         "value": "admitted",
-        "since": 222
+        "since": 259
       },
       {
         "value": "awaiting_person",
-        "since": 222
+        "since": 259
       },
       {
         "value": "done",
-        "since": 222
+        "since": 259
       },
       {
         "value": "held",
-        "since": 222
+        "since": 259
       },
       {
         "value": "implementing",
-        "since": 222
+        "since": 259
       },
       {
         "value": "integrating",
-        "since": 222
+        "since": 259
       },
       {
         "value": "merging",
-        "since": 222
+        "since": 259
       },
       {
         "value": "planning",
-        "since": 222
+        "since": 259
       },
       {
         "value": "retro",
-        "since": 222
+        "since": 259
       },
       {
         "value": "reviewing",
-        "since": 222
+        "since": 259
       },
       {
         "value": "step",
-        "since": 222
+        "since": 259
       },
       {
         "value": "testing",
-        "since": 222
+        "since": 259
       }
     ]
   },
@@ -2058,7 +2088,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -2252,7 +2282,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -2310,7 +2340,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 258
       },
       {
         "value": "testing",
@@ -2404,7 +2434,7 @@
     "values": [
       {
         "value": "children",
-        "since": 211
+        "since": 219
       },
       {
         "value": "escalated",
@@ -2412,7 +2442,7 @@
       },
       {
         "value": "task-stopped",
-        "since": 211
+        "since": 219
       }
     ]
   },
@@ -2445,6 +2475,28 @@
         "since": 46
       }
     ],
-    "until": 221
+    "until": 258
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
+      }
+    ]
   }
 ]

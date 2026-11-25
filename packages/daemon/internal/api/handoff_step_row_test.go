@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A role that stands at two steps of a task completes each, and the two completions are two facts
@@ -40,7 +42,7 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 		t.Fatalf("the tester's completion of step 4 = %d %s, want it applied as a fact of its own", answer.Code, answer.Body)
 	}
 	prefix := "handoff:" + key + ":1:1:1:tester:testing:a:0:" + written + ":pass"
-	if got, want := completionKeys(t, h, key), []string{prefix + ":p2", prefix + ":p4"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	if got, want := completionKeys(t, h, key), []string{prefix + ":p2", prefix + ":p4"}; !slices.Equal(got, want) {
 		t.Fatalf("the completion keys of %s = %q, want %q", key, got, want)
 	}
 }
@@ -48,8 +50,8 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 // runTaskAt runs task a of key's plan at step place.
 func runTaskAt(t *testing.T, h *harness, key string, place int) {
 	t.Helper()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(context.Background(), tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
 	}); err != nil {
 		t.Fatalf("run task a of %s at step %d: %v", key, place, err)
 	}
@@ -63,7 +65,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 	t.Helper()
 	ctx, records := context.Background(), record.NewStore()
 	builtin := plan.BuiltinRoles()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
 			GivenBy: "owner", GivenAt: time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting}
@@ -72,7 +74,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 			name, agentKey, _ := strings.Cut(word, ":")
 			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: name, AgentKey: agentKey, Type: builtin[name].Type})
 		}
-		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps)); err != nil {
 			return err
 		}
 		for at := range len(words) + 1 {
@@ -94,7 +96,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 // and the agent's turn of step 2, still open on step 2's entry, completes at the pull request's head
 // with a record of its own: its entry is at or below step 2's row, another step of the role, so the
 // route refuses it HANDOFF_STALE_ENTRY, saying so, and applies no fact. The control is a role at one
-// step, `implementer tester reviewer`, whose step a forward move handed again at the same head: the
+// step, `implementer tester:a reviewer`, whose step a forward move handed again at the same head: the
 // same completion is taken, as it was before a role stood at two steps. Without the route's read of
 // the other step (record.OtherStepsEntry) the first completion was applied, and only the
 // workflow's own fence, behind this route, refused it.
@@ -127,7 +129,7 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 				}
 				return
 			}
-			message := refused(t, answer, http.StatusConflict, "HANDOFF_STALE_ENTRY")
+			message := refused(t, answer, http.StatusConflict, intake.StaleEntryCode)
 			for _, want := range []string{
 				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
 				"the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them",

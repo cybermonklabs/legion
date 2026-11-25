@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A Legion role's session whose turn a content filter refuses after the model sent text, while a
+  background job of the session still runs, now moves down its model fallback chain at that turn's
+  end, and its return is armed as for any other refusal. Before, the plugin read the end Oh My Pi
+  sends for such a turn (`willContinue` and `awaitingAsyncWork` both set) as a retry of the host
+  and took no step, so the job's result started the next turn on the model that had just refused
+  the session. A turn end the host goes on from itself, with a retry or a hook's continuation
+  (`willContinue` without `awaitingAsyncWork`), still takes no step.
+custom:
+  Issue: pr4787

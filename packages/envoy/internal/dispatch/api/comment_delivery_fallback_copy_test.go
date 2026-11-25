@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener that answers delivers the mention to the session the comment's route or its author
@@ -26,6 +28,7 @@ import (
 // comment is published to its own topic, the copy the silent listener's failed mention gets
 // (TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment) included.
 func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		route     string
@@ -73,6 +76,7 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 // person started, on an issue with no route - adds no copy: the comment's comment.created payload
 // is unchanged, and once the outbox has looked at it again it still reached no topic of s2's.
 func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
 	_ = state.hold("s2")
@@ -131,6 +135,7 @@ func commentCreatedRow(t *testing.T, database *store.Store, commentID string) co
 // sweep; when that resend fails too, the claimant still hears the comment, from the claimant copy
 // the outbox held for it.
 func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
@@ -231,8 +236,8 @@ func (claimedRole) LastSeen(string) int64 { return time.Now().UnixMilli() }
 func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 
 // runOutboxUntilSettled runs the outbox through publisher until every event of issueKey is
-// published and every copy of commentID it held back for a resent mention is settled, for at most
-// 10 s.
+// published and every copy of commentID it held back for a resent mention is settled. Its one
+// bound is the test binary's deadline (testwait.Until).
 func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, issueKey, commentID string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,23 +254,24 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	awaitOutboxSettled(t, deps.Store, issueKey, commentID)
+}
+
+// awaitOutboxSettled waits until the outbox running beside the test has published every event of
+// issueKey and settled every copy of commentID it held back for a mention. Its one bound is the
+// test binary's deadline (testwait.Until).
+func awaitOutboxSettled(t *testing.T, database *store.Store, issueKey, commentID string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the outbox to publish every event of %s and settle every copy of %s (unpublished, unsettled)", issueKey, commentID), func() ([2]int, bool) {
 		var unpublished, unsettled int
-		if err := deps.Store.Pool.QueryRow(context.Background(), `
+		if err := database.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
 			       (select count(*) from comment_fallback_copies where comment_id = $2 and settled_at is null)
 		`, issueKey, commentID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count the outbox's work on %s: %v", issueKey, err)
 		}
-		if unpublished == 0 && unsettled == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished and %d copies of %s unsettled", unpublished, issueKey, unsettled, commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return [2]int{unpublished, unsettled}, unpublished == 0 && unsettled == 0
+	})
 }
 
 // recordingOutboxPublisher takes every envelope the outbox publishes and records it, a role
@@ -333,6 +339,7 @@ func (p *recordingOutboxPublisher) topicsAbout(t *testing.T, commentID string) [
 // fails too reaches no new destination: the outbox publishes nothing of the comment to the new
 // route, and the comment.created row keeps the publication its first publish recorded.
 func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	// Never released: every send to s2 waits until its caller gives up, and its attempt fails.
 	_ = state.hold("s2")
@@ -415,15 +422,15 @@ func fallbackCopiesOf(t *testing.T, database *store.Store, commentID string) []h
 	return copies
 }
 
-// awaitFallbackCopies waits, for at most 10 s, until the comment has a fallback row for every
-// destination in want and each of them reads settled, and answers the rows then. want is the
-// copies the outbox is to hold; settled says whether to wait for a pass to decide them.
+// awaitFallbackCopies waits until the comment has a fallback row for every destination in want
+// and each of them reads settled, and answers the rows then. want is the copies the outbox is to
+// hold; settled says whether to wait for a pass to decide them. Its one bound is the test
+// binary's deadline (testwait.Until).
 func awaitFallbackCopies(
 	t *testing.T, database *store.Store, commentID string, want []string, settled bool,
 ) []heldCopy {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("the fallback copies of %s to be one per %v, settled=%v", commentID, want, settled), func() ([]heldCopy, bool) {
 		copies := fallbackCopiesOf(t, database, commentID)
 		destinations := make([]string, 0, len(copies))
 		decided := true
@@ -431,22 +438,16 @@ func awaitFallbackCopies(
 			destinations = append(destinations, row.destination)
 			decided = decided && row.settled == settled
 		}
-		if slices.Equal(destinations, want) && decided {
-			return copies
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fallback copies of %s are %#v, want one per %v, settled=%v", commentID, copies, want, settled)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return copies, slices.Equal(destinations, want) && decided
+	})
 }
 
-// awaitPublishedCommentCreated waits, for at most 10 s, until the outbox has published the
-// comment.created event of commentID, and answers the destinations it reached.
+// awaitPublishedCommentCreated waits until the outbox has published the comment.created event of
+// commentID, and answers the destinations it reached. Its one bound is the test binary's deadline
+// (testwait.Until).
 func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, "the outbox to publish the comment.created of "+commentID+" (the destinations it reached)", func() ([]string, bool) {
 		var destinations []string
 		var publishedAt *time.Time
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -455,14 +456,8 @@ func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID
 		`, commentID).Scan(&publishedAt, &destinations); err != nil {
 			t.Fatalf("read comment.created of %s: %v", commentID, err)
 		}
-		if publishedAt != nil {
-			return destinations
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left the comment.created of %s unpublished", commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return destinations, publishedAt != nil
+	})
 }
 
 // heldLaneComment is a comment whose mention of s1 waits on a lane held longer than a claim
@@ -500,11 +495,13 @@ type queuedMention struct {
 // outbox decides, and with no route the mention's own send is the only thing that can hand s1
 // the comment. The sender holds the queued attempt's claim throughout, writing it again every
 // mentionClaimRefresh: it is the live claim the outbox bounds its wait by however long the lane
-// is held. The listener client's send window is long enough that no send of this lane's misses
-// it; a test whose send must miss it names a shorter one (aMentionQueuedWithinASendWindow).
+// is held. The listener client's send window is pastTheRun, longer than any run of the test
+// binary, so no send of this lane's misses it however long a loaded machine takes between the
+// stall and its release; a test whose send must miss it names a shorter one
+// (aMentionQueuedWithinASendWindow).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
-	return aMentionQueuedWithinASendWindow(t, route, 30*time.Second)
+	return aMentionQueuedWithinASendWindow(t, route, pastTheRun)
 }
 
 // aMentionQueuedWithinASendWindow is aMentionQueuedBehindAStalledSend with the window the
@@ -559,6 +556,7 @@ func aMentionQueuedPastALease(t *testing.T) heldLaneComment {
 // session's copy as a comment_fallback_copies row instead. When the queued send then lands, the
 // row settles with nothing published, so the session hears the comment once, from the mention.
 func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *testing.T) {
+	t.Parallel()
 	held := aMentionQueuedPastALease(t)
 	destinations := awaitPublishedCommentCreated(t, held.database, held.comment)
 	if slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
@@ -586,6 +584,7 @@ func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *tes
 // The copy held for a mention waiting on a held lane is the session's only one when that send
 // fails: the fallback pass publishes it to that destination alone, once.
 func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) {
+	t.Parallel()
 	held := aMentionQueuedPastALease(t)
 	awaitPublishedCommentCreated(t, held.database, held.comment)
 	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, false)
@@ -626,6 +625,7 @@ func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) 
 // here s1's host refuses that send too, so the pass publishes the copy and s1 hears the comment
 // exactly once, from the outbox.
 func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "session:s1")
 	lane.listener.refuseSends("s1")
 	retry := dispatchRequest(t, lane.handler, http.MethodPost, "/api/v1/comments/"+lane.queued+"/deliveries",
@@ -684,5 +684,58 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 	if sendsOfTheComment != 2 {
 		t.Fatalf("the listener took %d sends of the queued comment, want the refused Retry and the lane's "+
 			"own refused send: the attempt a failed Retry overtook is sent all the same", sendsOfTheComment)
+	}
+}
+
+// A copy the outbox holds back for a mention waiting on a held lane is the comment as written,
+// kept to publish should that mention fail. The author's delete of the comment before the fallback
+// pass decides the copy settles it with nothing published: the text it carries is withdrawn, and
+// the session is told of the comment.deleted event instead. The delete also fails the mention it
+// waited on (queueDeletedPostSettlement), which is the very state in which a pass publishes a
+// held copy (TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails), so a pass that runs
+// after the delete with the copy due publishes nothing of the comment to s1's own topic.
+func TestADeleteSettlesAHeldCopyOfTheCommentWithNothingPublished(t *testing.T) {
+	t.Parallel()
+	lane := aMentionQueuedBehindAStalledSend(t, "session:s1")
+	ageAttempts(t, lane.database, lane.sending, lane.queued)
+	published := &recordingOutboxPublisher{}
+	runOutboxBeside(t, lane.deps, published)
+	ownTopic := contracts.LegacyAgentSubject("s1")
+	awaitPublishedCommentCreated(t, lane.database, lane.queued)
+	awaitFallbackCopies(t, lane.database, lane.queued, []string{ownTopic}, false)
+
+	deleteThreadComment(t, lane.handler, lane.queued, "alice")
+	if copies := fallbackCopiesOf(t, lane.database, lane.queued); len(copies) != 1 || !copies[0].settled || copies[0].published {
+		t.Errorf("the held copy after the delete = %#v, want it settled with nothing published", copies)
+	}
+	if _, err := lane.database.Pool.Exec(context.Background(), `
+		update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where comment_id = $1
+	`, lane.queued); err != nil {
+		t.Fatalf("make the held copy due: %v", err)
+	}
+	awaitOutboxSettled(t, lane.database, lane.issue, lane.queued)
+	if copies := fallbackCopiesOf(t, lane.database, lane.queued); len(copies) != 1 || copies[0].published {
+		t.Errorf("the held copy once the outbox has run = %#v, want it never published", copies)
+	}
+	published.mu.Lock()
+	defer published.mu.Unlock()
+	var toS1 []string
+	for _, item := range published.items {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID string `json:"id"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope published to %s: %v", item.Topic, err)
+		}
+		if item.Topic == ownTopic && event.Payload.ID == lane.queued {
+			toS1 = append(toS1, event.Type)
+		}
+	}
+	if slices.Contains(toS1, "comment.created") || !slices.Contains(toS1, "comment.deleted") {
+		t.Errorf("the outbox published %v of the deleted comment to s1's own topic, want its comment.deleted "+
+			"and no comment.created", toS1)
 	}
 }

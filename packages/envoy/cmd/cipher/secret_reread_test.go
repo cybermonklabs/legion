@@ -27,6 +27,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestASecretFormSignsItsRereadAsThisProcesssSession: a form run where this process has a broker
@@ -318,7 +320,10 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 // TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress: a machine cache that holds a whole
 // session while another command holds its exclusive lock, as registerMachine does across its token
 // trade and enrollment, is no identity the reread holds now. The form does not wait for that lock:
-// it sends its reread unsigned and finishes, while the lock is still held.
+// it sends its reread unsigned and finishes, while the lock is still held. The lock is held until
+// the row ends, so a form that waited for it until it was released would not finish within the
+// shared wait, which would fail naming it; and a form that waited for it a while and then gave up
+// is late against a deadline of 0, beyond the time this process was held up (requireOnTime).
 func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
@@ -336,22 +341,28 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 		code           int
 	}
 	done := make(chan result, 1)
+	meter := startStallMeter(t)
+	start := time.Now()
 	go func() {
 		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 		done <- result{stdout, stderr, code}
 	}()
-	const bound = 10 * time.Second
-	select {
-	case got := <-done:
-		if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
-			!strings.Contains(got.stderr, "another command is registering this machine's session") {
-			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
+	var got result
+	testwait.Eventually(t, "the create to finish while another command holds the machine cache's lock", func() bool {
+		select {
+		case got = <-done:
+			return true
+		default:
+			return false
 		}
-		if strings.Contains(got.stderr, dir) {
-			t.Fatalf("create with the machine cache locked printed the cache's path %s: %q; want it named in words", dir, got.stderr)
-		}
-	case <-time.After(bound):
-		t.Fatalf("create did not finish within %s while another command held the machine cache's lock; want it not to wait for that lock", bound)
+	})
+	requireOnTime(t, meter, "the create while another command held the machine cache's lock", start, 0)
+	if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
+		!strings.Contains(got.stderr, "another command is registering this machine's session") {
+		t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
+	}
+	if strings.Contains(got.stderr, dir) {
+		t.Fatalf("create with the machine cache locked printed the cache's path %s: %q; want it named in words", dir, got.stderr)
 	}
 	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
 		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's", unsigned)
@@ -464,10 +475,12 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 // identity the process already holds. A key directory whose launcher is still enrolling (a fresh
 // enrollment.pending and no key.pem) is not waited on, and a machine whose cloud identity the
 // broker would trade for a session is traded for nothing: the broker is asked for its settings and
-// the reread and nothing else, the metadata server is asked nothing, and the form is done well
-// inside the enrollment wait it would otherwise have sat through.
+// the reread and nothing else, and the metadata server is asked nothing. The row decides "not
+// waited on" by events, never by a span: it fails as soon as the form says that it waits on the
+// launcher, which a wait says before it reads its deadline (awaitEnrollment), and the enrollment
+// wait is a day, so a form that waited without saying so would not come back within the shared
+// wait, which would fail naming it.
 func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) {
-	const enrollWait = 30 * time.Second
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
 			local := secrets.NewLocal()
@@ -479,25 +492,38 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 				if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker), nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", enrollWait.String())
+				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
 			}
 			calls := recordBrokerCalls(t)
 			useAWS(t, local, testAccount, adaSignIn)
 			useStdin(t, "v1")
-			started := time.Now()
-			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-			took := time.Since(started)
+			stdout, stderr := &cmdtest.LockedBuffer{}, &cmdtest.LockedBuffer{}
+			ended := make(chan struct{})
+			var code int
+			go func() {
+				defer close(ended)
+				code = cmdSecret([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, stdout, stderr)
+			}()
+			testwait.Eventually(t, "the create to end or say that it waits on the launcher", func() bool {
+				select {
+				case <-ended:
+					return true
+				default:
+					return strings.Contains(stderr.String(), launcherWaitStart)
+				}
+			})
+			if strings.Contains(stderr.String(), launcherWaitStart) {
+				t.Fatalf("stderr %q; the create must not wait on the launcher", stderr.String())
+			}
+			<-ended
 			if code != 0 {
-				t.Fatalf("create: exit %d, stderr %q; want 0", code, stderr)
+				t.Fatalf("create: exit %d, stderr %q; want 0", code, stderr.String())
 			}
 			if want := []string{"GET /v1/settings", "POST /v1/secrets/NEW_KEY/reread"}; !slices.Equal(calls(), want) {
 				t.Fatalf("the broker was asked %v; want %v and nothing else: no token trade, no enrollment", calls(), want)
 			}
 			if n := metadata.totalRequests(); n != 0 {
 				t.Fatalf("the metadata server was asked %d times; want never", n)
-			}
-			if took >= enrollWait/3 {
-				t.Fatalf("the create took %s; want it done well inside the %s enrollment wait it must not sit through", took, enrollWait)
 			}
 		})
 	}

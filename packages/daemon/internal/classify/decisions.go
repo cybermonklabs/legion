@@ -33,7 +33,7 @@ func AdvancePullRequestHead(pr record.PullRequest, arrival Arrival, headSHA stri
 			pr, _, _ = advance(pr, arrival, headSHA, nil)
 			return pr
 		}
-		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt}
+		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt, Settled: clone(pr.SettledHeads)}
 	}
 	pr = runStep(pr, record.RunStep{Head: headSHA, Before: arrival.Before, Sender: arrival.Sender, SyncedAt: arrival.At})
 	pr.Pushes = unspentPushes(pr.Pushes, pr.Moves, true)
@@ -706,10 +706,23 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 }
 
 // SettlementFor says whether a CI settlement of candidate.Head may stand for the pull request's
-// current head, and returns the pull request ready to apply it. It may only when candidate.Head is
-// the current head: every other settlement - an earlier head's, a head a force push left - stands
-// for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations, snapshots and commit statuses are each head's own.
+// current head, and returns the pull request with the fence it is weighed against
+// (ClassifySettlement) and applied to (ApplySettlement). It may only when candidate.Head is the
+// current head: every other settlement - an earlier head's, a head a force push left - stands for
+// nothing. Check runs, generations, snapshots and commit statuses are each head's own, so the
+// fence is the head's: the one the pull request holds when it stands at the head, and otherwise
+// the one it remembers for the head (record.PullRequest.SettledHeads), empty for a head it never
+// settled or no longer remembers.
+//
+// The pull request holds another head's fence, or none, when the branch went to another head that
+// settled and came back, when a reopen emptied the fence, and when a new generation's clear did
+// (record.Store's ClearGeneration). What it remembers for the head is the fence as it stood
+// before that, so a settlement after any of them is classified as it would have been had nothing
+// reset the fence, and applied to the same fence. An earlier settlement of the head - an older
+// run, fewer checks, an older commit status - delivered late, or replayed from a message the
+// intake gave up on, however late, is then stale as it is against a fence that stands, and the
+// newest one delivered again is the duplicate it is there (settle says what each does to a fence
+// that was reset).
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -718,14 +731,69 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	if head == pr.CheckedHead {
 		return pr, true
 	}
-	pr.CheckedHead = head
-	pr.Failing = []string{}
-	pr.Cancelled = []string{}
-	pr.CheckRuns = nil
-	pr.Generation = 0
-	pr.Snapshot = ""
-	pr.Statuses = nil
-	return pr, true
+	remembered := record.Settlement{Head: head}
+	for _, settled := range pr.SettledHeads {
+		if settled.Head == head {
+			remembered = settled
+		}
+	}
+	return withFence(pr, remembered), true
+}
+
+// fenceEntry is pr's check fence as an entry of what the pull request remembers of its settled
+// heads (record.PullRequest.SettledHeads): the head it stands at and each field of the fence, every
+// list copied, so the entry shares no list with pr.
+func fenceEntry(pr record.PullRequest) record.Settlement {
+	return record.Settlement{Head: pr.CheckedHead, CheckRuns: clone(pr.CheckRuns), Generation: pr.Generation, Snapshot: pr.Snapshot,
+		Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), Statuses: clone(pr.Statuses)}
+}
+
+// withFence is pr with entry as its check fence, standing at entry's head: each field of the entry,
+// every list copied, so pr shares no list with the entry it remembers, and Failing and Cancelled
+// lists even where the entry holds none, as a fence a settlement applied to holds them. fenceEntry
+// is the copy the other way: these two copy the pull request's fence to and from what it
+// remembers of its settled heads. They are not the only copies of a settlement's fields, so a
+// field the fence gains reaches these two and each of the others: the settlement fact's candidate
+// (workflow's settlementCandidate), a head run's settlement step and its replay
+// (ApplyCheckSettlement's step, candidateOf, sameSettlement), the apply of a newer settlement
+// (ApplySettlement), the reopen step that empties the fence (applyStep), the judgement a head run
+// anchors and replays and the test of its change (judgementOf, withJudgement, JudgementChanged),
+// and the store's columns and memory rows of the fence (record's PutPullRequest, scanPullRequest,
+// storedFence and the clear of a new generation).
+func withFence(pr record.PullRequest, entry record.Settlement) record.PullRequest {
+	pr.CheckedHead = entry.Head
+	pr.Failing, pr.Cancelled = append([]string{}, entry.Failing...), append([]string{}, entry.Cancelled...)
+	pr.CheckRuns, pr.Statuses = clone(entry.CheckRuns), clone(entry.Statuses)
+	pr.Generation, pr.Snapshot = entry.Generation, entry.Snapshot
+	return pr
+}
+
+// maxSettledHeads bounds the heads a pull request remembers the fence of
+// (record.PullRequest.SettledHeads), and so the rows of each kind pull_request_settled_heads keeps
+// for it: at most this many heads, each with one run of each check name and one status of each
+// context it reported. A branch comes back to a head it held after a push or two is undone, a
+// reopen, or a new generation, each of which is a head or two back; sixteen cover that with room.
+// A head pushed out of the memory loses only its fence: a settlement of it is weighed against an
+// empty one, as one of a head the record never settled is.
+const maxSettledHeads = 16
+
+// rememberSettled is settled, what the pull request remembers of its settled heads
+// (record.PullRequest.SettledHeads), with pr's fence as the entry of its checked head, the head a
+// settlement just applied on: that head's entry replaced and moved to the end, where the head a
+// settlement applied on last stands, and the oldest heads beyond maxSettledHeads gone. The fence
+// was the remembered one, or the one that stood at the head, when the settlement was applied to it
+// (SettlementFor), so the entry it replaces holds nothing the fence does not.
+func rememberSettled(settled []record.Settlement, pr record.PullRequest) []record.Settlement {
+	kept := make([]record.Settlement, 0, len(settled)+1)
+	for _, entry := range settled {
+		if entry.Head != pr.CheckedHead {
+			kept = append(kept, entry)
+		}
+	}
+	if drop := len(kept) - (maxSettledHeads - 1); drop > 0 {
+		kept = kept[drop:]
+	}
+	return append(kept, fenceEntry(pr))
 }
 
 // HeadPushKnown says whether a push the record holds left head, so the record already knows of a
@@ -1191,15 +1259,14 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the base is merged forward, by the agent of the task's last step of the
-// type implementation at or before its place, else the task's last such step (workflow's
-// mergeForward), and the issue's move into accepting, retro or merging is what asks for that merge
-// (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read here, the state build shows no
-// mergeWait for the round the engine has just ended.
+// head will change until the base is merged forward. Where no ask of that merge was made before,
+// the issue's move into merging is what asks the merger for it (cybermonklabs/legion#4979,
+// record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the
+// engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
-// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// mergeStateOwed refuses a pull request that is not open, so the state the record holds is the
 // one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
 // a read of the head again (the opened handler, then Apply's askMergeState). Projection's
 // mergeWaitView makes no state test of its own and relies on this one.
@@ -1235,50 +1302,95 @@ const (
 	MergeStateFactBasePush
 )
 
+// MergeForwardStands says whether a merge forward is asked, and stands, at place, where a task
+// stands whose first step of the type implementation is at implementation (the workflow's
+// Walk.implementationStart: the implementer's step on the default steps and for an issue with no
+// plan rows, or a step of that type under another role's name; no place for a task with none):
+// that place, where the work already is, or any place after it on the task's line
+// (dispatch://INFRA-4374 R1), and, once the task's run has reached that step (reached: the
+// workflow's implementationReached), any place of its line at all, so a move back to a step before
+// it keeps the merge forward standing there. On the default steps that is implementing, testing,
+// reviewing, accepting, retro and merging. Where the task places a planner step after the
+// implementer, its planning is one too, since it works on a branch whose pull request is open. The
+// issue keeps that phase while the role asked (record.MergeForwardAsker) merges.
+//
+// It reads the place and never the phase, because every step of a role the deployment or the
+// issue's plan defines runs as step: `checker implementer linter` reads step at place 1 and at
+// place 3, and only the place says that the checker's comes before the implementer's and the
+// linter's after it. The caller hands it the place the task stands at while its issue stands where
+// it does (the workflow's Walk.placeIn of record.StandsAt, so a hold counts as standing at the
+// place it is held from), which is no place for an issue that stands anywhere else - admitted,
+// awaiting_person, or out of the workflow - and such an issue, and one at a step before the
+// implementer whose run has not reached the implementer yet, has no pull request work to merge
+// forward and is asked for none; the first move into the implementation step is what reaches it
+// (the workflow's mergeForwardOnEntry). Where the merge comes next before merging - retro, or
+// accepting where no step of the task follows the acceptance (MergeComesNext) - nothing is asked
+// (ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
+// (cybermonklabs/legion#4979), and an ask made before stands there until it lands.
+func MergeForwardStands(implementation, place record.TaskPlace, reached bool) bool {
+	return implementation.Started() && place.Started() && (reached || place.Rank() >= implementation.Rank())
+}
+
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
-// request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
-// whether a fact of kind fact asks for it. Each of two reasons asks, and one is enough:
+// request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
+// ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
+// base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
+// kind fact asks for it, for an issue whose task's first step of the type implementation is at
+// implementation, which its run has reached where reached, and which stands at place
+// (MergeForwardStands says which places stand). Each of two reasons asks, and one is enough:
 //
-//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in,
-//     implementing through merging (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
-//     runs no checks on a head that conflicts with its base, so without a read a conflicting push
-//     stands with no CI and nobody is told; the read that finds the head CONFLICTING is the first
-//     of the two reads that confirm a conflict (R2).
-//   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
-//     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. In accepting, retro and merging (past the review, in the
-//     default steps) a conflict is acted on at once (record.ConflictMergeNext, R0). In testing and
-//     reviewing the record otherwise keeps the state the read before the push left: a record read
+//   - The fact moves the head, and a merge forward stands where the task stands
+//     (MergeForwardStands, dispatch://INFRA-4374 R0): the implementer's place, or a place after it
+//     on the task's line. GitHub runs no checks on a head that conflicts with its base, so without
+//     a read a conflicting push stands with no CI and nobody is told; the read that finds the head
+//     CONFLICTING is the first of the two reads that confirm a conflict (R2).
+//   - The fact is a push to the base, and a merge forward stands where the task stands at a place
+//     other than the implementer's on its line. GitHub sends no event of the pull request while
+//     it computes whether the head
+//     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
+//     so a conflict there is acted on at once (R0). Where the merge comes next before merging
+//     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) it
+//     is recorded for the move into merging (cybermonklabs/legion#4979). Elsewhere, without a
+//     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
-//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
-//     before it: there the head the implementer pushes next is read, by the reason above.
+//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for a task at the implementer's
+//     place or, before its run reached it, a place before it: there the head the implementer pushes
+//     next is read, by the reason above.
 //
-// Every other fact asks nothing here, and so does a head move or a base push of an issue outside
-// those phases. The third reason a read is owed is not the gate's: the issue's review round
-// waiting on GitHub's answer about the head, whatever the fact - an approval that stands on a head
-// GitHub has answered nothing for, or a state it would not merge from (RoundWaitsOnMergeState),
-// or a head whose first conflicting read waits for its second (workflow's reviewRound,
-// round.waitsOnMergeState). Only the engine works out the round, so askMergeStateFor adds that
-// reason, and works the round out only for a fact the gate owes no read for.
-func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
+// Every other fact asks nothing here, and so does a head move or a base push of a task at no such
+// place. The third reason a read is owed is not the gate's: the issue's review round waiting on
+// GitHub's answer about the head, whatever the fact - an approval that stands on a head GitHub has
+// answered nothing for, or a state it would not merge from (RoundWaitsOnMergeState), or a head
+// whose first conflicting read waits for its second (workflow's reviewRound,
+// round.waitsOnMergeState). Only the engine works out the round, so workflow's mergeStateOwed adds
+// that reason, and works the round out only for a fact the gate owes no read for.
+func MergeStateReadOwed(implementation, place record.TaskPlace, reached bool, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:
-		return record.StandsIn(issue, record.MergeForwardPhases...)
+		return MergeForwardStands(implementation, place, reached)
 	case MergeStateFactBasePush:
-		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+		return MergeForwardStands(implementation, place, reached) && place != implementation
 	}
 	return false
 }
 
 // ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
 // head that conflicts with its base must be merged forward now, or "" when nothing needs that yet,
-// and the conflict is recorded and nothing else is done. The reasons are read in this order, and
-// the first that holds is the answer:
+// and the conflict is recorded and nothing else is done. line is the phases the issue's task walks
+// (the workflow's Walk.Line: one for each step, then retro and merging). The reasons are read in
+// this order, and the first that holds is the answer:
 //
-//   - record.ConflictMergeNext: the issue stands in accepting, retro or merging (in the default
-//     steps, past its review), or is held from one of them (record.PastReview). The merge is near
-//     there, in the default steps its next step, and GitHub merges no head that conflicts with its
-//     base.
+//   - record.ConflictMergeNext: the issue stands in merging, or is held from it. The merge is the
+//     merger's next step, GitHub merges no head that conflicts with its base, and the merger merges
+//     the base forward itself (record.MergeForwardAsker, cybermonklabs/legion#4979).
+//   - "": the merge comes next for the issue before merging (MergeComesNext): it stands in retro,
+//     or in accepting where no step of its task follows the acceptance, or is held from one of
+//     them. Every step of the task has run, so the conflict waits for merging, where the merger
+//     resolves it (workflow's mergeForwardOnEntry), rather than going back to the implementer
+//     (cybermonklabs/legion#4979). Neither the architect's acceptance nor retro needs a head that
+//     merges, so nothing there waits on the merge forward. In accepting where a tester or a
+//     reviewer step follows the acceptance, the reasons below decide, as in testing and
+//     reviewing: that step still needs a head the base's checks run on.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1295,16 +1407,18 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //     once rather than wait for it.
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
-// be current: the steps go on at that head, and the merge forward waits for the issue's move into
-// accepting, retro or merging, where record.ConflictMergeNext holds.
+// be current: the step the issue stands at goes on at that head, and the merge forward waits for
+// the step that needs it, the issue's move into merging, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
 // contexts green on the head when nothing needs a merge yet, reads them once.
-func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
+func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
-	case record.PastReview(issue):
+	case record.StandsIn(issue, phase.Merging):
 		return record.ConflictMergeNext
+	case MergeComesNext(issue, line):
+		return ""
 	case rules == nil || rules.Unread != "":
 		return record.ConflictRulesUnread
 	case rules.Strict:
@@ -1316,6 +1430,29 @@ func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []str
 		}
 	}
 	return ""
+}
+
+// MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
+// phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
+// accepting where no step of the task follows the acceptance, or is held from one of them
+// merges. In the default steps these are accepting, retro and merging. In merging the merger
+// merges the base forward itself, and before it the conflict waits for merging
+// (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
+// acceptance, that step runs at the head before the merge, as a tester or a reviewer does after
+// the implementer. A line that holds no acceptance has no acceptance a step follows, so it answers
+// false in accepting.
+func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
+	switch record.StandsAt(issue) {
+	case phase.Retro, phase.Merging:
+		return true
+	case phase.Accepting:
+		for at, p := range line {
+			if p == phase.Accepting {
+				return at+1 < len(line) && line[at+1] == phase.Retro
+			}
+		}
+	}
+	return false
 }
 
 // GreenContexts is every context green on the pull request's current head, each once and sorted:
@@ -1360,15 +1497,15 @@ func GreenContexts(pr record.PullRequest) []string {
 // (record.PullRequest.ConflictingHead, which only the second CONFLICTING read of that head writes,
 // workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
 // rather than on the cause, because every way back out of a conflicting head is the same round of
-// work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
-// agent of the task's last step of the type implementation at or before its place, else the
-// task's last such step (the implementer in the default steps), answers each of them with the one
-// forward merge the conflict needs. That merge moves the recorded head, the mark no longer equals
-// it, and the next rejection counts (a rejection at a review step the owner does counts none,
-// workflow's transition), which is how the exemption ends without a write of its own. The same
-// mark is what says a head needs merging forward before it can merge at all: an approval of it
-// ends its review round (workflow's reviewRound), and a move into accepting, retro or merging at
-// it asks for the merge forward (workflow's mergeForwardOnEntry).
+// work - a reviewer's request for changes, a tester's fail, a worker's backward move to any
+// earlier step of its task - and what the conflict needs is the one forward merge, which the agent
+// of the task's last step of the type implementation at or before its place, else the task's last
+// such step (the implementer in the default steps), makes. That merge moves the recorded head, the
+// mark no longer equals it, and the next rejection counts (a rejection at a review step the owner
+// does counts none, workflow's transition), which is how the exemption ends without a write of its
+// own. The same mark is what says a head needs merging forward before it can merge at all: an
+// approval of it ends its review round (workflow's reviewRound), and a move into accepting, retro
+// or merging at it asks for the merge forward (workflow's mergeForwardOnEntry).
 func ConflictRound(pr record.PullRequest) bool {
 	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }
@@ -1490,6 +1627,21 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
 }
 
+// DesignApprovalStands reports whether the approval a news item names, of version to of the
+// document artifact, is still the person's current word: the gate's row for the item's step holds
+// that document, and its approved version is to. It is the approval case of the question
+// ApprovalFollows answers for a review — is this recorded decision still the person's current
+// word — asked when a task that names the decision is sent, not when it was composed. Where the
+// step now records another document (a registration that named one since), a later approval has
+// replaced the one the item names, or a changes request has cleared it (ApplyDesignGateEvent), the
+// item would tell the holder of a version that is no longer the person's word. A new version that
+// closed the gate since leaves it standing: the gate keeps that approval as the version a person
+// approved below the latest. It is named for the design gate because ApprovalStands already
+// answers the pull request's question of a review.
+func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
+	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
+}
+
 // DesignGateOpen reports whether a human approved the gate's current document version. It
 // answers one step's question; the deployment's whole list is DesignGatesOpen. It is
 // record.GateOpen, where the rule lives because the record package needs it too and may not read
@@ -1499,20 +1651,32 @@ func DesignGateOpen(gate record.DesignGate) bool {
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// the deployment gates, in the order it names them, or the single step spec when it gates none.
-// It is record.RequiredSteps, where the rule lives because the record package needs it too and
-// may not read this one, and it keeps its name here because every reader of a step list in this
-// file reads it through this name.
+// it is given, in their order, or the single step spec when it is given none. It is
+// record.RequiredSteps, where the rule lives because the record package needs it too and may not
+// read this one, and it keeps its name here because every reader of a step list in this file
+// reads it through this name. It takes no rows, so a caller that holds a root's rows gives it
+// TreeSteps' answer.
 func RequiredSteps(configured []record.DesignStep) []record.DesignStep {
 	return record.RequiredSteps(configured)
 }
 
+// TreeSteps is the steps one tree is gated on: the steps the deployment gates, and criteria
+// after them when the root holds a criteria row and the deployment gates spec but not criteria.
+// `gates.design` names the steps every root must register, any step a root registers holds its
+// tree, a criteria row exists only by the architect's registration, and a row kept after a switch
+// to `gates.design: off` gates nothing. It is record.TreeSteps, where the rule lives because the
+// record package needs it too and may not read this one, and it keeps its name here as
+// RequiredSteps does.
+func TreeSteps(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []record.DesignStep {
+	return record.TreeSteps(configured, gates)
+}
+
 // DesignGatesOpen reports whether gates, every design gate an issue holds by its step, lets the
-// tree's work run: no required step (RequiredSteps) holds the work. A required step with no row
-// holds the work, as an unregistered gate always has, and since a root always requires at least
-// one step, an issue holding no row at all is held too. A row of a step the deployment does not
-// require is read by nothing here: it is kept as the record of a step gated before, and holds
-// nothing.
+// tree's work run: no required step (RequiredSteps over TreeSteps) holds the work. A required
+// step with no row holds the work, as an unregistered gate always has, and since a root always
+// requires at least one step, an issue holding no row at all is held too. A row of a step the
+// tree is not gated on is read by nothing here: it is kept as the record of a step gated before,
+// and holds nothing.
 //
 // It is record.TreeGate.Open over the same steps and rows, where the rule lives because the
 // record package needs it too and may not read this one, and it keeps its name here because
@@ -1522,16 +1686,17 @@ func DesignGatesOpen(configured []record.DesignStep, gates map[record.DesignStep
 	return record.TreeGate{Steps: configured, Rows: gates}.Open()
 }
 
-// FirstClosedStep is the first required step (RequiredSteps) whose gate is not open, in the
-// configured order, with the row it holds — the zero row when it holds none, which is the step
-// nobody has registered. ok is false when every required step is open, which is DesignGatesOpen.
+// FirstClosedStep is the first required step (RequiredSteps over TreeSteps) whose gate is not
+// open, in the configured order with a registered criteria row after the deployment's steps,
+// with the row it holds — the zero row when it holds none, which is the step nobody has
+// registered. ok is false when every required step is open, which is DesignGatesOpen.
 //
 // It answers which step holds the work now, and so which step a refusal or a hold is about: a
 // step nobody has registered holds it, because nobody has said the document exists. Which step a
 // person is being asked about is another question, since nobody can be asked about a document
 // the record does not know, and the wait reads its own rule for it (StandingGate).
 func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, record.DesignGate, bool) {
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; !ok || !DesignGateOpen(gate) {
 			return step, gate, true
 		}
@@ -1540,12 +1705,18 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 }
 
 // StandingGate is the gate a person is being asked about: the row of the first required step
-// (RequiredSteps), in the configured order, that is closed and has a row. That is a different
-// question from which step holds the tree's work (FirstClosedStep), which a step nobody has
-// registered also holds: such a step names no document, so nobody can be asked about it, and the
-// wait it raised would be a wait on nothing. So the wait skips it and names the first registered
-// unapproved step after it, while the work stays held. ok is false when no required step holds a
-// closed row, which is every required step open or every closed one unregistered.
+// (RequiredSteps over TreeSteps), in the configured order with a registered criteria row after
+// the deployment's steps, that is closed and has a row. That is a different question from which
+// step holds the tree's work (FirstClosedStep), which a step nobody has registered also holds:
+// such a step names no document, so nobody can be asked about it, and the wait it raised would
+// be a wait on nothing. So the wait skips it and names the first registered unapproved step after
+// it, while the work stays held. ok is false when no required step holds a closed row, which is
+// every required step open or every closed one unregistered.
+//
+// A criteria row comes after the spec, so a root whose spec and Verification document are both
+// with the person stands on its spec, the document one approval request names when it asks for
+// both (`dispatch request-approval --include-verification`), and on its Verification document
+// once the spec is open.
 //
 // A deployment that gates no step asks no person about anything, so the empty list stands on no
 // gate: ok is false whatever rows the root holds. The empty list still holds the tree's work
@@ -1558,7 +1729,7 @@ func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]re
 	if len(configured) == 0 {
 		return record.DesignGate{}, false
 	}
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
 			return gate, true
 		}

@@ -3,7 +3,7 @@ body: |-
   The `legion` tool gives an architect `register_plan` (an issue, its plan document and that
   document's version), which answers the plan Legion took with each task's steps, and
   `stop_task` (an issue and a task). `handoff_complete` takes `return_to`, the step a tester's
-  failed completion sends its task back to. The plugin speaks daemon API contract 211.
+  failed completion sends its task back to. The plugin speaks daemon API contract 219.
 time: 2026-11-20T10:37:42Z
 custom:
     Issue: pr4611

@@ -76,7 +76,9 @@ import (
 // argument for it; a kind that can scan or rewrite (an index on an existing table, other alter
 // table forms, a DO block, any DML) never belongs here. A marked concurrent index has a separate
 // size exception in Census: it scans rows without holding off ordinary writes, not catalog-only
-// work.
+// work. So does a bounded write, an insert of literal rows or an update of rows by their primary
+// key (boundedWrites): it reads and writes only the rows it names, at a cost that does not grow
+// with the table, which is not catalog-only work either.
 var catalogOnlyStatements = map[string]func(c *classifier, node json.RawMessage) (kind string, err error){
 	"CreateFunctionStmt": (*classifier).catalogOnlyFunction,
 	"CreateTrigStmt":     always("create trigger"),
@@ -709,7 +711,7 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // release can have created such a cast, because a pending CREATE CAST is off the keep-on list.
 // What such code can do besides that, such as create a type or enable an event trigger, the
 // census does not see.
-func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, exemptionsOff string, err error) {
+func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, off exemptionsOff, err error) {
 	for _, s := range statements {
 		if s.node == "VariableSetStmt" {
 			var set struct {
@@ -737,9 +739,9 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 		}
 		reason, setConfig, err := c.takesLaterExemptions(s)
 		if err != nil {
-			return false, false, "", err
+			return false, false, exemptionsOff{}, err
 		}
-		if reason != "" {
+		if reason.does != "" {
 			return true, true, reason, nil
 		}
 		if later {
@@ -747,13 +749,13 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 		}
 		keeps, err := c.keepsReadsOn(s, setConfig)
 		if err != nil {
-			return false, false, "", err
+			return false, false, exemptionsOff{}, err
 		}
 		if !keeps {
 			here, later = true, true
 		}
 	}
-	return here, later, "", nil
+	return here, later, exemptionsOff{}, nil
 }
 
 // keepsReadsOn says whether a statement other than a SET or a RESET is known to leave every type,
@@ -914,14 +916,34 @@ func (c *classifier) listedKind(s statement) bool {
 	return false
 }
 
-// cannotSeeAnEventTrigger ends the words of laterExemptionsOff for a migration that holds a
-// statement whose effect on the event triggers the census cannot read, and for a migration that
-// does not parse.
+// cannotSeeAnEventTrigger ends the words of an exemptionsOff that leaves the census unable to see
+// whether the migration creates or alters an event trigger: a statement whose effect on the event
+// triggers the census cannot read, and a migration that does not parse.
 const cannotSeeAnEventTrigger = ", so the census cannot see whether it creates or alters an event trigger"
 
+// exemptionsOff is why no pending migration after one may be exempt from the limit
+// (takesLaterExemptions, classification.laterExemptionsOff), in its two parts: does is what the
+// migration does, in words that follow its name, and unseen says that what it does leaves the
+// census unable to see whether it creates or alters an event trigger. A refusal that names what
+// the migration does reads does alone; one that names what can run code on a later migration
+// reads both (String). The zero value stops no exemption.
+type exemptionsOff struct {
+	does   string
+	unseen bool
+}
+
+// String is the whole of why: what the migration does, and, where that leaves the census unable to
+// see whether it creates or alters an event trigger, that it cannot see it.
+func (e exemptionsOff) String() string {
+	if e.unseen {
+		return e.does + cannotSeeAnEventTrigger
+	}
+	return e.does
+}
+
 // takesLaterExemptions says why statement s takes the table-size exemption and the concurrent
-// index exception from every pending migration after its own, in words that follow the
-// migration's name, and "" where it takes neither. An event trigger runs code of its own on the
+// index exception from every pending migration after its own (exemptionsOff), and answers the
+// zero exemptionsOff where it takes neither. An event trigger runs code of its own on the
 // statements of every later migration, as an enabled one does (ddlEventTriggersQuery), and that
 // code can read any table. The census reads pg_event_trigger as it stands before any pending
 // migration applies, so it does not see an event trigger that a pending statement creates or
@@ -957,34 +979,34 @@ const cannotSeeAnEventTrigger = ", so the census cannot see whether it creates o
 // query of a view or a rule of a relation it names (catalogRelation), and catalogReadsOff gives
 // that answer to keepsReadsOn. So the census reads the catalog once for each relation name of a
 // statement.
-func (c *classifier) takesLaterExemptions(s statement) (reason string, setConfig bool, err error) {
+func (c *classifier) takesLaterExemptions(s statement) (reason exemptionsOff, setConfig bool, err error) {
 	switch s.node {
 	case "CreateEventTrigStmt", "AlterEventTrigStmt":
-		return "creates or alters an event trigger", false, nil
+		return exemptionsOff{does: "creates or alters an event trigger"}, false, nil
 	}
 	names, ok := treeNamesOf(s.body)
 	setConfig = names.setConfig
 	for _, relation := range names.relations {
 		catalog, calls, err := c.catalogRelation(relation)
 		if err != nil {
-			return "", false, err
+			return exemptionsOff{}, false, err
 		}
 		if catalog {
-			return "names " + relation.sanitized() + ", which can resolve to a relation of pg_catalog or to a relation whose rules read one" + cannotSeeAnEventTrigger, false, nil
+			return exemptionsOff{does: "names " + relation.sanitized() + ", which can resolve to a relation of pg_catalog or to a relation whose rules read one", unseen: true}, false, nil
 		}
 		setConfig = setConfig || calls
 	}
 	switch {
 	case s.node == "DoStmt":
-		return "runs a DO block" + cannotSeeAnEventTrigger, false, nil
+		return exemptionsOff{does: "runs a DO block", unseen: true}, false, nil
 	case s.node == "CallStmt":
-		return "calls a procedure" + cannotSeeAnEventTrigger, false, nil
+		return exemptionsOff{does: "calls a procedure", unseen: true}, false, nil
 	case s.node == "CreateExtensionStmt" || s.node == "AlterExtensionStmt" || s.node == "AlterExtensionContentsStmt":
-		return "creates or alters an extension" + cannotSeeAnEventTrigger, false, nil
+		return exemptionsOff{does: "creates or alters an extension", unseen: true}, false, nil
 	case !ok || !c.listedKind(s):
-		return "holds a statement that is off the list of statements that keep the catalog reads on" + cannotSeeAnEventTrigger, false, nil
+		return exemptionsOff{does: "holds a statement that is off the list of statements that keep the catalog reads on", unseen: true}, false, nil
 	}
-	return "", setConfig, nil
+	return exemptionsOff{}, setConfig, nil
 }
 
 // selectInto says whether a SelectStmt holds an INTO, which Postgres takes from the leftmost
@@ -1213,14 +1235,20 @@ func (c *classifier) read(tx pgx.Tx, query string, arg any, dest ...any) (found 
 	return false, fmt.Errorf("read the catalog: %w", err)
 }
 
-// statement is one statement of a migration: the type of its parse node, and the node's fields.
+// statement is one statement of a migration: the type of its parse node, the node's fields, and
+// the statement's own text, where the parser places it in the migration (boundedWrites reads the
+// tables each statement touches from it).
 type statement struct {
 	node string
 	body json.RawMessage
+	text string
 }
 
 // parseStatements reads sql with Postgres's own parser into its statements, ok false where the
-// parser refuses the text, fails itself, or gives a tree the census cannot read.
+// parser refuses the text, fails itself, or gives a tree the census cannot read. A statement's
+// text is the bytes the parser gives it: from stmt_location, which the JSON leaves out where it is
+// 0, for stmt_len bytes, where 0 means to the end of the text; the comments and the space before
+// the statement are among them, and its semicolon is not.
 func parseStatements(sql string) (statements []statement, ok bool) {
 	defer func() {
 		if recover() != nil {
@@ -1233,7 +1261,9 @@ func parseStatements(sql string) (statements []statement, ok bool) {
 	}
 	var parsed struct {
 		Stmts []struct {
-			Stmt json.RawMessage `json:"stmt"`
+			Stmt     json.RawMessage `json:"stmt"`
+			Location int             `json:"stmt_location"`
+			Len      int             `json:"stmt_len"`
 		} `json:"stmts"`
 	}
 	if json.Unmarshal([]byte(tree), &parsed) != nil {
@@ -1242,10 +1272,14 @@ func parseStatements(sql string) (statements []statement, ok bool) {
 	statements = make([]statement, len(parsed.Stmts))
 	for i, s := range parsed.Stmts {
 		node, body, ok := nodeOf(s.Stmt)
-		if !ok {
+		end := len(sql)
+		if s.Len > 0 {
+			end = s.Location + s.Len
+		}
+		if !ok || s.Location < 0 || s.Location > end || end > len(sql) {
 			return nil, false
 		}
-		statements[i] = statement{node: node, body: body}
+		statements[i] = statement{node: node, body: body, text: sql[s.Location:end]}
 	}
 	return statements, true
 }
@@ -1324,12 +1358,18 @@ type classification struct {
 	// it (catalogReadsOff), so Census gives them no catalog to read.
 	laterReadsOff bool
 	// laterExemptionsOff says why no pending migration after this one may be exempt from the
-	// limit, as words that follow the migration's name; "" where nothing stops the exemptions. A
-	// statement of the migration can create or enable an event trigger that the census does not
-	// see (takesLaterExemptions), and such a trigger can run code of its own on the statements of
+	// limit (exemptionsOff); the zero value where nothing stops the exemptions. A statement of the
+	// migration can create or enable an event trigger that the census does not see
+	// (takesLaterExemptions), and such a trigger can run code of its own on the statements of
 	// every later migration, as an enabled one does (ddlEventTriggersQuery). Or the migration does
 	// not parse, so the census cannot see whether it creates or alters one.
-	laterExemptionsOff string
+	laterExemptionsOff exemptionsOff
+	// statements are the migration's statements as Postgres's parser reads them, nil where it does
+	// not parse, and readsOff says that a statement of the migration can change what the names of
+	// its statements resolve to (catalogReadsOff): what boundedWrites reads the writes of a table
+	// above the limit from.
+	statements []statement
+	readsOff   bool
 }
 
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit, and what it changes
@@ -1365,7 +1405,7 @@ func tableSizeExemption(ctx context.Context, census, catalog pgx.Tx, sql string)
 	if !ok {
 		return classification{
 			laterReadsOff:      true,
-			laterExemptionsOff: "does not parse" + cannotSeeAnEventTrigger,
+			laterExemptionsOff: exemptionsOff{does: "does not parse", unseen: true},
 		}, nil
 	}
 	c := &classifier{ctx: ctx, census: census, catalog: catalog}
@@ -1373,7 +1413,7 @@ func tableSizeExemption(ctx context.Context, census, catalog pgx.Tx, sql string)
 	if err != nil {
 		return classification{}, err
 	}
-	answer := classification{laterReadsOff: laterReadsOff, laterExemptionsOff: laterExemptionsOff}
+	answer := classification{laterReadsOff: laterReadsOff, laterExemptionsOff: laterExemptionsOff, statements: statements, readsOff: readsOff}
 	if readsOff {
 		c.catalog = nil
 	}

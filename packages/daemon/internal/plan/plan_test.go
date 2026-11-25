@@ -3,6 +3,7 @@ package plan
 import (
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -91,18 +92,18 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 // it holds: its agent is the task's owner, the issue's own architect, and no agent the plan names.
 func TestAStoredStepNamesItsAgent(t *testing.T) {
 	for _, tc := range []struct {
-		step   Step
+		key    string
 		stored string
 		want   string
 	}{
-		{Step{Role: "reviewer"}, "", ""},
-		{Step{Role: "acceptance", Key: "owner"}, "", ""},
-		{Step{Role: "acceptance", Key: "owner"}, "acceptance", ""},
-		{Step{Role: "tester", Key: "a"}, "implementer", "implementer"},
-		{Step{Role: "implementer"}, "implementer-2", "implementer-2"},
+		{"", "", ""},
+		{"owner", "", ""},
+		{"owner", "acceptance", ""},
+		{"a", "implementer", "implementer"},
+		{"", "implementer-2", "implementer-2"},
 	} {
-		if got := StoredAgentName("t", 3, tc.step, tc.stored); got != tc.want {
-			t.Errorf("StoredAgentName(%s, %q) = %q, want %q", tc.step, tc.stored, got, tc.want)
+		if got := StoredAgentName(tc.key, tc.stored); got != tc.want {
+			t.Errorf("StoredAgentName(%q, %q) = %q, want %q", tc.key, tc.stored, got, tc.want)
 		}
 	}
 }
@@ -317,5 +318,50 @@ func TestAPlansRoleOverridesTheDeploymentForANameOfItsOwnAlone(t *testing.T) {
 			t.Errorf("RoleOf(%s) with the plan defining it %t and the deployment holding it answers %v, which disagrees with Overrides' %t",
 				tc.name, tc.planned, source, tc.want)
 		}
+	}
+}
+
+// MovesBackPairs is every pair MovePairs holds but the 13 no line of a task Supported takes makes
+// as a move back, written out here rather than read from the checks: each step phase, step among
+// them, to retro or to merging, and retro to merging, since the retro and the merge end every
+// line. Among the 44: a move back of another order than today's (testing-reviewing, on implementer
+// reviewer tester), a move back to a tester that stands before the implementer
+// (implementing-testing, on tester implementer), a planner's move back to the implementer
+// (planning-implementing, on implementer planner), the merge's move back to the retro, and the
+// moves of a step of a role the deployment defines, which may stand before the implementer or
+// after it: step-implementing (implementer checker), implementing-step (checker implementer) and
+// step-step (implementer checker linter). CanMoveBack answers each pair as the list holds it, and
+// the list is a fresh slice.
+func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
+	never := []string{
+		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
+		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
+		"retro-merging", "step-retro", "step-merging",
+	}
+	var want []string
+	for _, pair := range phase.MovePairs() {
+		if !slices.Contains(never, pair) {
+			want = append(want, pair)
+		}
+	}
+	got := MovesBackPairs()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("MovesBackPairs() = %q (%d), want %q (%d)", got, len(got), want, len(want))
+	}
+	for _, pair := range []string{"testing-reviewing", "implementing-testing", "planning-implementing", "merging-retro", "step-implementing", "implementing-step", "step-step"} {
+		if !slices.Contains(got, pair) {
+			t.Errorf("MovesBackPairs() leaves out %s", pair)
+		}
+	}
+	for _, pair := range phase.MovePairs() {
+		from, to, _ := phase.ParsePair(pair)
+		fires := !slices.Contains(never, pair)
+		if can := CanMoveBack(from, to); can != fires {
+			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
+		}
+	}
+	got[0] = "rubbish"
+	if MovesBackPairs()[0] == "rubbish" {
+		t.Fatal("MovesBackPairs returned the stored slice, which a caller can overwrite")
 	}
 }

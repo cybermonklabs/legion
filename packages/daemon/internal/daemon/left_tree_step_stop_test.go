@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -33,6 +35,7 @@ import (
 // (admit's startMidPhaseMembers), and that start finishes at the outbox, the one place every start
 // row of a role runs (workflow.StoppedStepRole).
 func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -44,12 +47,12 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
 		Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1}
 	owner := mustClaimToken(t, rootKey, claim.RoleArchitect)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		version := record.PlanVersion{Issue: childKey, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: owner, GivenAt: start.Add(-time.Hour)}
 		task := record.PlanTask{Issue: childKey, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.",
 			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: childKey, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: childKey, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 		})
@@ -93,23 +96,18 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 	// The child's implementer runs the first step of task a, in the root's tree.
 	implementer := launchedClaim(t, sup, rootKey, childKey, claim.RoleImplementer)
 	machine, _ := sup.Machine(implementer)
-	tx, err := pool.Begin(ctx)
-	if err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		if err := engine.StartStepRecord(ctx, tx, child); err != nil {
+			return fmt.Errorf("start the implementer's step: %w", err)
+		}
+		if err := engine.SettleFact(ctx, tx); err != nil {
+			return fmt.Errorf("settle the step's start: %w", err)
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
-	factCtx, committed := intake.WithCommitHooks(ctx)
-	factCtx = engine.OpenFact(factCtx)
-	if err := engine.StartStepRecord(factCtx, tx, child); err != nil {
-		t.Fatalf("start the implementer's step: %v", err)
-	}
-	if err := engine.SettleFact(factCtx, tx); err != nil {
-		t.Fatalf("settle the step's start: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	committed()
 	stepRun := func() string {
 		t.Helper()
 		var run string
@@ -143,7 +141,7 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 	// linger's expiry carries the child into a tree of its own.
 	until := start.Add(time.Hour)
 	root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -153,7 +151,7 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 	}
 	apply("handover:"+childKey, intake.Handover{Issue: childKey, Tree: rootKey, Generation: 1})
 	var carried *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		carried, err = records.Issue(ctx, tx, childKey)
 		return err

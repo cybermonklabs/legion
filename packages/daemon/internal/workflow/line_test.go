@@ -26,7 +26,7 @@ func seedOwnersPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-	steps := record.NameAgents(nil, nil, []record.PlanStep{
+	steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 		{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: key, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 	})
@@ -84,7 +84,7 @@ func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
 	v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 		GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-	steps := record.NameAgents(nil, nil, []record.PlanStep{
+	steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "checker", Type: "review"},
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 3, Role: "linter", Type: "security"},

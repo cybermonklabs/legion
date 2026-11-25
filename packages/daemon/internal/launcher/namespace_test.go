@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // namespaceHelperEnv marks the test binary re-executed as the PID 1 launcher below: TestMain
@@ -40,7 +40,7 @@ func TestLauncherPIDOneHelper(t *testing.T) {
 	}
 	err = Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 		StopGrace: grace,
 	})
 	if err != nil && ctx.Err() == nil {
@@ -58,8 +58,15 @@ func pidNamespace(t *testing.T) []string {
 		t.Skip("PID namespace launcher proof requires Linux")
 	}
 	prefix := []string{"-n", "unshare", "--pid", "--fork", "--mount-proc", "--kill-child", "--setuid", strconv.Itoa(os.Getuid()), "--setgid", strconv.Itoa(os.Getgid())}
-	probe := exec.Command("sudo", append(append([]string{}, prefix...), "/bin/true")...)
+	// The probe is killed 30 s before the test binary's deadline, and a probe killed so fails the
+	// test by name, not a skip: it answers in milliseconds where the prerequisite holds.
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
+	defer cancel()
+	probe := exec.CommandContext(ctx, "sudo", append(append([]string{}, prefix...), "/bin/true")...)
 	if output, err := probe.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("PID namespace prerequisite: the probe had not answered 30 s before the test binary's deadline: %v: %s", err, output)
+		}
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			t.Fatalf("PID namespace prerequisite: %v: %s", err, output)
 		}
@@ -75,7 +82,14 @@ const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
 // runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
 // (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
-// its environment, fails t unless the helper ran and passed, and answers what it printed.
+// its environment, fails t unless the helper ran and passed, and answers what it printed. The
+// helper's own deadline is this test's less helperDeadlineGap, so a helper whose wait gives up
+// near its deadline (reaperBound) prints why and ends, and this test then still has that gap for
+// its own cleanups before its alarm. When what ran before it left the helper less than
+// helperLeastTime, t fails by name and no helper starts: one would reach its own alarm before its
+// bounds could give up. The wait for the helper ends 30 s before this test's deadline at the
+// latest, 30 s after the helper's own alarm: sudo is then sent SIGTERM, and 10 s later the wait
+// returns whatever sudo does (WaitDelay).
 func runAsPIDOne(t *testing.T, helper string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
@@ -83,34 +97,60 @@ func runAsPIDOne(t *testing.T, helper string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
-		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
-	output, err := exec.Command("sudo", args...).CombinedOutput()
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1")
+	// The helper's -test.timeout ends helperDeadlineGap before this test's deadline, not reentry's
+	// reentryMargin: this test's own cleanups after a helper that gave up need that gap. The
+	// arguments are reentryUntil's, as every re-entry's are.
+	var end time.Time
+	if deadline, ok := t.Deadline(); ok {
+		end = deadline.Add(-helperDeadlineGap)
+		if left := time.Until(end); left < helperLeastTime {
+			t.Fatalf("%s as PID 1 would have %s before its own deadline, %s before this test's, less than the %s it needs: what ran before it took the rest of the test binary's -timeout", helper, left.Round(time.Millisecond), helperDeadlineGap, helperLeastTime)
+		}
+	}
+	args = append(append(append(args, self), reentryUntil(end, helper)...), "-test.v", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
+	defer cancel()
+	command := exec.CommandContext(ctx, "sudo", args...)
+	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
+	command.WaitDelay = 10 * time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s as PID 1 had not ended 30 s before the test binary's deadline, 30 s after its own: %v\n%s", helper, err, output)
+	}
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
 		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)
 	}
 	return string(output)
 }
 
+// helperDeadlineGap is how much sooner than its test a helper of runAsPIDOne reaches its own
+// deadline: the time the test has, once a helper that gave up has ended, for its own cleanups. On
+// this dev box the removal of a tree of ten workspaces of real git and jj, built for a helper, took
+// 17.3 s at a one-minute load of about 1,100 on 288 CPUs (2026-11-22), and more than 15 s in a
+// helper's cleanup at a load of about 760 the day before; a minute is more than twice the most
+// seen.
+const helperDeadlineGap = time.Minute
+
+// helperLeastTime is the least a helper of runAsPIDOne starts with before its own deadline: its
+// waits on the reaper give up 30 s before that deadline (reaperBound), and a wait for an install
+// 15 s before it, so a helper with less would reach its own alarm before either could say why.
+const helperLeastTime = 45 * time.Second
+
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
 	prefix := pidNamespace(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
-		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self, "-test.run=^TestLauncherPIDOneHelper$")
+		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(), "LEGION_LAUNCHER_TEST_TOKEN="+token,
+		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self)
+	args = append(args, reentry(t, "TestLauncherPIDOneHelper")...)
 	command := exec.Command("sudo", args...)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -122,18 +162,20 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	g.cancel = func() { _ = stdin.Close() }
-	go func() { g.result <- command.Wait() }()
+	go func() {
+		err := command.Wait()
+		listener.codeReturned(err)
+		g.result <- err
+		close(g.result)
+	}()
 	t.Cleanup(func() {
 		g.cancel()
-		select {
-		case err := <-g.result:
-			if err != nil {
-				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
-			}
-		case <-time.After(10 * time.Second):
-			_ = command.Process.Kill()
-			<-g.result
-			t.Error("PID 1 launcher did not stop after its context ended")
+		// No bound of the case's own on the launcher's end (reentry): one that does not stop after
+		// its context ended is ended by its own -test.timeout, with its alarm's goroutine dump in
+		// its output, and its namespace with it. A case that took the launcher's return itself
+		// leaves the channel closed (rig.result), with nothing left to read here.
+		if err, ok := <-g.result; ok && err != nil {
+			t.Errorf("PID 1 launcher exited: %v (one that did not stop after its context ended ends at its own deadline, its panic below)\n%s", err, output.String())
 		}
 	})
 	g.accept()
@@ -178,14 +220,16 @@ func TestPIDOneLauncherReapsOrphansWhileRoleStaysResident(t *testing.T) {
 	g := namespaceRig(t, 2*time.Second)
 	marker := filepath.Join(t.TempDir(), "orphan")
 	resultFile := filepath.Join(t.TempDir(), "reaped")
+	// The role waits for the orphan to be reaped rather than for a count of its own: a loop of
+	// 500 × 0.01 s read a slow machine as a launcher that never reaped (the orphan still there
+	// after 5 s), and the wait for the marker this writes is the test binary's own
+	// (published → beforeDeadline). A launcher that never reaps leaves the marker unwritten, and
+	// that wait fails by name.
 	script := `/bin/sh -c '/usr/bin/setsid /bin/sh -c '\''/bin/sleep 0.1; printf "%s ready\n" "$$" > "$ORPHAN"; exit 0'\'' &' 
 while [ ! -s "$ORPHAN" ]; do /bin/sleep 0.01; done
 read pid unused < "$ORPHAN"
-for n in $(/usr/bin/seq 1 500); do
-  if ! kill -0 "$pid" 2>/dev/null; then printf '1 gone\n' > "$RESULT"; exec /bin/sleep 600; fi
-  /bin/sleep 0.01
-done
-printf '1 zombie\n' > "$RESULT"
+while kill -0 "$pid" 2>/dev/null; do /bin/sleep 0.01; done
+printf '1 gone\n' > "$RESULT"
 exec /bin/sleep 600
 `
 	if result := g.start(shimwire.LauncherStart{ID: "resident", Generation: 1, Argv: []string{"/bin/sh", "-c", script},
@@ -221,14 +265,14 @@ while :; do /bin/sleep 600 & wait; done
 			}
 			published(t, ready)
 			g.cancel()
-			select {
-			case err := <-g.result:
-				g.result <- err
-				if err != nil {
-					t.Fatalf("launcher exit: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("launcher exceeded its shutdown budget")
+			// No span of the case's own on the launcher's exit, as namespaceRig's cleanup has none: a
+			// launcher that does not stop after its context ended is ended by its own -test.timeout
+			// (reentry), and this read then takes that exit's error. A fixed 5 s read a slow
+			// machine's shutdown as a launcher over its budget.
+			if err, ok := <-g.result; !ok {
+				t.Fatal("the launcher's result was taken before this test read it")
+			} else if err != nil {
+				t.Fatalf("launcher exit: %v", err)
 			}
 			body, err := os.ReadFile(finished)
 			if tc.graceful {

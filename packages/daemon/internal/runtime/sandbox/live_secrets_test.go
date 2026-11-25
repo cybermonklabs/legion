@@ -154,7 +154,7 @@ func (r *liveRig) checkSecretsTwoRolesEnrolled() error {
 		for _, v := range pod.Spec.Volumes {
 			if v.Projected != nil {
 				for _, s := range v.Projected.Sources {
-					if s.ServiceAccountToken != nil && s.ServiceAccountToken.Audience == "agent-secrets" {
+					if s.ServiceAccountToken != nil && s.ServiceAccountToken.Audience == r.env.agentSecretsAudience {
 						tokens++
 						if len(v.Projected.Sources) != 1 {
 							return fmt.Errorf("pod %s: the agent-secrets token shares its volume %s with %d other sources", pod.Name, v.Name, len(v.Projected.Sources)-1)

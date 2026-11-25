@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  No Legion skill holds the follow-the-code sentence any more; the two review agents carry it.
+  `legion-worker` drops `default-branch-check.md` and `foreign-path.md` and the steps that used
+  them, and `legion-oracle` drops its pointer to `default-branch-check.md`. `legion-worker`,
+  `legion-architect` and `legion-controller` correct the sentences that were false against the
+  code. `legion-retro` excepts a forward merge of the base from "No Legion check compares the head
+  that merges with the one the review approved" and drops "so whether a push after the approval
+  needs a new review is the repository's own rule".

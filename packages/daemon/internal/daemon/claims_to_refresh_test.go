@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -39,7 +40,7 @@ func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *sourc
 	return &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project,
 		runtime: "tmux", admissionCap: cfg.AdmissionCap, startedAt: time.Now(),
-		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 		noPluginInstall: func(_ context.Context, _ pgx.Tx, c supervise.Claim) (bool, error) {
 			return c.Role == claim.RoleReviewer, nil
@@ -85,6 +86,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	stale := api.DaemonAPIVersion - 1
 
@@ -195,7 +197,7 @@ func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
 	view := refreshCountSource(t, cfg, st)
 	view.noPluginInstall = stateNoPluginInstall(cfg)
 	var state api.State
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		state, _, err = view.State(ctx, tx)
 		return err
@@ -215,7 +217,7 @@ func putPlanRole(t *testing.T, st *store.Store, issue string, role record.PlanRo
 	ctx := context.Background()
 	records := record.NewStore()
 	role.Issue, role.Generation, role.PlanVersion = issue, 1, 1
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: issue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, issue, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		if err := records.PutPlan(ctx, tx, v, nil, nil); err != nil {
@@ -260,7 +262,7 @@ func TestAFailedPlanReadEndsTheStatesReadWithItsOwnError(t *testing.T) {
 	}
 	view := refreshCountSource(t, cfg, st)
 	view.noPluginInstall = stateNoPluginInstall(cfg)
-	err = st.Tx(ctx, func(tx pgx.Tx) error {
+	err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, _, err := view.State(ctx, tx)
 		return err
 	})
@@ -283,6 +285,7 @@ func TestAFailedPlanReadEndsTheStatesReadWithItsOwnError(t *testing.T) {
 // TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing is: a real Kubernetes runtime needs a
 // cluster this pod has none of.
 func TestTheStateCountsWhatADegradedDaemonCannotRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	no := false
 	rt := fake.NewRuntime()

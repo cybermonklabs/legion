@@ -47,7 +47,11 @@ func asksThenLands(t *testing.T, pool *pgxpool.Pool) {
 		if err != nil {
 			return err
 		}
-		return engine.mergeForward(ctx, tx, issue, stored, record.ConflictCheckNotGreen)
+		w, err := engine.walk(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		return engine.mergeForward(ctx, tx, issue, w, stored, record.ConflictCheckNotGreen)
 	})
 	applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209",
 		Base: "main", HeadSHA: "head-forward", Before: "head-43", Sender: "legion-implementer[bot]"})

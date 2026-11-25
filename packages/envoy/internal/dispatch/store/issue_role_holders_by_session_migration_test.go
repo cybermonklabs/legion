@@ -14,8 +14,8 @@ import (
 )
 
 // roleHoldersBySessionVersion is the migration that keys issue_role_holders by session, so two
-// sessions can hold one role of an issue (20261122130956_issue_role_holders_by_session).
-const roleHoldersBySessionVersion = 20261122130956
+// sessions can hold one role of an issue (20261124213825_issue_role_holders_by_session).
+const roleHoldersBySessionVersion = 20261124213825
 
 // The statements the release before this migration sends to issue_role_holders
 // (api/issue_role_holders.go before it): the read of an issue's set, the read of one session's
@@ -145,7 +145,7 @@ func TestTheBySessionMigrationTakesTwoSessionsOfOneRoleAndItsWayBackFoldsThem(t 
 	if err := insert("reviewer", "ses-r-new", "", false, "1 minute"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Pool.Exec(ctx, wayBackOf(t, "20261122130956_issue_role_holders_by_session.up.sql")); err != nil {
+	if _, err := store.Pool.Exec(ctx, wayBackOf(t, "20261124213825_issue_role_holders_by_session.up.sql")); err != nil {
 		t.Fatalf("the way back: %v", err)
 	}
 	if err := store.Pool.QueryRow(ctx, `select string_agg(role || '=' || session, ',' order by role) from issue_role_holders`).Scan(&stored); err != nil {

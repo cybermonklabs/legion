@@ -107,13 +107,14 @@ function recordingDaemon(options: {
     "signOff",
     "completeStep",
     "rootClose",
-    "childPark",
     "childRerun",
     "planRegister",
     "taskStop",
     "issueStatus",
     "freshSession",
     "compact",
+    "intakeReplay",
+    "intakeDiscard",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -178,40 +179,26 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code below. Its text gives one more, SIGNOFF_NOT_THE_OWNERS, which no term pins. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-  ],
-} as const;
-
+/** The daemon's own refusal codes the description names after `sign_off`'s part, for the
+ * architect's sign-off of an acceptance that is not its own, its report of a step of its own, its
+ * release and rerun of a child, the controller's fresh_session and compact, and its pause and
+ * resume: values of the daemon's answers, held by their codes and by no sentence. */
+const AFTER_SIGN_OFF_CODES = [
+  "SIGNOFF_NOT_THE_OWNERS",
+  "NOT_THE_OWNER",
+  "OWNER_STEP_NOT_RUNNING",
+  "CHILD_UNDER_ACCEPTED_PARENT",
+  "INVALID_CLAIM",
+  "CLAIM_NOT_OF_ROLE",
+  "CLAIM_IN_A_TURN",
+  "CLAIM_UNSETTLED",
+  "CLAIM_NOT_RUNNING",
+  "CLAIM_NOT_ON_OMP",
+  "PROJECT_ALREADY_PAUSED",
+  "PAUSE_UNAVAILABLE",
+  "PROJECT_NOT_PAUSED",
+  "PROJECT_PAUSED",
+] as const;
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -236,31 +223,43 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-// Every session reads one description. stop_task's part and sign_off's are each read from
-// their own opening: stop_task's up to sign_off's, and sign_off's to the description's end.
-test("the legion tool's description is one text for every session, and names stop_task's and sign_off's terms", () => {
+// Every session reads one description.
+test("the legion tool's description names each refusal code of the daemon's answers that the architect and the controller meet after sign_off, for every session", () => {
   const descriptions = new Set<string>();
   for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
+    const { description } = toolFor(active);
     descriptions.add(description);
-    const stopTaskAt = description.indexOf(STOP_TASK_TERMS.opens);
-    expect(stopTaskAt).toBeGreaterThan(0);
-    const signOffAt = description.indexOf(SIGN_OFF_TERMS.opens, stopTaskAt);
-    expect(signOffAt).toBeGreaterThan(stopTaskAt);
-    const stopTask = description.slice(stopTaskAt, signOffAt);
-    const signOff = description.slice(signOffAt);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
+    const signOffAt = description.indexOf("sign_off is");
+    expect(signOffAt).toBeGreaterThanOrEqual(0);
+    for (const code of AFTER_SIGN_OFF_CODES) {
+      expect(description.indexOf(code)).toBeGreaterThan(signOffAt);
     }
   }
   expect(descriptions.size).toBe(1);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. The `step` property's
+// The daemon's refusals and notices over children carry its rules for ending a child
+// (record.EndChildRule) and its sentence on a status it has not taken yet
+// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
+// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
+// side alone fails one test or the other. The first and the last sentence of the rule are written
+// out here, so a fixture that holds only a part of the rule fails here too.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+  const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
+    readonly rule: string;
+    readonly notTakenYet: string;
+  };
+  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
+  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  const { description } = toolFor(claimSession("architect"));
+  expect(description).toContain(rule);
+  expect(description).toContain(notTakenYet);
+});
+
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of its `description`s: every property and every `op` value in the order the tool
+ * declares them. The `step` property's
  * description is left out: it is the tool's words, which this test does not hold. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -278,7 +277,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "sign_off",
         "complete_step",
         "close_root",
-        "park_child",
         "rerun_child",
         "read_record",
         "read_release_records",
@@ -291,15 +289,13 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "replay_give_up",
+        "discard_give_up",
       ],
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
     // register_gate's design-gate step, or complete_step's place of a step in the issue's task;
     // zod renders the whole number's open upper bound as the largest safe integer.
@@ -310,11 +306,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       ],
     },
     issues: { type: "array", items: { type: "string" } },
-    task: {
-      type: "string",
-      description:
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
-    },
+    task: { type: "string" },
     to: {
       type: "string",
       enum: [
@@ -331,11 +323,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -349,34 +337,22 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
-    claim: {
-      type: "string",
-      description:
-        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role other than the one that works the role's step that started last; leave it out to reach that claim",
-    },
+    claim: { type: "string" },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
   },
   required: ["op"],
   additionalProperties: false,
 });
 
-/** The schema serialized with its `step` property's description left out, as
- * OMP_LEGION_TOOL_SCHEMA leaves it out. */
-function withoutStepDescription(schema: { properties?: Record<string, unknown> }): string {
-  const properties = Object.entries(schema.properties ?? {}).map(
-    ([name, property]): [string, unknown] => {
-      if (name !== "step") return [name, property];
-      const { description: _description, ...kept } = property as { description?: unknown };
-      return [name, kept];
-    }
-  );
-  return JSON.stringify({ ...schema, properties: Object.fromEntries(properties) });
-}
-
-test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
+// The schema the tool gives is read without the words of its `description`s, which no test holds.
+test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, but for its descriptions, for every session", () => {
   for (const active of EVERY_SESSION) {
-    expect(withoutStepDescription(z.toJSONSchema(toolFor(active).parameters as z.ZodType))).toBe(
-      OMP_LEGION_TOOL_SCHEMA
-    );
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType);
+    expect(
+      JSON.stringify(schema, (key, value) => (key === "description" ? undefined : value))
+    ).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -580,10 +556,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "close_root", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
   });
-  await expect(run(architect, { op: "park_child", issue: "LEGION-209" })).resolves.toMatchObject({
-    details: {},
-  });
-  expect(calls.at(-1)).toEqual(["childPark", { grantId: "grant-208", issue: "LEGION-209" }]);
   await expect(run(architect, { op: "rerun_child", issue: "LEGION-209" })).resolves.toMatchObject({
     details: {},
   });
@@ -591,7 +563,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "read_record", issue: "LEGION-208" })).resolves.toMatchObject({
     details: { record: state.issues["LEGION-208"] },
   });
-  for (const op of ["sign_off", "close_root", "park_child", "rerun_child"]) {
+  for (const op of ["sign_off", "close_root", "rerun_child"]) {
     await expect(run(worker, { op, issue: "LEGION-208" })).resolves.toMatchObject({
       isError: true,
     });
@@ -672,13 +644,13 @@ test("retry_or_escalate takes a reason", async () => {
   expect(calls).toHaveLength(before);
 });
 
-// Architects sent park_child a `reason`, as close_root and request_backward_move take one, and
-// were told only that the field is refused: five refusals over four days of architect sessions,
-// each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
-// a refusal of their `reason` names the fields the operation takes and the dispatch comment on
-// the child the why goes in, before any grant is minted. Any other operation's refusal names the
+// Architects sent a child operation a `reason`, as close_root and request_backward_move take one,
+// and were told only that the field is refused: five refusals over four days of architect
+// sessions, each sent again without it and its why lost. The daemon keeps no why for a rerun, so a
+// refusal of its `reason` names the fields the operation takes and the dispatch comment on the
+// child the why goes in, before any grant is minted. Any other operation's refusal names the
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
-test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
+test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
   const tool = createLegionTool({
     pi,
@@ -692,10 +664,6 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
     session: () => claimSession("architect"),
   });
   const refusals = [
-    [
-      { op: "park_child", issue: "LEGION-209", reason: "Folded into LEGION-208's pull request" },
-      'park_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
-    ],
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
       'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
@@ -1150,7 +1118,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
   ]);
 });
 
-// The owner's plan (contract 211): register_plan names its document as register_gate does, for any
+// The owner's plan (contract 219): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
 // comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
 // code. stop_task names the task to stop by its block's id.
@@ -1629,8 +1597,9 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // Where the issue has a pull request and its review step is not the owner's, a review ends its
-    // round on its own: a request for changes moves the issue back at once, an approval on to the
-    // task's next step once the pull request is mergeable, and the reviewer completes after it.
+    // round on its own: a request for changes moves the issue to implementing at once, an approval
+    // to its task's next step (accepting, in the default steps), or to its retro where the review is
+    // the task's last step, once the pull request is mergeable, and the reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
@@ -2011,7 +1980,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
   });
 }
 
-/** The phase workers of an issue, in the order the summary lists them under the architect. */
+/** Legion's phase workers of an issue, in the order the summary lists them under the architect. */
 const WORKER_ROLES = ["planner", "implementer", "tester", "reviewer", "merger"] as const;
 
 /** The state at the size that cut the controller's read (dispatch://INFRA-329): the 92 issues
@@ -2223,13 +2192,13 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 221) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (contract 258) is recovered as Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
-  // A claim named by its token (contract 222), another claim of the role than the step's worker,
+  // A claim named by its token (contract 259), another claim of the role than the step's worker,
   // is sent as named, and only when named; compact takes it the same way.
   await run({
     op: "fresh_session",
@@ -2321,8 +2290,8 @@ test("the controller reads the state without a grant and sets an issue's status 
   ]);
 });
 
-// Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in their workflow order, so the controller sees the claim that works a step.
+// Contract 258: the summary lists each worker of an issue's map, a role of the deployment's after
+// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];
@@ -2358,7 +2327,7 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
-// Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// Contract 259: two claims of one issue can hold one role, and `workers` shows one of them, so the
 // summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
 // both turn times and its token, marks it as another claim of that role, and names the token
 // because fresh_session and compact reach that claim only by it (their `claim`).
@@ -2619,6 +2588,174 @@ test("pause and resume are offered to no architect and no phase worker", async (
   expect(posted).toEqual([]);
 });
 
+// The intake's give-ups (dispatch://INFRA-1575, R3). The controller replays a give-up, a message
+// the daemon's intake gave up on, by its record id, or every open one of a consumer at or below a
+// stream sequence, and discards them the same way with a reason. Each call goes through the real
+// daemon client to the controller's route, so the answer the controller reads is the golden the
+// daemon's own test wrote, parsed by the contract's schema.
+test("the controller's replay_give_up sends one record id to the daemon's controller route and returns its answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const replayed = await controllerTool(daemon, minted).execute(
+    "",
+    { op: "replay_give_up", giveUp: 41 },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(replayed.isError).toBeUndefined();
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(replayed.content).toEqual([{ type: "text", text: JSON.stringify(replayed.details) }]);
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", giveUp: 41 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+});
+
+// The bulk form names the consumer and the stream sequence the summary gives as its newest. A
+// selection the daemon would refuse (GIVE_UP_REQUEST_INVALID) is refused before a grant is minted
+// or a request sent: both forms, neither, one half of the bulk form, a number that is no record id
+// or stream sequence, and a field the replay does not take.
+test("the controller's replay_give_up sends a consumer and every open record at or below a stream sequence (throughSeq)", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-dispatch";
+
+  const replayed = await run({ op: "replay_give_up", consumer, throughSeq: 6044896 });
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", consumer, throughSeq: 6044896 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+
+  const refusals = [
+    [
+      { op: "replay_give_up", giveUp: 41, consumer, throughSeq: 6044896 },
+      "replay_give_up takes giveUp, or consumer and throughSeq, not both",
+    ],
+    [{ op: "replay_give_up" }, "replay_give_up requires giveUp, or consumer and throughSeq"],
+    [
+      { op: "replay_give_up", consumer },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [
+      { op: "replay_give_up", consumer, throughSeq: 0 },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [{ op: "replay_give_up", throughSeq: 6044896 }, "replay_give_up requires consumer"],
+    [
+      { op: "replay_give_up", giveUp: 41.5 },
+      "replay_give_up's giveUp is a give-up's record id, a whole number from 1",
+    ],
+    [
+      { op: "replay_give_up", giveUp: 41, reason: "the fix runs" },
+      'replay_give_up does not accept field "reason"; it takes giveUp, consumer, throughSeq',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(1);
+  expect(minted).toHaveLength(1);
+});
+
+test("the controller's discard_give_up sends its reason and returns the daemon's answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-github";
+  const reason = "the listener published these bodies as text, and no fix can apply them";
+
+  const bulk = await run({ op: "discard_give_up", consumer, throughSeq: 812004, reason });
+  expect(bulk.isError).toBeUndefined();
+  expect(bulk.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(bulk.content).toEqual([{ type: "text", text: JSON.stringify(bulk.details) }]);
+  const one = await run({ op: "discard_give_up", giveUp: 42, reason });
+  expect(one.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(posted).toEqual([
+    [
+      "/legion/v1/intake/discard",
+      { grantId: "controller-grant-1", consumer, throughSeq: 812004, reason },
+    ],
+    ["/legion/v1/intake/discard", { grantId: "controller-grant-1", giveUp: 42, reason }],
+  ]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+});
+
+// A discard is the one act that ends a fact with no apply, so it says why: one with no reason, or
+// a blank one, is refused before a grant is minted or a request sent, and so is one that names no
+// give-up.
+test("discard_give_up without a reason is refused before any call", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const refusals = [
+    [{ op: "discard_give_up", giveUp: 41 }, "discard_give_up requires reason"],
+    [{ op: "discard_give_up", giveUp: 41, reason: " " }, "discard_give_up requires reason"],
+    [
+      { op: "discard_give_up", consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+      "discard_give_up requires reason",
+    ],
+    [
+      { op: "discard_give_up", reason: "it can never apply" },
+      "discard_give_up requires giveUp, or consumer and throughSeq",
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(
+      tool.execute("", parameters, undefined, undefined, context("ses_controller"))
+    ).resolves.toEqual({ content: [{ type: "text", text }], details: {}, isError: true });
+  }
+  expect(posted).toEqual([]);
+  expect(minted).toEqual([]);
+});
+
+// Neither operation is a claim's: a root architect, a sub-architect and every phase worker are
+// refused by the operation's name, before a grant is minted or a request sent.
+test("a phase worker and an architect have neither replay_give_up nor discard_give_up", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/intake/replay": "intake-replay.json",
+    "/legion/v1/intake/discard": "intake-discard.json",
+  });
+  const claims = EVERY_SESSION.filter((session) => session.kind !== "controller");
+  expect(claims).toHaveLength(7);
+  for (const session of claims) {
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+    for (const parameters of [
+      { op: "replay_give_up", giveUp: 41 },
+      { op: "discard_give_up", giveUp: 41, reason: "it can never apply" },
+    ]) {
+      await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
+        content: [
+          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+        ],
+        details: {},
+        isError: true,
+      });
+    }
+  }
+  expect(posted).toEqual([]);
+});
+
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {
   const state = stateOf92Issues();
   const { daemon } = recordingDaemon({ state });
@@ -2676,9 +2813,44 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
 });
 
+// The controller reads the live trees and the held issues off the summary: one `trees` line
+// naming the root of every live tree, `(none)` when no tree runs and no line for a body the daemon
+// stripped of `trees`, and one `held` line per held issue with its reason and the issues that hold
+// it. The first state is the daemon's golden, read through the client.
+test("read_state's summary names the live trees and each held issue with its reason", async () => {
+  const admissionLines = (lines: readonly string[]) =>
+    lines.filter((line) => /^(active|waiting|trees|blocked|held) /.test(line));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(admissionLines(golden)).toEqual([
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-240",
+    "waiting LEGION-212 LEGION-211",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "blocked LEGION-209 on LEGION-210 LEGION-213",
+    "blocked LEGION-211 on LEGION-210",
+    "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
+    "held LEGION-214 label_off",
+  ]);
+
+  const idle = legionState({
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+  });
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
+    "active (none)",
+    "waiting (none)",
+    "trees (none)",
+  ]);
+
+  const stripped = legionState();
+  expect(stripped.admission?.trees).toBeUndefined();
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: stripped }).daemon))).toEqual(
+    ["active (none)", "waiting (none)"]
+  );
+});
+
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
-// roles whose stop it still waits on and how many rows it holds; one line while the project
+// claims whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
 // the project's first pause. The two states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
@@ -2688,7 +2860,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   const pausedLine =
     "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
+    "the model provider is refusing every turn; waits on 1 claim — LEGION-208 implementer; " +
     "holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
 
@@ -2704,7 +2876,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const unpaused = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
   expect(pauseLines(unpaused)).toEqual([]);
 
-  // A pause every role has stopped for, with nothing held yet, and one that waits on two roles
+  // A pause every claim has stopped for, with nothing held yet, and one that waits on two claims
   // and holds one row.
   const pause = {
     id: 9,
@@ -2715,7 +2887,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const settled = legionState({ paused: { ...pause, waitsOn: [], held: [] } });
   expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: settled }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
-      "waits on no role; holds no row",
+      "waits on no claim; holds no row",
   ]);
   const waiting = legionState({
     paused: {
@@ -2739,8 +2911,84 @@ test("read_state's summary prints the pause's line while the project is paused a
   });
   expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: waiting }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
-      "waits on 2 roles — INFRA-100 architect, INFRA-101 tester; holds 1 row",
+      "waits on 2 claims — INFRA-100 architect, INFRA-101 tester; holds 1 row",
   ]);
+});
+
+// The pause's line names each claim whose stop the pause still waits on by the rule the issue lines
+// name a claim by: its issue and role, and its token beside them where the issue and the role do
+// not reach it, so fresh_session and compact reach it by its token. The issue and the role reach the
+// claim the issue's `workers` shows for the role, and, where the state shows none, the role's own
+// claim. A pause waits on every claim of an issue, so it can wait on two claims of one role — the
+// role's own and a second agent such as `implementer-2`, or the agent of another role's name that
+// holds the role for a step — and the line names them apart. A stop the daemon served without its
+// claim is named by its issue and role. Where the second agent works the role's step, the issue
+// and the role reach it, and the role's own claim is the one named with its token.
+test("read_state's summary names two claims of one role apart on the pause's line", async () => {
+  const stop = (role: string, claim?: string) => ({
+    ...(claim === undefined ? {} : { claim }),
+    issue: "LEGION-208",
+    role,
+    askedAt: "2026-11-16T08:00:00Z",
+  });
+  const state = legionState({
+    paused: {
+      id: 9,
+      since: "2026-11-16T08:00:00Z",
+      by: { kind: "operator" },
+      reason: "a provider outage",
+      waitsOn: [
+        stop("implementer", "legion-legion-legion-208-implementer"),
+        stop("implementer", "legion-legion-legion-208-implementer-2"),
+        stop("tester", "legion-legion-legion-208-reviewer"),
+        stop("merger"),
+      ],
+      held: [],
+    },
+  });
+  const lines = await summaryLinesOf(recordingDaemon({ state }).daemon);
+  const paused = lines.filter((line) => line.startsWith("paused: "));
+  expect(paused).toHaveLength(1);
+  // The names the line lists between its count of the claims and its count of the rows held.
+  const listed = /; waits on 4 claims — (.+); holds no row$/.exec(paused[0] ?? "");
+  expect(listed?.[1]?.split(", ")).toEqual([
+    "LEGION-208 implementer",
+    "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2)",
+    "LEGION-208 tester (claim legion-legion-legion-208-reviewer)",
+    "LEGION-208 merger",
+  ]);
+
+  const stepped = stateOf92Issues(1);
+  const tester = stepped.issues["INFRA-100"]?.workers?.tester?.claim;
+  if (tester === undefined) throw new Error("INFRA-100 lacks its tester");
+  tester.token = "legion-acme-infra-100-tester-2";
+  stepped.paused = {
+    id: 9,
+    since: "2026-11-16T08:00:00Z",
+    by: { kind: "operator" },
+    reason: "a provider outage",
+    waitsOn: [
+      {
+        claim: "legion-acme-infra-100-tester",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
+      {
+        claim: "legion-acme-infra-100-tester-2",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
+    ],
+    held: [],
+  };
+  const second = (await summaryLinesOf(recordingDaemon({ state: stepped }).daemon)).filter((line) =>
+    line.startsWith("paused: ")
+  );
+  expect(
+    /; waits on 2 claims — (.+); holds no row$/.exec(second[0] ?? "")?.[1]?.split(", ")
+  ).toEqual(["INFRA-100 tester (claim legion-acme-infra-100-tester)", "INFRA-100 tester"]);
 });
 
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
@@ -2805,6 +3053,32 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+});
+
+// What the controller reads of the intake's give-ups in `read_state` with no field: one line for
+// each consumer with open give-ups, with how many and the newest stream sequence among them, which
+// is the throughSeq of a replay or a discard of all of them, and one line saying none is open.
+// A state without the key, served to a caller below the contract that added it, says nothing.
+test("the read_state summary prints each consumer's open give-ups and their newest sequence", async () => {
+  const giveUpLines = (lines: readonly string[]) =>
+    lines.filter((line) => line.startsWith("intake give-ups"));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(giveUpLines(golden)).toEqual([
+    "intake give-ups legion-go-LEGION-dispatch open 2 newest seq 6044896",
+    "intake give-ups legion-go-LEGION-github open 1 newest seq 812004",
+  ]);
+  expect(golden[0]).toContain(
+    "intake give-ups <consumer> open <count> newest seq <stream sequence>"
+  );
+
+  const none = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-stage3.json" }).daemon
+  );
+  expect(giveUpLines(none)).toEqual(["intake give-ups (none)"]);
+
+  const unsaid = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
+  expect(giveUpLines(unsaid)).toEqual([]);
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

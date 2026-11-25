@@ -41,7 +41,7 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 		now: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), pub: &holderPublisher{}, logged: &syncBuffer{}}
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
 		Title: "LEGION-1", Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return putPlannedIssue(t, ctx, tx, r.records, issue, place, r.now, words...)
 	}); err != nil {
 		t.Fatalf("seed LEGION-1: %v", err)
@@ -74,7 +74,7 @@ func putPlannedIssue(t *testing.T, ctx context.Context, tx pgx.Tx, records recor
 	if err := records.PutIssue(ctx, tx, issue); err != nil {
 		return err
 	}
-	return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+	return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps))
 }
 
 // started counts a start of LEGION-1's place kind/at and leaves its run open, as a start does
@@ -83,7 +83,7 @@ func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
 	t.Helper()
 	ctx := context.Background()
 	place := record.StepPlace{Task: "a", Kind: kind, Place: at}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
 			return record.StepRecord{Task: "a", Kind: kind, Step: at, Agent: string(r.owner), Generation: 1, StartedAt: new(r.now)}
 		})
@@ -100,7 +100,7 @@ func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
 func (r *ownerHoldRig) ended(t *testing.T, kind string, at int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", record.StepPlace{Task: "a", Kind: kind, Place: at})
 		return err
 	}); err != nil {
@@ -346,7 +346,7 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPlace) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := r.records.Issue(ctx, tx, "LEGION-1")
 		if err != nil {
 			return err
@@ -441,7 +441,7 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 	// hold puts LEGION-1, standing in its retro, on a hold from it, as an escalation does.
 	hold := func(t *testing.T, r *ownerHoldRig) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			issue, err := r.records.Issue(ctx, tx, "LEGION-1")
 			if err != nil {
 				return err

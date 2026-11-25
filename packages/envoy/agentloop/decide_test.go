@@ -10,14 +10,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 // systemOnePrice is what the fixture's decision model charges, in USD per million tokens.
 var systemOnePrice = Price{Input: 3, Output: 15}
 
-// newDecideFixture is a decision put to s, with the one System One model and a token read from a
-// file on every attempt, as the run fixture's endpoint reads one.
+// newDecideFixture is a decision put to s, with the one System One model, a token read from a
+// file on every attempt, as the run fixture's endpoint reads one, and the run fixture's time bound
+// (runnerTime).
 func newDecideFixture(t *testing.T, s *standIn) DecideRequest {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
@@ -29,7 +29,7 @@ func newDecideFixture(t *testing.T, s *standIn) DecideRequest {
 		},
 		State:     json.RawMessage(`{"note":"The note says plum."}`),
 		Questions: decideQuestions(),
-		Bounds:    Bounds{Time: 30 * time.Second},
+		Bounds:    Bounds{Time: runnerTime(t)},
 	}
 }
 
@@ -161,7 +161,7 @@ func TestDecideReportsAProviderErrorAfterOneRetry(t *testing.T) {
 	if result.Fault != FaultProviderError || len(result.Answers) != 0 {
 		t.Errorf("after two 500s: result %+v, want %q and no answers: %s", result, FaultProviderError, result.Detail)
 	}
-	if n := len(twice.requests()); n != 2 {
+	if n := len(twice.attempts()); n != 2 {
 		t.Errorf("two 500s took %d requests, want 2: one retry only", n)
 	}
 
@@ -173,7 +173,7 @@ func TestDecideReportsAProviderErrorAfterOneRetry(t *testing.T) {
 	if result.Fault != "" || len(result.Answers) != 4 {
 		t.Errorf("after a 500 then an answer: result %+v, want the four answers: %s", result, result.Detail)
 	}
-	if n := len(retried.requests()); n != 2 {
+	if n := len(retried.attempts()); n != 2 {
 		t.Errorf("a 500 then an answer took %d requests, want 2", n)
 	}
 }

@@ -1,18 +1,21 @@
 // packages/cipher-client/src/dpop.ts
 //
-// The one RFC 9449 proof signer of this package, mirroring the Go signer in
-// `packages/envoy/internal/cipherclient/dpop.go`. A key is one of two kinds: one a session makes
-// in its own process (`newDpopKey`), or the box key a person's sign-in on this machine keeps
-// (`importDpopKey`), which the broker bound the sign-in to. Either way only its public half ever
-// leaves the process: a proof carries the public JWK in its header, and the private half is held
-// in the closure that signs, which no caller of this package can reach.
+// The one RFC 9449 proof signer of this package, mirroring Go's one signer, `dpopproof.Sign`
+// in `packages/envoy/internal/dpopproof/dpopproof.go`. A key is one of three kinds: one a session
+// makes in its own process (`newDpopKey`), the box key a person's sign-in on this machine keeps
+// (`importDpopKey`), which the broker bound the sign-in to, or the key a machine's device login
+// keeps (`dpopKeyOf`, from `device-login.ts`), which the broker bound the login to. Each way only
+// its public half leaves this package: a proof carries the public JWK in its header, and the
+// private half is held in the closure that signs. The device login is the one caller that holds
+// its private half too, since it writes the key into the login's own file.
 //
 // The private half is a `node:crypto` `KeyObject` rather than a WebCrypto `CryptoKey`, because a
 // NATS connection's proof is signed synchronously (`connectionProof`): nats.js asks its
 // authenticator for the CONNECT inside its own synchronous handshake, WebCrypto signs only
 // asynchronously, and the runtime warns of a non-extractable `CryptoKey` turned into a
-// `KeyObject` (`KeyObject.from`, DEP0204). One signer serves both proofs, as Go's `signProof`
-// does, so the two cannot drift.
+// `KeyObject` (`KeyObject.from`, DEP0204). One signer serves both proofs, as `dpopproof.Sign` signs
+// both of the Go client's (`internal/cipherclient`: an HTTP request's and a NATS connection's), so
+// the two cannot drift.
 
 import {
   createHash,
@@ -153,7 +156,17 @@ function publicJwkOf(privateKey: KeyObject, name: string): JWK {
 /** A key of this process's own, made here and held nowhere else. */
 export async function newDpopKey(): Promise<DpopKey> {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  return dpopKey(privateKey, publicJwkOf(privateKey, "this process's key"));
+  return dpopKeyOf(privateKey, "this process's key");
+}
+
+/**
+ * `privateKey` as a DPoP key: a machine's device login key, which `device-login.ts` makes, keeps
+ * in the login's file and reads back, and which the broker bound the login to, so every request of
+ * that login proves this key and no other. `name` says whose key it is, for a refusal to name; a
+ * key that is not P-256 is refused.
+ */
+export function dpopKeyOf(privateKey: KeyObject, name: string): DpopKey {
+  return dpopKey(privateKey, publicJwkOf(privateKey, name));
 }
 
 /**

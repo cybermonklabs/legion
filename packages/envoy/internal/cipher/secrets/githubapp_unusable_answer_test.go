@@ -492,7 +492,7 @@ func warned(log, says string) (lines, warnings int) {
 // release sends either again, and each answer it loses leaves its token live, which nothing can
 // name. A cut-off answer of any status but 201 minted nothing, and nothing is revoked for it. A
 // revoke GitHub refuses is logged, and its token stays live. Every unusable answer is the
-// upstream's trouble rather than a refusal, so the broker's narrowing check lets the request
+// upstream's trouble rather than a refusal, so the broker's profile check lets the request
 // through to its approver, and no error or log line holds a token. An answer whose part the
 // minter holds does not name its token is logged as a token nothing can revoke.
 func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
@@ -501,21 +501,23 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := githubAppValue(t, "123456", key)
-	lean := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"lean"}, ReadOnly: true}
+	lean := readScope("ada")
+	lean.Repositories = []string{"ada/lean"}
 	// wide names 100 repositories of 93 characters each, so its token request's body is far larger
 	// than the transport's write buffer and goes to the connection in writes of its own, the last of
 	// which is the one answerWriteFails reports an error for.
-	wide := &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}
+	wide := readScope("ada")
 	for i := range 100 {
-		wide.Repositories = append(wide.Repositories, fmt.Sprintf("%02d-%s", i, strings.Repeat("r", 90)))
+		wide.Repositories = append(wide.Repositories, fmt.Sprintf("ada/%02d-%s", i, strings.Repeat("r", 90)))
 	}
 
 	for _, tc := range []struct {
 		name  string
 		check bool
-		// narrowing is the run's narrowing, and nil for an owner-wide release of both accounts.
-		narrowing *secrets.GitHubNarrowing
-		faults    []tokenAnswerFault
+		// scope is the run's profile scope, and nil for one of both accounts and every repository
+		// their installations reach.
+		scope  *secrets.GitHubScope
+		faults []tokenAnswerFault
 		// refuseRevokes has GitHub answer every revoke 500.
 		refuseRevokes bool
 		// silent has the minter reach GitHub through a transport that tells the trace nothing.
@@ -546,57 +548,57 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 		says        []string
 		unrevokable bool
 	}{
-		{name: "an answer lost, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
-		{name: "an answer lost, to a release", narrowing: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
-		{name: "an answer cut off, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 1},
-		{name: "an answer cut off, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 3},
-		{name: "an answer cut off and then a whole one, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerCut}, requests: 1},
-		{name: "an answer cut off and then a whole one, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut}, requests: 2, live: 1, released: true},
-		{name: "an answer the caller's context ends during, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
-		{name: "an answer the caller's context ends during, to a release", narrowing: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
+		{name: "an answer lost, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
+		{name: "an answer lost, to a release", scope: lean, faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
+		{name: "an answer cut off, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 1},
+		{name: "an answer cut off, to a release", scope: lean, faults: []tokenAnswerFault{answerCut, answerCut, answerCut}, requests: 3},
+		{name: "an answer cut off and then a whole one, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerCut}, requests: 1},
+		{name: "an answer cut off and then a whole one, to a release", scope: lean, faults: []tokenAnswerFault{answerCut}, requests: 2, live: 1, released: true},
+		{name: "an answer the caller's context ends during, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
+		{name: "an answer the caller's context ends during, to a release", scope: lean, faults: []tokenAnswerFault{answerStalled}, deadline: 300 * time.Millisecond, requests: 1},
 		{name: "a release of two accounts whose caller's context ends during the second answer", faults: []tokenAnswerFault{answerWhole, answerStalled}, deadline: 300 * time.Millisecond, requests: 2},
-		{name: "an answer past the cap, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
-		{name: "an answer past the cap, to a release", narrowing: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
-		{name: "an answer past the cap with its token after it, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
-		{name: "an answer past the cap with its token after it, to a release", narrowing: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
-		{name: "an undecodable answer, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
-		{name: "an undecodable answer, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
-		{name: "an answer with no expiry, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
-		{name: "an answer with no expiry, to a release", narrowing: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
-		{name: "a whole answer with no token, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerNoToken}, requests: 1, live: 1, unrevokable: true},
-		{name: "a whole answer with no token, to a release", narrowing: lean, faults: []tokenAnswerFault{answerNoToken}, requests: 1, live: 1, unrevokable: true},
-		{name: "a 500 cut off, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerCut500, answerCut500, answerCut500}, noRevoke: true},
-		{name: "a 500 cut off, to a release", narrowing: lean, faults: []tokenAnswerFault{answerCut500, answerCut500, answerCut500}, noRevoke: true},
-		{name: "a token request that never reached GitHub, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
-		{name: "a token request that never reached GitHub, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, live: 1, released: true},
-		{name: "a token request whose name did not resolve, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUnresolved}, requests: 1, verdict: true},
-		{name: "a token request whose TLS handshake the broker refused, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUntrusted}, requests: 1, verdict: true},
-		{name: "a token request GitHub received whole though its write reported an error, to a check", check: true, narrowing: wide,
+		{name: "an answer past the cap, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
+		{name: "an answer past the cap, to a release", scope: lean, faults: []tokenAnswerFault{answerPastCap}, requests: 1},
+		{name: "an answer past the cap with its token after it, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
+		{name: "an answer past the cap with its token after it, to a release", scope: lean, faults: []tokenAnswerFault{answerPastCapTokenLast}, requests: 1, live: 1, unrevokable: true},
+		{name: "an undecodable answer, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
+		{name: "an undecodable answer, to a release", scope: lean, faults: []tokenAnswerFault{answerUndecodable}, requests: 1},
+		{name: "an answer with no expiry, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
+		{name: "an answer with no expiry, to a release", scope: lean, faults: []tokenAnswerFault{answerNoExpiry}, requests: 1},
+		{name: "a whole answer with no token, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerNoToken}, requests: 1, live: 1, unrevokable: true},
+		{name: "a whole answer with no token, to a release", scope: lean, faults: []tokenAnswerFault{answerNoToken}, requests: 1, live: 1, unrevokable: true},
+		{name: "a 500 cut off, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerCut500, answerCut500, answerCut500}, noRevoke: true},
+		{name: "a 500 cut off, to a release", scope: lean, faults: []tokenAnswerFault{answerCut500, answerCut500, answerCut500}, noRevoke: true},
+		{name: "a token request that never reached GitHub, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
+		{name: "a token request that never reached GitHub, to a release", scope: lean, faults: []tokenAnswerFault{answerUnreachable}, requests: 1, live: 1, released: true},
+		{name: "a token request whose name did not resolve, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerUnresolved}, requests: 1, verdict: true},
+		{name: "a token request whose TLS handshake the broker refused, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerUntrusted}, requests: 1, verdict: true},
+		{name: "a token request GitHub received whole though its write reported an error, to a check", check: true, scope: wide,
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 1, live: 1},
-		{name: "a token request GitHub received whole though its write reported an error, to a release", narrowing: wide,
+		{name: "a token request GitHub received whole though its write reported an error, to a release", scope: wide,
 			faults: []tokenAnswerFault{answerWriteFails, answerWriteFails, answerWriteFails}, requests: 3, live: 3},
-		{name: "a connection GitHub reset after it received the request, to a check", check: true, narrowing: lean,
+		{name: "a connection GitHub reset after it received the request, to a check", check: true, scope: lean,
 			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 1, live: 1},
-		{name: "a connection GitHub reset after it received the request, to a release", narrowing: lean,
+		{name: "a connection GitHub reset after it received the request, to a release", scope: lean,
 			faults: []tokenAnswerFault{answerReset, answerReset, answerReset}, requests: 3, live: 3},
-		{name: "a TLS record error after the request went out, to a check", check: true, narrowing: lean,
+		{name: "a TLS record error after the request went out, to a check", check: true, scope: lean,
 			faults: []tokenAnswerFault{answerBadRecord, answerBadRecord, answerBadRecord}, requests: 1, live: 1},
-		{name: "a TLS alert after the request went out, to a check", check: true, narrowing: lean,
+		{name: "a TLS alert after the request went out, to a check", check: true, scope: lean,
 			faults: []tokenAnswerFault{answerAlert, answerAlert, answerAlert}, requests: 1, live: 1},
-		{name: "a TLS record error after the request went out, to a release", narrowing: lean,
+		{name: "a TLS record error after the request went out, to a release", scope: lean,
 			faults: []tokenAnswerFault{answerBadRecord, answerBadRecord, answerBadRecord}, requests: 3, live: 3},
-		{name: "an answer lost through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
+		{name: "an answer lost through a transport that reports no connection, to a check", check: true, scope: lean, silent: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
-		{name: "an answer lost through a transport that reports no connection, to a release", narrowing: lean, silent: true,
+		{name: "an answer lost through a transport that reports no connection, to a release", scope: lean, silent: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 3, live: 3},
-		{name: "a token request that never reached GitHub through a transport that reports no connection, to a check", check: true, narrowing: lean, silent: true,
+		{name: "a token request that never reached GitHub through a transport that reports no connection, to a check", check: true, scope: lean, silent: true,
 			faults: []tokenAnswerFault{answerUnreachable}, requests: 1, verdict: true},
-		{name: "an answer lost through a wrapper that forwards GetConn and not GotConn, to a check", check: true, narrowing: lean, partial: true,
+		{name: "an answer lost through a wrapper that forwards GetConn and not GotConn, to a check", check: true, scope: lean, partial: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
-		{name: "an answer lost through an *http.Transport whose protocol is registered to that wrapper, to a check", check: true, narrowing: lean, registered: true,
+		{name: "an answer lost through an *http.Transport whose protocol is registered to that wrapper, to a check", check: true, scope: lean, registered: true,
 			faults: []tokenAnswerFault{answerLost, answerLost, answerLost}, requests: 1, live: 1},
-		{name: "an undecodable answer whose revoke GitHub refuses, to a check", check: true, narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
-		{name: "an undecodable answer whose revoke GitHub refuses, to a release", narrowing: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
+		{name: "an undecodable answer whose revoke GitHub refuses, to a check", check: true, scope: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
+		{name: "an undecodable answer whose revoke GitHub refuses, to a release", scope: lean, faults: []tokenAnswerFault{answerUndecodable}, refuseRevokes: true, requests: 1, live: 1, says: []string{saysNotRevokedUnusable}},
 		{name: "a release of two accounts whose second answer is undecodable", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, requests: 2},
 		{name: "a release of two accounts whose second answer is undecodable and whose revokes GitHub refuses", faults: []tokenAnswerFault{answerWhole, answerUndecodable}, refuseRevokes: true, requests: 2, live: 2,
 			says: []string{saysNotRevokedUnusable, saysNotRevokedUnreleased}},
@@ -624,11 +626,11 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, tc.deadline)
 				defer cancel()
 			}
-			owners := []string{"ada"}
-			if tc.narrowing == nil {
-				owners = []string{"acme-org", "ada"}
+			scope := tc.scope
+			if scope == nil {
+				scope = readScope("acme-org", "ada")
 			}
-			minted, err := app.Mint(ctx, secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing, Check: tc.check})
+			minted, err := app.Mint(ctx, secrets.MintRequest{Value: value, GitHub: scope, Check: tc.check})
 			switch {
 			case tc.released:
 				if err != nil || minted.Value == "" {

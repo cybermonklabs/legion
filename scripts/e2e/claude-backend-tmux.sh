@@ -714,7 +714,7 @@ dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 # The claude-envoy plugin the panes load, built from this checkout outside it: a pull request's tree
 # carries no fresh dist/ or legion/ (packages/claude-envoy/scripts/build.ts --out).

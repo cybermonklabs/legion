@@ -3,13 +3,12 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // workerToken is the claim of the agent that works role's step of issue now, read from the issue's
@@ -23,16 +22,13 @@ func (s *server) workerToken(ctx context.Context, issue string, role claim.Role)
 	if s.pool == nil || s.records == nil {
 		return "", errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	token, err := record.ReadWorkerClaim(ctx, s.records, tx, s.project, issue, role)
-	if err != nil {
-		return "", err
-	}
-	return token, tx.Commit(ctx)
+	var token claim.Token
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		token, err = record.ReadWorkerClaim(ctx, s.records, tx, s.project, issue, role)
+		return err
+	})
+	return token, err
 }
 
 // worksStep is the standing of a request on token, the claim the route read as the worker on
@@ -43,19 +39,4 @@ func (s *server) worksStep(issue string, role claim.Role, token claim.Token) fun
 		now, err := s.workerToken(ctx, issue, role)
 		return now == token, err
 	}
-}
-
-// refuseMovedSpawn answers a spawn whose launch of token, the claim it read as the worker on
-// role's step of issue, found the step another claim's under the machine's lock
-// (supervise.ErrStepLeft): nothing was launched or sent, and the answer names the claim the record
-// names there now, read again here, so the operator can ask again of the step as it stands.
-func (s *server) refuseMovedSpawn(w http.ResponseWriter, r *http.Request, issue string, role claim.Role, token claim.Token) {
-	now, err := s.workerToken(r.Context(), issue, role)
-	if err != nil {
-		s.operatorFailure(w, r, "spawn", token, err)
-		return
-	}
-	s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
-		"spawn refused: the %s's step of %s moved from claim %s to claim %s under the request; nothing was launched or sent, so ask again",
-		role, issue, token, now))
 }

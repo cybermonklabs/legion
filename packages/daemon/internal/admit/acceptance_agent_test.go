@@ -30,7 +30,7 @@ func runAtStep(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, 
 			steps = append(steps, record.PlanStep{Issue: key, Generation: generation, Task: "a", Position: i + 1, Role: role, AgentKey: agent, Type: roles[role].Type})
 		}
 		for _, put := range []error{
-			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)),
+			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps)),
 			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: position}, record.TaskRunning),
 		} {
 			if put != nil {

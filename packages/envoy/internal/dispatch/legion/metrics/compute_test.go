@@ -419,6 +419,43 @@ func TestAHandoffStartsTheNextPhaseAndLeavesNoHourBetweenThem(t *testing.T) {
 	}
 }
 
+// The fallback timeline follows the order of the steps the issue's plan names, not the default
+// steps' order. Under `implementer reviewer tester` the implement handoff starts reviewing, the
+// review handoff starts testing, the tester's first event is no step back, and the test handoff,
+// the last step's, starts the retro. A plan made after an event does not reach back to it: the
+// event reads the plan of the run it fell in, or the first run's where it fell before every plan.
+// The control is the same event log with no plan, read in the default steps' order.
+func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
+	events := func() *Issue {
+		return newIssue("INFRA-1").
+			worked("implementer", hour(0)).
+			handedOff("implement", hour(2)).
+			worked("reviewer", hour(3)).
+			handedOff("review", hour(5)).
+			worked("tester", hour(6)).
+			handedOff("test", hour(8)).
+			closedAt(hour(10))
+	}
+	for _, tc := range []struct {
+		name  string
+		issue *Issue
+		want  []string
+	}{
+		{"implementer reviewer tester", events().ran(hour(0), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"the plan of the first run, made after the first event", events().ran(hour(1), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"control: no plan, the default steps", events(),
+			[]string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-8", "reviewing 8-10"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := timelineOf(fixture(hour(-24), hour(24), tc.issue), tc.issue); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the fallback timeline is %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone: "A seventh bar, 'no role', holds the phases no
 // role works: `awaiting_person` and `held`", and the spec's "Phase boundaries before
 // observations" holds it to those two. Every other hour of the work time is on a role's bar.
@@ -842,6 +879,137 @@ func TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue(t *testing.
 	}
 	if whole != 3 {
 		t.Fatalf("the bars hold %g hours of a four-hour life, want 3: the queued hour is on no bar", whole)
+	}
+}
+
+// TestAnObservedStepIsOnItsRolesBar: an issue the sampler observed at `step`, where a role the
+// deployment defines works a step of its task, puts those hours on that role's bar, the role the
+// daemon reports as the issue's `stepRole` (legion.FieldStepRole), and on no other: the checker's
+// two hours here are the checker's, the implementer keeps its implementing and its retro, and the
+// bars still add up to the work time. Before it, `step` was on no bar, and those hours on none.
+func TestAnObservedStepIsOnItsRolesBar(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(5)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(2), "step").
+		observeString(legion.FieldStepRole, hour(2), "checker").
+		observeString(legion.FieldPhase, hour(4), "retro").
+		observe(legion.FieldStepRole, hour(4), "null")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if got, want := timelineOf(fixture(hour(-24), hour(24), issue), issue), []string{"implementing 0-2", "step:checker 2-4", "retro 4-5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the observed timeline is %v, want %v", got, want)
+	}
+	if bar := barOf(t, report, "checker"); bar.Hours != 2 {
+		t.Errorf("the checker's bar = %g hours, want its step's two", bar.Hours)
+	}
+	if bar := barOf(t, report, "implementer"); bar.Hours != 3 {
+		t.Errorf("the implementer's bar = %g hours, want its implementing and its retro, three", bar.Hours)
+	}
+	partitionsItsWorkTime(t, issue)
+}
+
+// TestAnObservedStepIsASendBackOnlyWhenItsRunReturned: a move from `step` to implementing is a
+// send-back only when the step failed and returned its task (StepRun.Returned). A step of a role
+// the deployment defines that stands before the implementer moves to implementing when it
+// passes, a forward move, and the observed phases cannot tell the two apart: only the run can.
+// Before it, the observed half of sentBackOnce read the designer's pass as a send-back, while its
+// fallback half answered false for the same history.
+func TestAnObservedStepIsASendBackOnlyWhenItsRunReturned(t *testing.T) {
+	for _, one := range []struct {
+		name     string
+		issue    *Issue
+		timeline []string
+		sentBack bool
+	}{
+		{
+			name: "the designer's step before the implementer passes",
+			issue: newIssue("INFRA-1").worked("implementer", hour(2)).closedAt(hour(5)).
+				observeString(legion.FieldPhase, hour(0), "step").
+				observeString(legion.FieldStepRole, hour(0), "designer").
+				observeString(legion.FieldPhase, hour(2), "implementing").
+				observe(legion.FieldStepRole, hour(2), "null").
+				observeString(legion.FieldPhase, hour(4), "retro").
+				stepRan("designer", hour(0), hour(2), false),
+			timeline: []string{"step:designer 0-2", "implementing 2-4", "retro 4-5"},
+		},
+		{
+			name: "the checker's step fails and returns the task to the implementer",
+			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observeString(legion.FieldPhase, hour(2), "step").
+				observeString(legion.FieldStepRole, hour(2), "checker").
+				observeString(legion.FieldPhase, hour(4), "implementing").
+				observe(legion.FieldStepRole, hour(4), "null").
+				observeString(legion.FieldPhase, hour(5), "retro").
+				stepRan("checker", hour(2), hour(4), true),
+			timeline: []string{"implementing 0-2", "step:checker 2-4", "implementing 4-5", "retro 5-6"},
+			sentBack: true,
+		},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			population := fixture(hour(-24), hour(24), one.issue)
+			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
+				t.Fatalf("the observed timeline is %v, want %v", got, one.timeline)
+			}
+			if row := Compute(population, ScopeAll, hour(24)).Rework.Issues[0]; row.SentBack != one.sentBack {
+				t.Errorf("sent back = %t, want %t", row.SentBack, one.sentBack)
+			}
+		})
+	}
+}
+
+// TestAStepBeforeObservationsIsOnItsRolesBar: before observations a step of a role the deployment
+// defines is read from its run (Issue.Runs), since its role writes no handoff and the workflow
+// writes `in_progress` as the step starts: that status, which reads as a send-back to
+// implementing when it follows `testing`, is the step's own while the run is open
+// (Issue.stepStatus). It lands a quarter hour after the run's start here, as the daemon's status
+// write reaches Dispatch after the run it records. The checker's hours are the checker's, the
+// implementer's are its own, the bars add up to the work time, and only a run that failed and
+// returned its task is a send-back. Before the runs were read, the checker's two hours were the
+// implementer's and the step a send-back.
+func TestAStepBeforeObservationsIsOnItsRolesBar(t *testing.T) {
+	tested := func() *Issue {
+		return newIssue("INFRA-1").worked("implementer", hour(0)).statusAt(hour(0), "in_progress").
+			handedOff("implement", hour(2)).statusAt(hour(2), "testing").worked("tester", hour(2)).
+			handedOff("test", hour(4)).statusAt(hour(4.25), "in_progress")
+	}
+	for _, one := range []struct {
+		name     string
+		issue    *Issue
+		timeline []string
+		bars     map[string]float64
+		sentBack bool
+	}{
+		{
+			name:     "the checker passes, and the retro follows",
+			issue:    tested().stepRan("checker", hour(4), hour(6), false).statusAt(hour(6), "retro").closedAt(hour(7)),
+			timeline: []string{"implementing 0-2", "testing 2-4", "step:checker 4-6", "retro 6-7"},
+			bars:     map[string]float64{"implementer": 3, "tester": 2, "checker": 2},
+		},
+		{
+			name: "the checker fails and returns the task to the implementer",
+			issue: tested().stepRan("checker", hour(4), hour(6), true).
+				handedOff("implement", hour(7)).statusAt(hour(7), "testing").closedAt(hour(8)),
+			timeline: []string{"implementing 0-2", "testing 2-4", "step:checker 4-6", "implementing 6-7", "testing 7-8"},
+			bars:     map[string]float64{"implementer": 3, "tester": 3, "checker": 2},
+			sentBack: true,
+		},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			population := fixture(hour(-24), hour(24), one.issue)
+			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
+				t.Fatalf("the fallback timeline is %v, want %v", got, one.timeline)
+			}
+			report := Compute(population, ScopeAll, hour(24))
+			for role, hours := range one.bars {
+				if bar := barOf(t, report, role); bar.Hours != hours {
+					t.Errorf("the %s bar = %g hours, want %g", role, bar.Hours, hours)
+				}
+			}
+			if row := report.Rework.Issues[0]; row.SentBack != one.sentBack {
+				t.Errorf("sent back = %t, want %t", row.SentBack, one.sentBack)
+			}
+			partitionsItsWorkTime(t, one.issue)
+		})
 	}
 }
 

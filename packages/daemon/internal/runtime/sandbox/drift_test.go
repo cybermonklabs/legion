@@ -10,20 +10,57 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // driftOf is why loc's pod has drifted from the configuration r would build one from now
 // (PodDrift). A runtime that cannot be asked fails the test: an error is never a statement that
 // something drifted.
-func driftOf(t *testing.T, ctx context.Context, r *Runtime, loc runtime.Locator) []string {
+//
+// PodDrift reads loc's Sandbox and the pod of the same name from r's informer stores. A write gets
+// to those stores through the watch, after the API has it. Thus driftOf first waits until r's
+// stores hold the Sandbox and the pod that g's trackers hold, within a minute (testwait.Bounded). Where
+// the tracker holds no such pod, the wait holds until the store holds none too. Without
+// the wait, a test that reads a write from the tracker can ask PodDrift about the Sandbox before
+// that write (TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed). The wait
+// compares the two decoded objects and not their resourceVersions, because a write to the fake
+// does not move the resourceVersion: "the fake tracker keeps whatever version an object carries"
+// (controller_test.go, setResourceVersion), and "the fake's tracker leaves the version alone"
+// (lifecycle_test.go, versionedTracker). Stores that already hold the trackers' objects give the
+// answer they gave before this wait.
+func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
 	t.Helper()
-	drifted, err := r.PodDrift(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc})
+	name := loc.Sandbox.Name
+	// differs names what the stores held unlike the trackers at the last read: the Sandbox, the
+	// pod, or both.
+	var differs []string
+	synced := func() bool {
+		held, heldPod := g.sandbox(name), g.pod(name)
+		stored, err := r.storedSandbox(name)
+		if err != nil {
+			t.Fatalf("PodDrift %s: the store's Sandbox %s: %v", loc.Claim, name, err)
+		}
+		differs = differs[:0]
+		if !equality.Semantic.DeepEqual(held, stored) {
+			differs = append(differs, "the Sandbox")
+		}
+		if !equality.Semantic.DeepEqual(heldPod, r.storedPod(name)) {
+			differs = append(differs, "the pod")
+		}
+		return len(differs) == 0
+	}
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, synced) {
+		t.Fatalf("PodDrift %s: the stores did not hold the trackers' objects named %s: %s of the store and of the tracker differ",
+			loc.Claim, name, strings.Join(differs, " and "))
+	}
+	drifted, err := r.PodDrift(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc})
 	if err != nil {
 		t.Fatalf("PodDrift %s: %v", loc.Claim, err)
 	}
@@ -31,7 +68,7 @@ func driftOf(t *testing.T, ctx context.Context, r *Runtime, loc runtime.Locator)
 }
 
 // operatorVolume is an operator's own volume (runtime.kubernetes.pod.volumes), and operatorMount a
-// mount of it: what an operator adds to every pod Legion runs, and two of the five keys a pod's
+// mount of it: what an operator adds to every pod Legion runs, and two of the keys a pod's
 // recorded shape holds.
 var (
 	operatorVolume = corev1.Volume{Name: "operator-extra", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -79,12 +116,14 @@ func shapedOptions(o *Options) {
 	o.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
 }
 
-// The shapes an issue pod built under shapedOptions records. shapedGVisorShape is a gVisor pod's,
-// byte for byte what every release before the sandbox setting recorded for that configuration, so a
-// pod those releases left running is read against it
-// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The others are a microVM pod's under
-// testMicroVM's block, under that block naming no metadata endpoint, and under that block with
-// keep_volume on (keptMicroVM), the one shape that records the setting.
+// The shapes a pod built under shapedOptions records. shapedGVisorShape is a gVisor issue pod's,
+// byte for byte what every release before the sandbox setting recorded for that configuration, so
+// a pod those releases left running is read against it
+// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The three after it are a microVM issue
+// pod's under testMicroVM's block, under that block naming no metadata endpoint, and under that
+// block with keep_volume on (keptMicroVM), the one shape that records the setting. The last is the
+// controller's pod's in a microVM under testMicroVM's block, on the controller's own reservation,
+// which names no storage class: its disk stays on runtime.kubernetes.storage_class.
 const (
 	shapedGVisorShape = `{"image":"` + testImage + `",` +
 		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
@@ -113,6 +152,14 @@ const (
 		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo","keep_volume":true,` +
 		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
+	shapedControllerMicroVMShape = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"1","ephemeral-storage":"10Gi","memory":"4Gi"},"requests":{"cpu":"1","ephemeral-storage":"1Gi","memory":"4Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm",` +
+		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
 )
 
 // testMicroVMSandboxShape is the sandbox member a microVM pod under testMicroVM's block records,
@@ -121,12 +168,13 @@ const testMicroVMSandboxShape = `{"runtime_class":"microvm","compute_class":"exa
 	`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 	`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}`
 
-// The keys of the three shapes a runtime builds its pods from (podShapes): an issue pod's in
-// either sandbox, and the controller's pod's, which runs in gVisor whatever the configuration says.
+// The keys of the four shapes a runtime builds its pods from (podShapes): an issue pod's and the
+// controller's pod's, each in either sandbox.
 var (
-	issueInGVisor      = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
-	issueInMicroVM     = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
-	controllerInGVisor = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	issueInGVisor       = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
+	issueInMicroVM      = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
+	controllerInGVisor  = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	controllerInMicroVM = podShapeKey{kind: controllerPod{}, sandbox: SandboxMicroVM}
 )
 
 // sandboxBlock is a runtime.kubernetes.sandbox of type kind naming testMicroVM's block, its
@@ -141,10 +189,15 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
 // microvm block's ComputeClass, StorageClass, keep_volume where it is on, and metadata endpoint,
-// which a block naming none leaves out. A gVisor pod records no sandbox at all, beside a microvm
-// block or without one, keep_volume on or off, so its shape is the one every release before the
-// sandbox setting recorded. It is pinned whole because it is what every later daemon compares a
-// running pod against: a change of spelling here reads as drift on every pod of the fleet at once.
+// which a block naming none leaves out. The recorded shape of an issue pod of a deployment that
+// defines roles also holds those roles by name (podShapeRecord.Roles). The controller's microVM
+// pod records no StorageClass and no keep_volume: its disk stays on
+// runtime.kubernetes.storage_class (diskSpec), and it keeps the volume its Sandbox owns whatever
+// keep_volume says (keptVolume), so neither key is in its shape. A gVisor pod records no sandbox
+// at all, beside a microvm block or without one, keep_volume on or off, so its shape is the one
+// every release before the sandbox setting recorded. It is pinned whole because it is what every
+// later daemon compares a running pod against: a change of spelling here reads as drift on every
+// pod of the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil
@@ -168,6 +221,12 @@ func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 		},
 		"a gVisor issue pod beside a microvm block that keeps its volume": {
 			SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: keptMicroVM()}, issueInGVisor, shapedGVisorShape,
+		},
+		"the controller's pod in a microVM": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerInMicroVM, shapedControllerMicroVMShape,
+		},
+		"the controller's pod in a microVM whose block keeps an issue pod's volume": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}, controllerInMicroVM, shapedControllerMicroVMShape,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -279,11 +338,11 @@ func TestPodShapeIgnoresTheCacheTrimmersSettings(t *testing.T) {
 	}
 	none := shaped(nil)
 	trimming := shaped(&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60})
-	// Each shape a pod is built from: either kind in gVisor, and an issue pod in a microVM.
+	// Each shape a pod is built from: either kind in gVisor, and either kind in a microVM.
 	for _, shape := range []struct {
 		kind    podKind
 		microVM *MicroVM
-	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}} {
+	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}, {controllerPod{}, testMicroVM()}} {
 		if podShape(none, shape.kind, shape.microVM) != podShape(trimming, shape.kind, shape.microVM) {
 			t.Fatalf("%T (microvm %v) encodes differently once the trimmer is configured:\n%s\n%s", shape.kind, shape.microVM != nil,
 				podShape(none, shape.kind, shape.microVM), podShape(trimming, shape.kind, shape.microVM))
@@ -312,7 +371,7 @@ func TestPodDriftIsNothingForAPodALaunchJustCreated(t *testing.T) {
 			g := newRig(t, nil, options...)
 			for _, spec := range []runtime.SpawnSpec{workerSpec(t), controllerSpec(t)} {
 				loc := g.spawn(spec)
-				if drifted := driftOf(t, g.ctx, g.r, loc); len(drifted) > 0 {
+				if drifted := driftOf(t, g, g.r, loc); len(drifted) > 0 {
 					t.Errorf("%s: PodDrift = %q, want nothing of a pod its own launch just created", spec.Claim, drifted)
 				}
 			}
@@ -340,7 +399,7 @@ func TestPodDriftNamesEachConfigurationKeyThatMoved(t *testing.T) {
 			g := newRig(t, nil, withOptions(tc.before))
 			loc := g.spawn(workerSpec(t))
 			r2 := secondRuntime(t, g, tc.now)()
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			switch {
 			case tc.key == "" && len(drifted) > 0:
 				t.Fatalf("PodDrift = %q, want nothing: the configuration did not move", drifted)
@@ -355,7 +414,8 @@ func TestPodDriftNamesEachConfigurationKeyThatMoved(t *testing.T) {
 }
 
 // A Sandbox whose stored template records no shape was written before this release, so there is
-// nothing to say what its pod was built from: it is compared by image alone, exactly as a pod is.
+// nothing to say what its pod was built from: it is compared by image alone, exactly as a pod is,
+// and by the roles its launcher names, Legion's six where the deployment defines none (rolesDrift).
 // A moved reservation, operator volume or mount, or disk size on it is no drift — a guess there
 // would replace pods no operator changed — and a moved image is.
 func TestPodDriftComparesASandboxWithoutAPodShapeByImageAlone(t *testing.T) {
@@ -375,7 +435,7 @@ func TestPodDriftComparesASandboxWithoutAPodShapeByImageAlone(t *testing.T) {
 			loc := g.spawn(workerSpec(t))
 			r2 := secondRuntime(t, g, tc.now)()
 			forgetPodShape(t, g, r2, loc.Sandbox.Name)
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			if (len(drifted) > 0) != tc.drifted {
 				t.Fatalf("PodDrift = %q, want drifted %t of a sandbox that records no shape", drifted, tc.drifted)
 			}
@@ -447,7 +507,7 @@ func TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift(t *testing.T) {
 			if got := r2.podShapes[issueInGVisor]; got != shapedGVisorShape {
 				t.Errorf("a gVisor issue pod is built now from\n%s\nwant the shape every release before the sandbox setting recorded\n%s", got, shapedGVisorShape)
 			}
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 				t.Errorf("PodDrift = %q of a gVisor pod a release before the sandbox setting built, want nothing", drifted)
 			}
 		})
@@ -463,10 +523,10 @@ func TestPuttingAnIssueOnTheCanaryListDriftsThatIssuesPodAlone(t *testing.T) {
 	g := newRig(t, nil)
 	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 	r2 := secondRuntime(t, g, sandboxBlock(SandboxGVisor, testTree))()
-	if drifted, want := driftOf(t, g.ctx, r2, canary), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
+	if drifted, want := driftOf(t, g, r2, canary), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
 		t.Errorf("PodDrift of the canary %s's pod = %q, want %q and nothing beside it", testTree, drifted, want)
 	}
-	if drifted := driftOf(t, g.ctx, r2, other); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, other); len(drifted) > 0 {
 		t.Errorf("PodDrift of LEGION-209's pod = %q, want nothing: no canary list names its issue", drifted)
 	}
 }
@@ -479,7 +539,7 @@ func TestSettingTheProjectToMicroVMDriftsEveryGVisorIssuePod(t *testing.T) {
 	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM))()
 	want := "sandbox null, now " + testMicroVMSandboxShape
 	for _, loc := range locs {
-		if drifted := driftOf(t, g.ctx, r2, loc); !slices.Equal(drifted, []string{want}) {
+		if drifted := driftOf(t, g, r2, loc); !slices.Equal(drifted, []string{want}) {
 			t.Errorf("PodDrift of %s's pod = %q, want %q and nothing beside it", loc.Claim, drifted, want)
 		}
 	}
@@ -496,10 +556,10 @@ func TestTheSwitchLeavesCanaryMicroVMPodsUndrifted(t *testing.T) {
 		t.Fatalf("the canary's pod records the shape %s, want the microVM one %s, or this case proves nothing", held, built)
 	}
 	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM))()
-	if drifted := driftOf(t, g.ctx, r2, canary); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, canary); len(drifted) > 0 {
 		t.Errorf("PodDrift of the canary %s's microVM pod = %q, want nothing: its issue runs in a microVM still", testTree, drifted)
 	}
-	if drifted, want := driftOf(t, g.ctx, r2, other), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
+	if drifted, want := driftOf(t, g, r2, other), "sandbox null, now "+testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
 		t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want %q and nothing beside it", drifted, want)
 	}
 }
@@ -511,10 +571,10 @@ func TestACanaryIssueOfAMicroVMProjectDriftsToGVisor(t *testing.T) {
 	g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
 	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 	r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM, testTree))()
-	if drifted, want := driftOf(t, g.ctx, r2, canary), "sandbox "+testMicroVMSandboxShape+", now null"; !slices.Equal(drifted, []string{want}) {
+	if drifted, want := driftOf(t, g, r2, canary), "sandbox "+testMicroVMSandboxShape+", now null"; !slices.Equal(drifted, []string{want}) {
 		t.Errorf("PodDrift of the canary %s's pod = %q, want %q and nothing beside it", testTree, drifted, want)
 	}
-	if drifted := driftOf(t, g.ctx, r2, other); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, other); len(drifted) > 0 {
 		t.Errorf("PodDrift of LEGION-209's microVM pod = %q, want nothing: its issue runs in a microVM still", drifted)
 	}
 }
@@ -545,10 +605,10 @@ func TestAMicroVMStorageClassChangeDriftsMicroVMPodsAlone(t *testing.T) {
 				sandboxBlock(SandboxGVisor, testTree)(o)
 				tc.move(o.Sandbox.MicroVM)
 			})()
-			if drifted, want := driftOf(t, g.ctx, r2, microVM), "sandbox "+testMicroVMSandboxShape+", now "+tc.now; !slices.Equal(drifted, []string{want}) {
+			if drifted, want := driftOf(t, g, r2, microVM), "sandbox "+testMicroVMSandboxShape+", now "+tc.now; !slices.Equal(drifted, []string{want}) {
 				t.Errorf("PodDrift of the microVM pod = %q, want %q and nothing beside it", drifted, want)
 			}
-			if drifted := driftOf(t, g.ctx, r2, gVisor); len(drifted) > 0 {
+			if drifted := driftOf(t, g, r2, gVisor); len(drifted) > 0 {
 				t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want nothing: it is built from nothing of the microvm block", drifted)
 			}
 		})
@@ -579,10 +639,10 @@ func TestAKeepVolumeChangeDriftsMicroVMPodsAlone(t *testing.T) {
 			g := newRig(t, nil, withOptions(keeping(tc.before)))
 			microVM, gVisor := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 			r2 := secondRuntime(t, g, keeping(tc.now))()
-			if drifted, want := driftOf(t, g.ctx, r2, microVM), "sandbox "+tc.held+", now "+tc.want; !slices.Equal(drifted, []string{want}) {
+			if drifted, want := driftOf(t, g, r2, microVM), "sandbox "+tc.held+", now "+tc.want; !slices.Equal(drifted, []string{want}) {
 				t.Errorf("PodDrift of the microVM pod = %q, want %q and nothing beside it", drifted, want)
 			}
-			if drifted := driftOf(t, g.ctx, r2, gVisor); len(drifted) > 0 {
+			if drifted := driftOf(t, g, r2, gVisor); len(drifted) > 0 {
 				t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want nothing: keep_volume keeps no gVisor pod's volume", drifted)
 			}
 		})
@@ -635,7 +695,7 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			drifted := strings.Join(driftOf(t, g.ctx, r2, loc), "; ")
+			drifted := strings.Join(driftOf(t, g, r2, loc), "; ")
 			if !strings.Contains(drifted, tc.says+" ") {
 				t.Errorf("PodDrift = %q, want a reason naming %s", drifted, tc.says)
 			}
@@ -686,7 +746,7 @@ func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 				g.update(g.pod(loc.Sandbox.Name), tc.stored)
 			}
 			r2 := restartedOver(t, g, loc, func(o *Options) { o.Pod.ServiceAccount = tc.account })
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			switch {
 			case tc.says == "" && len(drifted) > 0:
 				t.Errorf("PodDrift = %q of a pod on the configured account, want nothing", drifted)
@@ -700,8 +760,9 @@ func TestPodDriftNamesTheServiceAccountThePodRunsAs(t *testing.T) {
 // No round covers the project controller's pod (roundCovers), so its pod has drifted from nothing
 // whatever the configuration says now — the ServiceAccount it runs as included: the controller
 // holds no issue workspace and has nothing to push, so there is nobody in that pod to task and no
-// round to open over it. What this answers nothing for, its next launch replaces instead, for
-// every kind of drift and as it always did
+// round to open over it. What this answers nothing for, its next launch replaces instead: a launch
+// that installs nothing for every kind of drift, as it always did, and a launch installing a
+// stale-plugin pair for the image alone (podImageDrift)
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted,
 // TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry, and for the account
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers): a pod neither
@@ -715,7 +776,7 @@ func TestPodDriftIsNothingForTheControllersPod(t *testing.T) {
 		o.Pod.ServiceAccount = otherAccount
 		withOperatorMount(o)
 	})()
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 		t.Errorf("PodDrift = %q of the controller's pod, want nothing", drifted)
 	}
 }
@@ -829,7 +890,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	loc := g.spawn(workerSpec(t))
 	name := loc.Sandbox.Name
 	r2 := secondRuntime(t, g, func(o *Options) { o.Image = nextImage })()
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 		t.Fatal("PodDrift of the running pod is empty, so this case proves nothing: nothing below could be read as the drift that cleared")
 	}
 
@@ -879,7 +940,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	suspended("it naming the locator's own pod for its round", func(s *sandbox) bool {
 		return s.Annotations[roundDisplacedAnnotation] == loc.Sandbox.PodUID
 	})
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 		t.Errorf("PodDrift of this round's own replacement in flight = %q, want nothing: the pod is there and the round ends on it", drifted)
 	}
 }
@@ -947,7 +1008,7 @@ func TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs(t *testing.T) {
 				state, connected := r2.launchers.state(spec.Claim, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatal("PodDrift of the running pod is empty, so this case proves nothing: the reading below could not be the drift that cleared")
 			}
 
@@ -1046,7 +1107,7 @@ func TestTheLaunchAfterAReplacementProvisionsAPodOnTheConfiguredAccount(t *testi
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, func(o *Options) { o.Pod.ServiceAccount = otherAccount })
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 		t.Fatalf("PodDrift of a pod on another account = %q, want the account among its reasons: this is the round that reason opens", drifted)
 	}
 
@@ -1064,7 +1125,7 @@ func TestTheLaunchAfterAReplacementProvisionsAPodOnTheConfiguredAccount(t *testi
 	if pod.Spec.ServiceAccountName != otherAccount {
 		t.Fatalf("the pod the launch provisioned runs as %q, want the configured %s", pod.Spec.ServiceAccountName, otherAccount)
 	}
-	if drifted := driftOf(t, g.ctx, r2, resumed); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, resumed); len(drifted) > 0 {
 		t.Fatalf("the pod the launch provisioned has drifted: %q", drifted)
 	}
 }
@@ -1147,6 +1208,91 @@ func TestReplacePodIsANoOpWithoutThePodTheLocatorRecords(t *testing.T) {
 	})
 	if err := gone.r.ReplacePod(gone.ctx, runtime.Known{Claim: workerToken, Locator: &goneLoc}, stillDue); err != nil {
 		t.Fatalf("ReplacePod of an absent sandbox: %v", err)
+	}
+}
+
+// ReplaceIssuePod is ReplacePod for an update round whose claims record no process in its pod
+// (dispatch://INFRA-4109 R7): the daemon names the pod by the issue and the round's own pod uid,
+// since no locator is left to name it by. Where there is no pod of that round to end — no Sandbox
+// of the issue, a Sandbox whose pod is not the round's, a Sandbox already suspended — it answers
+// nil, asks nothing and writes nothing. Where there is, it asks the caller's last word under the
+// pod's launch turn, and a refusal hands back its own error having written nothing, so a launch
+// that holds the turn is never cut. A replacement made is the round's own, as ReplacePod's is: the
+// Sandbox is suspended under the round's displaced-pod mark, which is what a sweep reading it
+// before the pod ends tells this replacement from a launch's by (PodDrift), and the call returns
+// once the pod is gone, with the issue's Sandbox holding no pod.
+func TestReplaceIssuePodEndsTheRoundsPodUnderItsLaunchTurn(t *testing.T) {
+	g := newRig(t, nil)
+	asked := 0
+	notAsked := func(context.Context) error {
+		asked++
+		return errors.New("a replacement with no pod of its round to end asked whether it was due")
+	}
+	if err := g.r.ReplaceIssuePod(g.ctx, "LEGION-999", "uid-pod-of-no-sandbox", notAsked); err != nil {
+		t.Fatalf("ReplaceIssuePod of an issue with no Sandbox: %v", err)
+	}
+
+	loc := g.spawn(workerSpec(t))
+	name, pod := loc.Sandbox.Name, loc.Sandbox.PodUID
+	g.clearActions()
+	if err := g.r.ReplaceIssuePod(g.ctx, testTree, "uid-pod-of-another-round", notAsked); err != nil {
+		t.Fatalf("ReplaceIssuePod of a pod the Sandbox does not hold: %v", err)
+	}
+	if wrote := g.writes(); len(wrote) > 0 {
+		t.Fatalf("ReplaceIssuePod of a pod the Sandbox does not hold wrote %v", wrote)
+	}
+
+	refused := errors.New("a launch into the pod is in a decision")
+	turnHeld := false
+	if err := g.r.ReplaceIssuePod(g.ctx, testTree, pod, func(ctx context.Context) error {
+		waited, done := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer done()
+		release, err := g.r.lockPod(waited, name)
+		if err == nil {
+			release()
+		}
+		turnHeld = err != nil
+		if mode := g.sandbox(name).mode(); mode == modeSuspended {
+			t.Errorf("the Sandbox is already %s when the replacement asks whether it is due", mode)
+		}
+		return refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("ReplaceIssuePod of a replacement no longer due = %v, want %v", err, refused)
+	}
+	if !turnHeld {
+		t.Fatal("the pod's launch turn was free while the replacement asked whether it is due, want the replacement to hold it")
+	}
+	if wrote := g.writes(); len(wrote) > 0 {
+		t.Fatalf("ReplaceIssuePod of a replacement no longer due wrote %v", wrote)
+	}
+	if p := g.pod(name); p == nil || string(p.UID) != pod {
+		t.Fatalf("the pod of a replacement no longer due is %+v, want %s still running", p, pod)
+	}
+
+	if err := g.r.ReplaceIssuePod(g.ctx, testTree, pod, stillDue); err != nil {
+		t.Fatalf("ReplaceIssuePod of a replacement still due: %v", err)
+	}
+	s := g.sandbox(name)
+	if s.mode() != modeSuspended || s.Annotations[displacedAnnotation] != pod || s.Annotations[roundDisplacedAnnotation] != pod {
+		t.Fatalf("the Sandbox after the replacement is %s naming %q displaced and %q replaced by its round, want it suspended naming %s for both",
+			s.mode(), s.Annotations[displacedAnnotation], s.Annotations[roundDisplacedAnnotation], pod)
+	}
+	if p := g.pod(name); p != nil && string(p.UID) == pod {
+		t.Fatalf("ReplaceIssuePod returned with pod %s still in the cluster", pod)
+	}
+	if held, read := g.r.IssuePod(testTree); !read || held != "" {
+		t.Fatalf("IssuePod of %s after the replacement = %q, read %t; want no pod, read", testTree, held, read)
+	}
+
+	g.clearActions()
+	if err := g.r.ReplaceIssuePod(g.ctx, testTree, pod, notAsked); err != nil {
+		t.Fatalf("ReplaceIssuePod of a suspended Sandbox: %v", err)
+	}
+	if wrote := g.writes(); len(wrote) > 0 {
+		t.Fatalf("ReplaceIssuePod of a suspended Sandbox wrote %v", wrote)
+	}
+	if asked != 0 {
+		t.Fatalf("a replacement with no pod of its round to end asked whether it was due %d times, want never", asked)
 	}
 }
 

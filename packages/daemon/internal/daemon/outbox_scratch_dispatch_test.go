@@ -1,5 +1,7 @@
 package daemon
 
+//ci:builds packages/envoy ./cmd/dispatch startScratchDispatchOn starts the dispatch command testbuild.EnvoyBinary builds, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)
+
 import (
 	"bytes"
 	"context"
@@ -27,12 +29,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -86,6 +90,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 // so the row run again after a crash before its finish finds its own marker and posts nothing,
 // and the issue holds exactly one message.
 func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -138,6 +143,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 // own block bound — is no retry's to repair. The row finishes and its issue's architect is told
 // Dispatch's own refusal, rather than the row climbing its backoff for ever and telling nobody.
 func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -186,6 +192,7 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 // architect is told what was refused and that the status stands. Without that, the daemon's
 // record would read done while the Dispatch issue kept the status it had, and nobody would know.
 func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -247,6 +254,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 // list. The first read is made before the lane runs, so the holder Dispatch lists after it is the
 // publication's own and not a set something else wrote.
 func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
@@ -343,9 +351,10 @@ func scratchRoleHolders(t *testing.T, baseURL, token, issue string) []dispatch.R
 // phases row names on the tester's step, and the tester's own claim of an earlier version of the
 // plan. The daemon's board lane publishes both to a real Dispatch built from this tree, each with
 // its token and whether it works the step, and Dispatch lists both sessions as holders of the
-// tester's role. Before 20261122130956 Dispatch refused the set, a role named twice (400
+// tester's role. Before 20261124213825 Dispatch refused the set, a role named twice (400
 // INVALID_ROLE_HOLDER), the lane ended the row, and Dispatch kept a set with neither session.
 func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
@@ -357,8 +366,8 @@ func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
 	if _, err := r.pool.Exec(r.ctx, `update claims set role = 'tester' where token = $1`, string(keyed)); err != nil {
 		t.Fatalf("re-role the keyed claim to the tester: %v", err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 	}); err != nil {
 		t.Fatalf("name the keyed claim on the tester's step: %v", err)
 	}
@@ -479,10 +488,11 @@ type scratchDispatch struct {
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
-// Postgres (testdb.Database) and starts the cmd/dispatch this process built.
+// Postgres (testdb.PlainDatabase: a child process reads it) and starts the cmd/dispatch this
+// process built.
 func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scratchDispatch {
 	t.Helper()
-	database := testdb.Database(t, "dispatch_scratch_test")
+	database := testdb.PlainDatabase(t, "dispatch_scratch_test")
 	root := options.root
 	if root == "" {
 		root = filepath.Join("..", "..", "..", "..")

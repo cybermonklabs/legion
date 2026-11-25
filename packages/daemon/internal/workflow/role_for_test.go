@@ -8,14 +8,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// roleForAnswers is the role that works each phase, written out here rather than read from
-// phase.RoleFor, so a phase added to the daemon fails this test until somebody decides what role
-// works it. The architect works two of them: admitted, where a root's own architect reads its
-// spec and decomposes its tree, and accepting, where it signs the work off on an issue with no
-// plan rows. No row of the table starts a claim of the architect for either: a row into accepting
-// starts the agent of its place as every row does (startEffects), and where that agent is the
-// architect no claim starts (Engine.start); and every site that starts, resumes or reports a
-// phase's worker skips the architect, which internal/textcheck's
+// roleForAnswers is the role phase.RoleFor answers for each phase, written out here rather than
+// read from phase.RoleFor, so a phase added to the daemon fails this test until somebody decides
+// what role works it. Step answers none: the role that works it is the issue's own, the role of its
+// running step (record.Issue.RoleAt). The architect works two of them: admitted, where a root's own
+// architect reads its spec and decomposes its tree, and accepting, where it signs the work off on
+// an issue with no plan rows. No row of the table starts a claim of the architect for either: a row
+// into accepting starts the agent of its place as every row does (startEffects), and where that
+// agent is the architect no claim starts (Engine.start); and every site that starts, resumes or
+// reports a phase's worker skips the architect, which internal/textcheck's
 // TestEveryReaderOfRoleForLeavesTheArchitectUnchanged holds for every reader of RoleFor in the
 // daemon.
 var roleForAnswers = map[phase.Phase]claim.Role{

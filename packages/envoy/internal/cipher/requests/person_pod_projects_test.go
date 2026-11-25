@@ -36,7 +36,7 @@ func personPodNaming(t *testing.T, podUID string, projects ...string) (*Machine,
 func TestAPersonsPodNamingAPrivateProjectGetsItsSecretWhileItsPersonSeesIt(t *testing.T) {
 	m, pod, key := personPodNaming(t, "pod-sami-priv", privProject)
 	_, grantID := grantOf(t, m, pod, key, "read it", "PRIV_KEY")
-	if release, err := m.Values(t.Context(), grantID, pod, nil, ReleaseCall{}); err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
+	if release, err := m.Values(t.Context(), grantID, pod, ReleaseCall{}); err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
 		t.Fatalf("Values(PRIV_KEY) to sami's pod naming PRIV = %v, %v; want its value", release.Values, err)
 	}
 
@@ -44,7 +44,7 @@ func TestAPersonsPodNamingAPrivateProjectGetsItsSecretWhileItsPersonSeesIt(t *te
 		privProject: {Visibility: "private", Owner: otherPerson, Listed: []string{insider}},
 		teamProject: publicTeam,
 	})
-	if release, err := m.Values(t.Context(), grantID, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), grantID, pod, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values of grant %s once PRIV's list no longer names %s = %v, %v; want ErrGrantNotLive", grantID, samisPod.person, release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
@@ -52,7 +52,7 @@ func TestAPersonsPodNamingAPrivateProjectGetsItsSecretWhileItsPersonSeesIt(t *te
 	}
 
 	other, unnamed, unnamedKey := personPodNaming(t, "pod-sami-none")
-	request, err := other.Create(t.Context(), unnamed, signRequest(t, other, unnamedKey, "read it", "PRIV_KEY"), "", nil)
+	request, err := other.Create(t.Context(), unnamed, signRequest(t, other, unnamedKey, "read it", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from sami's pod naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
 }
 
@@ -64,7 +64,7 @@ func TestAnUnmappedPersonsPodNamesNoListOfItsOwn(t *testing.T) {
 	m, pod, key := personPodNaming(t, "pod-sami-unmapped", privProject)
 	_, grantID := grantOf(t, m, pod, key, "read it", "PRIV_KEY")
 	delete(m.PodOperators, samisPod.account)
-	if release, err := m.Values(t.Context(), grantID, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), grantID, pod, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values of grant %s once the setting drops %s = %v, %v; want ErrGrantNotLive", grantID, samisPod.account, release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {

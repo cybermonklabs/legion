@@ -349,8 +349,8 @@ func hasBackwardRow(rows []Row, from, to phase.Phase) bool {
 
 // workflowTransitionRequired says whether line declares a row of from on trigger: the gate's
 // opening out of admitted, each step phase of the line on its role's trigger, the returns of a
-// tester and a reviewer the line holds, a conflict from each phase of the line after implementing,
-// and a move back from each phase of the line with a phase before it.
+// tester and a reviewer the line holds, and a move back from each phase of the line with a phase
+// before it. A head that conflicts with its base asks for no row: it moves no phase.
 func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger TriggerKind) bool {
 	in := func(p phase.Phase) bool { return from == p && slices.Contains(line, p) }
 	switch trigger {

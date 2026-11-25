@@ -31,6 +31,7 @@ func fastPageRetries(t *testing.T) {
 // is visited whole rather than halved or refused, and one past githubResultCap is refused, since
 // its results past the cap are unreachable however the window is asked for.
 func TestWalkWindowedVisitsAWindowItCannotHalveWhole(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(minimumSearchWindow)
 	const maxResults = 10
@@ -146,6 +147,7 @@ func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
 // a real week of the deploy repository's history, which failed the pass identically on every
 // retry, forever.
 func TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -363,7 +365,7 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 		runsPage(t, w, r, runs)
 	})
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	settings, err := GetSettings(ctx, pool)
@@ -450,7 +452,7 @@ func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T)
 
 	fake := newFakeGitHub(t)
 	fake.installations = []fakeInstallation{{id: live, repos: []string{"acme/widgets"}}}
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	rows, err := pool.Query(ctx, `select step from delivery_reconcile_progress where starts_with(step, $1) order by step`, mergedPullRequestsStepPrefix)
 	if err != nil {

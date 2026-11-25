@@ -49,9 +49,14 @@ Each request, once, in the inventory's order (point 6):
   its prompt names, lands under `--out`. A read the inputs cannot give, or an error S10's own code
   raises on them, is a deviation (`inputs`); an error of this driver stops the run. A fact that
   holds ends there: `finish_judgement` gives `never_decide:waiting-legion-root` with no judge.
-  Before the run's first `started.json`, the sandbox's preflight runs once (`preflight`): the
-  sandbox's Job with no bundle, every check of it made and made again here, its result kept
-  under `preflights/`; any failure stops the run before a request has started.
+  Before each `started.json`, the sandbox's preflight runs (`preflight`): the sandbox's Job with
+  no bundle, every check of it made and made again here, and its calls of point 2's model to
+  point 2's gateway with the Job's own key, each a session of its own and each of which must be
+  answered with a message by that model (`s10_sandbox.probe_refusal`); its result kept under
+  `preflights/`. Any failure stops the run before the request has started, so a refusal the probe
+  meets, at the run's start or before a later request, costs no request, and the same command
+  resumes once the gateway answers. A refusal that starts after a passed probe can still make that
+  request's deviation.
 - Else the five bundles and the five calls are kept under `--out`, and only then is the request
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
@@ -74,13 +79,18 @@ Each request, once, in the inventory's order (point 6):
 
 Stops. A request is started once its `started.json` is kept, before S10's code runs on it, and a
 request started and not finished is a deviation (`started`) that no later run judges again (point
-6): the next run records it so before it judges anything else. A stop writes nothing more for the
-request in flight, records itself, and leaves the stage `started` for the same command to resume:
-a SIGTERM or an interrupt; a sandbox that refuses to start a judge, since every later request
-would meet the same sandbox until its cause is cleared; a failed preflight; a Kubernetes API call
-that still fails once it has been tried again (`s10_job.py`), which is no fault of the request's;
-and a read-back that Bun cannot run. A Job that ran and gave no readable result is that request's
-own `sandbox` deviation.
+6): the next run records it so before it judges anything else. A stop records itself and leaves
+the stage `started` for the same command to resume: a SIGTERM or an interrupt; a sandbox that
+refuses to start a judge, since every later request would meet the same sandbox until its cause is
+cleared; a failed preflight; a Kubernetes API call that still fails once it has been tried again,
+or a Job none of whose pods has started at a poll past `PLACEMENT_LIMIT`
+(`s10_job.py`), each no fault of the request's; and a read-back that Bun cannot run. It writes
+nothing more for the request in flight, but for one case: a stop that comes while an outcome built
+whole is read back (a read-back that cannot run, or a signal then) keeps that outcome as
+`pending-outcome.json`, and the next run reads it back and commits it, judging nothing again. That
+request was judged once and completed; only the check before its commit did not run, so it is not
+the `started` deviation point 6 makes of a request started and not completed. A Job that ran and
+gave no readable result is that request's own `sandbox` deviation.
 An error of this driver also writes nothing more and leaves the stage `started`, but records no
 stop: it ends the command with its traceback. Only a run that gives every request of the
 inventory its outcome writes `outcomes.jsonl` and marks the stage written; a request that no run
@@ -128,6 +138,7 @@ from s10_store import (  # noqa: E402
     CODE_DIRECTORY,
     OUTCOME_FILE,
     OUTCOMES_FILE,
+    PENDING_FILE,
     PREFLIGHT_DIRECTORY,
     STARTED_FILE,
     STARTED_REASON,
@@ -184,7 +195,9 @@ BUN = "/usr/local/bin/bun"
 
 
 class Stopped(Exception):
-    """The run stops: it writes nothing more, and the same command resumes the stage."""
+    """The run stops, and the same command resumes the stage. It writes nothing more for the
+    request in flight, but for an outcome built whole whose read-back stopped: `judge_all` keeps
+    that one as `PENDING_FILE`."""
 
 
 # ---------- flags and the admission ----------
@@ -368,8 +381,8 @@ class Recorder:
 @dataclass
 class Context:
     """What judging each request reads: the frozen module, its pins, the inputs, the stage, the
-    sandbox, the image the sandbox must run, the read-back each outcome passes before it is
-    committed (`read_back_with_bun`), and whether this run's preflight passed."""
+    sandbox, the image the sandbox must run, and the read-back each outcome passes before it is
+    committed (`read_back_with_bun`)."""
 
     shadow: object
     pins: object
@@ -378,7 +391,6 @@ class Context:
     runner: object
     image: str
     read_back: object
-    preflighted: bool = False
 
 
 def outcome_of(line, outcome, verdict=None, deviation=None, judgement=None, judges=None, sandbox=None,
@@ -604,24 +616,30 @@ def kept_result(directory, run, key):
 
 
 def preflight(context):
-    """Once a run, before its first request starts: the sandbox with no bundle and no judge
-    (`KubeRunner.preflight`), its result kept under `preflights/<n>/`, and every check of
-    `sandbox_problems` made on it. A refusal, a failed check, a gateway key in its files or a Job
-    that gave no readable result stops the run before any request has started, so no request
-    meets a sandbox that would refuse it."""
-    if context.preflighted:
-        return
+    """Before each request starts: the sandbox with no bundle and no judge (`KubeRunner.preflight`),
+    its result kept under `preflights/<n>/`, every check of `sandbox_problems` made on it, and its
+    calls of point 2's model held to `SANDBOX.probe_refusal`. A refusal, a failed check, a gateway
+    key in its files, a Job that gave no readable result, or a call of the model that the gateway
+    did not answer with a message by the model stops the run before the request has started, so no
+    request meets a sandbox that would refuse it, and none is spent on a refusal the probe met; a
+    refusal that starts after a passed probe can still make that request's deviation."""
     stage = context.stage
-    run = context.runner.preflight()
+    run = context.runner.preflight(context.pins.model)
     done = {name.split("/")[1] for name in stage.record["files"] if name.startswith(PREFLIGHT_DIRECTORY + "/")}
     kept, held = kept_result(f"{PREFLIGHT_DIRECTORY}/{len(done)}", run, context.runner.key)
     stage.commit(kept)
-    problems = sandbox_problems(context, run, sandbox_record(run), {}, preflight=True)
+    record = sandbox_record(run)
+    problems = sandbox_problems(context, run, record, {}, preflight=True)
+    if not problems:
+        refusal = SANDBOX.probe_refusal(record.get("probe"), context.pins.model)
+        if refusal is not None:
+            problems.append(refusal)
+    held = sorted(set(held) | set((record or {}).get("keyFound") or []))
     if held:
         problems.append(f"the gateway key's bytes were in the preflight's {held}")
     if problems:
-        raise Stopped(f"the sandbox's preflight, Job {run.job}, stops the run before any request: {problems[0]}")
-    context.preflighted = True
+        raise Stopped(f"the sandbox's preflight, Job {run.job}, stops the run before its next request starts: "
+                      f"{problems[0]}")
 
 
 def judge(context, line):
@@ -789,8 +807,11 @@ def read_back(context, line, outcome):
 
 
 def judge_all(context, stage, code, skill):
-    """Every request of the inventory its outcome, in its order: a request a run started and did not
-    finish is `started`, and every other is judged; each outcome read back before it is committed."""
+    """Every request of the inventory its outcome, in its order: a request whose outcome an earlier
+    run built and could not read back is that outcome (`PENDING_FILE`), refused unless it names that
+    request as the inventory does; a request a run started and did not finish is `started`; and
+    every other is judged. Each outcome is read back before it is committed; a read-back that does
+    not run keeps the outcome as pending and stops the run."""
     missing = {f"{CODE_DIRECTORY}/{name}": data for name, data in code.items()
                if not stage.has(f"{CODE_DIRECTORY}/{name}")}
     if missing:
@@ -802,11 +823,31 @@ def judge_all(context, stage, code, skill):
     for line in context.inputs.inventory:
         if stage.has(request_path(line["askId"], OUTCOME_FILE)):
             continue
-        if stage.has(request_path(line["askId"], STARTED_FILE)):
+        pending = request_path(line["askId"], PENDING_FILE)
+        if stage.has(pending):
+            outcome = json.loads(stage.read(pending))
+            # No outcome is committed in the place of another request's.
+            held = outcome if isinstance(outcome, dict) else {}
+            differ = [f"its {key} is {held.get(key)!r}, and the inventory's {line[key]!r}"
+                      for key in ("askId", "issueKey", "group", "cases") if held.get(key) != line[key]]
+            if differ:
+                raise CannotRun(f"{pending} is no outcome of the request it is kept for: {'; '.join(differ)}")
+        elif stage.has(request_path(line["askId"], STARTED_FILE)):
             outcome = deviation(line, "started", STARTED_REASON)
         else:
             outcome = judge(context, line)
-        outcome, files = read_back(context, line, outcome)
+        try:
+            outcome, files = read_back(context, line, outcome)
+        except (Stopped, KeyboardInterrupt):
+            # The outcome was built whole, and only the check before its commit did not run: it is
+            # kept, so the next run commits that outcome rather than recording the request started.
+            try:
+                data = json_bytes(outcome)
+            except (TypeError, ValueError):
+                data = None
+            if data is not None and not stage.has(pending):
+                stage.commit({pending: data})
+            raise
         stage.commit(files)
         print(f"  {line['askId']}: {outcome['outcome']} {outcome['verdict'] or outcome['deviation']['kind']}")
 

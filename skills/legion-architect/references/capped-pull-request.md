@@ -13,7 +13,7 @@ Read what every counted round found, choose one, act on it, and post the rounds 
 
 - **Split**: part of the work cannot settle here.
   On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`).
-  That parent's architect files it after the red-team check with `--blocked-by <this issue>` and releases it at once.
+  That parent's architect files it with `--blocked-by <this issue>` and releases it as section 2 of `skill://legion-architect` says.
   On the root, open a `dispatch ask`.
   The part stays a requirement until the person's answer says otherwise.
 

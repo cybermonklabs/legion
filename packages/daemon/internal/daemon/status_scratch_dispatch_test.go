@@ -45,6 +45,7 @@ func (d *interleaving) GetIssue(ctx context.Context, key string) (dispatch.Issue
 // its own messages included, so a refusal says only that the read was overtaken: the row reads
 // again and writes, and Dispatch ends at the phase's status.
 func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -88,6 +89,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 // through its own event, with its actor; until that event arrives the record stands where the
 // workflow left it, which is what this case reads.
 func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -124,6 +126,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 // issue to another lifecycle status in that moment keeps it, and the row finishes having written
 // nothing (dispatch://INFRA-714/spec A6).
 func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -161,7 +164,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 // holds one.
 func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", HandedOver: true, Rank: "U"}); err != nil {
@@ -211,7 +214,7 @@ func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 func recordOf(t *testing.T, pool *store.Pool, records record.Store, key string) record.Issue {
 	t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = records.Issue(context.Background(), tx, key)
 		return err

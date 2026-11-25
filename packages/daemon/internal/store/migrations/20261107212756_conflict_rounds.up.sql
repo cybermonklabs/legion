@@ -3,12 +3,12 @@
 --
 -- phases.conflict_rounds is record.PhaseRow.ConflictRounds: how many of the implementer's rounds
 -- were opened while the daemon's record held the pull request's own head as conflicting with its
--- base. Rounds rises on a review's request for changes where the review step's agent is not the
--- issue's own architect, and the api/handoff.go handoff key is built from pass, which every
--- backward move raises (20261029120000_phase_pass); the cap compares rounds - conflict_rounds with
--- review_round_cap, so a round opened while the head no longer merges costs the implementer
--- nothing (workflow's recordRound). Zero on every existing row, which counted no such round apart,
--- and a new generation resets it with rounds (record's clearGeneration).
+-- base. Every backward move still raises rounds, because the api/handoff.go handoff key is built
+-- from that number and two completions of one issue must not collide; the cap compares
+-- rounds - conflict_rounds with review_round_cap, so a round the daemon itself opened because the
+-- head no longer merges costs the implementer nothing (workflow's recordRound). Zero on every
+-- existing row, which counted no such round apart, and a new generation resets it with rounds
+-- (record's clearGeneration).
 --
 -- pull_requests.conflicting_head is record.PullRequest.ConflictingHead: the head the daemon last
 -- judged conflicting with its base, written by whichever read judged it — the two-minute

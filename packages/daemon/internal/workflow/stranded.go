@@ -33,23 +33,21 @@ const StrandedReleaseWake = 10 * time.Minute
 // state serves (api.Issue.ArchitectStalls) and reads no bound of its own.
 const ArchitectGateWake = 90 * time.Minute
 
-// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
-// the claim the wake brought back, when its stuck clock started, and whether a stuck pass has
+// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the claim the
+// wake brought back, when its stuck clock started, and whether a stuck pass has
 // already said so. The daemon reads them from its own records
 // (store.Store.UnfinishedPodResumesTx, which selects the resumes whose woken claim has taken no
 // first turn and passes over a paused project's) and hands them in, so this rule stays what every
 // other rule here is: a judgement over values.
 //
-// Claim is the token of the claim the wake brought back (pod_resumes.claim): two claims can hold
-// one role of an issue, the agent of a key on a step of another role beside that role's own claim,
-// and a wake of one is no wake of the other.
+// Claim is the token of the claim the wake brought back (pod_resumes.claim): two claims of one
+// issue can hold one role (record.WorkerClaim), and a wake of one is no wake of the other.
 //
 // ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
 // the moment the wake pacing let the launch out, and the moment a project's resume ended the pause
 // that held it (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the pacing,
 // or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
-	Issue   string
 	Claim   claim.Token
 	ClockAt time.Time
 	Stuck   bool
@@ -182,8 +180,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		return nil, err
 	}
 	// The worker of a role's step is the claim the record gives it (record.WorkerClaimOf over the
-	// issues' phases rows, read once here): two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — and
+	// issues' phases rows, read once here): two claims of one issue can hold one role, and
 	// only the worker is one a start of the phase brings back.
 	var keys []string
 	seen := make(map[string]bool, len(claims))

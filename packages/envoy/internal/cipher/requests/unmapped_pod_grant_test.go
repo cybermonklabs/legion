@@ -35,7 +35,7 @@ func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 	pod, key := dave.enroll(t, m.Store, "pod-dave-unmapped")
 	delete(m.PodOperators, dave.account)
 
-	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "after the setting dropped the account", "PRIV_HUMAN"), "", nil)
+	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "after the setting dropped the account", "PRIV_HUMAN"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) from the unmapped pod = %+v, %v; want it pending carol's approval", req, err)
 	}
@@ -105,7 +105,7 @@ func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *te
 	pod, key := dave.enroll(t, m.Store, "pod-dave-visible")
 	delete(m.PodOperators, dave.account)
 
-	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy the billing service", "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy the billing service", "DEEL_API_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) from the unmapped pod = %+v, %v; want it pending its owner's approval", req, err)
 	}

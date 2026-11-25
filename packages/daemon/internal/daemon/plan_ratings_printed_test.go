@@ -50,6 +50,7 @@ func plansPrintedWith(ratings string) string {
 // so the driver's check of the script's PASS line holds for a reason that holds them. The control
 // is a PASS line naming another reason.
 func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
+	t.Parallel()
 	printed := plansPrintedWith(`4/5 "Done in <1 day & no rework."`)
 	lines, err := parsePlans("SR1", printed)
 	if err != nil {
@@ -172,6 +173,7 @@ func parseRatings(text string) ([]printedRating, error) {
 // nothing after it. The scale is the daemon's (steprecord.RatingLeast to steprecord.RatingMost):
 // its top is a rating, and a rating past either end, or out of another number, is none.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
+	t.Parallel()
 	if parsed, err := parsePlans("SR1", plansPrintedWith(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
 		t.Fatalf("the line the command prints parsed as %+v, %v; want one rating 4/5 \"x\"", parsed, err)
 	}
@@ -199,6 +201,7 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 // texts: the one naming its plan holds, and the other fails, naming the plan it wants. The issue's
 // one record ends before the issue closes, as a walk's records do.
 func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
+	t.Parallel()
 	var steps stepRecordsRead
 	if err := json.Unmarshal([]byte(`{"tasks":[{"task":"default","steps":[{"started_at":"2026-11-16T23:58:00Z","ended_at":"2026-11-16T23:59:00Z"}]}]}`), &steps); err != nil {
 		t.Fatal(err)
@@ -230,6 +233,7 @@ func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 // unrated one printed with a rating, the time printed past its minutes, and the failed step
 // printed as none.
 func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *testing.T) {
+	t.Parallel()
 	records := func(started, ended string) stepRecordsRead {
 		t.Helper()
 		var steps stepRecordsRead

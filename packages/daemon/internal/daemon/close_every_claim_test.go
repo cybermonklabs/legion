@@ -72,6 +72,7 @@ func storeRoleClaims(t *testing.T, pool *store.Pool, tree, issue string) {
 // open, and the workspace removal acts. Close rows by role reached the claim of the worker on the
 // tester's step twice and left `…-tester` running, so the cleanup and the removal waited for ever.
 func TestALingersCloseRetiresAnEarlierVersionsClaimAndTheTreeIsCleanedUp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -127,7 +128,7 @@ func TestALingersCloseRetiresAnEarlierVersionsClaimAndTheTreeIsCleanedUp(t *test
 			t.Fatalf("no claim %s after its start", token)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1})
 	}); err != nil {
 		t.Fatalf("write the tester's phases row: %v", err)

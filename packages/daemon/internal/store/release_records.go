@@ -10,10 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which claims were in it and the roles they held,
-// when their claims were suspended as released, and how large the workspace bundle it saved was.
-// It is the row every resume of that pod hangs from, so a reader can pair a release with what
-// woke it and how long the agent waited.
+// PodRelease is one release of an issue pod: which claims were in it and the roles they held, and
+// when their claims were suspended as released. It is the row every resume of that pod hangs from,
+// so a reader can pair a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -26,13 +25,19 @@ type PodRelease struct {
 	Roles []string
 	// Claims are the tokens of the claims the release suspended, sorted (pod_releases.claims).
 	// Two claims can hold one role, so this names what Roles cannot. A record the release before
-	// 20261122102933 wrote names none.
+	// 20261124213823 wrote names none.
 	Claims []string
 	// At is when the release completed.
 	At time.Time
-	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
-	// the workspace held nothing unpushed.
+	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
+	// pod_releases.bundle_bytes keeps for the rows those releases wrote. No release saves one
+	// now, so every release this daemon records writes zero; the column stays because the release
+	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
+	// Release is the id of the release's mark (issue_releases.id) the record stands for,
+	// pod_releases.issue_release_id; zero for a record that names no mark. A release is recorded
+	// once per mark (RecordPodRelease), and a record read back names the mark it was written with.
+	Release int64
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -48,7 +53,7 @@ type PodResume struct {
 	// Role is the role the wake was for.
 	Role string
 	// Claim is the token of the claim the wake brought back (pod_resumes.claim). Every resume
-	// names one: 20261121183336 named the role's own claim on each resume the release before wrote.
+	// names one: 20261124213821 named the role's own claim on each resume the release before wrote.
 	Claim string
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
@@ -115,31 +120,47 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
-func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
+//
+// A record that names its release's mark (rel.Release) is written once per mark
+// (pod_releases_one_per_issue_release): the teardown records the release and clears the mark in
+// transactions of their own, so a teardown that failed, or whose daemon died, between the two runs
+// again and records the release again. That second write takes the record the first one wrote,
+// answers its id with wrote false and ends no streak, since the first one ended them. wrote is
+// true where this call wrote the row, which a record that names no mark always does.
+func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64, wrote bool, err error) {
 	if rel.Project == "" || rel.Issue == "" {
-		return 0, errors.New("a pod release record needs its project and issue")
+		return 0, false, errors.New("a pod release record needs its project and issue")
 	}
-	var id int64
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes)
-			values ($1, $2, $3, $4, $5, $6, $7) returning id`,
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = false
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, $7, nullif($8::bigint, 0))
+			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), strings.Join(rel.Claims, ","),
-			rel.At, rel.BundleBytes).Scan(&id); err != nil {
+			rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
+		wrote = true
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})
 	if err != nil {
-		return 0, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
+		return 0, false, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
 	}
-	return id, nil
+	return id, wrote, nil
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first
 // observation: a second observation of the same resume leaves the first time, which is the one
 // R5 measures.
 func (s *Store) MarkPodResumeReady(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set pod_ready_at = $2 where id = $1 and pod_ready_at is null`, id, at)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set pod_ready_at = $2 where id = $1 and pod_ready_at is null`, id, at)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stamp pod resume %d ready: %w", id, err)
 	}
@@ -149,7 +170,10 @@ func (s *Store) MarkPodResumeReady(ctx context.Context, id int64, at time.Time) 
 // MarkPodResumeFirstTurn stamps the woken role's first turn, which ends the resume R5 measures.
 // It is written once, as the pod-ready stamp is.
 func (s *Store) MarkPodResumeFirstTurn(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1 and first_turn_at is null`, id, at)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1 and first_turn_at is null`, id, at)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stamp pod resume %d with its first turn: %w", id, err)
 	}
@@ -158,7 +182,10 @@ func (s *Store) MarkPodResumeFirstTurn(ctx context.Context, id int64, at time.Ti
 
 // MarkPodResumeStuck records a resume with no first turn ten minutes after its wake.
 func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set stuck = true where id = $1`, id)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set stuck = true where id = $1`, id)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("mark pod resume %d stuck: %w", id, err)
 	}
@@ -170,7 +197,9 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 // each warns once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked
 // row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, true)
+	return ReadOnly(ctx, s.pool, "read the unfinished resumes of "+project, func(ctx context.Context, tx pgx.Tx) ([]PodResume, error) {
+		return podResumesWithoutAFirstTurn(ctx, tx, project, before, true)
+	})
 }
 
 // UnfinishedPodResumesTx are the resumes of project the stranded report judges R6 on, read
@@ -208,18 +237,14 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
 }
 
-// podResumesWithoutAFirstTurn is the pool read and the transaction read above, on whichever
-// querier the caller runs it on: the pool, or the caller's own transaction. A resume a release
-// closed (closed_at) is left out of each: it is a wake of a pod that is gone, which no warning
-// and no stranded report has anything to say about, and before closing had a column of its own
-// such a row was indeed gone from here, because closing wrote first_turn_at.
+// podResumesWithoutAFirstTurn is the transaction read of the resumes an unowned pass or a
+// stranded report needs. A resume a release closed (closed_at) is left out of each: it is a wake
+// of a pod that is gone, which no warning and no stranded report has anything to say about.
 //
 // Each reads the resume's stuck clock (clock_at), never the wake's own moment (at), and passes
-// over every resume of a project paused now (decision 14 of dispatch://INFRA-3759): the pause
-// holds the launch the resume waits for, and its resume starts the clock again. The pause is the
-// daemon's project's, matched to the resume's project token as readOpenPauseByToken matches it,
-// which says why.
-func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
+// over every resume of a project paused now: the pause holds the launch the resume waits for, and
+// its resume starts the clock again.
+func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
 		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
@@ -231,7 +256,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project str
 			or (pause_id is not null and not exists (select 1 from pod_releases
 				where project = r.project and issue = r.issue and roles <> '' and id > r.seen_release)))`
 	}
-	rows, err := q.Query(ctx, query+` order by id`, project, before)
+	rows, err := tx.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 	}
@@ -257,24 +282,28 @@ func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project str
 // reason per pass — the first condition that held the pod — so a pass that reads a new reason is
 // a pass that no longer reads the old one.
 func (s *Store) RecordPodHold(ctx context.Context, hold PodHold) error {
-	if hold.Project == "" || hold.Issue == "" || hold.Reason == "" {
-		return errors.New("a pod hold record needs its project, issue and reason")
-	}
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		if err := endPodHoldStreaks(ctx, tx, hold.Project, hold.Issue, hold.Reason); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `insert into pod_holds (project, issue, reason, detail, first_at, at, passes)
-			values ($1, $2, $3, $4, $5, $5, 1)
-			on conflict (project, issue, reason) where not ended do update
-			set detail = excluded.detail, at = greatest(pod_holds.at, excluded.at), passes = pod_holds.passes + 1`,
-			hold.Project, hold.Issue, hold.Reason, hold.Detail, hold.At)
-		return err
-	})
-	if err != nil {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return RecordPodHoldTx(ctx, tx, hold)
+	}); err != nil {
 		return fmt.Errorf("record the hold of %s: %w", hold.Issue, err)
 	}
 	return nil
+}
+
+// RecordPodHoldTx records hold inside the caller's transaction.
+func RecordPodHoldTx(ctx context.Context, tx pgx.Tx, hold PodHold) error {
+	if hold.Project == "" || hold.Issue == "" || hold.Reason == "" {
+		return errors.New("a pod hold record needs its project, issue and reason")
+	}
+	if err := endPodHoldStreaks(ctx, tx, hold.Project, hold.Issue, hold.Reason); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `insert into pod_holds (project, issue, reason, detail, first_at, at, passes)
+		values ($1, $2, $3, $4, $5, $5, 1)
+		on conflict (project, issue, reason) where not ended do update
+		set detail = excluded.detail, at = greatest(pod_holds.at, excluded.at), passes = pod_holds.passes + 1`,
+		hold.Project, hold.Issue, hold.Reason, hold.Detail, hold.At)
+	return err
 }
 
 // EndPodHoldStreaks ends every hold streak of a pod: the daemon's own call for a pass of the
@@ -286,7 +315,7 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 	if project == "" || issue == "" {
 		return errors.New("ending a pod's hold streaks needs its project and issue")
 	}
-	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return endPodHoldStreaks(ctx, tx, project, issue, "")
 	}); err != nil {
 		return fmt.Errorf("end the hold streaks of %s: %w", issue, err)
@@ -294,30 +323,61 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 	return nil
 }
 
-// OpenPodHold is whether a hold streak of the pod is running, on the pool: the same question
-// readIdleView answers as IdleView.Holding, asked outside any transaction. The release of a pod
-// no claim owns needs it there, because the one pass that reads no view at all — the issue whose
-// Sandbox the runtime no longer holds — still has a streak to end, and opening ReleaseIdleIssue
-// to learn that would cost the transaction, and the daemon's global fact serializer with it,
-// that reading the Sandbox first exists to save (daemon.releaseUnownedPod). The answer bounds a
-// write and nothing else: a pod with no streak is left alone, since an update that matches no
-// row costs a write transaction all the same.
+// OpenPodHold is whether a hold streak of the pod is running. The release of a pod no claim owns
+// needs it before it opens its decision transaction, because an issue whose Sandbox the runtime
+// no longer holds still has a streak to end. The answer bounds a write and nothing else: a pod
+// with no streak is left alone, since an update that matches no row costs a write transaction all
+// the same.
 func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
-	return openPodHold(ctx, s.pool, project, issue)
+	return ReadOnly(ctx, s.pool, "read whether a hold streak of "+issue+" is running", func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return openPodHold(ctx, tx, project, issue)
+	})
 }
 
-// openPodHold is that question as one statement, read through db: the pool for OpenPodHold's
-// own read, and the release's own transaction for the idle view it decides on (readIdleView,
-// pods.IdleView.Holding). One predicate for both, so a reader of a view's Holding and a reader
-// of the answer outside a transaction can never be reading two different questions.
-func openPodHold(ctx context.Context, db queryRower, project, issue string) (bool, error) {
+// openPodHold is the question that both OpenPodHold and readIdleView ask, through the transaction
+// they each own. One predicate for both keeps a view's Holding and this answer from reading two
+// different questions.
+func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
 	var holding bool
-	if err := db.QueryRow(ctx, `select exists (
+	if err := tx.QueryRow(ctx, `select exists (
 		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
 		project, issue).Scan(&holding); err != nil {
 		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
 	}
 	return holding, nil
+}
+
+// StandingPodHoldsTx is the standing hold of each pod of project, keyed by its issue, read
+// through the caller's transaction: the hold streak of that pod that no pass, release or other
+// reason has ended. The state route reads it in its own snapshot, so the holds it shows and every
+// other fact of that state come from one moment, and it is one statement for the whole project
+// rather than one read per issue.
+//
+// A pod holds one running streak at most, because RecordPodHold ends every other reason's
+// streak in the transaction that records a reason. The rows that were running when
+// 20261102154500_pod_hold_streaks gave a streak its end were all left running, one per reason a
+// pod was ever held for, so a pod may still carry more than one; the read answers the streak of
+// the newest pass, which is the reason the rule read last. A row's detail is answered whole:
+// what of it a reader is shown is that reader's to cut.
+func (s *Store) StandingPodHoldsTx(ctx context.Context, tx pgx.Tx, project string) (map[string]PodHold, error) {
+	rows, err := tx.Query(ctx, `select distinct on (issue) id, project, issue, reason, detail, first_at, at, passes
+		from pod_holds where project = $1 and not ended order by issue, at desc, id desc`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	holds := map[string]PodHold{}
+	for rows.Next() {
+		var h PodHold
+		if err := rows.Scan(&h.ID, &h.Project, &h.Issue, &h.Reason, &h.Detail, &h.FirstAt, &h.At, &h.Passes); err != nil {
+			return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+		}
+		holds[h.Issue] = h
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	return holds, nil
 }
 
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.
@@ -332,8 +392,14 @@ func endPodHoldStreaks(ctx context.Context, tx pgx.Tx, project, issue, except st
 // PodReleaseRecords are every release, resume and hold of project recorded at or after since,
 // oldest first, which is what a pod reads to measure a window.
 func (s *Store) PodReleaseRecords(ctx context.Context, project string, since time.Time) (PodReleaseRecords, error) {
+	return ReadOnly(ctx, s.pool, "read the pod release records of "+project, func(ctx context.Context, tx pgx.Tx) (PodReleaseRecords, error) {
+		return podReleaseRecords(ctx, tx, project, since)
+	})
+}
+
+func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := s.pool.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -342,7 +408,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 		var r PodRelease
 		var generation int64
 		var roles, claims string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes); err != nil {
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}
@@ -363,7 +429,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 	// Each resume carries the pause that held it (decision 15 of dispatch://INFRA-3759), so a
 	// reader of the window tells a held wake's wait from a released pod's, and the claim it brought
 	// back, since two claims of one role can each be woken.
-	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0),
+	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0),
 		pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
@@ -390,7 +456,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 		return out, fmt.Errorf("read the resume records of %s: %w", project, err)
 	}
 
-	holds, err := s.pool.Query(ctx, `select id, project, issue, reason, detail, first_at, at, passes from pod_holds
+	holds, err := tx.Query(ctx, `select id, project, issue, reason, detail, first_at, at, passes from pod_holds
 		where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the hold records of %s: %w", project, err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -161,7 +162,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	}
 	want := map[string][]Target{spec: {}, notes: {}, project: {}}
 	for _, shape := range shapes {
-		got, err := ScopeOf(ctx, tx, shape.Kind, shape.ID)
+		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
 		if err != nil {
 			t.Fatalf("scope of %s: %v", shape.name, err)
 		}
@@ -184,7 +185,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 			t.Errorf("scope sources of %s = %v; want %v", doc, got, sources)
 		}
 	}
-	if got, err := ScopeOf(ctx, tx, "comment", "c1"); err != nil || got != "" {
+	if got, err := ScopeOf(ctx, tx, model.Actor{}, "comment", "c1"); err != nil || got != "" {
 		t.Fatalf("scope of a source that is not a uuid = %q, %v; want none", got, err)
 	}
 }
@@ -278,7 +279,7 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pending scope of %s: %v", shape.name, err)
 		}
-		stored, err := ScopeOf(ctx, tx, shape.kind, shape.stored)
+		stored, err := ScopeOf(ctx, tx, model.Actor{}, shape.kind, shape.stored)
 		if err != nil {
 			t.Fatalf("scope of the stored %s: %v", shape.name, err)
 		}
@@ -391,7 +392,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
 	} {
-		got, err := QuestionMap(ctx, tx, doc)
+		got, err := QuestionMap(ctx, tx, model.Actor{}, doc)
 		if err != nil {
 			t.Fatalf("question map of %s: %v", doc, err)
 		}
@@ -421,7 +422,7 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	insertScopeVersion(t, tx, spec, 1, ":::ask{#q1}\nWhich?\n:::\n\n"+
 		`:::ask{id="q 2" state="open"}`+"\nWhich?\n:::\n")
 
-	got, err := QuestionMap(ctx, tx, spec)
+	got, err := QuestionMap(ctx, tx, model.Actor{}, spec)
 	if err != nil {
 		t.Fatalf("question map of the spec: %v", err)
 	}

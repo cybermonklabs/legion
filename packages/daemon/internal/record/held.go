@@ -19,8 +19,10 @@ type HeldReason string
 // The words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
-	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
-	// the daemon starts no issue of such a tree.
+	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close, or a
+	// member of a tree whose re-admitted root waits in the line, its design gate open, for the
+	// promotion that opens its tree again (reopensAtPromotion): the daemon starts no issue of such a
+	// tree, and in that last case the root's promotion is what ends the hold.
 	HeldTreeClosed HeldReason = "tree_closed"
 	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
@@ -35,8 +37,9 @@ const (
 	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
 	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
-	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
-	// deployment gates (TreeGate.Open).
+	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
+	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
+	// registered beside a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).
@@ -45,7 +48,7 @@ const (
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
+	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose task's last step is not an acceptance, held before
 	// its retro while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
@@ -70,14 +73,14 @@ const (
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
 	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
-	// issues that read this word are the ones in accepting, retro or merging (in the default
-	// steps, past their review), whose acceptance, retro and merge run on no slot at all. An issue
-	// held from one of those
+	// issues that read this word are the ones in accepting, retro or merging (InSlotlessPhase; in the
+	// default steps, past their review), whose acceptance, retro and merge run on no slot at all. An
+	// issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
 	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
 	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
-	// atWorkPastReview), so `why` serves this word's sentence only to a member in one of those
+	// atWorkInSlotlessPhase), so `why` serves this word's sentence only to a member in one of those
 	// phases of a tree that runs nothing. This is the one statement of that; every other reader
 	// points here.
 	HeldAtWork HeldReason = "at_work"
@@ -94,8 +97,9 @@ const (
 // test of `why`'s sentence table (the projection's heldSentences) holds that table to. The table
 // states which words `why` serves under which state. The order is decided in HeldReasonOf's own
 // body, and this list must follow that body's cases exactly, since a reorder here moves the
-// words that test requires of the table; a word added there is added here and to
-// `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`.
+// words that test requires of the table; a word added there is added here, to
+// `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`, and as a row of the table in
+// `skills/legion-controller/references/admission.md`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
 	HeldTreeParked,
@@ -189,6 +193,25 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 	return under
 }
 
+// reopensAtPromotion says whether root waits in the line for the promotion that opens its tree
+// while its design gate stands open: a re-admitted root whose tree's lifecycle is not open under
+// the workflow, which the gate leaves queued (ran, dispatch://INFRA-5471), or a root another tree
+// handed over carrying an open gate. Such a tree is closed until that promotion opens it, and its
+// members wait for it: Waiting's hold of an unopened tree's members (its unopened set, over
+// AwaitsPromotion) offers none of them a phase. It is written over QueuedRoot with no slot term,
+// and the two name the same roots wherever the gate is open: a queued root whose gate is open
+// holds no row the daemon granted it in this tree, since a promotion that granted one opened its
+// tree's lifecycle, after which an open gate makes the tree run, and the re-admission frees every
+// row of its tree from the generation before (admit's releaseTreeSlots); a root handed over
+// awaits its promotion whatever row it carries. Without this the ladder's gate word would pass
+// over them, the gate being open, and leave each at at_work or unclassified, which say that its
+// workers run or that no rule names its wait. A queued root whose gate is shut answers false, and
+// its members read design_gate as they always have.
+func reopensAtPromotion(root Issue, facts LineFacts) bool {
+	gate := facts.Gates[root.Key]
+	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)
+}
+
 // openChildren is the keys of the open Dispatch children of one children-first wait, in the order
 // that judgement lists them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
@@ -244,7 +267,8 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// chain walk and the two map reads cost nothing for an issue an earlier word answers for,
 	// which on a project of hundreds of records is most of them.
 	switch {
-	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now)):
+	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now) ||
+		(!claim.IsTreeRoot(issue.Key, issue.Tree) && reopensAtPromotion(root, facts.Facts))):
 		return HeldTreeClosed, []string{issue.Tree}
 	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
 		return HeldTreeParked, []string{issue.Tree}
@@ -293,8 +317,8 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
-	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the
-	// review keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
+	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
+	// merging keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue reads the word of its hold above where it has one,
 	// and falls to unclassified where it has none. The stalled-tree measure is unmoved: none of

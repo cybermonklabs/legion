@@ -139,6 +139,7 @@ var anchorReadParameters = []string{"text", "text[]"}
 // when a read's uuid comparison stops matching its index's expression, or when the clause that
 // makes the partial index eligible is dropped.
 func TestAnchorReadsSearchTheirTablesAnchorIndex(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	connection, err := database.Pool.Acquire(ctx)
@@ -267,6 +268,7 @@ func newAnchorFixture(t *testing.T) anchorFixture {
 // Every anchor read returns exactly the rows main's own statement returns over the same rows,
 // the upper-case and uncastable anchors of newAnchorFixture among them.
 func TestAnchorReadsReturnTheRowsMainsStatementsDo(t *testing.T) {
+	t.Parallel()
 	fixture := newAnchorFixture(t)
 	ctx := context.Background()
 	for _, read := range anchorReads() {
@@ -320,6 +322,7 @@ func anchorReadRows(t *testing.T, ctx context.Context, fixture anchorFixture, st
 // which would return it: take these rows out of the fixture and the comparison above passes
 // either way.
 func TestTheAnchorFixtureHoldsAnAnchorOutsideTheCanonicalForm(t *testing.T) {
+	t.Parallel()
 	fixture := newAnchorFixture(t)
 	var outside int
 	if err := fixture.database.Pool.QueryRow(context.Background(), `

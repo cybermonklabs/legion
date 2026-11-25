@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +23,19 @@ func refusalCode(result intake.Result) string {
 		return ""
 	}
 	return result.Refusal.Code
+}
+
+// jsonLogLines is each line of logged, an engine's log written by slog's JSON handler, that match
+// accepts, decoded, in the order logged; a line that is no JSON object is passed over.
+func jsonLogLines(logged *bytes.Buffer, match func(entry map[string]any) bool) []map[string]any {
+	var lines []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) == nil && match(entry) {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
 }
 
 // A review the review App submits decides a round only when the Legion footer it was written
@@ -91,13 +107,16 @@ func mergingEngine() *Engine {
 	return mergingEngineAt(time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC))
 }
 
-// mergingEngineAt is mergingEngine with its clock at now.
+// mergingEngineAt is mergingEngine with its clock at now. Its deployment defines the roles these
+// tests' plans name (deploymentRoles), as the settings of a deployment that defines them give the
+// engine, so a step of one of them is no role the deployment lost.
 func mergingEngineAt(now time.Time) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		// The project opens its production check with the tester, the role a project that names
 		// no production_check gets (INFRA-809); an engine with no role opens no check at all.
 		ProductionCheckRole: claim.RoleTester,
+		Deployment:          deploymentRoles(),
 		Clock:               func() time.Time { return now },
 	}, nil)
 }

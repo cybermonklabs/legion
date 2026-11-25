@@ -13,6 +13,7 @@ import (
 // API's dependency lock (lockProjectIssueDependencies in package api), so this test is the proof
 // for both. Both sets put the shared id -2012274736 first.
 func TestProjectsInLockOrderFollowsTheLockID(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)

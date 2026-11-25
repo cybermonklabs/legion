@@ -4,15 +4,13 @@
 --
 -- backward_moves is one count for each kind of move, keyed "<from>-<to>" with the phase words of
 -- the daemon's forward line, "testing-implementing" and "reviewing-implementing" among them
--- (internal/phase's BackwardPairs). It is counted on the implementer's row, beside pass (on the
--- task's plan_tasks row for an issue with plan rows, since 20261117034837_issue_plans), and a hook
--- reads it to decide when to prompt the issue's roles. pass is what rises on every backward move,
--- since a phase completion's idempotency key is built from it, and rounds is the review's own
--- count, which only a review that requested changes raises and review_round_cap bounds
--- (internal/workflow's recordPass and recordRound). The move the daemon made, until
--- 20261119003157_conflict_reads_and_merge_forward, for a head that no longer merged into its base
--- raised the pass, raised rounds and conflict_rounds where a review opened the round, and raised
--- no pair at all, because nobody sent the work back.
+-- (internal/phase's BackwardPairs). It is counted on the implementer's row, beside pass, and a
+-- hook reads it to decide when to prompt the issue's roles. pass is what rises on every backward
+-- move, since a phase completion's idempotency key is built from it, and rounds is the review's
+-- own count, which only a review that requested changes raises and review_round_cap bounds
+-- (internal/workflow's recordPass and recordRound). The move the daemon makes for a head that no
+-- longer merges into its base raises the pass, raises rounds and conflict_rounds where a review
+-- opened the round, and raises no pair at all, because nobody sent the work back.
 --
 -- What a reader of the production table must know: the counts start empty here and are never
 -- filled in from the past. The daemon has no record of which kind each backward move behind an

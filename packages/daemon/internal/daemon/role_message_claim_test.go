@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -17,8 +16,8 @@ import (
 // putPhaseRow writes row to the phases record of pool.
 func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row record.PhaseRow) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.PutPhase(context.Background(), tx, row)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPhase(ctx, tx, row)
 	}); err != nil {
 		t.Fatalf("write the %s's phases row: %v", row.Role, err)
 	}
@@ -29,32 +28,18 @@ func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row recor
 // role's step names another agent by the time the row runs. A prompt the release before wrote
 // names no claim, and reaches the claim of the worker on its role's step when it runs.
 func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)
 	named := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	later := mustClaimToken(t, "LEGION-208", claim.RoleReviewer)
 	putPhaseRow(t, pool, runner.records, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: later, StepTask: "t", StepPlace: 3, Entry: 4})
-	payload := map[string]any{}
-	encoded, err := json.Marshal(firedHook)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		t.Fatal(err)
-	}
-	delete(payload, "claim")
-	before, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload["claim"] = string(named)
-	naming, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	withClaim := firedHook
+	withClaim.Claim = named
 
-	row := record.OutboxRow{ID: 70, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: naming}
+	row := mustOutboxRow(t, "LEGION-208", withClaim, time.Now())
+	row.ID = 70
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("the hook prompt naming %s: %v", named, err)
 	}
@@ -62,7 +47,8 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 		t.Fatalf("the hook prompt naming %s was published as %+v, want once on its topic", named, published)
 	}
 
-	old := record.OutboxRow{ID: 71, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: before}
+	old := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	old.ID = 71
 	if err := runner.execute(ctx, old); err != nil {
 		t.Fatalf("the hook prompt of the release before: %v", err)
 	}

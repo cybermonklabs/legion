@@ -51,7 +51,7 @@ func TestAStepOfTheOwnerIsRunByTheArchitectThatOwnsTheIssueNow(t *testing.T) {
 		stepChild(t, pool, "LEGION-209", at, nil)
 		seedChildPR(t, pool, record.PullRequestOpen)
 		seedStepsAt(t, pool, "LEGION-209", 3, place, nil, "implementer", "reviewer:owner")
-		seedArchitectClaimIn(t, pool, "LEGION-209", state, by)
+		seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-209", 1, state, by)
 	}
 
 	for _, tc := range []struct {

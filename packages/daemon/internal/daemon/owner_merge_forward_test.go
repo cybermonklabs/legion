@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -34,7 +35,7 @@ const (
 func (r *ownerHoldRig) askedOf(t *testing.T, implementer claim.Token, at phase.Phase) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-1", Role: claim.RoleImplementer, Claim: implementer, Entry: 1,
 			StepTask: "a", StepPlace: 1}); err != nil {
 			return err
@@ -53,7 +54,7 @@ func (r *ownerHoldRig) askedOf(t *testing.T, implementer claim.Token, at phase.P
 func (r *ownerHoldRig) lands(t *testing.T, reviewAsked bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, "LEGION-1")
 		if err != nil || pr == nil {
 			return errors.Join(err, errors.New("LEGION-1 records no pull request"))
@@ -251,7 +252,7 @@ func (r *ownerHoldRig) landsThroughTheWorkflow(t *testing.T) {
 		Branch: "legion/LEGION-1", Base: "main", HeadSHA: mergeForwardLanded, Before: mergeForwardHead, Sender: "legion-implementer[bot]"}, engine); err != nil {
 		t.Fatalf("apply the synchronize that lands LEGION-1's merge forward: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, "LEGION-1")
 		if err == nil && (pr == nil || pr.MergeForward == nil || pr.MergeForward.Landed != mergeForwardLanded) {
 			err = fmt.Errorf("the record holds the pull request %+v", pr)
@@ -375,7 +376,7 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 func (r *ownerHoldRig) stepTwoRaised(t *testing.T, role claim.Role) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-1", Role: role, Claim: r.owner, Entry: 1, StepTask: "a", StepPlace: 2})
 	}); err != nil {
 		t.Fatalf("record the phases row of step 2: %v", err)

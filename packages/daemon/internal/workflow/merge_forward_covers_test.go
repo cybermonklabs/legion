@@ -230,7 +230,11 @@ func TestTheAgentAskedToMergeThatWorksTheStepGetsTheAskAndItCoversTheHold(t *tes
 				if err != nil {
 					return err
 				}
-				return engine.mergeForward(ctx, tx, issue, stored, record.ConflictCheckNotGreen)
+				w, err := engine.walk(ctx, tx, issue)
+				if err != nil {
+					return err
+				}
+				return engine.mergeForward(ctx, tx, issue, w, stored, record.ConflictCheckNotGreen)
 			})
 			if got := sentOf(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("the merge forward sent %+v, want %+v", got, tc.want)

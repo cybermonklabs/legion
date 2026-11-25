@@ -449,7 +449,6 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 		{"/legion/v1/signoff", `{"grantId":"g"}`, "issue"},
 		{"/legion/v1/steps/complete", `{"grantId":"g","issue":"LEGION-208"}`, "summary"},
 		{"/legion/v1/controller/github-credential", "{}", "secret"},
-		{"/legion/v1/children/park", `{"grantId":"g"}`, "issue"},
 		{"/legion/v1/children/rerun", `{"grantId":"g"}`, "issue"},
 	} {
 		t.Run(route.path+" "+route.body, func(t *testing.T) {
