@@ -16,6 +16,9 @@ body: |-
   one of its names that no earlier unit explains.
   A capture of a Legion pane whose `pi-legion` extension sent no `legion` tool is made once more
   and then dropped as `legion-tool-undefined`, with both attempts recorded.
+  A plugin built from a checkout that holds `scripts/daemon-contract.sh` is built with the daemon
+  API contract in its manifest, as a pack writes it, so a Legion pane built from main's `pi-legion`
+  defines its `legion` tool.
 time: 2026-11-24T18:48:13Z
 custom:
     Issue: skill-cuts

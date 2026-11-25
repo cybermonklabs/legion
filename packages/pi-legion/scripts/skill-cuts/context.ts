@@ -24,11 +24,14 @@
  *   Legion plugins: the repository at the commit (`trees/<key of repo, commit>`), its packages
  *   installed from its own lockfile (`bun install --frozen-lockfile --ignore-scripts`, only the
  *   plugin's workspace when the repository is a workspace), `bun run build` when the plugin has a
- *   build script, then the files its `files` list ships with each `omp.extensions` entry pointed at
- *   its bundle in `dist/` (`plugins/<key of repo, commit, path>`). Each skills path the plugin's
- *   manifest names (`omp.skills`, `dist/skills` for the Legion plugins, where the Envoy plugin
- *   also looks for its skills at load) is a link to `skills/`, so a plugin lists the arm's skills
- *   and no copy of its own: only the case's skill differs between arms. A plugin with no
+ *   build script (with `legion.daemonApiVersion` in the plugin's package.json, as a pack writes
+ *   it, when that file holds none and the checkout has `scripts/daemon-contract.sh`: the number
+ *   it prints, the file put back to its bytes after; a script that fails or prints no number
+ *   fails the build), then the files its `files` list ships with each `omp.extensions` entry
+ *   pointed at its bundle in `dist/` (`plugins/<key of repo, commit, path>`). Each skills path the
+ *   plugin's manifest names (`omp.skills`, `dist/skills` for the Legion plugins, where the Envoy
+ *   plugin also looks for its skills at load) is a link to `skills/`, so a plugin lists the arm's
+ *   skills and no copy of its own: only the case's skill differs between arms. A plugin with no
  *   `package.json` of that kind installs skills alone (a verification-skills plugin), which the
  *   profile's skills already hold. A plugin that cannot be installed (its manifest cannot be
  *   parsed, its build fails, or a plugin of its name is installed already) is left out, with its
@@ -478,12 +481,14 @@ async function run(
  *  minutes is over 100 times that; `bun install --frozen-lockfile --ignore-scripts --filter` of a
  *  plugin took 2.0 s with bun's cache filled, and 15 minutes leaves room for an empty cache that
  *  downloads every package; `bun run build` took 1.1 s, so 10 minutes; the role prompt's `go test`
- *  took 8.4 s with Go's build cache filled, and 15 minutes leaves room for an empty one. */
+ *  took 8.4 s with Go's build cache filled, and 15 minutes leaves room for an empty one; a
+ *  checkout's `scripts/daemon-contract.sh` took 0.08 s (2026-11-25), so 1 minute. */
 export const COMMAND_TIMEOUT_MS = {
   tar: 600_000,
   bunInstall: 900_000,
   bunBuild: 600_000,
   goTest: 900_000,
+  daemonContract: 60_000,
 } as const;
 
 /** Runs `argv` and throws, naming it and its last error lines, when it fails; it is ended once
@@ -1161,6 +1166,7 @@ interface Manifest {
   scripts?: { build?: unknown };
   workspaces?: unknown;
   omp?: { extensions?: unknown; skills?: unknown };
+  legion?: { daemonApiVersion?: unknown };
   [field: string]: unknown;
 }
 
@@ -1176,11 +1182,58 @@ function manifestPath(entry: string): string {
   return path.normalize(entry).replace(/^\.\//, "");
 }
 
+/** Where a checkout holds the script that prints its daemon API contract. */
+const DAEMON_CONTRACT_SCRIPT = path.join("scripts", "daemon-contract.sh");
+
+/** The contract a pack writes into the manifest of a plugin built from `tree` as
+ *  `legion.daemonApiVersion`: what the checkout's own script prints, since a plugin of 2026-11-25
+ *  or later reads the field as it loads (pi-legion's `daemonContract`) and refuses to load without
+ *  it. None when `manifest` holds the field already or `tree` has no script, as every checkout
+ *  from before the field is. The script reads the checkout's files alone, so it runs with no
+ *  `.git`, as in a cached checkout. */
+async function packedContract(tree: string, manifest: Manifest): Promise<number | undefined> {
+  if (manifest.legion?.daemonApiVersion !== undefined) return undefined;
+  if (!existsSync(path.join(tree, DAEMON_CONTRACT_SCRIPT))) return undefined;
+  const argv = ["bash", DAEMON_CONTRACT_SCRIPT];
+  const ran = await mustRun(argv, COMMAND_TIMEOUT_MS.daemonContract, { cwd: tree });
+  const printed = new TextDecoder().decode(ran.stdout).trim();
+  const contract = /^(0|[1-9][0-9]*)$/.test(printed) ? Number(printed) : Number.NaN;
+  if (!Number.isSafeInteger(contract)) {
+    throw new Error(
+      `\`${argv.join(" ")}\` printed ${JSON.stringify(printed)}, not a non-negative integer, so the plugin cannot be built the way a pack builds it`
+    );
+  }
+  return contract;
+}
+
+/** The last build of each checkout, by its path: a build puts the contract into the plugin's
+ *  package.json in the checkout and the original back after (`buildPlugin`), so builds in one
+ *  checkout run one after the other. A second that read the file while it held the contract would
+ *  take it as the plugin's own, write none, and build once the first had put the original back:
+ *  a bundle with no contract, kept under the plugin's cache key. */
+const lastBuilds = new Map<string, Promise<unknown>>();
+
+/** Runs `build` once the builds of `tree` that began before it have ended, failed or not. */
+function inTurn<T>(tree: string, build: () => Promise<T>): Promise<T> {
+  const turn = (lastBuilds.get(tree) ?? Promise.resolve()).then(build, build);
+  lastBuilds.set(
+    tree,
+    turn.catch(() => undefined)
+  );
+  return turn;
+}
+
 /** The plugin `path` of the repository checked out at `tree`, built into `dest` (see the file's
- *  header). */
+ *  header). Where a pack would write the daemon API contract into the manifest (`packedContract`),
+ *  the build runs with it in the plugin's package.json, which the bundle inlines, and the file is
+ *  put back to its bytes after, so the cached checkout is as it was; `dest` holds it as well. */
 async function buildPlugin(tree: string, pluginPath: string, dest: string): Promise<void> {
   const dir = path.join(tree, pluginPath);
-  const manifest = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as Manifest;
+  const manifestFile = path.join(dir, "package.json");
+  const original = readFileSync(manifestFile);
+  const manifest = JSON.parse(original.toString("utf8")) as Manifest;
+  const contract = await packedContract(tree, manifest);
+  if (contract !== undefined) manifest.legion = { ...manifest.legion, daemonApiVersion: contract };
   const lockfile = (at: string) =>
     existsSync(path.join(at, "bun.lock")) || existsSync(path.join(at, "bun.lockb"));
   const install = ["bun", "install", "--frozen-lockfile", "--ignore-scripts"];
@@ -1194,7 +1247,14 @@ async function buildPlugin(tree: string, pluginPath: string, dest: string): Prom
     await mustRun(install, COMMAND_TIMEOUT_MS.bunInstall, { cwd: dir });
   }
   if (typeof manifest.scripts?.build === "string") {
-    await mustRun(["bun", "run", "build"], COMMAND_TIMEOUT_MS.bunBuild, { cwd: dir });
+    try {
+      if (contract !== undefined) {
+        writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+      await mustRun(["bun", "run", "build"], COMMAND_TIMEOUT_MS.bunBuild, { cwd: dir });
+    } finally {
+      if (contract !== undefined) writeFileSync(manifestFile, original);
+    }
   }
   const files = strings(manifest.files);
   if (files.length === 0) {
@@ -2265,7 +2325,7 @@ export async function buildContext(
       }
       step = "its build failed";
       const built = await builds.entry("plugin", key, (dest) =>
-        buildPlugin(tree, plugin.path, dest)
+        inTurn(tree, () => buildPlugin(tree, plugin.path, dest))
       );
       step = "it could not be installed";
       const dir = path.join(pluginsDir, plugin.name);

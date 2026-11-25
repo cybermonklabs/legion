@@ -275,12 +275,18 @@ absolute path; a command given `--models` when none of them names one is refused
 `load` reads Oh My Pi the same way. A capture of a Legion pane (any role but the controller)
 whose context installs `pi-legion` as an extension must send that plugin's `legion` tool, which
 the plugin defines at the end of its session start: a body without it (Oh My Pi goes on past a
-session start that threw, saying `Extension error` on stderr) is refused and the arm captured
+session start that threw, saying `Extension error`, or an extension it could not load, saying
+`Failed to load extension`, on stderr) is refused and the arm captured
 once more by a fresh run, each attempt kept in the record's `legionAttempts` (its tool count,
-whether it defines `legion`, its `[legion]` and `Extension error` lines of stderr), and a second
+whether it defines `legion`, its `[legion]`, `Extension error` and `Failed to load extension` lines of stderr), and a second
 refusal saves nothing and stops the case: `behaviour` drops it as `legion-tool-undefined`, and
 `load` fails that task. A context that installs no `pi-legion`, or installs it as skills only, is
-not refused. A saved capture is read back and not made again; the
+not refused. `pi-legion` of 2026-11-25 or later refuses to load a bundle whose package.json holds
+no `legion.daemonApiVersion`, which a pack writes, so the runner builds such a plugin as a pack
+would: where the checkout holds `scripts/daemon-contract.sh` and the plugin's manifest holds no
+field, the build runs with the number that script prints in the manifest the bundle inlines (the
+file is put back after, and the installed manifest holds it too), and a script that fails or prints
+no number fails the plugin's build. A saved capture is read back and not made again; the
 installed copies of the profile's other skills that its record names, which its replays answer a
 read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
 not kept with `--out`. So where the cache lacks one of them (on a new machine, say), the case's
