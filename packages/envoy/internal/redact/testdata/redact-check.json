@@ -1,7 +1,7 @@
 {
   "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
   "gate": {
-    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No Go run is bounded by it alone: each Go run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row and its -verify for a package, whose budget is row_timeout once per top-level test it runs; runBound derives both); a Bun row's run is bounded by row_timeout alone. leaks are the leak rows: each names its row, the base its leak is at (a commit's full name), the capture its test fails at there, files - the head's files copied onto the base whole, the row's own test file and files that hold no test - and declarations: for a test file other tests share, the file and the top-level declarations of it (types.Func.FullName, or pkg.Name for a type, constant or variable) whose head text control (19) puts in place of the base's, so no other test of that file reaches the base's run.",
     "base": "origin/main",
     "rule": [
       "github.com/sjawhar/envoy/internal/redact.Remote",
@@ -600,11 +600,16 @@
       {
         "row": "leak-launcher-exchange-failed",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/envoy/redirects/redirects.go",
-          "packages/daemon/internal/launcher/metadata_launcher_test.go"
+        "files": ["packages/daemon/internal/launcher/metadata_redact_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/launcher/metadata_test.go",
+            "names": [
+              "github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS",
+              "(*github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS).ServeHTTP",
+              "(*github.com/sjawhar/legion/daemon/internal/launcher.fakeSTS).refuseWith"
+            ]
+          }
         ],
         "capture": "launcher.exchange-failed"
       },
@@ -1786,12 +1791,7 @@
       {
         "row": "launcher-exchange-echo",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/daemon/internal/launcher/metadata_redact_test.go",
-          "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/envoy/redirects/redirects.go",
-          "packages/daemon/internal/launcher/metadata_launcher_test.go"
-        ],
+        "files": ["packages/daemon/internal/launcher/metadata_redact_test.go"],
         "capture": "launcher.exchange-echo"
       },
       {
@@ -3057,99 +3057,132 @@
       {
         "row": "leakguard-tar-member-whole",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/whole"
       },
       {
         "row": "leakguard-tar-member-run",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/run"
       },
       {
         "row": "leakguard-tar-member-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.tar-member/escape"
       },
       {
         "row": "leakguard-served-body-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-body/below"
       },
       {
         "row": "leakguard-served-body-twice",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-body/twice"
       },
       {
         "row": "leakguard-served-unpack-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/below"
       },
       {
         "row": "leakguard-served-unpack-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/escape"
       },
       {
         "row": "leakguard-served-unpack-link",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
-          "packages/daemon/internal/leakguard/source_test.go"
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/leakguard/source_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/leakguard.sourceToken"]
+          }
         ],
         "capture": "leakguard.served-unpack/link"
       },
       {
         "row": "repocache-tar-echo-stream",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/stream"
       },
       {
         "row": "repocache-tar-echo-ref-file",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/ref-file"
       },
       {
         "row": "repocache-tar-echo-ref-dir",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": [
-          "packages/daemon/internal/repocache/tar_echo_test.go",
-          "packages/daemon/internal/repocache/server_test.go"
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "declarations": [
+          {
+            "file": "packages/daemon/internal/repocache/server_test.go",
+            "names": ["github.com/sjawhar/legion/daemon/internal/repocache.testProvisioningToken"]
+          }
         ],
         "capture": "repocache.tar-echo/ref-dir"
       },
@@ -10245,22 +10278,22 @@
       "id": "check-prints-probe-markers",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheGatePrintsTheProbeMarkersItTested",
-      "production": "cmd/redact-gate report: the printed bound names the probe markers a mutant's captured output is read for (MARKERS)"
+      "test": "TestTheGatesReportNamesEveryProbeMarkerItsEvidenceReads",
+      "production": "cmd/redact-gate report: the printed bound's MARKERS line names exactly the probe markers a mutant's captured output is read for (result.marked)"
     },
     {
       "id": "check-holds-device-sign-in-rows",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows",
+      "test": "TestTheInventoryHoldsTheDeviceSignInEchoRows",
       "production": "redact-check.json: the device sign-in's Wait and Refresh echo rows the verification names"
     },
     {
       "id": "check-states-its-bound",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
-      "test": "TestAcceptanceTheCheckStatesTheBoundTheVerificationNames",
-      "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection and both known-residual forms"
+      "test": "TestTheChecksStatementNamesWhatItsResultsDoNotEstablish",
+      "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection, both known-residual forms, a credential cut into pieces shorter than redact.TokenPiece, and a public name's route match reading the whole escaped path"
     },
     {
       "id": "gate-guarded-package-refusals",
