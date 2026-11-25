@@ -313,6 +313,29 @@ test("a refused save shows the server's message as it wrote it, and the draft st
   }
 });
 
+// INFRA-5200's rule, point 6: another writer's save changes the record under the form. The field
+// the reader changed keeps what they typed, and the fields they did not touch take the new record.
+test("another writer's save keeps the fields the reader changed and refreshes the rest", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const view = render(form(record));
+  try {
+    await replace(user, "Deploy workflow", ".github/workflows/ship.yml");
+    view.rerender(
+      form({ ...record, deploy_repo: "acme/gadgets", updated_at: "2026-10-08T12:00:00Z" })
+    );
+    expect(field("Deploy workflow").value).toBe(".github/workflows/ship.yml");
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+  } finally {
+    cleanup();
+  }
+});
+
 // A save the reader stopped may have been made: the form says so, and that its button sends what
 // the fields hold then, rather than a failure it cannot know of.
 test("a save the reader stopped says it may have been made, not that it failed", async () => {

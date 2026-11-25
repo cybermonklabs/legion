@@ -210,6 +210,45 @@ test("a board card shows ten of its labels and a +N that shows the rest", async 
   }
 });
 
+// INFRA-5200's rule, point 6: a card's labels the reader opened stay open when the card moves to
+// another column - another reader's write, which draws the card again in its new column. The
+// board, not the card, keeps the reader's choice, by issue key.
+test("a board card's opened labels stay open after the card moves to another column", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 12 }, (_, index) => `label-${index + 1}`);
+  const { cleanup, queryClient } = renderBoard({}, undefined, [issue({ labels, status: "todo" })]);
+  const groupOf = (column: string) => {
+    const group = screen
+      .getByRole("region", { name: column })
+      .querySelector<HTMLElement>('[data-board-card="CORE-1"] [data-layout-group="labels"]');
+    if (group === null) throw new Error(`no card's labels in ${column}`);
+    return group;
+  };
+  try {
+    await screen.findByRole("region", { name: "Project board" });
+    await user.click(
+      within(groupOf("Todo")).getByRole("button", { name: "+2, show all 12 labels" })
+    );
+
+    act(() => {
+      queryClient.setQueryData(
+        ["issues", "project", "CORE"],
+        [issue({ labels, status: "in_progress" })]
+      );
+    });
+
+    await waitFor(() => expect(groupOf("In progress")).toBeTruthy());
+    expect(
+      labels.filter((label) => within(groupOf("In progress")).queryByText(label) !== null)
+    ).toEqual(labels);
+    expect(
+      within(groupOf("In progress")).getByRole("button", { name: "Show fewer labels" })
+    ).toBeTruthy();
+  } finally {
+    cleanup();
+  }
+});
+
 test("board shows a shared empty state when the project has no issues", async () => {
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});

@@ -189,6 +189,10 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * as it opens and closes. A chip (`closed="chip"`) reads the field's name and its text in a label
  * chip's shape (`FIELD_CHIP`), and a click opens it into the plain box, its name beside it. While
  * it is closed, the heading or the chip is what names the notice as what describes it.
+ *
+ * Its groups: Field alone, full width; opened from a chip, Name then Field, on one line. A text
+ * longer than the field ends in an ellipsis while the reader is not in it, with the whole text
+ * as its title.
  */
 export function InPlaceField({
   closed,
@@ -456,6 +460,7 @@ export function InPlaceField({
       className={`${closed === undefined ? "w-full py-1" : "min-h-11 w-48 max-w-full py-0.5 sm:min-h-7"} rounded-md border px-2 text-sm text-ellipsis outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing} ${textPrimaryOnSurface}`}
       id={fieldId}
       list={listId}
+      title={draft === "" ? undefined : draft}
       type="text"
     />
   );

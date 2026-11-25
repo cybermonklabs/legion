@@ -19,10 +19,9 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
-import { CappedGroup } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { Pill, StatusPill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -74,6 +73,7 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { IssueLabels, OpenedLabelsContext, useOpenedLabels } from "./issues-table-columns";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -110,9 +110,11 @@ function columnAround(node: Element | null): HTMLElement | null {
  * an `article` so nothing interactive is nested in a control.
  *
  * Under its key and title, the card's row has these groups, in this order: Unread (the dot),
- * Priority, Claim, Progress, Route (the mark of a route nobody holds), Labels (the first ten, then
- * "+N" for the rest, flowing in the row) and Asks (the open-asks count). Each is one flex item, so
- * a card too narrow for them moves the last group that does not fit to the next line whole.
+ * Priority, Claim, Progress (its task and child counts, together), Route (the mark of a route
+ * nobody holds), Labels (the first ten, then "+N" for the rest, wrapping inside their own box)
+ * and Asks (the open-asks count). Each is one flex item, so a card too narrow for them moves the
+ * last group that does not fit to the next line whole. Which cards' labels the reader opened is
+ * the board's (`OpenedLabelsContext`), so a card drawn again in another column keeps them open.
  */
 function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
   const {
@@ -175,15 +177,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
           priority={issuePriority(issue.priority)}
         />
         <ClaimChip claim={issue.claim} />
-        <ProgressChips progress={issue.progress} />
+        <span className="flex flex-wrap items-center gap-2 empty:hidden">
+          <ProgressChips progress={issue.progress} />
+        </span>
         <UnreachableRouteMarker issue={issue} />
-        {(issue.labels ?? []).length === 0 ? null : (
-          <CappedGroup className="contents" label="labels" name="labels">
-            {(issue.labels ?? []).map((label) => (
-              <LabelPill key={label}>{label}</LabelPill>
-            ))}
-          </CappedGroup>
-        )}
+        <IssueLabels
+          className="flex min-w-0 max-w-full flex-wrap items-center gap-2"
+          issue={issue}
+        />
         {issue.open_asks === 0 ? null : (
           <span title={`${issue.open_asks} open asks`}>
             <AttentionBadge count={issue.open_asks} />
@@ -331,6 +332,7 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const openedLabels = useOpenedLabels();
   const { labels, matches } = useIssueFilters();
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
@@ -778,9 +780,9 @@ export function IssueBoard({
     </section>
   );
   return (
-    <>
+    <OpenedLabelsContext.Provider value={openedLabels}>
       {questionDialog}
       {body}
-    </>
+    </OpenedLabelsContext.Provider>
   );
 }

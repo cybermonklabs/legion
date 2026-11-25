@@ -1111,13 +1111,15 @@ function SelectionHeader({
  * (the first chip, its name and reason on one line that ends in an ellipsis with the whole as its
  * title, then "+N" for the rest; the notice names every excluded and not confirmed recipient
  * whole), the message sized to its text (`field-sizing`) from two rows up to `max-h-32`, and Mode,
- * Notice and Send on one line. A short screen (a phone in landscape) folds that into two lines -
- * heading beside the recipients, then the message beside the mode and Send - with the message
- * held at two rows. `min-h-16` is important because styles.css's unlayered below-1280 touch floor
- * (`min-height: 44px`) would otherwise override it and shrink the message box on its first
- * character. Elsewhere none of these classes apply, and the recipients show the first ten,
- * wrapping, then "+N". Opening "+N" is the reader's: the recipients then wrap onto as many lines
- * as they need, and the composer scrolls up and down inside its half of the screen.
+ * Notice and Send on one line. A short screen (a phone in landscape) folds that into three rows -
+ * heading beside the recipients, then the message beside the mode and Send, then the Notice
+ * alone, one line high - with the message held at two rows. `min-h-16` is important because
+ * styles.css's unlayered below-1280 touch floor (`min-height: 44px`) would otherwise override it
+ * and shrink the message box on its first character. Elsewhere none of these classes apply, and
+ * the recipients show the first ten, wrapping, then "+N". Opening "+N" is the reader's, and the
+ * page keeps it (`chosenOpen`), so a composer that an empty agent list takes away comes back as
+ * the reader left it: the recipients then wrap onto as many lines as they need, and the composer
+ * scrolls up and down inside its half of the screen.
  *
  * The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
  * description there rather than a line of its own: this panel is held to 40% of a phone empty
@@ -1128,10 +1130,12 @@ function BroadcastComposer({
   agents,
   body,
   composed,
+  chosenOpen,
   defaulted,
   delivery,
   onBody,
   onDelivery,
+  onChosenOpen,
   onSend,
   selected,
   onDeselect,
@@ -1139,12 +1143,15 @@ function BroadcastComposer({
   agents: readonly Agent[];
   body: string;
   composed: ComposedBroadcast;
+  /** Whether the reader opened the recipients past their "+N"; the page holds it. */
+  chosenOpen: boolean;
   /** Whether `delivery` is the selection's own mode rather than one the sender picked. */
   defaulted: boolean;
   delivery: MessageDeliveryMode;
   onBody: (body: string) => void;
   onDelivery: (delivery: MessageDeliveryMode) => void;
   onDeselect: (sessionID: string) => void;
+  onChosenOpen: (open: boolean) => void;
   onSend: (send: BroadcastSend) => void;
   selected: ReadonlySet<string>;
 }): ReactNode {
@@ -1189,7 +1196,6 @@ function BroadcastComposer({
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
   const compact = useMediaQuery(COMPACT_COMPOSER_QUERY);
-  const [chosenOpen, setChosenOpen] = useState(false);
   const chipOnOneLine = compact && !chosenOpen;
 
   return (
@@ -1209,7 +1215,7 @@ function BroadcastComposer({
         list="Selected agents"
         max={compact ? COMPACT_RECIPIENTS_SHOWN : LAYOUT_GROUP_MAX}
         name="chosen-agents"
-        onOpenChange={setChosenOpen}
+        onOpenChange={onChosenOpen}
         open={chosenOpen}
       >
         {[...selected].map((sessionID) => {
@@ -1600,6 +1606,11 @@ export function AgentsPage(): ReactNode {
     ? "Restore draft would replace the broadcast you have started. Send it, or clear its message and selection, first."
     : null;
   const showComposer = selected.size > 0 && agents.length > 0;
+  // Whether the reader opened the composer's recipients past their "+N". The page holds it, not
+  // the composer, which an empty agent list unmounts while the selection stands; a selection the
+  // reader empties (a Send, Clear, the last chip's ✕) starts the next one closed.
+  const [chosenOpen, setChosenOpen] = useState(false);
+  if (selected.size === 0 && chosenOpen) setChosenOpen(false);
   // Not memoised: the grouping is a function of the clock, and is recomputed on every render of
   // this page. Every listed session is grouped, the ones the filters exclude included: their
   // rows stay mounted, hidden, like a collapsed group's.
@@ -1903,6 +1914,7 @@ export function AgentsPage(): ReactNode {
             <BroadcastComposer
               agents={agents}
               body={draft}
+              chosenOpen={chosenOpen}
               composed={composedBroadcast(
                 { ...composition, delivery },
                 { agents, current, refilling }
@@ -1911,6 +1923,7 @@ export function AgentsPage(): ReactNode {
               delivery={delivery}
               onBody={composition.setDraft}
               onDelivery={composition.setDelivery}
+              onChosenOpen={setChosenOpen}
               onDeselect={(sessionID) => select(sessionID, false)}
               onSend={(send) => {
                 queue.enqueue(send);

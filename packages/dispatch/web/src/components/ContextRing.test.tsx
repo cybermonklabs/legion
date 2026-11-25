@@ -72,10 +72,15 @@ describe("the context ring", () => {
     }
   });
 
-  test("a newer figure moves the ring and the open panel where they stand", () => {
+  test("a newer figure moves the ring and the open panel where they stand, and an open panel with no figure says so", () => {
     const view = render(<ContextRing onOpenChange={() => {}} open={true} usage={undefined} />);
     try {
-      expect(screen.queryByTestId("agent-context-ring")).toBeNull();
+      // The reader opened the panel, so it stays open with no figure, and draws none.
+      expect(screen.getByTestId("agent-context-share").textContent).toBe("No reading");
+      expect(screen.queryByText(/%/)).toBeNull();
+      expect(screen.getByRole("dialog").textContent).toContain(
+        "The session is not reporting its context window now."
+      );
 
       view.rerender(
         <ContextRing

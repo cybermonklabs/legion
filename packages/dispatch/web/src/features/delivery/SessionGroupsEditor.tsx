@@ -64,13 +64,18 @@ function GroupCard({
   pending: boolean;
   write: (change: GroupChange) => void;
   /** Whether the reader opened this group's sessions past their "+N". The editor holds it, by
-   *  group id: a write moves the group's `updated_at`, which mounts this card again. */
+   *  group id, as it holds the card itself by group id. */
   sessionsOpen: boolean;
   onSessionsOpen: (open: boolean) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
-  const [name, setName] = useState(group.name);
+  // The reader's rename draft, kept while the group changes under it (a member added, a rename
+  // from another tab): null while the reader has typed nothing, so the field shows the group's
+  // name as it now stands, and back to null once the group's name is the draft.
+  const [draft, setDraft] = useState<string | null>(null);
+  if (draft !== null && draft === group.name) setDraft(null);
+  const name = draft ?? group.name;
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
@@ -81,7 +86,7 @@ function GroupCard({
         <input
           className={fieldClass}
           id={`${id}-name`}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => setDraft(event.target.value)}
           value={name}
         />
         <button
@@ -178,7 +183,16 @@ function GroupCard({
  *  it reads by its registry title, else its short id. A save reaches the page's live views as
  *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
  *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
- *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
+ *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted.
+ *
+ *  Its groups, in this order, each on a line of its own: Heading (the title, Close at the right),
+ *  the note on what a group is, Sessions (the window's sessions, one row each), New group (the
+ *  name field and Create group), the refusal, and Groups (one `GroupCard` each). A session's row
+ *  has two groups: Session (its checkbox and name, with its live link) and Membership (its pull
+ *  request count and its group's name); a row too narrow for both moves Membership to a line of
+ *  its own, whose text wraps inside it, so a long group name never pushes the session's name
+ *  aside. A card is keyed by its group's id, so a change to the group redraws it in place and
+ *  keeps the reader's rename draft and opened sessions. */
 export function SessionGroupsEditor({
   onClose,
   groups,
@@ -297,10 +311,10 @@ export function SessionGroupsEditor({
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
             return (
-              <li className="flex items-center gap-2 text-sm" key={session}>
+              <li className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm" key={session}>
                 {/* The checkbox's label keeps the name; the agent's live link sits beside it. */}
                 <AgentName
-                  className="flex min-w-0 flex-1 items-center"
+                  className="flex min-w-0 flex-1 basis-40 items-center"
                   control={(agentName) => (
                     <label className="flex min-w-0 flex-1 items-center gap-2" title={session}>
                       <input
@@ -315,7 +329,9 @@ export function SessionGroupsEditor({
                   sessionId={session}
                   storedTitle={storedTitle(session)}
                 />
-                <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
+                <span
+                  className={`min-w-0 max-w-full text-xs [overflow-wrap:anywhere] ${textMutedOnSurface}`}
+                >
                   {count} PR{count === 1 ? "" : "s"}
                   {inGroup === undefined ? "" : ` · ${inGroup}`}
                 </span>
@@ -369,7 +385,7 @@ export function SessionGroupsEditor({
           {groups.map((group) => (
             <GroupCard
               group={group}
-              key={`${group.id}:${group.updated_at}`}
+              key={group.id}
               onSessionsOpen={(open) => openGroup(group.id, open)}
               pending={save.isPending}
               selected={selected}

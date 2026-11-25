@@ -36,6 +36,10 @@ const FILLING_TEXT =
   "When it is nearly full the session drops its oldest turns, so give it less to read, or give the next piece of work to another agent.";
 const NEARLY_FULL_TEXT =
   "This window is nearly full. The session drops its oldest turns from here on, so give it less to read, or give the next piece of work to another agent.";
+/** What the open panel says while the session reports no window: the reader opened the panel,
+ *  so it stays open and says what is missing rather than closing by itself. */
+const NO_READING_TEXT =
+  "The session is not reporting its context window now. Its next reading shows here.";
 
 /**
  * The share of the window in use, as a whole percent: 68,000 of 200,000 is 34. A session that
@@ -66,7 +70,10 @@ export interface ContextRingProps {
  * width can keep it at the right edge of the message box.
  *
  * The host owns `open`, as `MultiSelect`'s does. Escape closes the panel wherever the focus is,
- * and so does a pointer press outside it.
+ * and so does a pointer press outside it. A session that reports no window draws no ring, since a
+ * ring at 0 percent would report a figure the session never gave; but a panel the reader opened
+ * is the reader's, so while it is open the ring stays, reading "No reading", and the panel says
+ * the window is not reported until the next reading fills it.
  */
 export function ContextRing({ onOpenChange, open, usage }: ContextRingProps): ReactNode {
   const share = contextShare(usage);
@@ -75,19 +82,26 @@ export function ContextRing({ onOpenChange, open, usage }: ContextRingProps): Re
 
   usePanelDismiss({ onOpenChange, open, panelRef, triggerRef });
 
-  if (usage === undefined || share === undefined) return null;
+  if ((usage === undefined || share === undefined) && !open) return null;
+  const reading = usage === undefined || share === undefined ? undefined : { share, usage };
 
-  const near = share >= NEARLY_FULL_PERCENT;
+  const near = reading !== undefined && reading.share >= NEARLY_FULL_PERCENT;
   const shareText = near ? inlineWarningText : textSecondaryOnCanvas;
-  const figures = `${count.format(usage.tokens)} of ${count.format(usage.contextWindow)} tokens`;
-  const filled = (CIRCUMFERENCE * share) / 100;
-
+  const figures =
+    reading === undefined
+      ? "No reading of the context window"
+      : `${count.format(reading.usage.tokens)} of ${count.format(reading.usage.contextWindow)} tokens`;
+  const filled = reading === undefined ? 0 : (CIRCUMFERENCE * reading.share) / 100;
   return (
     <span className="relative shrink-0">
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={`Context window, ${share} percent used`}
+        aria-label={
+          reading === undefined
+            ? "Context window, no reading"
+            : `Context window, ${reading.share} percent used`
+        }
         className={`flex min-h-8 shrink-0 items-center gap-1.5 rounded-lg px-1.5 text-xs font-medium tabular-nums ${shareText} ${surfaceMutedHoverBg}`}
         data-testid="agent-context-ring"
         onClick={() => onOpenChange(!open)}
@@ -104,19 +118,27 @@ export function ContextRing({ onOpenChange, open, usage }: ContextRingProps): Re
             strokeOpacity="0.25"
             strokeWidth="2.5"
           />
-          <circle
-            cx="8"
-            cy="8"
-            r={RADIUS}
-            stroke="currentColor"
-            strokeDasharray={`${filled.toFixed(2)} ${CIRCUMFERENCE.toFixed(2)}`}
-            strokeLinecap="round"
-            strokeWidth="2.5"
-            transform="rotate(-90 8 8)"
-          />
+          {reading === undefined ? null : (
+            <circle
+              cx="8"
+              cy="8"
+              r={RADIUS}
+              stroke="currentColor"
+              strokeDasharray={`${filled.toFixed(2)} ${CIRCUMFERENCE.toFixed(2)}`}
+              strokeLinecap="round"
+              strokeWidth="2.5"
+              transform="rotate(-90 8 8)"
+            />
+          )}
         </svg>
         <span className="whitespace-nowrap" data-testid="agent-context-share">
-          {share}%<span className="hidden sm:inline"> of the window</span>
+          {reading === undefined ? (
+            "No reading"
+          ) : (
+            <>
+              {reading.share}%<span className="hidden sm:inline"> of the window</span>
+            </>
+          )}
         </span>
       </button>
       {open ? (
@@ -128,21 +150,27 @@ export function ContextRing({ onOpenChange, open, usage }: ContextRingProps): Re
           role="dialog"
         >
           <p className={`text-sm font-semibold ${textPrimaryOnSurface}`}>Context window</p>
-          <p className={`mt-1 text-xs tabular-nums ${textMutedOnSurface}`}>
-            {figures} · {share}%
-          </p>
-          <span
-            aria-hidden="true"
-            className={`mt-2 block h-1.5 w-full overflow-hidden rounded-full ${progressTrack}`}
-          >
-            <span
-              className={`block h-full rounded-full bg-current ${shareText}`}
-              style={{ width: `${share}%` }}
-            />
-          </span>
-          <p className={`mt-2 text-xs ${textSecondaryOnSurface}`}>
-            {near ? NEARLY_FULL_TEXT : FILLING_TEXT}
-          </p>
+          {reading === undefined ? (
+            <p className={`mt-1 text-xs ${textSecondaryOnSurface}`}>{NO_READING_TEXT}</p>
+          ) : (
+            <>
+              <p className={`mt-1 text-xs tabular-nums ${textMutedOnSurface}`}>
+                {figures} · {reading.share}%
+              </p>
+              <span
+                aria-hidden="true"
+                className={`mt-2 block h-1.5 w-full overflow-hidden rounded-full ${progressTrack}`}
+              >
+                <span
+                  className={`block h-full rounded-full bg-current ${shareText}`}
+                  style={{ width: `${reading.share}%` }}
+                />
+              </span>
+              <p className={`mt-2 text-xs ${textSecondaryOnSurface}`}>
+                {near ? NEARLY_FULL_TEXT : FILLING_TEXT}
+              </p>
+            </>
+          )}
         </div>
       ) : null}
     </span>

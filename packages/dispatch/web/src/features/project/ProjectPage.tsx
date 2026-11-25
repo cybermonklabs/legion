@@ -42,11 +42,12 @@ type IssueView = "list" | "board";
 
 /**
  * A project's page. Its header's groups, in this order: Identity (the project's name and its
- * key), Attention (the questions on this project that wait on the reader), Navigation (the tabs)
- * and View (list or board, and the board's two toggles). A row too narrow for them all moves the
- * last group that does not fit to the next line whole. Below `md` Identity and Attention share
- * the first line and the rest start the next; from `md` Attention goes last, after the view
- * controls.
+ * key), Attention (the questions on this project that wait on the reader), Navigation (the tabs,
+ * and beside them, while the read of the project's architecture sources is pending or failed, that
+ * read's state, since the Architecture tab exists only once it says there is a source) and View
+ * (list or board, and the board's two toggles). A row too narrow for them all moves the last
+ * group that does not fit to the next line whole. Below `md` Identity and Attention share the
+ * first line and the rest start the next; from `md` Attention goes last, after the view controls.
  */
 export function ProjectPage(): ReactNode {
   const location = useLocation();
@@ -192,7 +193,7 @@ export function ProjectPage(): ReactNode {
           viewer={viewer}
         />
         <div aria-hidden className="basis-full md:hidden" />
-        <div className="max-w-full">
+        <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1">
           <Tabs
             activeTab={activeTab}
             ariaLabel="Project"
@@ -201,6 +202,27 @@ export function ProjectPage(): ReactNode {
             onSelect={selectTab}
             tabs={hasSource ? [architectureTab, ...tabs] : tabs}
           />
+          {/* No source read yet is not no source: the reader sees that the tab strip may still
+              gain Architecture, or why it cannot say. */}
+          {sources.isPending ? (
+            <span className={`text-xs ${textMutedOnCanvas}`} role="status">
+              Checking for an architecture…
+            </span>
+          ) : sources.isError ? (
+            <span
+              className={`flex flex-wrap items-center gap-2 text-xs ${dangerText}`}
+              role="alert"
+            >
+              Could not check for an architecture.
+              <button
+                className="font-medium underline"
+                onClick={() => void sources.refetch()}
+                type="button"
+              >
+                Retry
+              </button>
+            </span>
+          ) : null}
         </div>
         {activeTab === "issues" ? (
           <div className="flex flex-wrap items-center gap-2 md:ml-auto">

@@ -55,6 +55,8 @@ test("the text a reader left stands through the write, rather than the old text 
   // still the old text; the reader must not see their own words undone while it travels.
   await user.tab();
   expect((field as HTMLInputElement).value).toBe("New name");
+  // A one-line field shortens a long text to an ellipsis, so its whole text is its title.
+  expect(field).toHaveAttribute("title", "New name");
   await user.click(page.getByRole("button", { name: "Land the write" }));
   expect((field as HTMLInputElement).value).toBe("New name");
   view.unmount();

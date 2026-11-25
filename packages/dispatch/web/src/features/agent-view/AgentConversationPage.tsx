@@ -298,11 +298,10 @@ export function AgentConversationPage({
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
   const mode = picked !== null && modes.includes(picked) ? picked : (modes[0] ?? "aside");
   // Which panel of the footer row stands open, since both open upwards over the transcript from
-  // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
+  // the same corner: one at a time, as a `MultiSelect`'s host holds its list. The reader opens and
+  // closes it; a session that stops reporting its window leaves an open context panel open,
+  // saying so (`ContextRing`).
   const [panel, setPanel] = useState<"context" | "help" | null>(null);
-  // The ring's panel goes with the ring: a session that stops reporting its window takes the ring
-  // away, and its next reading draws the ring closed rather than reopening a panel by itself.
-  if (panel === "context" && conversation.context === undefined) setPanel(null);
   // The slash commands the composer completes (LEGION-394). The session runs typed input only
   // from a Send or an Aside, so a BTW, a side question it answers, offers none; nor does a
   // session that sent no list, whose host cannot run typed input.

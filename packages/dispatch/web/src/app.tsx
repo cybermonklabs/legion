@@ -553,10 +553,12 @@ function ShellProviders({
  * The signed-in frame, in three named groups in this order:
  *
  * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
- *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
- *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
- *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
- *   from the `md` width instead and opens the same drawer from it.
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, and inside
+ *   that row one count at a time, each whole, where it is still too narrow; Menu is its own item
+ *   at the right, in reach however the counts wrap. The navigation itself is in a drawer the
+ *   reader opens with Menu. From the compact width up it is the sidebar, or the rail the reader
+ *   collapses it to; the issue frame draws its icon rail from the `md` width instead and opens
+ *   the same drawer from it.
  * - **Main**: the page (`<main>`).
  * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
  *
@@ -1009,7 +1011,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              <span className="flex shrink-0 items-center gap-x-2">
+              <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
                 {routeIsInbox(location.pathname) ? (
                   <span className={inboxBadgeClass}>{inboxLabel}</span>
                 ) : (

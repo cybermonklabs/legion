@@ -1269,6 +1269,10 @@ Inbox's and the other pages'); each fix pull request deletes every entry of its 
 leaves it empty, so the three merge in any order, and the list and its use go once all three are
 empty.
 
+Point 5 of the rule moves a header's properties into Details; a list row, a card, a table cell, a
+settings row and a status bar keep the marks they show, because a reader chooses an item by them
+(dispatch://INFRA-5200/artifact/decisions-md).
+
 ## Phone check
 
 Browser emulation covers responsive layout. A phone acceptance check runs against

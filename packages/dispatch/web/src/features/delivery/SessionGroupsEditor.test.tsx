@@ -293,8 +293,7 @@ test("a group shows ten of its sessions and a +N that shows the rest", async () 
 });
 
 // INFRA-5200's rule, point 6: a group the reader opened past its "+N" stays open when the group
-// changes. A write moves its `updated_at`, which draws its card again from nothing (the card's key
-// holds it, so the rename draft resets), and the editor, not the card, keeps the reader's choice.
+// changes: a write moves its `updated_at`, and the editor, not the card, keeps the reader's choice.
 test("a group's opened sessions stay open after a member past the tenth is removed", async () => {
   const user = userEvent.setup();
   const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
@@ -310,6 +309,31 @@ test("a group's opened sessions stay open after a member past the tenth is remov
     ]);
     expect(within(members()).getAllByRole("button", { name: /^Remove / })).toHaveLength(11);
     expect(within(members()).getByRole("button", { name: "Show fewer sessions" })).toBeDefined();
+  } finally {
+    cleanup();
+  }
+});
+
+// INFRA-5200's rule, point 6: a change to the group from elsewhere - a member removed, another
+// tab's rename - redraws its card in place and keeps the reader's rename draft. With no draft,
+// the field shows the group's name as it now stands.
+test("a group's rename draft survives a change to the group, and with no draft the field follows a rename", async () => {
+  const user = userEvent.setup();
+  const other: DeliverySessionGroup = { ...crew, id: "2", name: "Night crew", sessions: ["s3"] };
+  const editor = renderEditor([crew, other]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew");
+    editor.regroup([
+      { ...crew, sessions: ["s1"], updated_at: "2026-10-12T00:00:00Z" },
+      { ...other, name: "Day crew", updated_at: "2026-10-12T00:00:00Z" },
+    ]);
+    expect(nameOf("Release crew").value).toBe("Ship crew");
+    expect(nameOf("Day crew").value).toBe("Day crew");
   } finally {
     cleanup();
   }

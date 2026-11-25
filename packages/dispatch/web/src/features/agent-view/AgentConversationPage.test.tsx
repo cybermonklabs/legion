@@ -3205,9 +3205,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
   expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
 });
 
-// R1. The ring's panel goes with the ring, and the next reading draws the ring closed: a panel the
-// person opened on one reading does not open again by itself on a later one.
-test("a clearing frame closes the ring's open panel, and the next reading draws the ring closed", async () => {
+// INFRA-5200's rule, point 6: a panel the reader opened is the reader's. A clearing frame leaves
+// the ring's open panel open, saying the window is not reported, and the next reading fills it.
+// Closed by the reader, the ring goes with the reading, and a later reading draws it closed: a
+// panel never opens by itself (INFRA-812's R1).
+test("a clearing frame leaves the ring's open panel open and saying so, the next reading fills it, and a closed ring stays closed", async () => {
   const user = userEvent.setup();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
   view.frame(contextFrame(3, 8_192, 32_768));
@@ -3217,13 +3219,30 @@ test("a clearing frame closes the ring's open panel, and the next reading draws 
 
   view.frame(clearedFrame(4));
 
-  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
-  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("No reading")
+  );
+  expect(screen.getByTestId("agent-context-ring")).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByTestId("agent-context-popover").textContent).toContain(
+    "The session is not reporting its context window now."
+  );
 
   view.frame(contextFrame(5, 16_384, 32_768));
 
   await waitFor(() =>
     expect(screen.getByTestId("agent-context-share").textContent).toBe("50% of the window")
+  );
+  expect(screen.getByTestId("agent-context-popover").textContent).toContain(
+    "16,384 of 32,768 tokens"
+  );
+
+  await user.click(screen.getByTestId("agent-context-ring"));
+  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
+  view.frame(clearedFrame(6));
+  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
+  view.frame(contextFrame(7, 8_192, 32_768));
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
   );
   expect(screen.getByTestId("agent-context-ring")).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();

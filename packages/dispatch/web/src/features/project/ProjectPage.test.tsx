@@ -257,6 +257,35 @@ test("any other failure of the source lookup is shown, never silently turned int
   }
 });
 
+// INFRA-5200's rule, point 6: on Issues, the Architecture tab exists only once the source read
+// says there is a source, so Navigation says the read is still out, or that it failed and can be
+// retried, rather than gaining a tab from a read the reader never saw.
+test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
+  const user = userEvent.setup();
+  const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");
+  try {
+    expect(await screen.findByText("Checking for an architecture…")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+  } finally {
+    pending.restore();
+  }
+
+  const failed = renderPage("/projects/CORE/issues", undefined, "alice", [], new ApiError(500, {}));
+  try {
+    const alert = await screen.findByText(/^Could not check for an architecture\./);
+    expect(alert).toHaveAttribute("role", "alert");
+    failed.listProjectArchitectureSources.mockResolvedValue([coreSource]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("tab", { name: "Architecture" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not check for an architecture.")).not.toBeInTheDocument();
+  } finally {
+    failed.restore();
+  }
+});
+
 test("/architecture renders nothing while the source lookup is pending, like the bare path, so the tab strip never shows without its active tab", async () => {
   const page = renderPage("/projects/CORE/architecture", undefined, "alice", [], "pending");
   try {

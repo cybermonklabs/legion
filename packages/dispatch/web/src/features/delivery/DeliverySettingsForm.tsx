@@ -74,6 +74,31 @@ interface Draft {
   excluded_repos: string;
 }
 
+/** The fields as the stored record fills them, and empty where there is none. */
+function recordDraft(record: DeliverySettings | null): Draft {
+  return {
+    deploy_repo: record?.deploy_repo ?? "",
+    deploy_workflow_path: record?.deploy_workflow_path ?? "",
+    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
+    population_authors: record?.population_authors?.join("\n") ?? "",
+    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
+    production_job_names: record?.production_job_names?.join("\n") ?? "",
+    production_apply_step_name: record?.production_apply_step_name ?? "",
+    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
+    staging_apply_job_name: record?.staging_apply_job_name ?? "",
+    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
+  };
+}
+
+/** The fields of `next` that differ from `stored`: what the reader has changed. */
+function changedFields(next: Draft, stored: Draft): Partial<Draft> {
+  const changed: Partial<Draft> = {};
+  for (const field of Object.keys(next) as (keyof Draft)[]) {
+    if (next[field] !== stored[field]) changed[field] = next[field];
+  }
+  return changed;
+}
+
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
 const PIPELINE_JOB_FIELDS = [
   {
@@ -114,6 +139,12 @@ interface DeliverySettingsFormProps {
  * GitHub App can read the deploy repository, and a refusal shows under the form as the server wrote
  * it. A save refreshes the record and every delivery read, so the Delivery page, which renders this
  * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds.
+ *
+ * Its groups, in this order: Fields (each field one item, two columns from `sm` and one below it)
+ * and Save; a refusal shows under them. A one-line value longer than its field ends in an ellipsis
+ * with the whole value as its title; a list wraps inside its own box. The fields the reader has
+ * changed stay as they typed them when the record changes under them - anyone's save - and the
+ * rest follow the record.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
   const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
@@ -135,27 +166,23 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     }
     record = settings.data;
   }
-  // Keyed by the record's write time, so a save (anyone's) starts the fields over from the record
-  // as the server stored it, and so does a caller handing over another record.
-  return <DeliverySettingsFields key={record?.updated_at ?? "unset"} record={record} />;
+  return <DeliverySettingsFields record={record} />;
 }
 
 function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
-  const [draft, setDraft] = useState<Draft>(() => ({
-    deploy_repo: record?.deploy_repo ?? "",
-    deploy_workflow_path: record?.deploy_workflow_path ?? "",
-    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
-    population_authors: record?.population_authors?.join("\n") ?? "",
-    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
-    production_job_names: record?.production_job_names?.join("\n") ?? "",
-    production_apply_step_name: record?.production_apply_step_name ?? "",
-    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
-    staging_apply_job_name: record?.staging_apply_job_name ?? "",
-    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
-  }));
+  // What the reader has changed, over the record as the server now holds it: a save from anywhere
+  // refreshes the fields the reader has not touched and keeps the ones they have, and a changed
+  // field the record comes to hold as the reader typed it (their own save landing) follows the
+  // record again.
+  const stored = recordDraft(record);
+  const [edited, setEdited] = useState<Partial<Draft>>({});
+  const pending = changedFields({ ...stored, ...edited }, stored);
+  if (Object.keys(pending).length !== Object.keys(edited).length) setEdited(pending);
+  const draft: Draft = { ...stored, ...edited };
+  const setDraft = (next: Draft) => setEdited(changedFields(next, stored));
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -204,6 +231,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               pattern={ownerRepoPattern}
               placeholder="owner/repo"
               required
+              title={draft.deploy_repo === "" ? undefined : draft.deploy_repo}
               value={draft.deploy_repo}
             />
           </label>
@@ -217,6 +245,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               }
               placeholder=".github/workflows/<deploy>.yml"
               required
+              title={draft.deploy_workflow_path === "" ? undefined : draft.deploy_workflow_path}
               value={draft.deploy_workflow_path}
             />
           </label>
@@ -256,6 +285,11 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                   setDraft({ ...draft, production_apply_step_name: event.target.value })
                 }
                 placeholder="The step whose success means the job applied (optional)"
+                title={
+                  draft.production_apply_step_name === ""
+                    ? undefined
+                    : draft.production_apply_step_name
+                }
                 value={draft.production_apply_step_name}
               />
             </label>
@@ -273,6 +307,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 id={`${id}-${key}`}
                 onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
                 placeholder={placeholder}
+                title={draft[key] === "" ? undefined : draft[key]}
                 value={draft[key]}
               />
             </label>
@@ -291,6 +326,9 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               }
               placeholder=".github/workflows/<checks>.yml"
               required
+              title={
+                draft.pr_checks_workflow_path === "" ? undefined : draft.pr_checks_workflow_path
+              }
               value={draft.pr_checks_workflow_path}
             />
           </label>

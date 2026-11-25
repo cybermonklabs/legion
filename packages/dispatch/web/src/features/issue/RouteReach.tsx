@@ -67,8 +67,8 @@ export function RouteReachUnknownMarker({
  *
  * `showRoute` names the route in the label, for the header, where the marker sits in the state
  * row rather than beside the route: a role as its address, a session by `AgentName`. A name can
- * be long, so only the route ellipsizes and the verdict stays whole, the rule `ClaimChip`
- * follows for a holder's name.
+ * be long, so in a box narrower than the whole chip the route and the verdict each shorten inside
+ * themselves, as `UnreachableRoute` says.
  */
 export function UnreachableRouteMarker({
   issue,
@@ -134,10 +134,10 @@ export function UnresponsiveRouteMarker({
 /**
  * The chip that says an issue's route reaches nobody. Its groups, in this order: Mark (⚠), Route
  * (the route, or the session it names, when `showRoute`) and Verdict ("Nobody holds it right now"
- * or "Not running right now"); the explanation follows for screen readers only. Beside a route,
- * the route ends in an ellipsis and the verdict stays whole. Alone, the verdict gives way inside
- * the chip when a narrow cell or card holds less than all of it: it ends in an ellipsis under the
- * chip's own title, which says it whole, and inside `NoTooltips`, which draws no title, it wraps.
+ * or "Not running right now"); the explanation follows for screen readers only. The mark never
+ * shrinks. Route and Verdict give way inside the chip when a narrow cell, card or header row
+ * holds less than all of it: each ends in an ellipsis under the chip's own title, which says it
+ * whole, and inside `NoTooltips`, which draws no title, each wraps inside itself.
  */
 function UnreachableRoute({
   route,
@@ -174,15 +174,7 @@ function UnreachableRoute({
           :
         </span>
       ) : null}
-      <span
-        className={
-          showRoute
-            ? "shrink-0"
-            : tooltips
-              ? "min-w-0 truncate"
-              : "min-w-0 [overflow-wrap:anywhere]"
-        }
-      >
+      <span className={tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"}>
         {verdict}
       </span>
       <span className="sr-only">. {explanation}</span>

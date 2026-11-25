@@ -1050,6 +1050,44 @@ test("an Agents row shows ten roles and a +N for the rest, and the composer ten 
   }
 });
 
+// INFRA-5200's rule, point 6: the recipients the reader opened past their "+N" stay open when an
+// agent list that comes back empty takes the composer away while the selection stands, and the
+// composer comes back with the list.
+test("the composer's opened recipients are still open after an empty agent list takes it away and it comes back", async () => {
+  const user = userEvent.setup();
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+  const recipients = () =>
+    within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    await user.click(within(recipients()).getByRole("button", { name: "+2, show all 12 agents" }));
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+
+    page.listAgents.mockResolvedValue([]);
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Broadcast" })).toBeNull());
+
+    page.listAgents.mockResolvedValue(crowd);
+    await refetchAgents(page.queryClient);
+    await screen.findByRole("region", { name: "Broadcast" });
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+    expect(within(recipients()).getByRole("button", { name: "Show fewer agents" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // D3: the pin no longer lifts a row out of its group - the rail is the pin's own home now - so
 // a pinned session is in the group its row puts it in, first among that group's rows.
 test("Agents keeps a pinned session in its own group, first among its rows", async () => {
