@@ -1055,6 +1055,69 @@ function headsTester(runDir: string, run: string, label: string): Row {
   };
 }
 
+/** Whether a gh call reads CI, by the arguments the gh stand-in recorded: `gh pr checks`, `gh run
+ * view`, `watch`, `rerun` or `list`, a `gh api` path of check runs or suites or of Actions' runs or
+ * jobs, or any read that asks for a pull request's or a commit's `statusCheckRollup`. */
+function readsCI(argv: readonly string[]): boolean {
+  const [first = "", second = ""] = argv;
+  if (first === "pr" && second === "checks") return true;
+  if (first === "run" && ["view", "watch", "rerun", "list"].includes(second)) return true;
+  if (
+    first === "api" &&
+    argv.some((arg) => /check-runs|check-suites|actions\/(runs|jobs)/.test(arg))
+  )
+    return true;
+  return argv.some((arg) => arg.includes("statusCheckRollup"));
+}
+
+/** tester-reads-no-ci: a tester, started on the implementer's completion, tests #702, at whose head
+ * k1 has no `ci_check` and k3, a check a CI job runs, waits on its job's run (case ci-late) or
+ * reads no for the job's failure (case ci-red). The tester runs and records k1 and reads no CI. The
+ * record is the run's own newest test record on its issue (handoffs.json, as headsTester finds
+ * it). A pass: that record exists; the run recorded a result of k1 (a `dispatch result` with
+ * `--check k1`, through the CLI or a host's Dispatch tool, operationsOf); no call reads CI (readsCI
+ * over the gh stand-in's record, and a `dispatch results` with `--check k3`); and no reply of the
+ * run starts WAITING before Dispatch recorded the record (with no record, no reply at all). The
+ * notes name the record, each read of CI and each WAITING line. Its row is
+ * `tester-reads-no-ci:<case>`. `ref` is never counted. */
+function headsTesterReadsNoCI(runDir: string, run: string, label: string, dirCase: string): Row {
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  const waiting = waitingLines(entries, record?.created_at);
+  const dispatchCalls = operations(entries).flatMap((operation) =>
+    operation.kind === "dispatch" ? [operation.call] : []
+  );
+  const resultsOnK1 = dispatchCalls.filter(
+    (call) => call.command === "result" && call.flag("check") === "k1"
+  ).length;
+  const ciReads = [
+    ...parsed(path.join(runDir, "calls.jsonl"), Call)
+      .filter((call) => call.as === "gh" && readsCI(call.argv))
+      .map((call) => `gh ${call.argv.join(" ")}`),
+    ...dispatchCalls
+      .filter((call) => call.command === "results" && call.flag("check") === "k3")
+      .map((call) => call.text),
+  ];
+  const notes = [
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} resultsOnK1=${resultsOnK1} ciReads=${ciReads.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...ciReads.map((read) => `  read of CI: ${read.slice(0, 200)}`),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    scenario: `tester-reads-no-ci:${dirCase}`,
+    label,
+    pass: record !== undefined && resultsOnK1 > 0 && ciReads.length === 0 && waiting.length === 0,
+    ref: false,
+    notes: notes.join("\n"),
+  };
+}
+
 /** architect-pass-and-fail and ci-pass-and-fail's architect: the tree's root architect judges #702,
  * at whose head the tester recorded a pass, its test record and then a fail (in ci-pass-and-fail,
  * the CI job its pass and then its fail while the job's run is still going), and the reviewer its
@@ -3398,8 +3461,10 @@ function unscored(
   }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  // A tester of tester-reads-no-ci that reads CI fails its run whatever the world answered, so its
+  // read of CI with no route is a read like any other, not the rig's gap.
   const gaps = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
-    (call) => call.no_route === true
+    (call) => call.no_route === true && !(scenario === "tester-reads-no-ci" && readsCI(call.argv))
   );
   if (gaps.length > 0)
     return `the gh stand-in had no route for ${gaps.length} call(s), first \`gh ${gaps[0]?.argv.join(" ")}\`: the agent read the rig's gap, not GitHub's answer`;
@@ -3690,6 +3755,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         : role === "tester"
           ? headsTester(dir, run, label)
           : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
+    "tester-reads-no-ci": headsTesterReadsNoCI,
   });
   // A catalog row whose scenario has no scorer here, such as a typo of one that has, would leave
   // its runs read as runs of a label: refused before any run is scored.
@@ -3842,8 +3908,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           issue back naming k1 and signed nothing off (headsArchitect); ci-pass-and-fail",
       "           (per role): the reviewer's refusal naming k1, the tester's test record listing k1",
       "           in its failures (headsTester) and the architect's move back naming k1, each with",
-      "           no WAITING line before it",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate and the four heads",
+      "           no WAITING line before it; tester-reads-no-ci (per case): the tester's own test",
+      "           record and result of k1, with no read of CI and no WAITING line before the record",
+      "           (headsTesterReadsNoCI)",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and the heads",
       "           scenarios: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",

@@ -23,8 +23,10 @@ const CIJob = z.strictObject({
   log: z.string().optional(),
 });
 
-/** The worlds' named jobs: ci-only's and ci-pass-and-fail's, and the job of k2, the check a CI job
- * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other. */
+/** The worlds' named jobs: ci-only's and ci-pass-and-fail's, the job of k2, the check a CI job
+ * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other;
+ * and the job of k3 in tester-reads-no-ci, still going in its case ci-late (`ci-late`) and failed
+ * in ci-red (`ci-check-fail`, with its log). */
 const World = z.strictObject({
   repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   defaultBranch: z.string().min(1),
@@ -33,6 +35,7 @@ const World = z.strictObject({
     "ci-pass-and-fail": CIJob,
     "ci-check-fail": CIJob,
     "ci-check-pass": CIJob,
+    "ci-late": CIJob,
   }),
 });
 

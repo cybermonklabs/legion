@@ -180,6 +180,12 @@
 #                   reviewer (on the tester's pass), tester (on the implementer's completion) and
 #                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
 #                   headsTester and headsArchitect, counted per role and label.
+#   tester-reads-no-ci
+#                   The tester, on the implementer's completion, tests #702 alone, at whose head k1
+#                   has no ci_check and k3 carries ci_check="usage-test": its job's run is still in
+#                   progress in the case ci-late and ended failure, with its log, in ci-red. The case
+#                   is in the run's name, tester-reads-no-ci-<case>-<label>-<n>. Scored by
+#                   headsTesterReadsNoCI: the tester records k1 and neither reads CI nor waits.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -2107,9 +2113,9 @@ pr_line() {
 # reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
 # k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line k2 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check=''
+  local scenario=$1 scenario_case=${2:-} pr head line k2 k3 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check=''
   case $scenario_case in ci-check-fail | ci-check-fail-other-head) ci_check=$scenario_case ;; esac
-  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:*) prs=(702) ;; esac
+  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:* | tester-reads-no-ci:*) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
     head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
@@ -2124,6 +2130,12 @@ heads_routes() {
       k2=$(pr_line k2 "$pr")
       line="${line:-- Check k1 (before_merge): not yet run}
 ${k2:-- Check k2 (before_merge): not yet run}"
+    fi
+    # k3, the check a CI job runs in the tester's world, has the line its job's state gives it.
+    if [ "$scenario" = tester-reads-no-ci ]; then
+      k3=$(pr_line k3 "$pr")
+      line="$line
+${k3:-- Check k3 (before_merge): not yet run}"
     fi
     case $pr in
     702)
@@ -2179,6 +2191,12 @@ ${line:-- Check k1 (before_merge): not yet run}
     case $ci_check:$pr in
     ci-check-fail:702 | ci-check-fail-other-head:703) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
     ci-check-fail-other-head:702) named=$(jq -c '[.ciJobs["ci-check-pass"]]' "$here/rig-world.json") ;;
+    esac
+    # k3's job in the tester's world: still going at #702's head in ci-late, failed there with its
+    # log in ci-red.
+    case $scenario:$scenario_case:$pr in
+    tester-reads-no-ci:ci-late:702) named=$(jq -c '[.ciJobs["ci-late"]]' "$here/rig-world.json") ;;
+    tester-reads-no-ci:ci-red:702) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
     esac
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
       --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
@@ -2280,7 +2298,7 @@ hide_state_off() {
 # cmd_batch refuses any other scenario, and heads_cases any catalog row that names one.
 rig_scenario() {
   case $1 in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail | tester-reads-no-ci) ;;
   *) return 1 ;;
   esac
 }
@@ -2436,8 +2454,24 @@ run_ci_pass_and_fail() {
   [ "$role" != tester ] || seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# tester-reads-no-ci: the tester, started on the implementer's completion (tester_prompt), tests
+# #702, at whose head k1 has no ci_check and k3's CI job is still going (ci-late) or has failed
+# (ci-red), and its records are read back afterwards (seed.ts capture-handoffs). Scored by
+# headsTesterReadsNoCI.
+run_tester_reads_no_ci() {
+  local index=$1 start=$2 scenario_case=$3
+  heads_world tester-reads-no-ci "$index" "$start" "$scenario_case"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes tester-reads-no-ci "$scenario_case"
+  tester_prompt 702 "$(jq -r '."702"' "$R/heads.json")"
+  hide_state_on
+  legion_session tester
+  hide_state_off
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]" cases askgate
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|tester-reads-no-ci> <label> <n> <index> <start> [<case>]" cases askgate
   # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
   heads_cases "${1:-}"
   [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
@@ -2494,6 +2528,7 @@ cmd_run() {
   reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" "$scenario_case" ;;
   architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" "$scenario_case" ;;
   ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
+  tester-reads-no-ci) run_tester_reads_no_ci "$index" "$start" "$scenario_case" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
@@ -2518,7 +2553,7 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|tester-reads-no-ci> <runs> <label>..."
   local runs=$2 label n index=0 start scenario_case cases askgate
   batch_scenario=$1
   rig_scenario "$batch_scenario" || fail "unknown scenario $batch_scenario"
