@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -350,4 +351,196 @@ func TestAWithheldDestinationIsRecordedNowhereAReaderSees(t *testing.T) {
 			t.Fatalf("a copy %s took, which sees TT: destinations %v, answers %d; want its topic and the comment", session, destinations, len(items))
 		}
 	}
+}
+
+// TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList holds every outbox read of a
+// session's sight to the listener record as the listener answers now (readSight,
+// Deps.ListenerRefresh). The stored record has expired; it lists TT for session-listed and
+// role-holder, both tied to nobody, and PUB alone for session-member, the session of a full member
+// TT's access list names. While TT is private every verdict depends on a list, so each reader runs
+// the refresh first. Each row runs once with a refresh that renews the record, after which the
+// sessions whose list names TT are sent TT's event and session-member is not, and once with a
+// refresh that leaves the record expired, as a listener that does not answer does, after which
+// nothing is sent on a list the read could not judge: the batch's event backs off, the role
+// forward is held and its event backs off, the fallback row counts an attempt and stays held, and
+// the handover answers the error. Last, with TT public and its member full, no verdict depends on
+// a list: the event reaches both sessions in the same pass, and the refresh, which would fail, is
+// never run.
+func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) {
+	const (
+		member  = "member@example.com"
+		listed  = "session-listed"
+		claimer = "session-member"
+		record  = `[{"session_id":"session-listed","projects":["TT"]},{"session_id":"session-member","projects":["PUB"]},{"session_id":"role-holder","projects":["TT"]}]`
+	)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	// seed stands up T-1 of TT, routed to route, TT private unless public, the full member on TT's
+	// list and tied to session-member, and the listener record, expired a minute ago.
+	seed := func(t *testing.T, route *string, public bool) *store.Store {
+		t.Helper()
+		database := storetest.Open(t)
+		seedIssue(t, database, "T-1", route)
+		tieSession(t, database, claimer, member)
+		visibility := "private"
+		if public {
+			visibility = "public"
+		}
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`update projects set visibility = $1 where key = 'TT'`, []any{visibility}},
+			{`insert into people (email, member_kind) values ($1, 'full')`, []any{member}},
+			{`insert into project_access (project_key, principal_kind, principal, added_by) values ('TT', 'person', $1, '{"kind":"user","id":"alice"}')`, []any{member}},
+			{`insert into route_roster (answered, sessions, sent_at, expires_at) values (true, $1, now() - interval '1 hour', now() - interval '1 minute')`, []any{record}},
+		} {
+			if _, err := database.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+				t.Fatalf("seed %q: %v", statement.sql, err)
+			}
+		}
+		return database
+	}
+	// comment writes a comment of alice's on T-1 and its event.
+	comment := func(t *testing.T, database *store.Store, broker *events.Broker) (string, model.Event) {
+		t.Helper()
+		commentID := seedComment(t, database, "T-1", alice, "Is the order right?", nil)
+		return commentID, appendEvent(t, database, broker, model.Event{
+			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Body: "Is the order right?"}},
+		})
+	}
+	// refresh is a bound refresh counting its runs, which renews the stored record when renews.
+	refresh := func(t *testing.T, database *store.Store, renews bool) (*ListenerRefresh, *atomic.Int32) {
+		runs, listener := &atomic.Int32{}, &ListenerRefresh{}
+		listener.Bind(func(ctx context.Context) {
+			runs.Add(1)
+			if !renews {
+				return
+			}
+			if _, err := database.Pool.Exec(ctx, `update route_roster set sent_at = now(), expires_at = now() + interval '1 hour'`); err != nil {
+				t.Errorf("renew the listener record: %v", err)
+			}
+		}, 3*time.Second)
+		return listener, runs
+	}
+	// settled reads whether event id was published, and whether it waits on a back-off.
+	settled := func(t *testing.T, database *store.Store, id int64) (published, backedOff bool) {
+		t.Helper()
+		if err := database.Pool.QueryRow(ctx, `select published_at is not null, next_attempt_at is not null from events where id = $1`,
+			id).Scan(&published, &backedOff); err != nil {
+			t.Fatalf("read event %d: %v", id, err)
+		}
+		return published, backedOff
+	}
+	route := "session:" + listed
+	for _, renews := range []bool{true, false} {
+		arm := "/a refresh that renews the record"
+		if !renews {
+			arm = "/a refresh that leaves the record expired"
+		}
+		t.Run("the batch's read"+arm, func(t *testing.T) {
+			database := seed(t, &route, false)
+			claimIssue(t, database, "T-1", model.Actor{Kind: "session", ID: claimer})
+			_, event := comment(t, database, events.NewBroker())
+			listener, runs := refresh(t, database, renews)
+			publisher := &recordingPublisher{}
+			deps := Deps{Store: database, Publisher: publisher, ListenerRefresh: listener}
+			if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+				t.Fatalf("scan batch: %v", err)
+			}
+			published, backedOff := settled(t, database, event.ID)
+			sentListed, sentMember := topicsNaming(publisher, listed), topicsNaming(publisher, claimer)
+			switch {
+			case renews && (len(sentListed) != 1 || len(sentMember) != 0 || !published):
+				t.Fatalf("after a refresh: %s sent %v, %s sent %v, published %v; want the listed session alone sent TT's event",
+					listed, sentListed, claimer, sentMember, published)
+			case !renews && (len(sentListed) != 0 || len(sentMember) != 0 || published || !backedOff):
+				t.Fatalf("with the record still expired: %s sent %v, %s sent %v, published %v, backed off %v; want neither sent and the event backed off",
+					listed, sentListed, claimer, sentMember, published, backedOff)
+			case runs.Load() == 0:
+				t.Fatalf("the batch judged an expired list with no refresh")
+			}
+		})
+		t.Run("a role forward's holder"+arm, func(t *testing.T) {
+			roleRoute := "role:reviewer"
+			database := seed(t, &roleRoute, false)
+			_, event := comment(t, database, events.NewBroker())
+			listener, runs := refresh(t, database, renews)
+			publisher := &recordingPublisher{}
+			deps := withHeldRoles(Deps{Store: database, Publisher: publisher, ListenerRefresh: listener})
+			if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+				t.Fatalf("scan batch: %v", err)
+			}
+			published, backedOff := settled(t, database, event.ID)
+			forwarded := topicsNaming(publisher, contracts.RoleTopicPrefix+"reviewer")
+			switch {
+			case renews && (len(forwarded) != 1 || !published):
+				t.Fatalf("after a refresh: forwarded %v, published %v; want %s forwarded TT's event", forwarded, published, roleHolder)
+			case !renews && (len(forwarded) != 0 || published || !backedOff):
+				t.Fatalf("with the record still expired: forwarded %v, published %v, backed off %v; want nothing forwarded and the event backed off",
+					forwarded, published, backedOff)
+			case runs.Load() == 0:
+				t.Fatalf("the role forward judged its holder by an expired list with no refresh")
+			}
+		})
+		t.Run("the fallback pass"+arm, func(t *testing.T) {
+			database := seed(t, nil, false)
+			broker := events.NewBroker()
+			commentID, event := comment(t, database, broker)
+			destination := contracts.LegacyAgentSubject(listed)
+			if _, err := database.Pool.Exec(ctx, `update events set published_at = now() where id = $1`, event.ID); err != nil {
+				t.Fatalf("publish the comment's event: %v", err)
+			}
+			if _, err := database.Pool.Exec(ctx, `
+				insert into comment_fallback_copies (comment_id, destination, event_id, session_id) values ($1, $2, $3, $4)
+			`, commentID, destination, event.ID, listed); err != nil {
+				t.Fatalf("hold the session's copy: %v", err)
+			}
+			listener, runs := refresh(t, database, renews)
+			publisher := &recordingPublisher{}
+			deps := Deps{Store: database, Publisher: publisher, Broker: broker, ListenerRefresh: listener}
+			publishFallbackCopies(ctx, deps, unfenced{}, holding(t, deps).instance)
+			row, sent := readHeldCopy(t, database, commentID, destination), topicsNaming(publisher, listed)
+			switch {
+			case renews && (!row.settled || !row.published || len(sent) != 1):
+				t.Fatalf("after a refresh the row is settled %v, published %v, sent to %v; want it published once", row.settled, row.published, sent)
+			case !renews && (row.settled || row.attempts == 0 || len(sent) != 0):
+				t.Fatalf("with the record still expired the row is settled %v after %d attempts, sent to %v; want it held, an attempt counted and nothing sent",
+					row.settled, row.attempts, sent)
+			case runs.Load() == 0:
+				t.Fatalf("the fallback pass judged an expired list with no refresh")
+			}
+		})
+		t.Run("the kept copy's handover"+arm, func(t *testing.T) {
+			database := seed(t, nil, false)
+			listener, runs := refresh(t, database, renews)
+			sees, err := holderSeesTheCopy(ctx, Deps{Store: database, ListenerRefresh: listener}, roleHolder,
+				contracts.Envelope{EventID: "dispatch-9", Payload: `{"project":"TT"}`})
+			switch {
+			case renews && (err != nil || !sees):
+				t.Fatalf("after a refresh %s sees TT's kept copy: %v, %v; want true", roleHolder, sees, err)
+			case !renews && (sees || !errors.Is(err, errListenerRecordExpired)):
+				t.Fatalf("with the record still expired %s sees TT's kept copy: %v, %v; want errListenerRecordExpired", roleHolder, sees, err)
+			case runs.Load() == 0:
+				t.Fatalf("the handover judged its holder by an expired list with no refresh")
+			}
+		})
+	}
+	t.Run("with every project public and each person a full member", func(t *testing.T) {
+		database := seed(t, &route, true)
+		claimIssue(t, database, "T-1", model.Actor{Kind: "session", ID: claimer})
+		_, event := comment(t, database, events.NewBroker())
+		listener, runs := refresh(t, database, false)
+		publisher := &recordingPublisher{}
+		deps := Deps{Store: database, Publisher: publisher, ListenerRefresh: listener}
+		if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+			t.Fatalf("scan batch: %v", err)
+		}
+		published, _ := settled(t, database, event.ID)
+		if sentListed, sentMember := topicsNaming(publisher, listed), topicsNaming(publisher, claimer); len(sentListed) != 1 || len(sentMember) != 1 || !published || runs.Load() != 0 {
+			t.Fatalf("with no private project: %s sent %v, %s sent %v, published %v, refreshed %d times; want both sent in the pass and no refresh",
+				listed, sentListed, claimer, sentMember, published, runs.Load())
+		}
+	})
 }

@@ -29,11 +29,12 @@ import (
 //   - The credential limit, read from the session's listener record (route_roster_session_projects,
 //     an answer that has not passed its expires_at, as SessionContentClause reads it): where that
 //     record lists the session's projects, the list covers the project as CredentialCovers says -
-//     a restricted member's credential covers what it lists, every other credential each public
-//     project and the private ones it lists. Where it lists none, a session tied to a person is
-//     bounded by that person's sight alone, as the content rule bounds what such a session read;
-//     a session tied to nobody is a credential of no person that lists none, which sees the public
-//     projects.
+//     a restricted member's list that names projects covers those alone, and every other list, a
+//     restricted member's empty one among them, each public project and the private ones it names,
+//     so a restricted member's empty list covers the public projects its person sees. Where it
+//     lists none, a session tied to a person is bounded by that person's sight alone, as the
+//     content rule bounds what such a session read; a session tied to nobody is a credential of no
+//     person that lists none, which sees the public projects.
 //
 // A restricted member's session is the outside session this exists for: its person sees only the
 // projects its access lists name, public ones included, and its credential only the one project
@@ -53,17 +54,35 @@ func SessionSeesProjectClause(sessionExpr, projectAlias string) string {
 			offset 0)
 		and case when jsonb_typeof(%[4]s -> %[1]s) = 'array'
 			then (%[4]s -> %[1]s) ? %[2]s.key
-				or (%[2]s.visibility = 'public' and not exists (
+				or (%[2]s.visibility = 'public' and ((%[4]s -> %[1]s) = '[]'::jsonb or not exists (
 					select 1 from session_owners tied
 					join people tied_person on tied_person.email = tied.login and tied_person.member_kind = 'restricted'
 					where tied.session_id = %[1]s
-					offset 0))
+					offset 0)))
 			else %[2]s.visibility = 'public'
 				or exists (select 1 from session_owners tied where tied.session_id = %[1]s offset 0)
 			end)`,
 		sessionExpr, projectAlias,
 		store.PersonSeesProjectSQL("tied.login", "coalesce(tied_person.member_kind, 'full')", projectAlias),
 		listed))
+}
+
+// SightListSQL is two boolean columns of a select, for the sessions of the text array sessionsExpr
+// over the projects of the text array projectsExpr. The first is whether a verdict of
+// SessionSeesProjectClause can depend on a listener list: a project is private, or a session is
+// tied to a restricted member, the two cases where the clause answers otherwise with a list than
+// without one. The second is whether the stored listener record (route_roster) holds an answer
+// with more than leftExpr seconds of its life left; a silence the API stored for a listener that
+// did not answer lists no session, so it is no answer. The clause reads a record past its
+// expires_at as no list at all, so a reader whose verdict depends on a list refreshes a record
+// that is not fresh before it judges (the outbox's readSight, the api's withheldFromSession).
+func SightListSQL(sessionsExpr, projectsExpr, leftExpr string) string {
+	return fmt.Sprintf(`exists (select 1 from projects where key = any(%[2]s) and visibility = 'private')
+		or exists (select 1 from session_owners tied
+			join people tied_person on tied_person.email = tied.login and tied_person.member_kind = 'restricted'
+			where tied.session_id = any(%[1]s)),
+		coalesce((select answered and expires_at > now() + make_interval(secs => %[3]s) from route_roster), false)`,
+		sessionsExpr, projectsExpr, leftExpr)
 }
 
 // RowsQuerier is the one read SessionsSeeProjects makes: a pool, a transaction, or a reader that

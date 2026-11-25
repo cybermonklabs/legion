@@ -8,6 +8,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,10 +59,12 @@ type lookup interface {
 // batch reads in the same statements as mentions and leaves out of its readings
 // (lookups.editOnly). sessions and projects are the sessions the routes named and the projects
 // the events are judged against, whose sight the batch reads (loadSessionSight); sees answers
-// every session seen, so the first pass adds every destination the second may.
+// every session seen, so the first pass adds every destination the second may. listener is what
+// that read refreshes the stored listener record through first (Deps.ListenerRefresh, readSight).
 type wanted struct {
 	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
 	sessions, projects                                                           map[string]struct{}
+	listener                                                                     *ListenerRefresh
 }
 
 func newWanted() *wanted {
@@ -140,7 +144,8 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // which the column it is read from refuses (validIDs; a thread's is not failed but has no entry),
 // or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
 // with the error the event's destinations then report. sight is, for each project read, the
-// sessions that see it, of the sessions read (sightSessions, sightProjects: loadSessionSight).
+// sessions that see it, of the sessions read (sightSessions, sightProjects: loadSessionSight), and
+// sightUnread why the batch read no sight at all (errListenerRecordExpired), nil when it read it.
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
@@ -156,6 +161,7 @@ type lookups struct {
 	sight         map[string]map[string]bool
 	sightSessions map[string]struct{}
 	sightProjects map[string]struct{}
+	sightUnread   error
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -234,8 +240,11 @@ func (l *lookups) judgedBy(string) {}
 func (l *lookups) sees(sessionID, project string) (bool, error) {
 	_, session := l.sightSessions[sessionID]
 	_, judged := l.sightProjects[project]
-	if !session || !judged {
+	switch {
+	case !session || !judged:
 		return false, fmt.Errorf("the batch read no sight of session %s for project %s", sessionID, project)
+	case l.sightUnread != nil:
+		return false, fmt.Errorf("the batch read no sight of session %s for project %s: %w", sessionID, project, l.sightUnread)
 	}
 	return l.sight[project][sessionID], nil
 }
@@ -308,9 +317,10 @@ type queryer interface {
 // copies that own a destination of one (loadMentionDeliveries, two statements), comment recipients
 // (loadCommentRecipients), primary document authors (loadPrimaryDocumentAuthors), and, last, the
 // sight of every session the routes named or those reads answered for every project the events
-// are judged against (loadSessionSight). Each read is the per-id read the outbox made before, over
-// a set of ids: the same rows, in the same order for each id. Every kind but the issues' and the
-// sight's is a uuid, read and answered in its canonical form
+// are judged against (loadSessionSight), which with a listener refresh (wanted.listener) first
+// reads the listener record, and reads it again after a refresh (readSight). Each read is the
+// per-id read the outbox made before, over a set of ids: the same rows, in the same order for each
+// id. Every kind but the issues' and the sight's is a uuid, read and answered in its canonical form
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
 // whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
 // reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
@@ -371,25 +381,114 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	return found, nil
 }
 
-// loadSessionSight reads, in one statement, which of the sessions the batch's routes named
-// (wanted.sessions) and its reads answered (lookups.answeredSessions) see which of the projects its
-// events are judged against (wanted.projects), by the access package's rule
-// (access.SessionsSeeProjects), and records what it read (lookups.sight). A batch whose events name
-// no project, or no session, reads nothing.
+// loadSessionSight reads, in one statement after the listener record's, which of the sessions the
+// batch's routes named (wanted.sessions) and its reads answered (lookups.answeredSessions) see which
+// of the projects its events are judged against (wanted.projects), by the access package's rule
+// (readSight), and records what it read (lookups.sight). A batch whose events name no project, or
+// no session, reads nothing. A listener record that stays expired where a verdict depends on a
+// list fails no read: the batch reads no sight (lookups.sightUnread), so every copy it would judge
+// is withheld and its event backs off (destinations.withheld), and nothing is sent or withheld on
+// a list it could not read.
 func loadSessionSight(ctx context.Context, db queryer, want *wanted, found *lookups) error {
 	sessions := found.answeredSessions()
 	maps.Copy(sessions, want.sessions)
 	found.sightSessions, found.sightProjects = sessions, want.projects
-	if len(sessions) == 0 || len(want.projects) == 0 {
-		found.sight = map[string]map[string]bool{}
+	sight, err := readSight(ctx, db, want.listener, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(want.projects)))
+	if errors.Is(err, errListenerRecordExpired) {
+		found.sight, found.sightUnread = map[string]map[string]bool{}, err
 		return nil
 	}
-	sight, err := access.SessionsSeeProjects(ctx, db, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(want.projects)))
 	if err != nil {
 		return err
 	}
 	found.sight = sight
 	return nil
+}
+
+// ListenerRefresh is the API's refresh of the stored listener record (route_roster), which every
+// outbox read of a session's sight asks before it judges a list of a record that has expired
+// (readSight), as the API's readers refresh the record before the session content rule reads it.
+// cmd/dispatch builds the outbox before it registers the API, so it gives the outbox an empty one
+// and binds the API's refresh into it once the API is registered (Bind). Until then it refreshes
+// nothing, and a read whose verdict depends on a list of an expired record fails as when the
+// listener does not answer.
+type ListenerRefresh struct {
+	bound atomic.Pointer[boundRefresh]
+}
+
+// boundRefresh is what Bind sets: the refresh, and the life the stored record must have left for a
+// read to judge by it without asking.
+type boundRefresh struct {
+	refresh func(context.Context)
+	margin  time.Duration
+}
+
+// Bind sets refresh, which asks the listener again and stores its answer for every process, and
+// margin, the life the stored record must have left for the outbox to take it without asking: the
+// API's own (api.Background's RefreshListenerRecord and ListenerRecordMargin).
+func (l *ListenerRefresh) Bind(refresh func(context.Context), margin time.Duration) {
+	l.bound.Store(&boundRefresh{refresh: refresh, margin: margin})
+}
+
+// errListenerRecordExpired is a sight not read because a verdict of it depends on a listener list
+// and the stored listener record holds no answer that has not expired, even once the listener was
+// asked again (readSight).
+var errListenerRecordExpired = errors.New("the stored listener record has expired and asking the listener again did not renew it, so no session's list could be read")
+
+// listenerRecordQuery is readSight's read of the stored listener record, for the sessions $1 over
+// the projects $2 (access.SightListSQL): whether a verdict can depend on a listener list, and
+// whether the record holds an answer with more than $3 seconds of its life left.
+var listenerRecordQuery = `select ` + access.SightListSQL("$1::text[]", "$2::text[]", "$3::float8")
+
+// readSight is every outbox read of which of sessions see which of projects
+// (access.SessionsSeeProjects), after the stored listener record is asked again where it must be.
+// With listener set, where a verdict can depend on a list and the record has expired or has
+// listener's margin of its life or less left, it runs the refresh once and reads the record again;
+// a record that has still expired answers errListenerRecordExpired and no sight, which each caller
+// takes as a sight it could not read. Where no verdict depends on a list it asks nothing, and with
+// no listener, as this package's tests and a process with no API build Deps, it judges the record
+// as it stands.
+func readSight(ctx context.Context, db queryer, listener *ListenerRefresh, sessions, projects []string) (map[string]map[string]bool, error) {
+	if len(sessions) == 0 || len(projects) == 0 {
+		return map[string]map[string]bool{}, nil
+	}
+	if listener != nil {
+		bound := listener.bound.Load()
+		var margin time.Duration
+		if bound != nil {
+			margin = bound.margin
+		}
+		depends, fresh, err := readListenerRecord(ctx, db, sessions, projects, margin)
+		if err != nil {
+			return nil, err
+		}
+		if depends && !fresh {
+			if bound != nil {
+				bound.refresh(ctx)
+				_, fresh, err = readListenerRecord(ctx, db, sessions, projects, 0)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if !fresh {
+				return nil, errListenerRecordExpired
+			}
+		}
+	}
+	return access.SessionsSeeProjects(ctx, db, sessions, projects)
+}
+
+// readListenerRecord runs listenerRecordQuery: whether a verdict depends on a list, and whether the
+// stored record has more than left of its life left.
+func readListenerRecord(ctx context.Context, db queryer, sessions, projects []string, left time.Duration) (depends, fresh bool, err error) {
+	rows, err := db.Query(ctx, listenerRecordQuery, sessions, projects, left.Seconds())
+	if err == nil {
+		_, err = pgx.ForEachRow(rows, []any{&depends, &fresh}, func() error { return nil })
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("read the listener record the sight is judged by: %w", err)
+	}
+	return depends, fresh, nil
 }
 
 // mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one

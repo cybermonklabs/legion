@@ -868,6 +868,11 @@ func main() {
 		"envoy_dispatch_outbox_role_forwards_held_total",
 		"Role forwards an event's holder resolution held pending with nothing sent, by the holder's state: unresponsive (the holder is past the live window), undated (nothing dates the holder) or unresolved (the role claim or the holder's session could not be read)",
 	)
+	// The outbox judges a session's sight by the stored listener record, which the API refreshes;
+	// the API is registered only below (routes.New), so the outbox is given this empty refresh now
+	// and the API's own is bound into it there. Until then, a read whose verdict depends on a list
+	// of an expired record backs off as when the listener does not answer (outbox.ListenerRefresh).
+	listenerRefresh := &outbox.ListenerRefresh{}
 	if natsClient != nil {
 		outboxPool, err := database.Pool.Outbox()
 		if err != nil {
@@ -888,6 +893,7 @@ func main() {
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
+			ListenerRefresh:  listenerRefresh,
 			Metrics:          met,
 		})
 		outboxStopped = make(chan struct{})
@@ -1211,6 +1217,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
+	listenerRefresh.Bind(background.RefreshListenerRecord, background.ListenerRecordMargin)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it

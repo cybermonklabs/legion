@@ -129,6 +129,37 @@ func TestASessionOfNoPrivateDeploymentSeesEveryProjectButAnOutsidersSessionDoesN
 	}
 }
 
+// TestARestrictedMembersEmptyListCoversThePublicProjectsItsPersonSees holds the credential limit
+// of a restricted member's session to CredentialCovers: bob, restricted, is on the access lists of
+// public PUB (here) and private PRIV, and not on public OPEN's. His session whose listener list is
+// empty sees PUB, and neither PRIV, which no list names, nor OPEN, which bob does not see (the
+// person limit); his session whose list names PRIV sees PRIV alone.
+func TestARestrictedMembersEmptyListCoversThePublicProjectsItsPersonSees(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, visibility) values ('OPEN', 'Open', 'olga@example.com', 'public');
+		insert into project_access (project_key, principal_kind, principal, added_by) values
+			('PUB', 'person', 'bob@other.example', '{"kind":"user","id":"olga@example.com"}');
+		insert into session_owners (session_id, login) values
+			('ses_bob_empty', 'bob@other.example'), ('ses_bob_priv', 'bob@other.example');
+		insert into route_roster (answered, sessions, sent_at, expires_at) values (true,
+			'[{"session_id":"ses_bob_empty","projects":[]},{"session_id":"ses_bob_priv","projects":["PRIV"]}]',
+			now(), now() + interval '1 hour');
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	sight, err := SessionsSeeProjects(ctx, database.Pool, []string{"ses_bob_empty", "ses_bob_priv"}, []string{"PUB", "PRIV", "OPEN"})
+	if err != nil {
+		t.Fatalf("SessionsSeeProjects: %v", err)
+	}
+	for session, want := range map[string][]bool{"ses_bob_empty": {true, false, false}, "ses_bob_priv": {false, true, false}} {
+		if got := []bool{sight["PUB"][session], sight["PRIV"][session], sight["OPEN"][session]}; !slices.Equal(got, want) {
+			t.Errorf("%s sees PUB, PRIV, OPEN = %v, want %v", session, got, want)
+		}
+	}
+}
+
 // TestTheSessionSightClauseAnswersTrueOrFalseNeverNull: a missing session, a missing project key and
 // a project of no visibility each answer a boolean, as the clause and as its negation, so a rule
 // written as "no destination the session may not see" fails closed
