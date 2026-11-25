@@ -245,18 +245,20 @@ const SYSTEM = `You edit text that AI agents wrote in Dispatch, an issue tracker
 (park, parks, parked, parking, and names that hold it, such as park_child or isParked) is being
 removed, because it hides what happened. Each use gets the words of its own meaning:
 
-- A status use: the word said that an issue, a tree, a plan, a branch of work or a release was set
-  aside in the issue tracker (moved to the backlog or the icebox, or kept out of the workflow).
-  This is its meaning wherever it speaks of such work, unless the paragraph shows one of the
-  meanings below. Write Dispatch's status words for it: "moved to backlog", "in backlog",
-  "in icebox", "in backlog or icebox", and where done or triage are meant too, "out of the
-  workflow". Never write "held", "on hold", "paused", "shelved", "set aside", "deferred",
-  "suspended" or any other word for a status use: only Dispatch's status words.
+- A status use: the word said that an issue, a tree, a plan, a branch of work, a release, or a
+  document or notes of such work was set aside in the issue tracker (moved to the backlog or the
+  icebox, or kept out of the workflow). This is its meaning wherever it speaks of anything of the
+  work in the tracker, unless the paragraph shows one of the meanings below. Write Dispatch's
+  status words for it: "moved to backlog", "in backlog", "in icebox", "in backlog or icebox", and
+  where done or triage are meant too, "out of the workflow". Never write "held", "held back",
+  "on hold", "paused", "pending", "shelved", "set aside", "deferred", "suspended" or any other
+  word for a status use: only Dispatch's status words.
 - A relaunch that the Legion daemon's wake pacing holds back is "delayed", never "backlog".
 - A launch that waits for the issue pod's start gate "waits for the pod".
 - A person's decision kept for a tree that does not run is a "kept decision".
-- For any other meaning, one that is no issue's status (a goroutine, a thread, a lock, a test
-  hook, a request), write what happens there: blocked, waits, paused, held, pending.
+- For a program's own things (a goroutine, a thread, a lock, a test hook, a request, a document
+  update that waits for the updates it needs), write what happens there: blocked, waits, paused,
+  held, pending.
 - A renamed code name gets its new name exactly, from the list of names you are given. A name
   that is not on the list stays as it is.
 

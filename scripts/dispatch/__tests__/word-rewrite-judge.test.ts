@@ -240,7 +240,7 @@ describe("the answer", () => {
     expect(prompt.user).toContain(`- at ${JUDGED[0]?.start}: "park"`);
   });
 
-  test("the prompt has a status use written in Dispatch's status words, and never held, on hold or paused", () => {
+  test("the prompt has a status use, of any work in the tracker and its documents and notes, written in Dispatch's status words and never held, held back or pending", () => {
     const { system } = buildPrompt(question());
     for (const words of [
       '"moved to backlog"',
@@ -252,8 +252,10 @@ describe("the answer", () => {
     }
     const flat = system.replace(/\s+/g, " ");
     expect(flat).toContain(
-      'Never write "held", "on hold", "paused", "shelved", "set aside", "deferred", "suspended" or any other word for a status use'
+      'Never write "held", "held back", "on hold", "paused", "pending", "shelved", "set aside", "deferred", "suspended" or any other word for a status use'
     );
-    expect(flat).toContain("an issue, a tree, a plan, a branch of work or a release");
+    expect(flat).toContain(
+      "an issue, a tree, a plan, a branch of work, a release, or a document or notes of such work"
+    );
   });
 });
