@@ -20,6 +20,7 @@ import type {
   IssueSummary,
   MessageRead,
 } from "@legion/contracts";
+import { joinUrl } from "@legion/contracts/url-join";
 import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
@@ -172,7 +173,7 @@ export class ProductionDispatch {
    * path and the query, never the server or the token. */
   async #get<T>(segments: readonly string[], query?: Record<string, string>): Promise<T> {
     const shown = describe(segments, query);
-    const url = new URL(`${this.#base}${shown}`);
+    const url = joinUrl(this.#base, shown);
     let last = "";
     for (let attempt = 1; attempt <= READ_TRIES; attempt++) {
       if (attempt > 1) await this.#sleep(backoffMs(attempt - 1));
