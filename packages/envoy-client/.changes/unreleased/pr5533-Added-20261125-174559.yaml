@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `dispatch steps` ends each line with four words: `set <model>` and `answered <counts>`. The
+  counts read `<model>=<calls>(<share>%)`, joined by commas, or `none`, `unknown` or `running`. A
+  missing set model prints `-`. `dispatch plans` ends each finished issue's line with
+  `on set model <n> off <n> unknown <n>`, and prints `-` for each against an older Dispatch.
+time: 2026-11-25T17:45:59Z
+custom:
+    Issue: pr5533

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  Dispatch stores and serves two new fields of a step record, `set_model` and `answers`. `answers`
+  lists each model that answered and its count: at most 16 entries, each count at least 1, and no
+  model twice. A write that breaks these rules is refused with 400 `STEP_INPUT` and writes
+  nothing. The plans read gains `set_model_steps`: how many of an issue's agent steps answered on
+  their set model, off it, or with counts unknown. Records written before this change read with no
+  set model and unknown counts.
+time: 2026-11-25T17:45:59Z
+custom:
+    Issue: pr5533
