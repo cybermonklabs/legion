@@ -103,11 +103,21 @@ func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
 	return newRoleRigWith(t, session.WithSessionTTL(maxAge))
 }
 
-// newRoleRigWith is a roleRig on a server of its own, its session registry opened with options.
+// keeperHeld is the keeper's period (bus.WithKeepInterval) of an outbox client on a stream a row
+// narrows by hand (roleRig.narrowAgentCapture, sessionOrderRig.refuse and
+// holdsBackASessionRouteTheStreamRefuses): an hour, longer than any row runs. The client owns the
+// stream, and each pass of its keeper adds back every subject of this binary's that the stream
+// lacks and that overlaps none the stream carries (bus.ConnectOwningStream), so a pass inside the
+// row lets the stream capture again what the row took off it, and a send the row needs
+// unacknowledged or refused is stored.
+const keeperHeld = time.Hour
+
+// newRoleRigWith is a roleRig on a server of its own, its session registry opened with options. Its
+// outbox client holds its keeper off (keeperHeld), so a row's narrowAgentCapture stands.
 func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *roleRig {
 	t.Helper()
 	_, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url})
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithKeepInterval(keeperHeld))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
@@ -393,7 +403,9 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // ends. A forward to any other holder is then stored nowhere, so nothing acknowledges it and
 // nothing else answers one: that is the shape a role forward goes unanswered in, and the batch
 // that sent it waits roleForwardAckTimeout. The holder's own subscription is handed the forward
-// all the same, over core NATS.
+// all the same, over core NATS. The narrowed list stands because the rig's client holds its keeper
+// off (keeperHeld): with no holder named, nothing left on the stream overlaps the agent subjects,
+// and the keeper would add them back.
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
 	js, err := r.conn.JetStream()

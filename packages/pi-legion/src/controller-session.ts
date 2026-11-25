@@ -4,6 +4,7 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -31,6 +32,10 @@ import {
 } from "./classify";
 import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
+
+/** The daemon API contract this build speaks, which the controller's registration states as
+ * `pluginContract` (`daemonContract`, read once as the module loads). */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 type PersistedTranscript = (
   context: CommandContext | SessionContext
@@ -332,7 +337,7 @@ export function createControllerSession(
         sessionId: sessionID,
         ompSessionFile: sessionFile,
         agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       })
       .catch((error: unknown) => {
         // A refusal that arrives after the session's stop began writes no line: the stop overtook

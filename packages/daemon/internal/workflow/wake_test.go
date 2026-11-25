@@ -220,6 +220,7 @@ func laterSettlement(head string, generation int64, failing ...string) intake.Pu
 // R2: a settlement on the head of the issue's pull request wakes the released phase worker whose
 // phase is open, and the woken role's task names the head and what the settlement came to.
 func TestACISettlementWakesTheReleasedPhaseWorker(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	rig.apply("settled", settlement("head1", "build"))
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "build")
@@ -229,6 +230,7 @@ func TestACISettlementWakesTheReleasedPhaseWorker(t *testing.T) {
 // wakes the pod at most once. The second settlement is of a later generation, so it applies and is
 // turned away by the role's open resume, not as the redelivery of the first.
 func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	rig.apply("settled", settlement("head1", "build"))
 	rig.apply("settled-again", laterSettlement("head1", 2))
@@ -250,6 +252,7 @@ func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 // the fence the record remembers for the head (classify.SettlementFor), so one that names fewer
 // checks than the newer one, or an older commit status, is stale as it is with the fence standing.
 func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
+	t.Parallel()
 	ofRun := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
 		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, Generation: generation,
 			Snapshot: fmt.Sprintf("%s-%d", head, generation), CheckRuns: []record.AttemptRun{{Name: "build", ID: id}}, Failing: failing}
@@ -375,6 +378,7 @@ func openResumes(t *testing.T, pool *pgxpool.Pool, role claim.Role) int {
 // above it, and a heal keyed on the release a wake pairs with would close it and queue a second
 // start row against R6's one task per wake.
 func TestAWakeTakesOverAResumeOfAPodSinceReleased(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wake func(rig wakeRig)
@@ -444,6 +448,7 @@ func TestAWakeTakesOverAResumeOfAPodSinceReleased(t *testing.T) {
 // with — that release is roleless, so the pairing passes over it and the resume's own pairing
 // release stays older than it for ever.
 func TestAWakeIsRefusedWhileThePodOfTheOpenResumeIsComingBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		seed func(rig wakeRig)
@@ -486,6 +491,7 @@ func TestAWakeIsRefusedWhileThePodOfTheOpenResumeIsComingBack(t *testing.T) {
 // R3: a message published to the role topic of a role of the pod wakes that role, whatever the
 // publish kept, and the woken role's task says a message was sent to its topic.
 func TestARoleMessageWakesTheReleasedRole(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	token := wakeToken(t, claim.RoleImplementer)
 	rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"})
@@ -495,6 +501,7 @@ func TestARoleMessageWakesTheReleasedRole(t *testing.T) {
 // R3: the same report delivered twice wakes the pod once; the mark is keyed on the listener's own
 // report id.
 func TestARoleMessageReportedTwiceWakesThePodOnce(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	token := wakeToken(t, claim.RoleImplementer)
 	fact := intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"}
@@ -506,6 +513,7 @@ func TestARoleMessageReportedTwiceWakesThePodOnce(t *testing.T) {
 // R3: a role message for a released sub-architect wakes the architect, which stays the message's
 // owner.
 func TestARoleMessageWakesAReleasedArchitect(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	token := wakeToken(t, claim.RoleArchitect)
 	rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"})
@@ -515,6 +523,7 @@ func TestARoleMessageWakesAReleasedArchitect(t *testing.T) {
 // R4: a message sent to the agent subject of a released session wakes the role that kept that
 // session, and the woken role's task names the session.
 func TestAnAgentMessageWakesTheReleasedSession(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-2"})
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeAgentMessage, "session-implementer", "sent to your session")
@@ -523,6 +532,7 @@ func TestAnAgentMessageWakesTheReleasedSession(t *testing.T) {
 // R4: a report naming a session no released claim of this daemon's project kept wakes nothing.
 // Every daemon consumes the subject, and only the one that owns the session acts.
 func TestAnAgentMessageForAnotherDaemonsSessionWakesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "somebody-elses-session", At: wakeAt, Report: "report-2"})
 	if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
@@ -532,6 +542,7 @@ func TestAnAgentMessageForAnotherDaemonsSessionWakesNothing(t *testing.T) {
 
 // R7: the listener's liveness report is recorded and wakes nothing.
 func TestAListenerReadyReportIsRecordedAndWakesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	rig.apply("ready", intake.ListenerWake{Kind: intake.ListenerWakeReady, At: wakeAt, Report: "report-3"})
 	if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
@@ -560,6 +571,7 @@ func armBackstop(t *testing.T, pool *pgxpool.Pool, role claim.Role, due time.Tim
 // R5: the backstop wakes the phase worker it was armed for, and its task says the backstop ran
 // out.
 func TestTheBackstopWakesThePhaseWorker(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
 	rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
@@ -569,6 +581,7 @@ func TestTheBackstopWakesThePhaseWorker(t *testing.T) {
 // R5: a backstop two passes read fires once. The row's conditional fire is what decides it, so
 // the second fact changes nothing even under a different event id.
 func TestABackstopReadTwiceFiresOnce(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
 	fact := intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer}
@@ -590,6 +603,7 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 // architect works and none for a phase no role works. Admitted and accepting are the two the
 // architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		p    phase.Phase
@@ -613,6 +627,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 // R8: a linger, a park and a close each take the issue out of the workflow or stop its tree, and
 // a wake of any kind then does nothing.
 func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	lingerUntil := wakeAt.Add(time.Hour)
 	for _, tc := range []struct {
 		name  string
@@ -647,6 +662,7 @@ func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
 // R8: an operator's suspend of a released claim re-stamps its suspension source, and a wake then
 // finds no released claim to act on.
 func TestAWakeDoesNothingOnceAnOperatorTookTheClaimOver(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "operator")
 	token := wakeToken(t, claim.RoleImplementer)
@@ -660,6 +676,7 @@ func TestAWakeDoesNothingOnceAnOperatorTookTheClaimOver(t *testing.T) {
 // R8: a daemon suspension — a linger, a park, a close or a hand-over — takes a released claim
 // over the same way, and a wake then does nothing either.
 func TestAWakeDoesNothingOnceTheDaemonTookTheClaimOver(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "daemon")
 	rig.apply("settled", settlement("head1", "build"))
@@ -685,6 +702,7 @@ func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {
 // recorded, and its start row names the wake's kind and the pause. A wake taken once the pause has
 // ended is an ordinary wake again.
 func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	ctx := context.Background()
 	if _, err := rig.pool.Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at)
@@ -738,6 +756,7 @@ func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *te
 // taken in between is the release's, which names no pause and pairs with the issue's newest
 // release.
 func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name      string
@@ -811,6 +830,7 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 // daemon's own settlement to the worker as a message somebody published to its topic. The
 // architect is told as before, since no settlement wakes it.
 func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		phase phase.Phase

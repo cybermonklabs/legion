@@ -816,7 +816,7 @@ func (p *idleRigRoleProcess) register(bootToken string) error {
 	var answer claim.RegisterResponse
 	if err := p.post(p.daemon+"/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: p.session, OmpSessionFile: sessionFile,
-		AgentID: "idle-rig-agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "idle-rig-agent", PluginContract: api.DaemonAPIVersion(),
 	}, &answer); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}

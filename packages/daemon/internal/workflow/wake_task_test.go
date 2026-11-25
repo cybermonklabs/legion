@@ -14,6 +14,7 @@ import (
 // R6: every wake's task names the wake, so the woken agent's first turn reads why its pod came
 // back without reading anything else.
 func TestWakeTaskNamesItsWake(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		kind, detail, want string
 	}{
@@ -36,6 +37,7 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 // unpushed work are as the session left them; the pod was never released. The lines about the
 // message that woke it stay.
 func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		kind, detail, want string
 	}{
@@ -255,6 +257,7 @@ func TestARetellRendersTheWakeAgainFromItsKindAndDetail(t *testing.T) {
 // that drops one fails and names it. The task says the same whether an idle release or a
 // project's pause stopped the session.
 func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
 		task := WakeTask(pods.WakeRoleMessage, "legion-LEGION-208-implementer", stop)
 		for _, clause := range []struct{ rule, want string }{

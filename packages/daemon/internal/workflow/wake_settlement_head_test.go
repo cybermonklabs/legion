@@ -50,6 +50,7 @@ func noWake(t *testing.T, rig wakeRig, what string) {
 // implementer with a task naming head0 the head, and the redelivery after the second release
 // wakes it a second time.
 func TestWakeOnSettlementOfAnOldHeadWakesNobody(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	for _, tc := range []struct {
 		name string
@@ -132,6 +133,7 @@ func TestWakeOnSettlementOfAnOldHeadWakesNobody(t *testing.T) {
 // Negative control: at ac57d598 the wake reads no head, so the settlement of head1 wakes the
 // implementer, and checks writes no drop line.
 func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	// priorHead is the head the record held before head0's synchronize arrived.
 	const priorHead = "head-prior"
