@@ -3740,7 +3740,7 @@ package api
 // agents start with the role <role>, and this release runs one agent that starts with each role
 // for an issue.` (`PLAN_REFUSED`), where a release before it refused every task that named a
 // role twice. The daemon keeps a phases row and a report for each step of a role
-// (store migration 20261125044726_phase_step_key), so the task of each later step names the
+// (store migration 20261125114500_phase_step_key), so the task of each later step names the
 // report of every step before it. `POST /legion/v1/handoff/complete` holds a completion to the
 // run whose entry it serves: it refuses the report of the same agent's other step of the role
 // with `HANDOFF_STALE_ENTRY`, and a completion of another agent of the role, once the task stands
