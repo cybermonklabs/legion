@@ -216,6 +216,9 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 		if final {
 			return Anchored{}, ErrAnchorMissing
 		}
+		if s.afterMarkMiss != nil {
+			s.afterMarkMiss(artifactID)
+		}
 
 		select {
 		case <-updates:

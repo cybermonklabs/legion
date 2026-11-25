@@ -237,6 +237,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
