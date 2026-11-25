@@ -303,50 +303,29 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // configured rename moves, read in a working directory whose remotes name no github.com
 // repository for it, runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); every
 // other call naming such an owner is routed and refused as with no R4. The rows that read no git
-// remote are ghroutetest.FailsClosedCalls, which `legion gh`'s tests also resolve through its keep
-// of gh's help; the rows below read the working directory's, or a bundle on disk.
+// remote are ghroutetest.FailsClosedCalls, read under savedGhHelp, and
+// ghroutetest.HBeforeTheCommandCalls, a -h before the command's name, read under gh 2.98.0's help
+// of every command, saved whole; `legion gh`'s tests also resolve both through its keep of gh's
+// help. The rows below read the working directory's, or a bundle on disk.
 func TestGhTargetOfFailsClosed(t *testing.T) {
-	for _, tc := range ghroutetest.FailsClosedCalls {
-		target, err := TargetOf(tc.Argv, tc.Env, tc.Help(savedGhHelp), noGitRepository, ghroutetest.OwnersOwnDirectories)
-		switch {
-		case tc.Err != "":
-			if err == nil || !strings.Contains(err.Error(), tc.Err) {
-				t.Errorf("TargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.Argv, tc.Env, target, err, tc.Err)
-			}
-		case err != nil || target.Owner != tc.Owner:
-			t.Errorf("TargetOf(%q, %v) = %+v, %v; want the owner %q", tc.Argv, tc.Env, target, err, tc.Owner)
-		}
-	}
-	// A -h before the command's name is refused but as the whole argv (the walk's -h case says
-	// why); `gh pr --help` is the way to ask. The rows read gh 2.98.0's help of every command,
-	// saved whole, which holds `gh status`, so the words of a -h row are gh's commands and the row
-	// is refused for its -h alone.
-	walked := savedGhHelpOf(t, "2.98.0")
-	const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
-	for _, tc := range []struct {
-		argv []string
-		err  string // a refusal containing this, and "" for a call that names no owner
+	walked := ghroutetest.HBeforeTheCommandCalls
+	for _, table := range []struct {
+		calls []ghroutetest.TargetCall
+		help  func([]string) (string, error)
 	}{
-		{argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, err: hBeforeTheCommand},
-		{argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, err: hBeforeTheCommand},
-		{argv: []string{"-h", "status", "repo", "create", "acme/x", "--public"}, err: hBeforeTheCommand},
-		{argv: []string{"auth", "-h", "status", "logout", "-h", "github.com"}, err: hBeforeTheCommand},
-		{argv: []string{"repo", "-h", "view", "create", "acme/x", "--public"}, err: hBeforeTheCommand},
-		{argv: []string{"-R", "acme/widgets", "-h", "pr", "view", "1"}, err: hBeforeTheCommand},
-		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}, err: hBeforeTheCommand},
-		{argv: []string{"-h", "status"}, err: hBeforeTheCommand},
-		{argv: []string{"-R", "acme/widgets", "-h"}, err: hBeforeTheCommand},
-		{argv: []string{"pr", "-h"}, err: hBeforeTheCommand},
-		{argv: []string{"-h"}},
+		{calls: ghroutetest.FailsClosedCalls, help: savedGhHelp},
+		{calls: walked.Calls, help: savedGhHelpOf(t, walked.Version)},
 	} {
-		target, err := TargetOf(tc.argv, nil, walked, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		switch {
-		case tc.err != "":
-			if err == nil || !strings.Contains(err.Error(), tc.err) {
-				t.Errorf("TargetOf(%q) = %+v, %v; want a refusal containing %q", tc.argv, target, err, tc.err)
+		for _, tc := range table.calls {
+			target, err := TargetOf(tc.Argv, tc.Env, tc.Help(table.help), noGitRepository, ghroutetest.OwnersOwnDirectories)
+			switch {
+			case tc.Err != "":
+				if err == nil || !strings.Contains(err.Error(), tc.Err) {
+					t.Errorf("TargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.Argv, tc.Env, target, err, tc.Err)
+				}
+			case err != nil || target.Owner != tc.Owner:
+				t.Errorf("TargetOf(%q, %v) = %+v, %v; want the owner %q", tc.Argv, tc.Env, target, err, tc.Owner)
 			}
-		case err != nil || target.Owner != "":
-			t.Errorf("TargetOf(%q) = %+v, %v; want no owner", tc.argv, target, err)
 		}
 	}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.

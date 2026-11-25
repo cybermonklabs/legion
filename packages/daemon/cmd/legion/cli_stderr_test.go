@@ -14,9 +14,9 @@ const stderrToken = "FAKEtok3nZQ9x"
 
 // What `legion gh` prints itself passes the URL rule on its way to stderr (newRoot). It refuses a
 // call in a checkout whose remotes name two owners and names each remote by its URL as `git
-// remote -v` lists it (ghRemote.what), and a remote's URL can carry a token, as a remote added
-// as https://x-access-token:<token>@github.com/... does: the refusal names that remote by its URL
-// with no credential, and holds no token.
+// remote -v` lists it (ghroute.Remote.what), and a remote's URL can carry a token, as a remote
+// added as https://x-access-token:<token>@github.com/... does: the refusal names that remote by
+// its URL with no credential, and holds no token.
 func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	stub, _ := visibilityReadGh(t, ":\n")

@@ -302,6 +302,37 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"auth", "status", "-h", "ghe.example.com"}, Err: "another host"},
 }
 
+// WalkedCalls is a resolver table whose rows read gh's help of every command as the gh release
+// Version prints it, saved whole (cmd/legion's testdata/gh-help-walk/<Version>, which each
+// package's savedGhHelpOf answers from), in place of the help SavedHelp answers from
+// testdata/gh-help. Each row is read under that help with its own Edits where it names any.
+type WalkedCalls struct {
+	Version string
+	Calls   []TargetCall
+}
+
+// hBeforeTheCommand is the refusal of a -h before the command's name.
+const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
+
+// HBeforeTheCommandCalls are the rows of ghroute's TestGhTargetOfFailsClosed with a -h before
+// the command's name, main's #4472: each is refused but as the whole argv (the walk's -h case
+// says why); `gh pr --help` is the way to ask. The rows read gh 2.98.0's help of every command,
+// saved whole, which holds `gh status`, so the words of a -h row are gh's commands and the row is
+// refused for its -h alone.
+var HBeforeTheCommandCalls = WalkedCalls{Version: "2.98.0", Calls: []TargetCall{
+	{Argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-h", "status", "repo", "create", "acme/x", "--public"}, Err: hBeforeTheCommand},
+	{Argv: []string{"auth", "-h", "status", "logout", "-h", "github.com"}, Err: hBeforeTheCommand},
+	{Argv: []string{"repo", "-h", "view", "create", "acme/x", "--public"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-R", "acme/widgets", "-h", "pr", "view", "1"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-h", "status"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-R", "acme/widgets", "-h"}, Err: hBeforeTheCommand},
+	{Argv: []string{"pr", "-h"}, Err: hBeforeTheCommand},
+	{Argv: []string{"-h"}},
+}}
+
 // OneRepositoryCalls are the rows of ghroute's TestGhTargetOfNamesTheOneRepositoryEverySelectorNames
 // that read no git remote: beside the owner, TargetOf reads the one repository every selector of
 // the command names, and none where they name two of the owner's or a selector names the owner

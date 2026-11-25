@@ -2078,9 +2078,18 @@ func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T)
 			t.Errorf("the guard's read ran with %s=%q, want the daemon's %q", name, values[name], value)
 		}
 	}
+	// The read's child gets the guard's whole environment, which carries the answer's own copy of
+	// the rule file as leakguard.RulesFileVar: that name holds the answer's copy and never the
+	// daemon's file, and every other kept-out name is absent.
 	for name, value := range keptOut {
-		if got, ok := values[name]; ok && got == value {
-			t.Errorf("the guard's read ran with the daemon's %s=%q", name, got)
+		got, ok := values[name]
+		switch {
+		case name == leakguard.RulesFileVar:
+			if got != f.answer.rules {
+				t.Errorf("the guard's read ran with %s=%q, want the answer's own rule file %q, never the daemon's %q", name, got, f.answer.rules, value)
+			}
+		case ok:
+			t.Errorf("the guard's read ran with %s=%q, a name of the daemon's that stays out", name, got)
 		}
 	}
 }

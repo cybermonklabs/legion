@@ -163,12 +163,21 @@ func TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp(t *testing.T) {
 // gh's own help decides it (ghTargetOfKept), as main's #4394 ran those tables: the target, the
 // refusal text and the files sent alike, a help gh refuses among them (an unknown command, a gh
 // alias's help), which is never kept and is read from gh again. Each row is read under its own
-// edits of gh's saved help.
+// edits of gh's saved help, and the rows of a -h before the command's name, as main's #4472 ran
+// them, under gh 2.98.0's help of every command, saved whole (ghroutetest.HBeforeTheCommandCalls).
 func TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp(t *testing.T) {
 	rows := 0
-	for _, calls := range [][]ghroutetest.TargetCall{ghroutetest.FailsClosedCalls, ghroutetest.OneRepositoryCalls} {
-		for _, tc := range calls {
-			ghTargetOfKept(t, tc.Argv, tc.Env, tc.Help(savedGhHelp), noGitRepository, ghroutetest.OwnersOwnDirectories)
+	walked := ghroutetest.HBeforeTheCommandCalls
+	for _, table := range []struct {
+		calls []ghroutetest.TargetCall
+		help  func([]string) (string, error)
+	}{
+		{calls: ghroutetest.FailsClosedCalls, help: savedGhHelp},
+		{calls: ghroutetest.OneRepositoryCalls, help: savedGhHelp},
+		{calls: walked.Calls, help: savedGhHelpOf(t, walked.Version)},
+	} {
+		for _, tc := range table.calls {
+			ghTargetOfKept(t, tc.Argv, tc.Env, tc.Help(table.help), noGitRepository, ghroutetest.OwnersOwnDirectories)
 			rows++
 		}
 	}
