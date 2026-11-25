@@ -3068,11 +3068,13 @@ The earlier release names none of the three tables and not the column, so this s
 #### Rolling back the release that starts a fix beside the other steps
 
 This release starts a task's first implementation step again as a fix, in a working copy of its own, when a check that a CI job runs fails at the task's head, while the other steps of the task go on.
-Its migration `20261123134547_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit` and `fix_check`, the columns `pending_task_deliveries.fix`, `fix_from` and `move_to`, and the column `workspace_bundles.fix_head`, the commit the fix's working copy stood on when a release saved the workspace's work.
-It also writes the outbox's kind check (`outbox_kind_check`) again, with `fix_job_read` added to the list of `20261119203047_design_news`.
-An earlier release names none of the two tables and none of the eight columns in a statement.
-It decodes a `notice`, a `controller_notice`, a `supervise` row and a `step_record` row strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and fails at every attempt a row that carries what it does not know.
-This release queues such rows: the `ci-failed` notice, a fix's start with `fix` and `fixFrom`, a start with `moveTo`, and a step record with `startCommit`, `endCommit` and `fixCheck`.
+Its migration `20261123134547_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit`, `fix_check`, `beside_fix` and `push_branch`, the columns `pending_task_deliveries.fix`, `fix_from`, `move_to` and `fix_branch`, and the column `workspace_bundles.fix_head`, the commit the fix's working copy stood on when a release saved the workspace's work.
+`task_fixes.pushed` holds, for each role, the head of that role's branch beside the fix that a push showed, and `step_starts.beside_fix` and `push_branch` the fix a step's start named and the branch beside it that step pushes to.
+It also writes the outbox's kind check (`outbox_kind_check`) again, with `fix_job_read`, `ci_news` and `beside_branches_delete` added to the list of `20261119203047_design_news`.
+An earlier release names none of the two tables and none of the twelve columns in a statement.
+It decodes a `notice`, a `controller_notice`, a `supervise` row, an `update_ask` row and a `step_record` row strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and fails at every attempt a row that carries what it does not know.
+This release queues such rows: the `ci-failed` notice, a fix's start with `fix`, `fixFrom` and `fixBranch`, a start with `moveTo`, an update round's ask with `branch`, `ownFix` and `fixReads`, and a step record with `startCommit`, `endCommit` and `fixCheck`.
+It also records the fix that owns a merge forward under `fix` on the pull request's `merge_forward` and on each landing in its `earlier`, which the earlier release does not know.
 It also writes two new reasons of a hold on `issues.hold_reason`: `fix`, an issue held while its fix runs, and `ci`, an issue held until each check a CI job runs passes at its head.
 
 At the rollback, with every daemon of the database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
@@ -3083,15 +3085,18 @@ Run the block once for each project: a later run drops nothing again, and delete
 begin;
 delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'ci-failed' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'fix_job_read';
+delete from outbox where kind in ('ci_news', 'beside_branches_delete');
+update outbox set payload = payload - 'branch' - 'ownFix' - 'fixReads' where kind = 'update_ask' and payload ?| array['branch', 'ownFix', 'fixReads'] and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and (payload ? 'fix' or payload ? 'fixFrom') and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'moveTo' where kind = 'supervise' and payload ? 'moveTo' and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'startCommit' - 'endCommit' - 'fixCheck' where kind = 'step_record' and payload ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
 update step_starts set record = record - 'startCommit' - 'endCommit' - 'fixCheck' where record ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
+update pull_requests set merge_forward = (merge_forward - 'fix') || case when jsonb_typeof(merge_forward->'earlier') = 'array' then jsonb_build_object('earlier', (select coalesce(jsonb_agg(landed - 'fix' order by at), '[]'::jsonb) from jsonb_array_elements(merge_forward->'earlier') with ordinality as earlier(landed, at))) else '{}'::jsonb end where (merge_forward ? 'fix' or jsonb_path_exists(merge_forward, '$.earlier[*].fix')) and split_part(issue, '-', 1) = '<PROJECT>';
 delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
-alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix;
+alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix, drop column if exists fix_branch;
 alter table workspace_bundles drop column if exists fix_head;
 update issues set hold_reason = null where hold_reason in ('fix', 'ci') and split_part(key, '-', 1) = '<PROJECT>';
-alter table step_starts drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
+alter table step_starts drop column if exists push_branch, drop column if exists beside_fix, drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
 drop table if exists ci_failures;
 drop table if exists task_fixes;
 alter table plan_tasks drop column if exists fixes_ci;
@@ -3102,9 +3107,10 @@ commit;
 ```
 
 The header of `20261123134547_fix_beside_steps.up.sql` carries this same block.
-The deletes and the updates of the outbox, and the update of `step_starts.record`, are owed to the earlier release.
+The deletes and the updates of the outbox, the update of `step_starts.record` and the update of `pull_requests.merge_forward` are owed to the earlier release.
 The record a step's start keeps is copied into a step record by the roll forward of a rollback below the release that records each step, so its three members go too.
-Two statements take the rows of every project, not only of `<PROJECT>`: the kind check the block sets back refuses a `fix_job_read` row of any project, and a pending delivery of a fix goes with the columns that name it.
+The update of the merge forward takes `fix` off the ask and off each earlier landing, and leaves every other member and the landings in their order.
+Three statements take the rows of every project, not only of `<PROJECT>`: the kind check the block sets back refuses a `fix_job_read`, a `ci_news` and a `beside_branches_delete` row of any project, and a pending delivery of a fix goes with the columns that name it.
 That delete reads the column through the row's JSON, so a later run, which finds the column dropped, deletes nothing.
 The drops and the deleted version row are owed to the roll-forward: its `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row), which creates the two tables again empty and adds the columns again at their defaults.
 
@@ -3114,7 +3120,17 @@ A deleted fix start, or a deleted pending delivery of a fix, is a fix that does 
 An issue whose `fix` or `ci` reason the way back cleared is a plain hold under the earlier release, and a retry of that release releases it without waiting for the fix or the checks.
 So read the CI checks at the head of its pull request before that retry, and move the issue back to its implementer where one fails.
 A saved workspace bundle keeps its work when the way back drops `workspace_bundles.fix_head`: the earlier release restores it without the fix's working copy, and the fix's commits are still in it.
+A deleted `ci_news` row is a report of CI runs or a prompt to read Dispatch that nobody gets; a step starts by reading Dispatch, so none is owed after the way back.
+A deleted `beside_branches_delete` row leaves its branches on GitHub, as the way back leaves every branch beside a fix.
 After the roll-forward, each task reads `fixes_ci` false, so a run that started before the rollback takes no fix, and its CI messages are as the earlier release sent them.
+
+The branches `legion-beside/<KEY>/<generation>/<task>/fix-<n>/<role>` on GitHub stay after the way back: no row of the earlier release deletes one.
+Each holds the commits a step pushed beside a fix, which the fix may not have taken yet, so a person reads each before deleting it.
+List them, for each repository the project works, with:
+
+```sh
+gh api --paginate repos/<owner>/<repo>/git/matching-refs/heads/legion-beside/<PROJECT>-
+```
 
 #### Rolling back below the release that trims an issue pod's volume
 

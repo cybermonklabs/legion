@@ -57,7 +57,9 @@
 -- takes moveTo off each other start, takes branch, ownFix and fixReads off each queued update ask,
 -- and takes the two commits and the check off each queued step record and off the record of each
 -- step's start, which the roll forward of a rollback below the release that records each step
--- copies into a step record. Three statements take the rows of every project: the release
+-- copies into a step record. It takes the fix that owns a merge forward off the pull request's
+-- record of it and off each earlier landing it keeps, and leaves every other member and each
+-- landing in its order. Three statements take the rows of every project: the release
 -- before's kind check, which the block sets back, refuses a fix_job_read, a ci_news and a
 -- beside_branches_delete row of any project, and a pending delivery of a fix goes with the columns
 -- that name it. That delete reads the column through the row's JSON, so a later run, which finds
@@ -80,6 +82,7 @@
 -- update outbox set payload = payload - 'moveTo' where kind = 'supervise' and payload ? 'moveTo' and split_part(issue, '-', 1) = '<PROJECT>';
 -- update outbox set payload = payload - 'startCommit' - 'endCommit' - 'fixCheck' where kind = 'step_record' and payload ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
 -- update step_starts set record = record - 'startCommit' - 'endCommit' - 'fixCheck' where record ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
+-- update pull_requests set merge_forward = (merge_forward - 'fix') || case when jsonb_typeof(merge_forward->'earlier') = 'array' then jsonb_build_object('earlier', (select coalesce(jsonb_agg(landed - 'fix' order by at), '[]'::jsonb) from jsonb_array_elements(merge_forward->'earlier') with ordinality as earlier(landed, at))) else '{}'::jsonb end where (merge_forward ? 'fix' or jsonb_path_exists(merge_forward, '$.earlier[*].fix')) and split_part(issue, '-', 1) = '<PROJECT>';
 -- delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
 -- alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix, drop column if exists fix_branch;
 -- alter table workspace_bundles drop column if exists fix_head;

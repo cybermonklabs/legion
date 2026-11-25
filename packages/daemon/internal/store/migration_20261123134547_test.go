@@ -414,9 +414,12 @@ func TestMigrationFixBesideStepsKeepsEachRowAndItsWayBack(t *testing.T) {
 		block := wayBackOf(t, fixBesideStepsVersion, fixBesideStepsRelease)
 		var kept []string
 		for _, line := range strings.Split(block, "\n") {
-			if !strings.Contains(line, "merge_forward") {
+			if !strings.HasPrefix(line, "update pull_requests set merge_forward") {
 				kept = append(kept, line)
 			}
+		}
+		if len(kept) == len(strings.Split(block, "\n")) {
+			t.Fatalf("the way back holds no update of the merge forward to take out:\n%s", block)
 		}
 		store := fixBesideStepsStore(t)
 		runFixBesideStepsWayBack(t, store, strings.Join(kept, "\n"))
