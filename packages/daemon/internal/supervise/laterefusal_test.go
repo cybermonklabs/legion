@@ -464,9 +464,10 @@ func TestAReplayedRefusalLeavesATaskThisConnectionReSent(t *testing.T) {
 	}
 }
 
-// A send's outcome can arrive after settle retired its task: the turn end's retire failed and
-// left the task held, and the next event's settle retires it. The acknowledgement then has no
-// task to mark, and it must record nothing rather than end the daemon.
+// A send's outcome can arrive after settle retired its task: the prompt's turn and its result were
+// decided before the send's acknowledgement (sending), the result's retire failed and left the task
+// held, and the next event's settle retires it. The acknowledgement then has no task to mark, and
+// it must record nothing rather than end the daemon.
 func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -476,12 +477,14 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := waitFor(t, "the send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
-		t.Fatal(err)
+	for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h.store.fail("RetireDelivery", errBoom)
-	if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: testToken}); err == nil {
-		t.Fatal("the turn end's retire succeeded, want it to fail and leave the task held")
+	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}); err == nil {
+		t.Fatal("the result's retire succeeded, want it to fail and leave the task held")
 	}
 	h.store.fail("RetireDelivery", nil)
 	if h.claim().Pending == nil {

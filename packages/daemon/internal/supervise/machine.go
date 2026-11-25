@@ -1886,12 +1886,21 @@ type Machine struct {
 	turnsEnded atomic.Uint64
 }
 
-// sending is the send in flight (startSend): its delivery id and generation. What its prompt
-// carries of news of the approved design is the pending delivery's own while the id is the
-// pending one's (startSend says why), so the send keeps no copy of it.
+// sending is the send in flight (startSend): its delivery id and generation, and whether its
+// prompt's result has come (resulted). What its prompt carries of news of the approved design is
+// the pending delivery's own while the id is the pending one's (startSend says why), so the send
+// keeps no copy of it.
+//
+// The send's outcome reaches the machine from the send's own goroutine, and the turn its prompt
+// starts, that turn's end and the prompt's result reach it from the stream's queue. Oh My Pi
+// writes the acknowledgement first, but the two goroutines hand the machine their events in
+// whatever order they are scheduled, so all three can be decided before the outcome. A result
+// decided first is the prompt's answer (promptResulted marks it here), and the outcome that
+// follows it ends the send and decides nothing (fenceOutcome).
 type sending struct {
 	id         string
 	generation uint64
+	resulted   bool
 }
 
 // awaitedPrompt is one prompt of the pending task that Oh My Pi acknowledged and has not yet
@@ -2988,13 +2997,17 @@ func timesADelivery(kind TimerKind) bool {
 // is one of those: that answer took the task back under a new id (takeBackPending), so the
 // acknowledgement adds no prompt to the ones the task waits on a result for (Machine.outstanding),
 // and the same answer recorded the claim working (recordBusyTurn), so nothing goes from here into
-// the turn it named: the task waits for that turn's end.
+// the turn it named: the task waits for that turn's end. So is the outcome of a send whose
+// prompt's result was decided first (sending.resulted): the result answered the prompt, and settled
+// the task where its turn was over (promptResulted), so an acknowledgement after it would wait on a
+// result that has come already, and with the task held, nothing would retire it.
 func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
+	resulted := own && m.send.resulted
 	if own {
 		m.send = nil
 	}
-	if generation == m.claim.Generation && pendingID(m.claim.Pending) == deliveryID {
+	if !resulted && generation == m.claim.Generation && pendingID(m.claim.Pending) == deliveryID {
 		return true, nil
 	}
 	if own {

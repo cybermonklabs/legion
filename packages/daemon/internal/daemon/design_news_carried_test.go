@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The cases here hold to one rule, the whole way from the fact to the told row: a confirmation
@@ -393,6 +394,75 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 	}
 	r.startTurn(reviewer)
 	r.wantTold("after the confirmation of the news sent again", pathRoot, record.AudienceHolder, 4, false)
+}
+
+// The reviewer's news task is sent, and Oh My Pi takes its prompt and runs its turn to its end,
+// but the reviewer's machine is handed that turn's start and end before the send's
+// acknowledgement: the stream's frames reach it on the stream's queue, and the acknowledgement on
+// the send's own goroutine, in whatever order the two are scheduled. The turn's start is taken for
+// the task's while the send is in flight, which confirms it, and its end retires nothing while
+// that send has had no answer. The prompt's result, decided after the acknowledgement or before
+// it, says the turn ran, which makes the credit of the news final: the reviewer took version 4
+// once, and the sweep queues no reconcile to tell it again. A task retired at that end has its
+// result dropped as stale and gives the news back, and the reviewer is told version 4 twice.
+func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		resultFirst bool
+	}{
+		{name: "the acknowledgement, then the result"},
+		{name: "the result, then the acknowledgement", resultFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
+			// The case holds the news task's send at the door while its turn starts and ends, so
+			// the send's own deadline is a hang guard here and no part of what the case reads.
+			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
+			r.told(pathRoot, record.AudienceHolder, 3)
+			r.told(pathRoot, record.AudienceArchitect, 4)
+			reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
+			gated := newGatedPrompt()
+			r.conns.Register(token, gated)
+			r.queueNewsTask(pathRoot)
+			news := testwait.Receive(t, "the send of the reviewer's news task", gated.entered)
+
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("the news task's turn starts: %v", err)
+			}
+			if held := reviewer.Claim().Pending; held == nil || held.ID != news || held.ConfirmedAt.IsZero() {
+				t.Fatalf("the reviewer holds %+v after its turn started, want the news task %s confirmed: its send is in flight", held, news)
+			}
+			if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+				t.Fatalf("the news task's turn ends: %v", err)
+			}
+			acknowledge := func() {
+				gated.release <- struct{}{}
+				reviewer.Wait()
+			}
+			result := func() {
+				if err := reviewer.Handle(r.ctx, supervise.StreamPromptResult{Claim: token, DeliveryID: news, AgentInvoked: true}); err != nil {
+					t.Fatalf("the news task's prompt reports that its turn ran: %v", err)
+				}
+			}
+			if tc.resultFirst {
+				result()
+				acknowledge()
+			} else {
+				acknowledge()
+				result()
+			}
+			reviewer.Wait()
+			if held := reviewer.Claim().Pending; held != nil {
+				t.Fatalf("the reviewer holds %+v after its news task's result and acknowledgement, want nothing", held)
+			}
+			r.wantTold("after the news task's result and acknowledgement", pathRoot, record.AudienceHolder, 4, false)
+			r.sweepNews()
+			if rows := r.held(ofKind(record.OutboxKindDesignChanges)); len(rows) != 0 {
+				t.Fatalf("the sweep queued %d reconciles of the tree's news, want none: the reviewer took version 4 once", len(rows))
+			}
+		})
+	}
 }
 
 // checksEvent applies a Dispatch event of the root's Verification document (pathChecks) through

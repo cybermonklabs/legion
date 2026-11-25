@@ -1586,7 +1586,16 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // the prompt it may find running carried. An acknowledgement the shim gave from its own record, for
 // a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
 // forwarded, since every send under one id carries the same news.
-func acked(m *Machine, ctx context.Context, _ Event) error {
+//
+// A task a turn has already confirmed is ackedInTurn's. The stream reported that turn's start and
+// its end before this acknowledgement, which reaches the machine on the send's own goroutine, so
+// the claim is ready or idle again holding the task (settle leaves it to the send's outcome,
+// sendAwaitsResult): the mark and the wait for a turn armed here would be for a turn that has run,
+// and that wait would take the task back at its bound (noTurn).
+func acked(m *Machine, ctx context.Context, ev Event) error {
+	if !m.claim.Pending.ConfirmedAt.IsZero() {
+		return ackedInTurn(m, ctx, ev)
+	}
 	m.helloDuringSend = false
 	p := m.claim.Pending
 	m.awaitResult(p.ID, p.News)
@@ -1599,10 +1608,10 @@ func acked(m *Machine, ctx context.Context, _ Event) error {
 // ackedInTurn is the acknowledgement of a prompt whose turn the stream reported first: Oh My Pi's
 // agent_start can land before the answer to the prompt that caused it, and that start has already
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
-// and it has started — but the prompt itself is still outstanding, and which of the turns that
-// follow is its own is still a question only its result answers, so it is recorded here too, with
-// the news it carried. The copy the confirmation credits stays as that confirmation fixed it
-// (turnAnswers). Nothing else moves, and nothing is written.
+// and it has started, and it may have ended too (acked) — but the prompt itself is still
+// outstanding, and which of the turns that follow is its own is still a question only its result
+// answers, so it is recorded here too, with the news it carried. The copy the confirmation credits
+// stays as that confirmation fixed it (turnAnswers). Nothing else moves, and nothing is written.
 func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
@@ -2163,7 +2172,9 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
 // Pi's agent_end names no prompt and a role's own background result starts turns the daemon
-// never prompted.
+// never prompted. Nor does one that ends while the send of that prompt is still in flight with no
+// result (sendAwaitsResult), since the stream can hand the machine a turn's end before the send's
+// acknowledgement (sending).
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs here, before the queued task's
 // send: the claim's process speaks a plugin contract that cannot answer an update round, so it is
@@ -2263,10 +2274,11 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.settle(ctx); err != nil {
 		return err
 	}
-	if m.resultPending() {
+	if m.resultPending() || m.sendAwaitsResult() {
 		// Oh My Pi has not said yet which turn this prompt's was, so settle retired nothing and
 		// the task is still in the worker's hands. What is held for the turn runs from the
-		// result instead (promptResulted), which is where this turn is over for it.
+		// result instead (promptResulted), which is where this turn is over for it; a send
+		// refused instead leaves the task to go again as refused says.
 		return nil
 	}
 	return m.afterTurn(ctx)
@@ -2368,6 +2380,12 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id with
 // no prompt of it outstanding — is fenced out before this runs (fence).
 //
+// A result can be decided before the outcome of the send whose prompt it answers: the stream's
+// queue handed the machine the prompt's turn and its result first (sending). The result is that
+// send's answer, so it marks the send (sending.resulted): the task's turn, already ended, is over
+// for it here as for a prompt acknowledged first (settle, sendAwaitsResult), and the outcome that
+// follows decides nothing (fenceOutcome).
+//
 // A turn that ended in a provider error does not retire its task (providerErrored): the work is
 // still owed, and the daemon owes the worker another prompt of it rather than an idle claim
 // (dispatch://INFRA-956 R2). A turn that ended with no error is the one that clears the claim's
@@ -2392,6 +2410,9 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // prompt this daemon did not see acknowledged, the copy the task holds.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
+	if m.send != nil && m.send.id == r.DeliveryID {
+		m.send.resulted = true
+	}
 	if !r.AgentInvoked {
 		busy := agentBusy(r.Error)
 		why := "acknowledged, and Oh My Pi ran no turn for it"

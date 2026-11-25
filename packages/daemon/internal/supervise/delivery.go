@@ -1764,6 +1764,15 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
+// Nor is a turn that ends while the send of the task's prompt is still in flight and that prompt
+// has had no result (sendAwaitsResult). A turn that starts then is taken for the task's
+// (turnAnswers), and its end can be decided before the send's acknowledgement, which reaches the
+// machine on the send's own goroutine (sending). A task retired at that end would have its
+// prompt's result dropped as stale (fence), and with it the final credit of the news the prompt
+// carried, which would then be owed and sent again, or the provider error that leaves the work
+// owed (providerErrored). The send's outcome and the prompt's result say which turn it was, as
+// they do for a prompt acknowledged first.
+//
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
 // suspension is different: the operator resumes this same claim, so its pending phase task waits
@@ -1781,7 +1790,7 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending()
+	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending() && !m.sendAwaitsResult()
 	suspended := m.claim.State == StateSuspended && p.Phase != "" && m.claim.SuspendedBy.RetiresPhaseTask()
 	if !turnOver && !suspended {
 		return nil
@@ -2107,6 +2116,14 @@ func (m *Machine) outstandingPrompt(id string) bool {
 
 // awaitsResult is whether any prompt of the pending task is still waiting on its result.
 func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
+
+// sendAwaitsResult is whether the send of the pending task's prompt is still in flight and that
+// prompt has had no result (sending.resulted): its outcome, and after an acknowledgement its
+// result, are still to come, and they are what say which turn was the prompt's (settle).
+func (m *Machine) sendAwaitsResult() bool {
+	p := m.claim.Pending
+	return p != nil && m.send != nil && m.send.id == p.ID && !m.send.resulted
+}
 
 // turnNews is the news of the approved design the first prompt of the pending task still
 // outstanding carried, nil where none is outstanding: the pinned Oh My Pi runs one admitted prompt
