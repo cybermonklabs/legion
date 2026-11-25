@@ -72,6 +72,9 @@ type MetadataIdentity struct {
 	// Audience is what the minted token's `aud` carries, which the broker checks against
 	// BROKER_GOOGLE_OIDC_AUDIENCE.
 	Audience string
+	// FromBroker is set where the audience is the Google exchange audience the broker answered
+	// (DetectMachineIdentity), not one MachineAudienceVar names.
+	FromBroker bool
 }
 
 // NewMetadataIdentity is the identity of a machine whose metadata server mints its token for
@@ -88,10 +91,25 @@ func (m *MetadataIdentity) Token(ctx context.Context) (string, string, error) {
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
-// Describe names the audience MachineAudienceVar sets (audienceText) and the variable that names
-// the metadata server.
+// Describe names the audience: the broker's (FromBroker) as such, or by MachineAudienceVar where
+// that setting chose it (audienceText); as written where it is a plain http(s) URL
+// (internal/redact's allow-list), since the audience is a value a person can paste a credential
+// into, and this text is in every trade's log line and error. It names the metadata server by
+// googleidentity.MetadataHostVar only while that variable is set: a Compute Engine VM's server is
+// at its own address.
 func (m *MetadataIdentity) Describe() string {
-	return "this machine's Google identity token for " + audienceText(m.Audience) + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	audience := audienceText(m.Audience)
+	if m.FromBroker {
+		audience = "the Google exchange audience the broker names"
+		if redact.Clean(m.Audience) {
+			audience = m.Audience
+		}
+	}
+	described := "this machine's Google identity token for " + audience
+	if os.Getenv(googleidentity.MetadataHostVar) != "" {
+		described += " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	}
+	return described
 }
 
 // audienceText names the audience MachineAudienceVar sets: as written when it is a plain http(s)
