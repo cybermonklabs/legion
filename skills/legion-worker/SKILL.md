@@ -117,7 +117,7 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 
-- A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
+- A check carrying `ci_check`, or a lane label: `skill://legion-worker/references/ci-checks.md`.
 
 - Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
 

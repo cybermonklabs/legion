@@ -45,6 +45,8 @@ A read GitHub refuses leaves the required set unknown: report it to the architec
 
 - A check the base does not require holds no approval: a red one is a finding if its log shows the change breaks something, else name it in the review body.
 
+- `ci-ok` passes over a job held back without its label: before you approve, read its `not run at this head` lines as `skill://legion-worker/references/ci-checks.md` says, with or without a `ci_check`.
+
 - The `checkRuns` of the issue's `mergeWait` counts only the runs a settlement applied: read GitHub before you act.
 
 ### A required item with no run at the head

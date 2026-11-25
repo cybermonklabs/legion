@@ -1,6 +1,6 @@
 # A check CI proves
 
-Read it when a check of the issue's Verification document carries `ci_check`, before you run, record, judge or write the line of any check.
+Read it when a check of the issue's Verification document carries `ci_check`, or a pull request needs a lane label (`full-ci`, `lane:<output>`), before you run, record, judge or write the line of any check.
 
 ## What it is
 
@@ -43,10 +43,12 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
-- A job the repository runs on a pull request only under the label `full-ci` or its own `lane:<output>` (on cybermonklabs/legion, the slow suites and the full browser lane) does not run without it.
+- A job held back on a pull request runs there only under the label `full-ci` or its own `lane:<output>`.
+  On cybermonklabs/legion that is any of the fifteen outputs `.github/ci-notes/ci.md`'s lane-label entry lists, `daemon_go_tests`, `envoy_go`, `pi_legion`, `test` and the full browser lane among them; when a run holds one back, the ci-ok summary lists it on a `not run at this head` line.
   The implementer adds the label, then pushes, or closes and reopens the pull request when there is nothing to push: a label on its own starts no run.
   Before asking for review, the implementer reads the ci-ok summary's `not run at this head` lines: a lane the pull request needs that is listed there means the label did not take, so push or reopen again.
   The label comes off once the run it was added for passes, unless a `ci_check` of the issue names such a job, which keeps it on.
+  The reviewer reads the same lines before approving, whether or not a check carries `ci_check`: a line listing a job that a `ci_check` names, or the one job that runs a test the change adds or edits, takes a request for changes naming the label and the push or reopen that runs it, not an approval on that `ci-ok`.
 
 ## A name that no run answers
 

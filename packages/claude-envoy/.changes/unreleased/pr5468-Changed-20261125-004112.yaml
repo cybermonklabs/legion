@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The worker skill says that a lane:<output> or full-ci label starts no run on its own: the implementer pushes or closes and reopens the pull request after adding it, reads the ci-ok summary''s `not run at this head` lines before asking for review, and takes the label off once the run it was added for passes.'
+body: 'The worker skill says that a lane:<output> or full-ci label starts no run on its own: the implementer pushes or closes and reopens the pull request after adding it, reads the ci-ok summary''s `not run at this head` lines before asking for review, and takes the label off once the run it was added for passes. The reviewer reads the same lines before approving and requests changes naming the label when a job a ci_check names, or the one job that runs a test the change adds or edits, is listed there. The architect''s design gate names lane:<output> beside full-ci.'
 time: 2026-11-25T00:41:12.435204625Z
 custom:
     Issue: pr5468
