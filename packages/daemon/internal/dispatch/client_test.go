@@ -742,9 +742,11 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	}
 }
 
-// TestTheBearerReachesNoOtherHostARedirectNames: the bearer goes on every request to Dispatch's own
-// host, a redirect there included, and on none to another host a redirect names, as when the
-// client set the header itself and Go's client dropped it on such a redirect.
+// TestTheBearerReachesNoOtherHostARedirectNames: through a client that follows redirects, the
+// transport puts the bearer on every request to Dispatch's own host, a redirect there included,
+// and on none to another host a redirect names, as when the client set the header itself and Go's
+// client dropped it on such a redirect. The Dispatch client follows neither redirect
+// (redirects.Refused): each read is refused by its status, and neither target is reached.
 func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
 	var mu sync.Mutex
 	presented := map[string]string{}
@@ -777,11 +779,13 @@ func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
 	}}
 	defer base.CloseIdleConnections()
 
-	client := New(server.URL, BearerTransport(dispatchToken, base))
+	follows := &http.Client{Transport: BearerTransport(dispatchToken, base)}
 	for _, key := range []string{"LEGION-12", "LEGION-13"} {
-		if _, err := client.GetIssue(context.Background(), key); err != nil {
+		response, err := follows.Get(server.URL + "/api/v1/issues/" + key)
+		if err != nil {
 			t.Fatalf("get %s through its redirect: %v", key, err)
 		}
+		_ = response.Body.Close()
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -790,6 +794,19 @@ func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
 	}
 	if got, reached := presented["other.example/api/v1/issues/LEGION-12"]; !reached || got != "" {
 		t.Fatalf("a redirect to another host was reached=%t with Authorization %q, want it reached with none", reached, got)
+	}
+	clear(presented)
+	mu.Unlock()
+
+	client := New(server.URL, BearerTransport(dispatchToken, base))
+	for _, key := range []string{"LEGION-12", "LEGION-13"} {
+		if _, err := client.GetIssue(context.Background(), key); err == nil {
+			t.Errorf("the Dispatch client read %s through its redirect, want the redirect refused", key)
+		}
+	}
+	mu.Lock()
+	if len(presented) != 0 {
+		t.Errorf("the Dispatch client reached %v through a redirect, want no target reached", presented)
 	}
 }
 
