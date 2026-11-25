@@ -161,8 +161,8 @@ func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 		t.Fatalf("event %d, one of whose copies is still owed a keep, has %d role.undelivered records, want none", one.ID, records)
 	}
 	rows := expiryRows(t, rig.database, one.ID, role)
-	if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryGone || rows[1].settled {
-		t.Fatalf("event %d's expiries are %+v, want attempt 1 passed over as gone and attempt 2 still owed", one.ID, rows)
+	if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryCarried || rows[1].settled {
+		t.Fatalf("event %d's expiries are %+v, want attempt 1 carried and attempt 2 still owed", one.ID, rows)
 	}
 	if after := keptLane(t, rig.client, role); len(after) != 2 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's two", role, len(after))
@@ -206,8 +206,8 @@ func TestAGoneCopyDoesNotEndAnEventItsSiblingDelivers(t *testing.T) {
 			if held {
 				want = expiryForwarded
 			}
-			if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryGone || rows[1].outcome == nil || *rows[1].outcome != want {
-				t.Fatalf("event %d's expiries are %+v, want attempt 1 passed over as gone and attempt 2 %s", event.ID, rows, want)
+			if len(rows) != 2 || rows[0].outcome == nil || *rows[0].outcome != expiryCarried || rows[1].outcome == nil || *rows[1].outcome != want {
+				t.Fatalf("event %d's expiries are %+v, want attempt 1 carried and attempt 2 %s", event.ID, rows, want)
 			}
 			if held {
 				if forward := handedNow(t, recv, "the sibling's forward"); forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {

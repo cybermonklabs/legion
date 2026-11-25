@@ -140,14 +140,21 @@ type Deps struct {
 	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
 	// need not wait a claim lease out; it is unexported, so no importer can.
 	heldCopyWarnAfter time.Duration
-	// clock is the time a role forward's acknowledgement is judged at (roleForward.forward,
-	// roles.ForwardStoredTooLate), and nil is time.Now, which is what cmd/dispatch runs. A test
-	// moves it past a forward's fence and acknowledgement window while the forward waits, which no
-	// test could otherwise wait out; it is unexported, so no importer can.
+	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
+	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
+	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves
+	// it past a forward's fence and acknowledgement window while the forward waits, which no test
+	// could otherwise wait out; it is unexported, so no importer can.
 	clock func() time.Time
-	// holdLocked, when set, runs inside an expiry record's transaction right after it locked the
-	// publisher hold's row (lockPublisherHold), and holds the record there until it returns. A
-	// test opens a takeover of the hold while a record holds that lock, which no test could time
+	// holdRead, when set, runs inside a holder transaction right after its first, unlocked read of
+	// the publisher hold found the hold this process's (inHolderTransaction), before the
+	// transaction writes anything. A test takes the hold over there, so the transaction's final
+	// lock (lockPublisherHold) must see the takeover and roll back; it is unexported, and nil in
+	// cmd/dispatch.
+	holdRead func()
+	// holdLocked, when set, runs inside a holder transaction right after it locked the publisher
+	// hold's row (lockPublisherHold), and holds the transaction there until it returns. A test
+	// opens a takeover of the hold while a transaction holds that lock, which no test could time
 	// otherwise; it is unexported, and nil in cmd/dispatch.
 	holdLocked func()
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox

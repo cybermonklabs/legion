@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -362,4 +364,236 @@ func lastMsgID(lane []bus.StoredMessage) string {
 		return ""
 	}
 	return lane[len(lane)-1].MsgID
+}
+
+// refusingKeeps is a publisher whose window refuses every keep on role's kept lane for good, as
+// NATS refuses a send however often it is sent (bus.ErrRefused), and passes every other send on.
+type refusingKeeps struct {
+	*bus.Client
+	role string
+}
+
+func (p refusingKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
+	return refusingKeepsWindow{Sender: p.Client.WindowUntil(deadline), role: p.role}
+}
+
+type refusingKeepsWindow struct {
+	bus.Sender
+	role string
+}
+
+func (w refusingKeepsWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	if subject == bus.KeptRoleSubject(w.role) {
+		return answered(fmt.Errorf("test window: %w", bus.ErrRefused))
+	}
+	return w.Sender.PublishStoredAsync(subject, item, msgID)
+}
+
+// An expired copy whose keep NATS refuses for good cannot be kept again, so its event ends as one
+// whose copy is gone does: its row settles undelivered and one role.undelivered record is appended,
+// with the reason expired, after the one keep that ended. Before this rule a refused keep was a
+// failed attempt, retried with backoff for good, and never reached its record.
+func TestARefusedKeepEndsItsEventRecordedUndelivered(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-keep-refused"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	holding(t, rig.deps()).scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 1 {
+		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
+	}
+	expire(t, rig.client, role, lane[0])
+
+	refusing := holding(t, rig.publisherOn(refusingKeeps{Client: rig.client, role: role}))
+	refusing.passKeptExpiries(ctx, unfenced{})
+
+	rows := expiryRows(t, rig.database, event.ID, role)
+	if len(rows) != 1 || !rows[0].settled || rows[0].outcome == nil || *rows[0].outcome != expiryUndelivered {
+		t.Fatalf("event %d's expiries are %+v, want its one settled undelivered", event.ID, rows)
+	}
+	records := undeliveredRecords(t, rig.database, "T-1")
+	if len(records) != 1 {
+		t.Fatalf("T-1 holds %d role.undelivered events, want one", len(records))
+	}
+	if record := records[0].Payload.(model.RoleUndeliveredEventPayload); record.Reason != model.RoleUndeliveredExpired || record.Keeps != 1 {
+		t.Fatalf("the record is %+v, want reason expired after 1 keep", record)
+	}
+}
+
+// A notice whose own attempt disagrees with the outbox's count - here it says 5 for the event's
+// first expiry - is recorded at the outbox's next attempt, 1, and the event is kept again. Before
+// this rule the notice's attempt decided the row, so this notice reached the bound at once.
+func TestTheOutboxsCountDecidesAnExpirysAttempt(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-attempt-count"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	outbox := holding(t, rig.deps())
+	outbox.scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+	notice := expiryNoticeOf(t, role, lane[0])
+	notice.Attempt = 5
+	if err := rig.client.PublishKeptCopyExpiry(ctx, notice); err != nil {
+		t.Fatalf("store the notice: %v", err)
+	}
+
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	rows := expiryRows(t, rig.database, event.ID, role)
+	if len(rows) != 1 || rows[0].attempt != 1 || rows[0].outcome == nil || *rows[0].outcome != expiryKept {
+		t.Fatalf("event %d's expiries are %+v, want attempt 1 kept again", event.ID, rows)
+	}
+	if records := undeliveredRecords(t, rig.database, "T-1"); len(records) != 0 {
+		t.Fatalf("T-1 holds %d role.undelivered events, want none after the first expiry", len(records))
+	}
+}
+
+// A notice that names no copy this outbox kept for its role is passed over, and only the cursor
+// moves past it: one for a role the event was never routed to, and one stored on another role's
+// expiry subject than its own role's. Before this rule both were recorded and kept again.
+func TestANoticeForACopyTheOutboxNeverKeptIsPassedOver(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role, other = "expiry-notice-routed", "expiry-notice-elsewhere"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	rig.silent(t, contracts.RoleTopicPrefix+other)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	outbox := holding(t, rig.deps())
+	outbox.scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+
+	unrouted := expiryNoticeOf(t, role, lane[0])
+	unrouted.Role = other
+	if err := rig.client.PublishKeptCopyExpiry(ctx, unrouted); err != nil {
+		t.Fatalf("store the notice for a role the event was never routed to: %v", err)
+	}
+	misfiled, err := json.Marshal(expiryNoticeOf(t, role, lane[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := rig.client.JS().Publish(bus.KeptExpiredSubject(other), misfiled)
+	if err != nil {
+		t.Fatalf("store the notice on another role's expiry subject: %v", err)
+	}
+
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	for _, r := range []string{role, other} {
+		if rows := expiryRows(t, rig.database, event.ID, r); len(rows) != 0 {
+			t.Fatalf("the outbox recorded %+v for role %s, want nothing", rows, r)
+		}
+	}
+	if cursor := expiryCursor(t, rig.database); cursor != int64(ack.Sequence) {
+		t.Fatalf("the expiry cursor is %d, want it at the misfiled notice's sequence %d, past both notices", cursor, ack.Sequence)
+	}
+	if lane := keptLane(t, rig.client, role); len(lane) != 1 {
+		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
+	}
+	if lane := keptLane(t, rig.client, other); len(lane) != 0 {
+		t.Fatalf("role %s's kept lane holds %d copies, want none", other, len(lane))
+	}
+}
+
+// A notice whose role is no role name (roles.Valid) is passed over, even when the event names that
+// role's topic among its destinations, so the routing check alone would take it, and when it was
+// stored on that role's own expiry subject: only the cursor moves past it. With the role check
+// taken away, the notice is recorded.
+func TestANoticeWhoseRoleIsNoRoleNameIsPassedOver(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role, invalid = "expiry-notice-valid", "Not-A-Role"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	outbox := holding(t, rig.deps())
+	outbox.scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+	if _, err := rig.database.Pool.Exec(ctx, `
+		update events set published_destinations = array_append(published_destinations, $2) where id = $1
+	`, event.ID, contracts.RoleTopicPrefix+invalid); err != nil {
+		t.Fatalf("name the invalid role's topic among event %d's destinations: %v", event.ID, err)
+	}
+	notice := expiryNoticeOf(t, role, lane[0])
+	notice.Role = invalid
+	if err := rig.client.PublishKeptCopyExpiry(ctx, notice); err != nil {
+		t.Fatalf("store the notice for role %s: %v", invalid, err)
+	}
+	stored, err := rig.client.NextStoredMessage(ctx, bus.KeptExpiredSubject(invalid), 1)
+	if err != nil {
+		t.Fatalf("read the notice back: %v", err)
+	}
+
+	outbox.passKeptExpiries(ctx, unfenced{})
+
+	if rows := expiryRows(t, rig.database, event.ID, invalid); len(rows) != 0 {
+		t.Fatalf("the outbox recorded %+v for role %s, want nothing", rows, invalid)
+	}
+	if cursor := expiryCursor(t, rig.database); cursor != int64(stored.Sequence) {
+		t.Fatalf("the expiry cursor is %d, want it at the notice's sequence %d", cursor, stored.Sequence)
+	}
+}
+
+// unavailableKeeps is a publisher whose window answers every keep on role's kept lane as NATS
+// unreachable (bus.ErrUnavailable), and passes every other send on.
+type unavailableKeeps struct {
+	*bus.Client
+	role string
+}
+
+func (p unavailableKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
+	return unavailableKeepsWindow{Sender: p.Client.WindowUntil(deadline), role: p.role}
+}
+
+type unavailableKeepsWindow struct {
+	bus.Sender
+	role string
+}
+
+func (w unavailableKeepsWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	if subject == bus.KeptRoleSubject(w.role) {
+		return answered(fmt.Errorf("test window: %w", bus.ErrUnavailable))
+	}
+	return w.Sender.PublishStoredAsync(subject, item, msgID)
+}
+
+// A keep of the expiry pass that finds NATS unavailable counts on the outbox's publish failures as
+// failed, and its row is released after retry.BaseDelay with no attempt counted: the outage is no
+// fault of the row. Before the shared send rule the expiry pass counted nothing for it.
+func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-keep-unavailable"
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	holding(t, rig.deps()).scan(ctx, unfenced{})
+	lane := keptLane(t, rig.client, role)
+	if len(lane) != 1 {
+		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
+	}
+	expire(t, rig.client, role, lane[0])
+	deps, registry := rig.countingDeps(t)
+	deps.Publisher = unavailableKeeps{Client: rig.client, role: role}
+
+	before := time.Now()
+	holding(t, deps).passKeptExpiries(ctx, unfenced{})
+	after := time.Now()
+
+	if body := failureReasons(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
+		t.Fatalf("/metrics body = %q, want the unavailable keep counted as failed once", body)
+	}
+	var attempts int
+	var settled bool
+	var due *time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select attempt_count, settled_at is not null, next_attempt_at from outbox_role_copy_expiries
+		where event_id = $1 and role = $2
+	`, event.ID, role).Scan(&attempts, &settled, &due); err != nil {
+		t.Fatalf("read event %d's expiry: %v", event.ID, err)
+	}
+	if attempts != 0 || settled || due == nil || due.Before(before.Add(retry.BaseDelay-time.Second)) || due.After(after.Add(retry.BaseDelay+time.Second)) {
+		t.Fatalf("event %d's expiry is attempts=%d settled=%v due=%v, want no attempt, unsettled, due retry.BaseDelay (%v) after the pass",
+			event.ID, attempts, settled, due, retry.BaseDelay)
+	}
 }

@@ -712,42 +712,41 @@ notification topic, so they receive it. No session's own set (`Session`, `Sessio
 read it: no consumer filter takes it, no session may register an interest reaching it, those sets
 hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
 `Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
-30 seconds, and after every scan,
-with the stored-message read it already holds (`readKeptExpiries`). It passes over a notice whose
-role is no valid role name, that was stored on another role's expiry subject, or whose event was
-never routed to that role. It records each other notice in `outbox_role_copy_expiries`, keyed by
-the event, the role and the attempt, which is the outbox's own next attempt for that pair (the
-notice's own attempt is logged), so a repeated notice reopens the event's delivery to that role
-once. A keep NATS refuses for good ends the pair as a gone copy does. It then keeps the
-event's copy again, read back
-from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or forwards
-it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else of the
-event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops and
-appends a `role.undelivered` event on the event's own issue, document or project, written by a
-system actor so it reaches no role, which a person reads in that owner's history. It also notes
-the event in `outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of
-the document a document event is about: the first such note of a role on an issue opens a
-one-hour window, every later note of that role there joins it, and once the hour has ended the
-outbox posts one message naming every event of the window, through the issue message route's own
-writer (`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route
-either. The window is kept in Postgres, and its message is written under an id derived from the
-issue, the role, the moment the window opened and the events it names. So a restart does not
-lose the window, and a post made again after a crash between the post and its mark writes no
-second message. A note joins only a window whose message is not posted yet. A long window's events
-go in several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message
-passes the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document
-kept from before the name bound can have, is named by the document's id and the reference's
-length instead. An event's delivery to a role ends the same way whether its last keep expired or
-no copy of it is left to keep: every expiry of it still owed a keep is settled, and its one
-`role.undelivered` record is appended, so nothing keeps it again. A copy the stream no longer
-holds ends nothing while another copy of the event carries its delivery on, that is, while
-another expiry of it is still owed a keep or was kept, forwarded or skipped after the gone one
-was recorded. Such a row is settled `gone`. Only the publisher hold's holder records a notice,
-claims an expiry or
-posts a window. Each record transaction reads the hold's row first and locks it for share only
-as its last statement before the commit, so a takeover of the hold waits for that commit and the
-new holder reads every write it made, while the hold's renewal never waits behind a record that
-is itself waiting on an issue's lock. An event of
+30 seconds, and after every scan, with the stored-message read it already holds
+(`readKeptExpiries`). It passes over a notice whose role is no valid role name, that was stored
+on another role's expiry subject, or whose event was never routed to that role. It records each
+other notice in `outbox_role_copy_expiries`, keyed by the event, the role and the attempt, which
+is the outbox's own next attempt for that pair (the notice's own attempt is logged), so a repeated
+notice reopens the event's delivery to that role once. It then keeps the event's copy again, read
+back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
+forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
+of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
+and appends a `role.undelivered` event on the event's own issue, document or project, written by
+a system actor so it reaches no role, which a person reads in that owner's history. It stops the
+same way, with fewer keeps, when a copy cannot be kept again: the stream no longer holds it, or
+NATS refused its keep or its forward for good. Such a copy ends nothing while another copy of the
+event carries its delivery on, that is, while another expiry of it is still owed a keep or was
+kept, forwarded or skipped after this one was recorded; its row is settled `carried`. Either way
+every expiry of the event still owed a keep is settled, and its one `role.undelivered` record is
+appended, so nothing keeps it again. The outbox also notes the event in
+`outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of the
+document a document event is about: the first such note of a role on an issue opens a one-hour
+window, every later note of that role there joins it, and once the hour has ended the outbox
+posts one message naming every event of the window, through the issue message route's own writer
+(`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route either.
+The window is kept in Postgres, and its message is written under an id derived from the issue,
+the role, the moment the window opened and the events it names. So a restart does not lose the
+window, and a post made again after a crash between the post and its mark writes no second
+message. A note joins only a window whose message is not posted yet. A long window's events go in
+several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message passes
+the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document kept
+from before the name bound can have, is named by the document's id and the reference's length
+instead. Only the publisher hold's holder records a notice, claims an expiry or posts a window.
+Each record is one holder transaction: it reads the hold's row first with no lock, and locks it
+for share only as its last statement before the commit, rolling back when the hold is no longer
+its own. So a takeover of the hold either lands before that lock and makes the record roll back,
+or waits for its commit, and the new holder reads every write it made; and the hold's renewal
+never waits behind a record that is itself waiting on an issue's lock. An event of
 no issue and
 of no issue's document never has a copy kept for a role, since the route is read from the issue
 alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
