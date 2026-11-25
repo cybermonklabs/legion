@@ -1010,7 +1010,10 @@ function Turn({
         </span>
         <EditedMark at={turn.editedAt} deleted={turn.deleted} marks={pageChrome} />
       </p>
-      <div className={WORDS}>
+      {/* Marked as a node's words, so `styles.css` keeps a wide table or line of code scrolling
+          sideways inside itself and gives the words the rhythm, links, chips and pictures of a
+          node's words elsewhere on the page. */}
+      <div className={WORDS} data-node-words="">
         {turn.deleted === null ? (
           <MarkdownBody
             markdown={turn.body}
