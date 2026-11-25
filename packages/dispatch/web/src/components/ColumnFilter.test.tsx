@@ -12,7 +12,7 @@ import { type ReactNode, useState } from "react";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { optionNames } from "../__tests__/list-picks";
-import { ColumnFilter } from "./ColumnFilter";
+import { ColumnFilter, type ColumnFilterProps } from "./ColumnFilter";
 import type { ControlSize } from "./control-names";
 import { useDataTable } from "./DataTable";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
@@ -59,7 +59,7 @@ function Funnels({
   open,
   size,
 }: {
-  counted?: boolean;
+  counted?: ColumnFilterProps<Deploy>["counted"];
   open?: string;
   size?: ControlSize;
 }): ReactNode {
@@ -138,6 +138,20 @@ test("a value filter whose counts nothing has counted yet draws no count beside 
     expect(regions()).toEqual(["eu", "us"]);
     view.rerender(<Funnels counted open="region" />);
     expect(regions()).toEqual(["eu, 1 deploy", "us, 1 deploy"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A filter some of whose values count a read that has not answered yet: each of those values is
+// drawn with no count beside it, never a 0, and every value whose count is counted draws it.
+test("a value filter draws a count beside each value it is told is counted, and none beside the rest", () => {
+  const view = render(<Funnels counted={(value) => value === "eu"} open="region" />);
+  try {
+    expect(optionNames(screen.getByRole("listbox", { name: "Region options" }))).toEqual([
+      "eu, 1 deploy",
+      "us",
+    ]);
   } finally {
     view.unmount();
   }

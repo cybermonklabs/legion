@@ -17,7 +17,7 @@ import { card, focusVisibleRing, textSecondaryOnCanvas } from "../theme/classes"
 import { AnchoredPanel } from "./AnchoredPanel";
 import { Chip } from "./Chip";
 import { type ControlRowScope, useControlRowKeys } from "./control-keys";
-import { CONTROL, type ControlSize, controlIn } from "./control-names";
+import { CONTROL, type ControlSize, controlIn, toolbarHeight } from "./control-names";
 import { ARM_ON_PRESS, landWhole, useFocusPlace } from "./focus-place";
 import { PANEL_FRAME } from "./PanelTrigger";
 
@@ -31,7 +31,7 @@ const CLEAR_FILTERS_CLASS = `min-h-11 shrink-0 rounded-lg px-2 text-xs font-medi
 const CLEAR_FILTERS: Record<ControlSize, string> = {
   comfortable: CLEAR_FILTERS_CLASS,
   compact: `${CLEAR_FILTERS_CLASS} md:min-h-8`,
-  toolbar: `${CLEAR_FILTERS_CLASS} xl:h-8.5 xl:min-h-0`,
+  toolbar: `${CLEAR_FILTERS_CLASS} ${toolbarHeight}`,
 };
 
 /** The panel `+N more` opens: a card over the page, as a filter panel is (`PANEL_FRAME`), that

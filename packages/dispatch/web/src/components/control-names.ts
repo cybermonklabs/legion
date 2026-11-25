@@ -34,14 +34,18 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
  *  priorities pages' toolbars (dispatch://INFRA-2947, R15). */
 export type ControlSize = "comfortable" | "compact" | "toolbar";
 
+/** The 34 px height a table toolbar's controls share from 1280 px up (dispatch://INFRA-2947, R15);
+ *  `xl:min-h-0` lifts each control's 44 px phone minimum there. */
+export const toolbarHeight = "xl:h-8.5 xl:min-h-0";
+
 /** 44 px: the touch target of the comfortable size. The compact size keeps that target wherever
  *  a finger is the pointer and gives it up only from `md`, where a mouse is. The toolbar size
  *  keeps the 44 px floor `styles.css` gives every control below 1280 px, and from 1280 px up
- *  stands at one height, 34 px, whatever its control holds; `xl:min-h-0` lifts its own 44 px
- *  minimum there. The font is each control's own: a chip reads at `text-xs` and a search box at
- *  `text-sm`, and a size that carried one would change every chip in the application. */
+ *  stands at one height, 34 px (`toolbarHeight`), whatever its control holds. The font is each
+ *  control's own: a chip reads at `text-xs` and a search box at `text-sm`, and a size that
+ *  carried one would change every chip in the application. */
 export const controlPadding: Record<ControlSize, string> = {
   comfortable: "min-h-11 px-3 py-2",
   compact: "min-h-11 px-2 py-1 md:min-h-8",
-  toolbar: "min-h-11 px-2 py-1 xl:h-8.5 xl:min-h-0",
+  toolbar: `min-h-11 px-2 py-1 ${toolbarHeight}`,
 };

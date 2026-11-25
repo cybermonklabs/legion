@@ -979,6 +979,43 @@ test("a press that takes away the row marked last, with the row now at its place
   }
 });
 
+for (const edge of ["bottom", "header"] as const) {
+  test(`the row at the removed row's place takes focus when 70% of its mark is clipped at the ${edge}`, () => {
+    const laidOut = layRowsOut("[data-row]", 9);
+    const atBottom = edge === "bottom";
+    const height = atBottom ? 730 : 750;
+    const head = document.createElement("div");
+    head.getBoundingClientRect = () => new DOMRect(0, 0, 200, 70);
+    const last = atBottom ? "CORE-17" : "CORE-10";
+    const next = atBottom ? "CORE-18" : "CORE-11";
+    const view = render(<PlacedList count={1} head={head} last={last} listed={PLACED_KEYS} />);
+    const list = screen.getByRole("list", { name: "Rows" });
+    list.style.overflowY = "auto";
+    list.append(head);
+    list.getBoundingClientRect = () => new DOMRect(0, 0, 200, height);
+    Object.defineProperties(list, { clientHeight: { value: height }, clientWidth: { value: 200 } });
+    const hit = drawOver(head, 70, "[data-row]", 9, { at: height, element: list });
+    const scroll = spyOn(list, "scrollBy").mockImplementation(() => {});
+    const moves = watchMoves();
+    try {
+      pressInBar("Dismiss");
+      view.rerender(
+        <PlacedList count={0} head={head} last={last} listed={without(PLACED_KEYS, last)} />
+      );
+      const mark = rowBox(next);
+      expect(mark).toHaveFocus();
+      expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+      expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: atBottom ? 70 : -70 }]]);
+    } finally {
+      moves.restore();
+      scroll.mockRestore();
+      hit();
+      view.unmount();
+      laidOut();
+    }
+  });
+}
+
 // The row marked last was below the window when the press took it away, so the row that moves
 // up into its place is below it too. The focus goes to the nearest row before that place that
 // the reader can see, the window's last row, which the window's bottom edge cuts: it is shown
@@ -987,6 +1024,7 @@ test("a press that takes away the row marked last, with the row now at its place
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-19" listed={PLACED_KEYS} />);
   const moves = watchMoves();
+  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
     pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-19" listed={without(PLACED_KEYS, "CORE-19")} />);
@@ -994,8 +1032,10 @@ test("a press that takes away the row marked last, with the row now at its place
     const landing = rowBox("CORE-17");
     expect(landing).toHaveFocus();
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([landing]);
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 800 - window.innerHeight }]]);
+    expect(moves.scrolled).toEqual([]);
   } finally {
+    scroll.mockRestore();
     moves.restore();
     view.unmount();
     laidOut();
@@ -1142,16 +1182,16 @@ test("the row marked last still listed takes the focus out of sight too, shown w
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   const mark = rowBox("CORE-3");
-  const shown = spyOn(mark, "scrollIntoView");
+  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
     pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-3" listed={PLACED_KEYS} />);
     expect(mark).toHaveFocus();
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
-    expect(moves.scrolled).toEqual([mark]);
-    expect(shown.mock.calls).toEqual([[{ block: "nearest", inline: "nearest" }]]);
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: -700 }]]);
+    expect(moves.scrolled).toEqual([]);
   } finally {
-    shown.mockRestore();
+    scroll.mockRestore();
     moves.restore();
     view.unmount();
     laidOut();
@@ -1184,6 +1224,41 @@ test("the row marked last still listed under the list's sticky head takes the fo
     view.unmount();
     headBox.mockRestore();
     laidOut();
+  }
+});
+
+test("Clear selection at the window's bottom edge scrolls just the cut, without the root's scroll padding", () => {
+  const view = render(<PlacedList count={1} last="CORE-1" listed={["CORE-1"]} />);
+  const mark = rowBox("CORE-1");
+  let top = window.innerHeight - 6;
+  mark.getBoundingClientRect = () => new DOMRect(10, top, 13, 13);
+  const list = screen.getByRole("list", { name: "Rows" });
+  list.style.overflowY = "auto";
+  list.getBoundingClientRect = () => new DOMRect(0, 400, 200, 500);
+  Object.defineProperties(list, { clientHeight: { value: 500 }, clientWidth: { value: 200 } });
+  const style = document.documentElement.style;
+  const padding = style.scrollPaddingBottom;
+  style.scrollPaddingBottom = "5rem";
+  const scroll = spyOn(window, "scrollBy").mockImplementation((options?: ScrollToOptions) => {
+    top -= options?.top ?? 0;
+  });
+  const scrollBox = spyOn(list, "scrollBy").mockImplementation(() => {});
+  const moves = watchMoves();
+  try {
+    pressInBar("Dismiss");
+    view.rerender(<PlacedList count={0} last="CORE-1" listed={["CORE-1"]} />);
+    expect(mark).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+    expect(mark.getBoundingClientRect().bottom).toBe(window.innerHeight);
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 7 }]]);
+    expect(scrollBox).not.toHaveBeenCalled();
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    scrollBox.mockRestore();
+    scroll.mockRestore();
+    style.scrollPaddingBottom = padding;
+    view.unmount();
   }
 });
 

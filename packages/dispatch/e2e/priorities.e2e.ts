@@ -29,6 +29,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar } from "./editor";
+import { listTrigger } from "./filters";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
@@ -278,8 +279,10 @@ async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
  *  where that table is the last thing on the page and its box takes the window rather than
  *  standing under another table below the fold. */
 function pagerBelowWindow(page: Page): Promise<number> {
+  // The pager of the tab's one table, by its component's own test identifier, as
+  // `tablesOverflow` finds its box: `priorities-table-pager` or `issues-table-pager`.
   return page
-    .getByTestId("issues-table-pager")
+    .locator('[data-testid$="-table-pager"]')
     .evaluate((pager) => pager.getBoundingClientRect().bottom - window.innerHeight);
 }
 
@@ -529,8 +532,14 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
-    // The grouping control reads "Group by".
-    await expect(priorities.getByRole("combobox", { exact: true, name: "Group by" })).toBeVisible();
+    // The grouping control reads "Group by", inside the View display menu (INFRA-3135, R2).
+    await priorities.getByRole("button", { exact: true, name: "View" }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "View" })
+        .getByRole("group", { exact: true, name: "Group by" })
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The count closed in the last 7 days is hidden until the column control turns it on.
     const closed = prioritiesTable.getByRole("columnheader", { name: /^Closed, 7 days/ });
@@ -3075,14 +3084,14 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(header).not.toContainText("Advances");
     const rail = header.getByTestId("issue-metadata-rail");
     await expect(rail.getByTestId("issue-advances")).toHaveCount(0);
-    expect(
-      await line.evaluate(
-        (element) =>
-          element.previousElementSibling?.querySelector("select")?.getAttribute("aria-label") ??
-          null
-      )
-    ).toBe(`Priority of ${seed.rollout}`);
-    const tagBox = await stateRow.getByLabel(/^Priority of /).boundingBox();
+    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows
+    // (`listTrigger`), and it stands in the element right before the chips.
+    const tag = listTrigger(
+      line.locator("xpath=preceding-sibling::*[1]"),
+      `Priority of ${seed.rollout}`
+    );
+    await expect(tag).toBeVisible();
+    const tagBox = await tag.boundingBox();
     const lineBox = await line.boundingBox();
     expect(lineBox?.x ?? Number.NaN).toBeGreaterThan(tagBox?.x ?? Number.NaN);
     expect(lineBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(120);

@@ -1076,10 +1076,13 @@ test("named rows that stood above the view free their whole space: the focused r
 
 // The rows the press takes away, one above the view and one just below it, free their whole
 // space. The focused row after them moves up across the window's bottom edge and is left partly
-// in sight: the least scroll there is brings its control whole into sight at that edge, and the
-// window is not scrolled.
-test("a focused row the named rows leave partly in sight is brought whole into sight at its nearest edge, and the window is not scrolled", () => {
+// in sight: `scrollToNearest` scrolls the window by the exact cut, without `scrollIntoView` and
+// without the root's 5rem scroll-padding-bottom below 1280 px pushing it further.
+test("a focused row the named rows leave partly in sight is scrolled by the exact cut, without root scroll padding", () => {
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 580, writable: true });
+  const style = document.documentElement.style;
+  const padding = style.scrollPaddingBottom;
+  style.scrollPaddingBottom = "5rem";
   const going = (id: string) => id === "r2" || id === "r16";
   const moves = watchScrollsIntoView();
   const view = render(<List leaving={going} rows={ids(20)} />);
@@ -1090,12 +1093,14 @@ test("a focused row the named rows leave partly in sight is brought whole into s
     const after = before - 2 * ROW_HEIGHT;
     expect(after).toBeLessThan(580);
     expect(after + ROW_HEIGHT).toBeGreaterThan(580);
+    const cut = Math.ceil(after + ROW_HEIGHT - 580);
 
     view.rerender(<List leaving={going} rows={ids(20).filter((id) => !going(id))} />);
-    expect(viewportTop("r17")).toBe(after);
-    expect(window.scrollY).toBe(245);
-    expect(moves.scrolled).toEqual([{ options: { block: "nearest" }, target: "r17 button" }]);
+    expect(window.scrollY).toBe(245 + cut);
+    expect((viewportTop("r17") ?? 0) + ROW_HEIGHT).toBe(580);
+    expect(moves.scrolled).toEqual([]);
   } finally {
+    style.scrollPaddingBottom = padding;
     view.unmount();
     moves.restore();
   }

@@ -2517,9 +2517,13 @@ test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag
     const stateActions = screen.getByTestId("issue-state-actions");
     const line = within(stateActions).getByTestId("issue-advances");
     expect(within(line).getByRole("button", { name: "Edit priorities" })).not.toBeNull();
-    expect(line.previousElementSibling?.querySelector("select")?.getAttribute("aria-label")).toBe(
-      "Priority of CORE-1"
-    );
+    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows,
+    // in the element right before the chips.
+    const before = line.previousElementSibling;
+    if (!(before instanceof HTMLElement)) throw new Error("nothing stands before the chips");
+    expect(
+      within(before).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).not.toBeNull();
     expect(
       within(screen.getByTestId("issue-metadata-rail")).queryByTestId("issue-advances")
     ).toBeNull();

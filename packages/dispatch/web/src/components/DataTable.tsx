@@ -44,7 +44,7 @@ import {
 import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
 import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL, type ControlSize } from "./control-names";
-import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, landNearest, useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel, widthBounds } from "./table-layout";
@@ -149,9 +149,9 @@ export interface DataTableModel<Row> {
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
-  /** Puts the focus on a row of this page, or on what `selector` names inside it, by the path
-   *  `j` and `k` take: a row the virtualizer has not drawn is scrolled to and focused once it
-   *  lands, and null is handed back meanwhile. */
+  /** Focuses a row or a control inside it, scrolling an undrawn row in first and focusing it once
+   *  it lands. A `"nearest"` hand-off places the control whole, measured once drawn, rather than
+   *  letting the row's approximate virtual offset decide where it ends up. */
   readonly focusRow: FocusRow;
   readonly names: DataTableNames;
 }
@@ -310,6 +310,18 @@ export function useDataTable<Row>({
   const focusRow = useRowKeymap({
     displayRows,
     keymap: names.keymap,
+    landNearest: (element, from) => {
+      const box = layout.scrollRef.current;
+      if (box === null) return;
+      // The index scroll only draws the row. Once it is drawn, it must not retarget the box
+      // after the checkbox's measured position has taken over.
+      if (from !== undefined) virtualizer.cancelScroll();
+      landNearest(
+        element,
+        box.querySelector("thead th"),
+        from === undefined ? undefined : { box, top: from }
+      );
+    },
     linkAttribute: names.linkAttribute,
     onMark: selection?.onMark,
     rowAttribute: names.rowAttribute,
@@ -401,11 +413,14 @@ export interface DataTableProps<Row> {
   readonly onOpenFilterChange: (id: string | undefined) => void;
   /** How many rows each value of the open filter's column would list. */
   readonly filterCounts: ReadonlyMap<string, number>;
-  /** Whether `filterCounts` counts the rows the reader's narrowing lists: false while it is the
-   *  previous answer's, kept on screen while the read for a new narrowing is out, and then the
-   *  shared filter draws no count beside a value (`ColumnFilter`'s `counted`). A table given none
-   *  counts. */
-  readonly filterCounted?: boolean;
+  /** Which values of the open filter's column `filterCounts` has counted for the rows the
+   *  reader's narrowing lists: every value (`true`, and a table given none), no value (`false`),
+   *  or each value the caller's function answers true for, given the column's id and the value.
+   *  A value is not counted while `filterCounts` is the previous answer's, kept on screen while
+   *  the read for a new narrowing is out, or while a read that the value's count counts has not
+   *  answered. The shared filter draws no count beside a value that is not counted, and its
+   *  count beside every other (`ColumnFilter`'s `counted`). */
+  readonly filterCounted?: boolean | ((column: string, value: string) => boolean);
   /** By column id, the filter values whose rows are not loaded yet, which say `load` rather
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
@@ -840,7 +855,11 @@ export function DataTable<Row>({
     (({ column, onOpenChange, open }) => (
       <ColumnFilter
         column={column}
-        counted={filterCounted}
+        counted={
+          typeof filterCounted === "function"
+            ? (value) => filterCounted(column.id, value)
+            : filterCounted
+        }
         counts={column.id === openFilter ? filterCounts : EMPTY_COUNTS}
         noun={noun}
         onOpenChange={onOpenChange}

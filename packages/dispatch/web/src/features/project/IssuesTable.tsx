@@ -63,6 +63,7 @@ import {
   isEpic,
   matchesFilters,
   matchesSearch,
+  NOBODY_FACET,
   narrowsNothing,
   PAGE_SIZES,
   tableStorageKey,
@@ -346,9 +347,9 @@ export function IssuesTable({
   // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
   // table draws its row, out of sight or not. After a press that took that issue out of the view
   // - off the list, or out of what the filters show, as Take out of epic does under the Epic
-  // filter: a row the reader can see at its place, else before it. With no issue marked, as after
-  // a select-all from the table's head: the first row the reader can see below the table's sticky
-  // head. Each is shown whole at its nearest edge, below that head too. `head` is a header cell:
+  // filter: a row with any part of its mark in sight at its place, else before it. With no
+  // issue marked, as after a select-all from the table's head: the first row the reader can see
+  // below the sticky head. Each mark is shown whole at its nearest edge. `head` is a header cell:
   // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
   // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
   // lands in the place of an issue that went.
@@ -365,14 +366,17 @@ export function IssuesTable({
   });
   // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) has put the
   // focus itself, save where the table lists the issue marked last and its window has not drawn
-  // that row: the row is scrolled to, and its checkbox takes the focus as it lands (`focusRow`).
+  // that row: scroll to draw it, then show the measured checkbox whole at its nearest edge
+  // and give it focus with no additional focus scroll (`focusRow`).
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
     if (landAtPlace()) return null;
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
-    return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
+    if (key === null) return focusListStop(tableStop());
+    model.focusRow(key, ROW_CHECKBOX, "nearest");
+    return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
@@ -490,15 +494,19 @@ export function IssuesTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
-  // The header filters count what the table shows once the rows it waits on are in, as the
-  // chip does (`counted`): never the open issues alone while the closed ones it asked for are
-  // out. While the Claimed by filter reads the registry, they also wait until the registry's
-  // latest read has succeeded (`known`), so they stay hidden before its first answer and after a
-  // read that failed: until then no session's claim reads lapsed (`claimIsTakeable`), so Nobody
-  // or lapsed would leave out each claim whose session has gone, in its own count and, picked, in
-  // every other filter's.
-  const filterCounted = counted && (!readsRegistry || registry.known);
-
+  // A header filter's count is drawn once every read it counts has answered, and a read it does
+  // not count never hides it. Every count counts the rows the table waits on (`counted`), as the
+  // chip does: never the open issues alone while the closed ones it asked for are out. While a
+  // Nobody-or-lapsed narrowing is active (`wantsFree`) and the agent registry's first read is
+  // still pending (`registryPending`), the listed rows can still change when the registry answers,
+  // so no column draws a count. Once the registry answers or settles on its error (where the page
+  // shows `unclaimed-unchecked` and counts every claim as held), each count that the registry does
+  // not decide draws: every other column, and Claimed by's Nobody. Every other Claimed by value -
+  // Nobody or lapsed, and each holder - still waits until the registry's latest read has succeeded
+  // (`known`), since only it decides which claims have lapsed (`claimIsTakeable`).
+  const registryPending = wantsFree && !registry.known && !registry.isError;
+  const filterCounted = (column: string, value: string) =>
+    counted && !registryPending && (column !== "claim" || value === NOBODY_FACET || registry.known);
   const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
   // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back

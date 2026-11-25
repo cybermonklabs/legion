@@ -44,8 +44,9 @@ export interface RowKeymap {
   readonly select?: KeymapActionId;
 }
 
-/** Focuses the row whose id is `key`, or the element `selector` names inside it. */
-export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
+/** Focuses the row whose id is `key`, or the element `selector` names inside it. The selection
+ *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. */
+export type FocusRow = (key: string, selector?: string, placement?: "nearest") => void;
 
 /**
  * The keys a reader walks the table's rows with, as the actions the caller names: two keys move
@@ -53,12 +54,13 @@ export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
  * action, and, in a table that selects, one marks it. A row the virtualizer has not drawn yet is
  * scrolled to first and focused when it lands.
  *
- * It hands back that same way to a row (`FocusRow`), for whatever else has to put the focus on
- * one: the row now where it is drawn, and once it lands where it is not.
+ * It hands back to a row (`FocusRow`) the same way. For a nearest-edge hand-off, keep the box's
+ * starting scroll position so the draw of a virtual row does not decide its final placement.
  */
 export function useRowKeymap<TData>({
   displayRows,
   keymap,
+  landNearest,
   linkAttribute,
   onMark,
   rowAttribute,
@@ -68,6 +70,8 @@ export function useRowKeymap<TData>({
 }: {
   displayRows: readonly { row: Row<TData> }[];
   keymap: RowKeymap;
+  /** Shows a measured target whole, from the box's position before any virtual scroll. */
+  landNearest: (element: HTMLElement, from?: number) => void;
   /** The attribute on the link inside a row that opening the row follows. */
   linkAttribute: string;
   /** Told the row `x` marks, as it marks it; never one it unmarks. */
@@ -78,8 +82,8 @@ export function useRowKeymap<TData>({
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollToIndex: (index: number) => void;
 }): FocusRow {
-  /** The row that takes the focus once the virtualizer draws it, and what inside it does. */
-  const pendingFocus = useRef<{ key: string; selector: string | undefined } | null>(null);
+  /** The row and control that take the focus once drawn, with the origin of a nearest-edge hand-off. */
+  const pendingFocus = useRef<{ key: string; selector?: string; from?: number } | null>(null);
   // The row in hand: the row of this table that holds the focus, or one of its controls does. A
   // row of another table on the page, under the same attribute, is none of this table's.
   const focusedRow = () => {
@@ -88,22 +92,25 @@ export function useRowKeymap<TData>({
   };
   const rowElement = (key: string) =>
     scrollRef.current?.querySelector<HTMLElement>(`[${rowAttribute}="${CSS.escape(key)}"]`);
-  // What it focused, or null: a row the virtualizer has not drawn is focused once it lands, and a
-  // key no row of this page holds moves nothing.
-  const focusRow: FocusRow = (key, selector) => {
+  // Focuses a drawn row or control directly, scrolls an undrawn row in first and focuses it once
+  // it lands, and ignores a key no row of this page holds.
+  const focusRow: FocusRow = (key, selector, placement) => {
     const row = rowElement(key);
     if (row) {
       pendingFocus.current = null;
       const element = selector === undefined ? row : row.querySelector<HTMLElement>(selector);
-      element?.focus();
-      return element;
+      if (element !== null) {
+        if (placement === "nearest") landNearest(element);
+        else element.focus();
+      }
+      return;
     }
     const index = displayRows.findIndex(({ row }) => row.id === key && !row.getIsGrouped());
     if (index !== -1) {
-      pendingFocus.current = { key, selector };
+      const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
+      pendingFocus.current = { key, selector, from };
       scrollToIndex(index);
     }
-    return null;
   };
   const moveFocus = (direction: 1 | -1) => {
     const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
@@ -128,7 +135,9 @@ export function useRowKeymap<TData>({
     pendingFocus.current = null;
     const element =
       pending.selector === undefined ? row : row.querySelector<HTMLElement>(pending.selector);
-    element?.focus({ preventScroll: true });
+    if (element === null) return;
+    if (pending.from !== undefined) landNearest(element, pending.from);
+    else element.focus({ preventScroll: true });
   });
   const focusedLink = () => focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`) ?? null;
   const openFocusedRow = () => focusedLink()?.click();
