@@ -36,7 +36,7 @@ Read `skill://legion-controller/references/session.md` for who launched you, the
 
 ## What happened before you started
 
-Every launch opens with a start message. The daemon keeps each wake it owes the controller until your session is both its registered controller (`legion controller start`) and the live holder of the controller role, and then sends it; a wake from a daemon of an earlier release that was sent while no controller ran is lost. So on it:
+Every launch opens with a start message. On it:
 
 1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it.
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
