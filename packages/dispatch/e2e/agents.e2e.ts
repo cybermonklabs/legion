@@ -951,11 +951,19 @@ function wholeAbove(box: { y: number; height: number } | null, composerTop: numb
   return box !== null && box.y >= 0 && box.y + box.height <= composerTop;
 }
 
-/** Whole cards above the composer, of the rows a reader sees. */
+/** Whole cards above the composer, of the rows a reader sees. Every shown card's box is read in
+ *  one pass in the page: the list is windowed (`rowWindow.ts`) and redraws a frame after a
+ *  scroll, so a card counted before that redraw can be gone after it, and a locator per card
+ *  (`all()`, then each one's `boundingBox`) waits out its timeout on a card the redraw took
+ *  away. A card with no layout box reads null, as `boundingBox` reads it. */
 async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<number> {
   const composerTop = (await composer.boundingBox())?.y ?? 0;
-  const boxes = await Promise.all(
-    (await shownAgentRows(agents.page()).all()).map((card) => card.boundingBox())
+  const boxes = await shownAgentRows(agents.page()).evaluateAll((cards) =>
+    cards.map((card) => {
+      if (card.getClientRects().length === 0) return null;
+      const { height, y } = card.getBoundingClientRect();
+      return { height, y };
+    })
   );
   return boxes.filter((box) => wholeAbove(box, composerTop)).length;
 }

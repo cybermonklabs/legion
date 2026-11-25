@@ -55,6 +55,7 @@ import {
   replyToMessageDelivery,
   resolveAsk,
   resolveComment,
+  sessionCookie,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
@@ -10168,8 +10169,9 @@ test("taking off the Inbox's only narrowing by its chip or by Clear filters at 3
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): twenty labelled issues seeded, and at each of two widths the issue header's Status
-// and the project List's Labels filter walked by the arrows, then narrowed by a word and cleared.
+// SLOW(>=2s): twenty labelled issues and five more people seeded, and at each of two widths the
+// issue header's Assignee and the project List's Labels filter walked by the arrows, then narrowed
+// by a word and cleared.
 // INFRA-3135, round 26 (the tester's, measured in builds Jobs infra-3135-p-hc-pmzhr and
 // infra-3135-p-hfw-wx7zj at 8e7e463a and infra-3135-p-bc-td6pm and infra-3135-p-bfw-4tfm7 at
 // 34dc6a07, and this row in infra-3135-p-red-7lb7z and infra-3135-p-red2-p8kpf at 8e7e463a): the
@@ -10188,13 +10190,25 @@ test("taking off the Inbox's only narrowing by its chip or by Clear filters at 3
 // arrows and a single pick's open scroll the box to the option they mark (`showOption`). The rule
 // (the architect's ruling of 2026-11-24 08:07Z on round 25's Status row): the shared list shows the
 // option it marks active, on every list it draws.
-test("the shared list keeps the option it marks active wholly inside its box when a typed word narrows it and when the word is cleared, in the issue header's Status and the project List's Labels filter, at 1440 and 390 @firefox @webkit", async ({
+// INFRA-2160's D5, merged over this row: the issue header's Status is a single pick in a menu's
+// place (`MultiSelect`'s `menu`, R4 and R5), whose panel is cut at 384 px (`max-h-96`) where a
+// plain pick's is cut at 288 (`max-h-72`), with its line of keys at its foot, and on a coarse
+// pointer at no height of its own (`bare`), where its statuses stand whole. Five ArrowDown from
+// Triage scrolled its box nothing at 1440x900 in Chromium (builds Job infra-2160-af-4b7e-lfg29, at
+// 4b7ecee6), so the row walks the issue header's Assignee in its place: the same shared list's
+// single pick, with none of a menu's rules, whose box shows five options, and which lists
+// Unassigned and everyone signed in, eight options with the five people the row signs in beside
+// alice and bob.
+test("the shared list keeps the option it marks active wholly inside its box when a typed word narrows it and when the word is cleared, in the issue header's Assignee and the project List's Labels filter, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Two widths, each with an issue page's Status and the project List's Labels filter walked.
+  // Two widths, each with an issue page's Assignee and the project List's Labels filter walked.
   test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Statuses in sight" });
+  // The Assignee lists Unassigned, then everyone signed in: alice and bob, whom the reset signs
+  // in, and these five. The issue is alice's, its creator's, so the list opens on her.
+  for (const login of ["carol", "dave", "erin", "frank", "grace"]) await sessionCookie(login);
   for (let label = 1; label <= 20; label += 1) {
     const labelled = await createIssue({ project: "CORE", title: `Labelled ${label}` });
     await patchIssue(labelled.key, { labels: [`lab-${String(label).padStart(2, "0")}`] });
@@ -10258,15 +10272,15 @@ test("the shared list keeps the option it marks active wholly inside its box whe
   // with the box scrolled to its end the narrowing leaves it at 259 px.
   const lists = [
     {
-      name: "the issue header's Status",
-      listbox: "Status options",
+      name: "the issue header's Assignee",
+      listbox: `Assignee of ${issue.key} options`,
       options: 8,
       downs: 5,
-      word: "e",
+      word: "a",
       narrowed: 6,
       reach: async () => {
         await page.goto(`/issues/${issue.key}/artifacts`);
-        return listTrigger(page.getByTestId("issue-header"), "Status");
+        return listTrigger(page.getByTestId("issue-header"), `Assignee of ${issue.key}`);
       },
     },
     {
