@@ -183,10 +183,10 @@ func TestSessionKeeperReconnectsOnEachTokenAfterTheFirst(t *testing.T) {
 }
 
 // A session's keeper moves its connection off a presented token that lapses before the renewal
-// loop's first token is renewed. The connection presents the token the client holds while that
-// has more than RenewBefore left (cipherclient.Client.Token), and the loop trades at once and
-// renews only RenewBefore ahead of the token it traded (Client.Run), so a presented token with
-// less than that left over a fresh one's would be dropped by the server at its own expiry before
+// loop's first token is renewed. The connection presents the token the client holds until that
+// token's renewal moment (cipherclient.Client.Token, Client.RenewalAt), and the loop trades at
+// once and renews the token it traded only at that token's Client.RenewalAt (Client.Run), so a
+// presented token that lapses before then would be dropped by the server at its own expiry before
 // any later token landed. The keeper reconnects on the first token then, presenting the token the
 // loop holds, and skips the first only when the presented token outlives that token's renewal.
 // The control is the keeper that skips the first token whatever the presented one has left,
