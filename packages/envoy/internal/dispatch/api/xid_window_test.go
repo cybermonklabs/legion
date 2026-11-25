@@ -606,8 +606,8 @@ func xidWindowPlanReview(t *testing.T, f *xidFixture) {
 
 func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 	spec, _ := xidSpec(2)
-	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(11,
-		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
+	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(10,
+		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
 			"the two reads that load the issue it answers with, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": xidProject, "title": "Second large spec for the reviewers", "spec": spec, "force": true,
@@ -874,10 +874,10 @@ func xidWindowMessageDeliveryReply(t *testing.T, f *xidFixture) {
 		"body":   "Can this ship?\n\nThe migration section is the one to read.",
 		"target": "session:s1", "delivery": "steer",
 	}, "alice")
-	f.measure(t, http.StatusCreated, storetest.XidWindowOf(11,
-		"the parent message's lock, the attempt row's lock, the reply's node, the reply's insert, the one batch writing "+
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(10,
+		"the parent message's lock, the attempt row's lock, the reply's insert, the one batch writing "+
 			"its block index and its references, its thread, the thread's logins, the batch appending "+
-			"message.answered and what the node write stated, the stamp of its references, the attempt's update and the COMMIT ending "+
+			"message.answered, the stamp of its references, the attempt's update and the COMMIT ending "+
 			"them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return xidSessionReply(t, h, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 			"attempt": 1, "body": xidCitingBody("It can: the outbox keys each copy.", f.issueKey),
