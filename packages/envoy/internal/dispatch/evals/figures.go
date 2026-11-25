@@ -456,22 +456,17 @@ func (g *figureGroup) foldEnds(evalID string, cut figureCut, first, last time.Ti
 
 // foldFigures folds what ends names of the group's stored figures, of evalID in cut: the range of
 // each of FigureLengths that ends on each of its end days, each into ranged, and each of its days,
-// into daily, each where it holds a row of the group.
+// into daily, each where it holds a row of the group (figureEnds.keys).
 func (g *figureGroup) foldFigures(evalID string, cut figureCut, ends figureEnds, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
-	for end := range ends.endDays() {
-		for _, n := range FigureLengths {
-			if figures, oldest, held := g.rangeFigure(n, end); held {
-				key := rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo}
-				ranged(rangeFigureRow{rangeFigureKey: key, key: g.key, figures: figures, oldest: oldest})
-			}
+	ends.keys(evalID, cut, func(key rangeFigureKey) {
+		if figures, oldest, held := g.rangeFigure(key.days, key.end); held {
+			ranged(rangeFigureRow{rangeFigureKey: key, key: g.key, figures: figures, oldest: oldest})
 		}
-	}
-	for day := ends.days.From; day.Before(ends.days.To); day = day.AddDate(0, 0, 1) {
-		if figures, stamp, held := g.dayFigure(day); held {
-			key := dayFigureKey{repo: cut.repo, day: day, eval: evalID, deployRepo: cut.deployRepo}
+	}, func(key dayFigureKey) {
+		if figures, stamp, held := g.dayFigure(key.day); held {
 			daily(dayFigureRow{dayFigureKey: key, key: g.key, figures: figures, stamp: stamp})
 		}
-	}
+	})
 }
 
 // figureEnds is what one fold of a project's stored figures folds of each eval's rows of each cut
@@ -518,6 +513,21 @@ func (f figureEnds) holds(end time.Time) bool {
 		return found
 	}
 	return !end.Before(f.first) && !end.After(f.last)
+}
+
+// keys calls ranged with the key of each range f names of evalID in cut, for each of its end days
+// in day order the range of each of FigureLengths that ends on it, and then daily with the key of
+// each of its days, in day order: what a fold of f folds of one eval's group of rows
+// (figureGroup.foldFigures, figurePlan.addEnds).
+func (f figureEnds) keys(evalID string, cut figureCut, ranged func(rangeFigureKey), daily func(dayFigureKey)) {
+	for end := range f.endDays() {
+		for _, n := range FigureLengths {
+			ranged(rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo})
+		}
+	}
+	for day := f.days.From; day.Before(f.days.To); day = day.AddDate(0, 0, 1) {
+		daily(dayFigureKey{repo: cut.repo, day: day, eval: evalID, deployRepo: cut.deployRepo})
+	}
 }
 
 // rows is the days whose rows f's folds read: every day one of its ranges spans, and its days.
@@ -843,18 +853,19 @@ func movedCuts(moved map[figureGroupKey]map[time.Time]bool) []figureCut {
 }
 
 // figureFoldWorkers is the most goroutines one write of stored figures folds its ranges and days
-// on at once (figurePlan.foldAndWrite), 4, and never more than the CPUs the process may use. The
-// fold runs inside the server that answers the page reads, in the write of the rows it folds, so it
-// takes a few of the server's CPUs and leaves the rest to those reads: it was 0.69 s of the 2.03 s
-// of CPU a production rule's rewrite took at ten times INFRA's size (k8's breakdown at c6c68919),
-// one range after another.
+// on at once (figurePlan.foldAndWrite, and buildFigureEnds of each cut it reads), 4, and never
+// more than the CPUs the process may use. The fold runs inside the server that answers the page
+// reads, in the transaction that writes what it folds, so it takes a few of the server's CPUs and
+// leaves the rest to those reads: it was 0.69 s of the 2.03 s of CPU a production rule's rewrite
+// took at ten times INFRA's size (k8's breakdown at c6c68919), one range after another.
 const figureFoldWorkers = 4
 
 // figurePlan is what one write of a project's stored figures folds of the days it moved, every row
 // of it read before any is folded (readFigurePlan): each range and day of an eval's group of rows
 // to fold, the ranges in the byte order of their keys and the days in theirs (sortByKey), and the
 // ranges and days of the evals that hold no row the reads span, whose stored rows the write
-// deletes.
+// deletes. buildFigureEnds folds each cut it reads in one too, its ranges and days in the order it
+// adds them (addEnds) and no gone range or day: it deletes the stored rows no fold of it built.
 type figurePlan struct {
 	ranges     []rangeTarget
 	days       []dayTarget
@@ -939,6 +950,16 @@ func (p *figurePlan) add(group *figureGroup, key figureGroupKey, days []time.Tim
 			p.days = append(p.days, dayTarget{dayFigureRow: dayFigureRow{dayFigureKey: target, key: group.key}, group: group})
 		}
 	}
+}
+
+// addEnds adds to p each range and day that ends names of group, the rows of evalID in cut
+// (figureEnds.keys), to fold.
+func (p *figurePlan) addEnds(group *figureGroup, evalID string, cut figureCut, ends figureEnds) {
+	ends.keys(evalID, cut, func(key rangeFigureKey) {
+		p.ranges = append(p.ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: key, key: group.key}, group: group})
+	}, func(key dayFigureKey) {
+		p.days = append(p.days, dayTarget{dayFigureRow: dayFigureRow{dayFigureKey: key, key: group.key}, group: group})
+	})
 }
 
 // sortByKey sorts p's ranges and days in the byte order of their keys, the order a write folds and
@@ -1538,6 +1559,21 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // evals a project holds. So are entries' stored range rows where every is not set. The read of the
 // stored range rows reads every end day from the first of ends through its last, and passes over
 // those of an end day it does not fold.
+//
+// Each cut's ranges and days are folded once its rows are read, on up to figureFoldWorkers
+// goroutines at once (foldInChunks of figurePlan.fold, whose folds of one group share it as a
+// write's do), each into a target of its own, and gathered on the calling goroutine, which sends
+// every statement of tx, one at a time: so the rows it upserts and deletes, and the order each
+// statement takes them in, are those a fold on one goroutine gives. On one goroutine the fold was
+// most of each first paint a move's commit folds: on the farm at INFRA's size, gaps of up to 500
+// ms in which no statement took over 10 ms, in a commit whose first paints of three cuts took
+// 0.8-1.7 s and left some views 2.02-2.17 s after the move, past R14's 2 s
+// (dispatch://INFRA-2916). It writes nothing while it folds, as figurePlan.foldAndWrite does: its
+// range upserts take the ranges in the byte order of their keys, in which the cuts of a repository
+// interleave (a key orders by length and end day before eval and deploy repository), so they could
+// begin only once a repository's last cut is folded, and a plan of every cut would hold all their
+// rows at once, where it holds one cut's; and it deletes the stored rows no fold built, which it
+// reads once every cut is folded.
 func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, ends figureEnds) error {
 	read := ends.rows()
 	cuts, err := readFigureCuts(ctx, tx, scope.project, read, repo)
@@ -1545,7 +1581,9 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 		return err
 	}
 	evalIDs := slices.Sorted(maps.Keys(entries))
+	workers := min(runtime.GOMAXPROCS(0), figureFoldWorkers)
 	var writes figureWrites
+	var plan figurePlan
 	built := map[rangeFigureKey]bool{}
 	builtDays := map[dayFigureKey]bool{}
 	for _, cut := range cuts {
@@ -1554,14 +1592,28 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			return err
 		}
 		for _, evalID := range slices.Sorted(maps.Keys(groups)) {
-			groups[evalID].foldFigures(evalID, cut, ends, func(row rangeFigureRow) {
-				writes.ranges = append(writes.ranges, row)
-				built[row.rangeFigureKey] = true
-			}, func(row dayFigureRow) {
-				writes.days = append(writes.days, row)
-				builtDays[row.dayFigureKey] = true
-			})
+			plan.addEnds(groups[evalID], evalID, cut, ends)
 		}
+		// No chunk is sent, so the fold answers no error.
+		if err := foldInChunks(len(plan.ranges)+len(plan.days), workers, plan.fold, nil, nil); err != nil {
+			return err
+		}
+		for index := range plan.ranges {
+			if target := &plan.ranges[index]; target.held {
+				writes.ranges = append(writes.ranges, target.rangeFigureRow)
+				built[target.rangeFigureKey] = true
+			}
+		}
+		for index := range plan.days {
+			if target := &plan.days[index]; target.held {
+				writes.days = append(writes.days, target.dayFigureRow)
+				builtDays[target.dayFigureKey] = true
+			}
+		}
+		// The next cut's targets reuse the lists, and none keeps this cut's groups and rows.
+		clear(plan.ranges)
+		clear(plan.days)
+		plan.ranges, plan.days = plan.ranges[:0], plan.days[:0]
 	}
 	ofCut, rangeArgs, base := "", []any{scope.project, ends.first, ends.last}, paramBytes(1, scope.project)+2*(4+8)
 	if repo != nil {
