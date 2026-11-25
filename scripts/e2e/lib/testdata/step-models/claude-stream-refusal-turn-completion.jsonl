@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}
+{"type":"assistant","message":{"id":"msg_standin","role":"assistant","model":"claude-sonnet-4-5","stop_reason":null,"content":[{"type":"tool_use","name":"mcp__legion__legion","input":{"op":"handoff_complete"}}]},"parent_tool_use_id":null,"timestamp":"2026-11-04T17:04:38.017Z"}
+{"type":"system","subtype":"model_refusal_no_fallback"}
+{"type":"assistant","message":{"id":"ab549f88-559a-474b-ab21-2240e0bf6fa2","role":"assistant","model":"<synthetic>","stop_reason":"refusal"},"parent_tool_use_id":null,"timestamp":"2026-11-04T17:04:38.026Z"}
+{"type":"result","subtype":"success"}
