@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -167,7 +167,8 @@ func (w planWorld) tasksOf(t *testing.T, generation uint64) []string {
 // 0, of no document and no giver.
 var defaultVersion = versionRow{}
 
-// ownersVersion is version of childDoc as giver gave it last, after each of earlier.
+// ownersVersion is version of childDoc as the store holds it: giver the giver it added last
+// (given_by), and earlier the givers it added before, in the order it added them.
 func ownersVersion(version int, giver liveClaim, earlier ...liveClaim) versionRow {
 	row := versionRow{Version: version, Document: childDoc, Giver: string(giver.token)}
 	for _, before := range earlier {
@@ -256,7 +257,7 @@ func TestAPlanVersionPassedOverIsStoredWhenGivenAgain(t *testing.T) {
 // giver, the one change; and version 1 given for LEGION-209 before the daemon recorded it, which
 // LEGION-209's first step carried to generation 1, given again there under an id never marked,
 // whose mark is the one change. Each table's rows are read whole before and after
-// (testpg.TableRows), so a row changed in place counts.
+// (testdb.TableRows), so a row changed in place counts.
 //
 // The faults it catches: a give of the version in force judged as a later version (its control:
 // versionRefusal taking no give as the version in force, sameVersion false, under which each give
@@ -267,14 +268,14 @@ func TestAGiveOfTheVersionInForceStoresNothing(t *testing.T) {
 	t.Run("taken at the issue's generation, given again by its giver and by another owner", func(t *testing.T) {
 		w := newPlanWorld(t, true)
 		w.taken(t, w.sub, 1, "premise: the sub-architect's version 1")
-		before := testpg.TableRows(t, w.h.store.Pool())
+		before := testdb.TableRows(t, w.h.store.Pool())
 		w.taken(t, w.sub, 1, "the sub-architect gives the version it gave")
-		again := testpg.TableRows(t, w.h.store.Pool())
-		if changed := testpg.ChangedTables(before, again); len(changed) != 0 {
+		again := testdb.TableRows(t, w.h.store.Pool())
+		if changed := testdb.ChangedTables(before, again); len(changed) != 0 {
 			t.Errorf("the sub-architect's give again changed the rows of %q, want no table changed", changed)
 		}
 		w.taken(t, w.root, 1, "the root's architect gives the version the sub-architect gave")
-		if changed := testpg.ChangedTables(again, testpg.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"issue_plans"}) {
+		if changed := testdb.ChangedTables(again, testdb.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"issue_plans"}) {
 			t.Errorf("the root's architect's give changed the rows of %q, want issue_plans alone: the giver it adds", changed)
 		}
 		if got, want := w.versionsOf(t, 1), []versionRow{ownersVersion(1, w.root, w.sub)}; !reflect.DeepEqual(got, want) {
@@ -290,11 +291,11 @@ func TestAGiveOfTheVersionInForceStoresNothing(t *testing.T) {
 		if got := w.versionsOf(t, 1); !reflect.DeepEqual(got, []versionRow{ownersVersion(1, w.root)}) {
 			t.Fatalf("premise: after its first step LEGION-209 holds %+v at generation 1, want version 1 carried from generation 0", got)
 		}
-		before := testpg.TableRows(t, w.h.store.Pool())
+		before := testdb.TableRows(t, w.h.store.Pool())
 		w.taken(t, w.root, 1, "the first step carried version 1 to generation 1, where the give names it")
 		// The give's id, which names generation 1, was never marked: the give marks it, and
 		// writes nothing else.
-		if changed := testpg.ChangedTables(before, testpg.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"processed_events"}) {
+		if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"processed_events"}) {
 			t.Errorf("the give again changed the rows of %q, want processed_events alone: its mark", changed)
 		}
 	})
@@ -328,10 +329,10 @@ func TestAGiveOfAVersionBelowThePlanInForceIsRefusedWhateverItsID(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			w := newPlanWorld(t, false)
 			tc.given(t, w)
-			before := testpg.TableRows(t, w.h.store.Pool())
+			before := testdb.TableRows(t, w.h.store.Pool())
 			refusedSaying(t, registerPlan(w.h, w.root.grant(t), "LEGION-209", childDoc, 1), http.StatusConflict, "PLAN_VERSION_OLD",
 				"the plan in force of LEGION-209 is version 2, and Legion takes only a later version: version 1 changed nothing.")
-			if changed := testpg.ChangedTables(before, testpg.TableRows(t, w.h.store.Pool())); len(changed) != 0 {
+			if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); len(changed) != 0 {
 				t.Errorf("the refused give changed the rows of %q, want no table changed", changed)
 			}
 		})
@@ -465,13 +466,13 @@ func TestAGiversGiveAgainAtGenerationZeroWritesNothing(t *testing.T) {
 	if got := w.versionsOf(t, 0); !reflect.DeepEqual(got, want) {
 		t.Fatalf("LEGION-209 holds %+v at generation 0, want %+v", got, want)
 	}
-	before := testpg.TableRows(t, w.h.store.Pool())
+	before := testdb.TableRows(t, w.h.store.Pool())
 
 	w.taken(t, w.sub, 1, "the sub-architect's give delivered again")
 	if got := w.versionsOf(t, 0); !reflect.DeepEqual(got, want) {
 		t.Errorf("after the second delivery LEGION-209 holds %+v at generation 0, want %+v unchanged", got, want)
 	}
-	if changed := testpg.ChangedTables(before, testpg.TableRows(t, w.h.store.Pool())); len(changed) != 0 {
+	if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); len(changed) != 0 {
 		t.Errorf("the second delivery changed the rows of %q, want no table changed", changed)
 	}
 }
@@ -504,7 +505,7 @@ func (w planWorld) handedOver(t *testing.T, run bool) {
 // The plan of a hand-over that carries its run is the plan that run walks (admit's readmit carries
 // it with each task where it stood), so the new owner's give of its version in force is answered
 // as taken, stores no plan row, and adds the new owner to the version's givers, the one change of
-// the store beside the mark of its id (testpg.TableRows). A hand-over that
+// the store beside the mark of its id (testdb.TableRows). A hand-over that
 // carries no run carries no plan, so the new owner's give of the same version is the new
 // generation's first plan, and is stored. The root's architect gives version 1 for LEGION-209 at
 // generation 1, the run starts there or does not, and LEGION-209 is then handed over as a root of
@@ -520,12 +521,12 @@ func TestTheNewOwnersGiveOfAHandedOverVersion(t *testing.T) {
 		w.firstStep(t)
 		w.handedOver(t, true)
 		owner := newLiveClaim(t, w.h, "LEGION-209", claim.RoleArchitect)
-		before := testpg.TableRows(t, w.h.store.Pool())
+		before := testdb.TableRows(t, w.h.store.Pool())
 
 		w.taken(t, owner, 1, "the version the carried run walks")
 		// The give's id, which names generation 2, was never marked: the give marks it, adds the
 		// new owner to the version's givers, and writes nothing else.
-		if changed := testpg.ChangedTables(before, testpg.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"issue_plans", "processed_events"}) {
+		if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"issue_plans", "processed_events"}) {
 			t.Errorf("the give changed the rows of %q, want issue_plans and processed_events alone: the giver and the mark", changed)
 		}
 		if got, want := w.versionsOf(t, 2), []versionRow{ownersVersion(1, owner, w.root)}; !reflect.DeepEqual(got, want) {
@@ -558,7 +559,7 @@ func daemonHandlers(engine *workflow.Engine) []intake.Handler {
 // A second delivery of a give that was stored and is in force writes nothing, through every handler
 // the daemon applies a fact with (daemonHandlers): no plan row, no notice to a worker that a version
 // reached it, no outbox row, no message on the issue and no row changed in place, which every
-// table's rows, read whole before and after (testpg.TableRows), hold. Its id stays marked, so a
+// table's rows, read whole before and after (testdb.TableRows), hold. Its id stays marked, so a
 // daemon of the release before, after a way back, reads it as a give already applied. The give is
 // the root's architect's version 1, after LEGION-209's first step ran the default steps and the
 // default task was stopped, so its first delivery stores the version and starts its task again,
@@ -585,14 +586,14 @@ func TestASecondDeliveryOfAStoredGiveWritesNothing(t *testing.T) {
 		if err != nil || result.Refusal != nil || result.Duplicate {
 			t.Fatalf("%s = %+v, %v, want it applied with no refusal", what, result, err)
 		}
-		return testpg.TableRows(t, w.h.store.Pool())
+		return testdb.TableRows(t, w.h.store.Pool())
 	}
-	before := testpg.TableRows(t, w.h.store.Pool())
+	before := testdb.TableRows(t, w.h.store.Pool())
 	first := deliver("the first delivery")
-	if changed := testpg.ChangedTables(before, first); len(changed) == 0 {
+	if changed := testdb.ChangedTables(before, first); len(changed) == 0 {
 		t.Fatal("premise: the first delivery changed no table, want the version stored and its task started")
 	}
-	if changed := testpg.ChangedTables(first, deliver("the second delivery")); len(changed) != 0 {
+	if changed := testdb.ChangedTables(first, deliver("the second delivery")); len(changed) != 0 {
 		t.Errorf("the second delivery changed the rows of %q, want no table changed", changed)
 	}
 	assertProcessedEvent(t, w.h, id)

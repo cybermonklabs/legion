@@ -1,4 +1,4 @@
-package testpg
+package testdb
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // Querier is what TableRows reads through: the store's pool (store.Pool, a CloneStore's) and a pgx
-// pool (ClonePool's) both answer it.
+// pool (internal/testpg's ClonePool, or one opened on Database) both answer it.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

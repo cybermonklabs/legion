@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // namedSync is a synchronize from a listener that sends its before and its sender.
@@ -62,14 +62,14 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := appliedEvents(t, record.PullRequestOpen, tc.facts...)
-			before := testpg.TableRows(t, pool)
+			before := testdb.TableRows(t, pool)
 			if _, err := intake.ApplyFact(context.Background(), pool, "github", "late", tc.late, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 				t.Fatalf("apply the late synchronize: %v", err)
 			}
-			after := testpg.TableRows(t, pool)
+			after := testdb.TableRows(t, pool)
 			delete(before, "processed_events")
 			delete(after, "processed_events")
-			changed := testpg.ChangedTables(before, after)
+			changed := testdb.ChangedTables(before, after)
 			if !tc.changes && len(changed) != 0 {
 				t.Fatalf("the late synchronize changed %v, want nothing", changed)
 			}

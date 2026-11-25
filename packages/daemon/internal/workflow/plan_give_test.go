@@ -12,16 +12,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// settledRows is every table's rows (testpg.TableRows) after the boot's pass that comes before any
+// settledRows is every table's rows (testdb.TableRows) after the boot's pass that comes before any
 // fact the daemon applies (bootBefore, which applyFacts runs too), so the rows a delivery writes,
 // deletes or changes in place are its own.
 func settledRows(t *testing.T, pool *pgxpool.Pool, engine *Engine) map[string]string {
 	t.Helper()
 	bootBefore(t, pool, engine)
-	return testpg.TableRows(t, pool)
+	return testdb.TableRows(t, pool)
 }
 
 // A give of the version in force applies nothing whatever its id: under the id the release before
@@ -30,7 +30,7 @@ func settledRows(t *testing.T, pool *pgxpool.Pool, engine *Engine) map[string]st
 // names the giver, as a route that named a registration so would give it. Each is answered as
 // taken, with no refusal, and its id is marked: a daemon of the release before, after a way back,
 // reads each as a give already applied. The mark of the id never marked is the one change of every
-// table's rows (testpg.TableRows, testpg.ChangedTables), so no row is changed in place either.
+// table's rows (testdb.TableRows, testdb.ChangedTables), so no row is changed in place either.
 //
 // The faults it catches: the version in force judged as a later version, as main judged a give
 // under an id never marked (its control: versionRefusal's sameVersion false, under which each give
@@ -55,7 +55,7 @@ func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
 		}
 	}
 	// The give under the id never marked marks it, and nothing else changes.
-	if changed := testpg.ChangedTables(before, testpg.TableRows(t, pool)); !reflect.DeepEqual(changed, []string{"processed_events"}) {
+	if changed := testdb.ChangedTables(before, testdb.TableRows(t, pool)); !reflect.DeepEqual(changed, []string{"processed_events"}) {
 		t.Errorf("the gives again changed the rows of %q, want processed_events alone: the one mark", changed)
 	}
 }
@@ -63,7 +63,7 @@ func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
 // A give of a plan is judged on the record its fact reads, whatever its id's mark: a give that
 // was taken, delivered again after its giver owns the issue no more, is refused ISSUE_OUTSIDE_TREE,
 // and one delivered again after the issue moved to a later generation is refused
-// PLAN_STALE_GENERATION, each changing no row of any table (testpg.TableRows, read before and
+// PLAN_STALE_GENERATION, each changing no row of any table (testdb.TableRows, read before and
 // after it). The move comes between the two deliveries, applied in a transaction of its own before
 // the second, so the second reads it. Here the sub-architect of LEGION-209 gives version 1 for
 // LEGION-210, a member of the tree LEGION-208; then LEGION-209 is adopted into another tree, or
@@ -115,7 +115,7 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 			if want := tc.want(target, given); !reflect.DeepEqual(result.Refusal, want) || result.Duplicate {
 				t.Errorf("the second delivery = %+v, want the refusal %+v", result, want)
 			}
-			if changed := testpg.ChangedTables(before, testpg.TableRows(t, pool)); len(changed) != 0 {
+			if changed := testdb.ChangedTables(before, testdb.TableRows(t, pool)); len(changed) != 0 {
 				t.Errorf("the refused delivery changed the rows of %q, want no table changed", changed)
 			}
 		})
@@ -128,7 +128,7 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 // (PLAN_NOT_TAKEN), one in a lingering tree, one whose first apply failed and rolled back, which
 // its second delivery takes and its third writes nothing of, one taken, and one taken before its
 // tree began to linger, which is refused TREE_LINGERING after that. Every table's rows, read before
-// and after each delivery (testpg.TableRows), hold it: no row written, deleted or changed in place,
+// and after each delivery (testdb.TableRows), hold it: no row written, deleted or changed in place,
 // so no plan row, no notice, no outbox row, no message on the issue, no mark of a refusal.
 //
 // The faults it catches: a delivery that writes again (its control: planGiven writing a give of the
@@ -180,7 +180,7 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				if _, err := intake.ApplyFact(context.Background(), pool, "api", id, given, engine, laterHandlerFails{}); err == nil {
 					t.Fatal("premise: the apply with a failing handler succeeded, want it failed")
 				}
-				if changed := testpg.ChangedTables(before, testpg.TableRows(t, pool)); len(changed) != 0 {
+				if changed := testdb.ChangedTables(before, testdb.TableRows(t, pool)); len(changed) != 0 {
 					t.Fatalf("premise: the failed apply changed the rows of %q, want no table changed", changed)
 				}
 				return id, given
@@ -213,7 +213,7 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				if !reflect.DeepEqual(result.Refusal, want.want) || result.Duplicate {
 					t.Fatalf("delivery %d = %+v, want the refusal %+v", i+1, result, want.want)
 				}
-				if changed := testpg.ChangedTables(before, testpg.TableRows(t, pool)); (len(changed) != 0) != want.writes {
+				if changed := testdb.ChangedTables(before, testdb.TableRows(t, pool)); (len(changed) != 0) != want.writes {
 					t.Fatalf("delivery %d changed the rows of %q, want it to write: %v", i+1, changed, want.writes)
 				}
 			}
