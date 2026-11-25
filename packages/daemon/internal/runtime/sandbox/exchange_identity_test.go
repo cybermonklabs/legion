@@ -60,6 +60,7 @@ func exchangeTokenVolumes(pod corev1.PodSpec, audience string) []corev1.Volume {
 // the issue pod's Sandbox byte for byte; its start command, which the golden does not hold, is read
 // here for the two variables.
 func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +120,7 @@ func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
 // pool's audience, is the endpoint's and no exchange identity
 // (TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees pins it), so it is passed over.
 func TestNoIdentityWithoutTheKey(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +158,7 @@ func TestNoIdentityWithoutTheKey(t *testing.T) {
 // is not there would fail every trade it tries, where one told of no identity keeps the credential
 // it had. The enrollment it does carry it is still told of.
 func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -214,6 +217,7 @@ var exchangeDeployments = []struct {
 // builds carries it as the operator wrote it. A deployment that names an audience refuses that
 // pod, naming the piece of it that collides.
 func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
+	t.Parallel()
 	const operatorVolume = "operator-identity"
 	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	cases := []struct {
@@ -290,6 +294,7 @@ func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
 // of an enrolled pod both, and a spec setting either is refused as one setting any variable the
 // runtime sets itself (runtime.ValidateSpawnSpec).
 func TestALaunchSpecMayNameTheExchangeVariablesWhileTheExchangeIsOff(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range exchangeDeployments {
 		for name, value := range map[string]string{identityVariable: "metadata", tokenFileVariable: "/etc/operator/identity/token"} {
 			t.Run(deployment.name+"/"+name, func(t *testing.T) {
