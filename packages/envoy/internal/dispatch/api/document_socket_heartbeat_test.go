@@ -33,13 +33,17 @@ import (
 // newCookieServerOn's do, and whose agents present tokens the secrets broker issued, as
 // newBrokerTokenRig's do: the one server where a request can carry both, a cookie and a token
 // beside it. The API and the document service share one cookie identity, as cmd/dispatch hands
-// them one.
+// them one. It verifies service-account tokens too (Deps.OIDC), as a deployment that serves its
+// fleet's pods does.
 type documentSocketTokenRig struct {
 	// tokens is the rig the broker-token verifier comes from: its stub broker answers what a test
 	// says a token is, and its deps.BrokerTokens is the verifier this server decides tokens with.
-	// Its own server is never sent a request.
-	tokens   *brokerTokenRig
-	sessions *store.PgSessionStore
+	// Its own server is sent no socket; a test that needs a person's agent token mints it there
+	// (asPerson), on the database this server reads too.
+	tokens *brokerTokenRig
+	// serviceTokens is the issuer of the service-account tokens this server verifies.
+	serviceTokens *serviceTokenIssuer
+	sessions      *store.PgSessionStore
 	// logins is the API's Identity: the cookie identity the document service shares, counting
 	// the lookups made through it (countedLogins).
 	logins *countedLogins
@@ -63,15 +67,16 @@ const documentSocketPerson = "alice@d.example"
 // issue whose spec she can open, on a server whose sockets resolve their caller every heartbeat.
 // The verifier is newBrokerTokenRig's, taken from that rig rather than built a second time, so it
 // is the one every broker-token test drives: the same stub broker, the replay table on this same
-// database, and the switches cmd/dispatch sets on it. The server's heartbeats run on beats
-// (Deps.Clock; nil is the real clock), which a row that moves through them hands a fake, and a live
-// socket's read deadline on a fake no one moves (Deps.LiveSocketClock), so no pong the runner holds
-// back ends one.
-func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock) *documentSocketTokenRig {
+// database, and the switches cmd/dispatch sets on it. Each of options is applied to the verifier's
+// options after the rig's own, for a test that needs a bucket it can empty or a broker that does
+// not answer. The server's heartbeats run on beats (Deps.Clock; nil is the real clock), which a row
+// that moves through them hands a fake, and a live socket's read deadline on a fake no one moves
+// (Deps.LiveSocketClock), so no pong the runner holds back ends one.
+func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock, options ...func(*ciphertoken.Options)) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}}
-	rig.tokens = newBrokerTokenRig(t, timeBrokerCalls(t, rig.heartbeats))
+	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}, serviceTokens: newServiceTokenIssuer(t)}
+	rig.tokens = newBrokerTokenRig(t, append([]func(*ciphertoken.Options){timeBrokerCalls(t, rig.heartbeats)}, options...)...)
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
@@ -81,7 +86,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats cloc
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.logins, AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL: testServerURL, Docs: documents, Events: broker,
+		ServerURL: testServerURL, Docs: documents, Events: broker, OIDC: rig.serviceTokens.verifier(t),
 		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Clock: beats,
 	})
 	if err != nil {

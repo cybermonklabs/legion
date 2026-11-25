@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -326,15 +327,37 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	t.Logf("walked the table's %d rows and GET %s with each of %d read-only tokens", mounted, liveSocketPattern, len(tokens))
 }
 
+// documentProcessOf is the host name documents names its process by (docs.ProcessHeader), read
+// off an answer the document service writes itself, with no layer of the API's in front of it. It
+// fails the test when the service names none, since an answer that names none could then not be
+// told from one that names it.
+func documentProcessOf(t *testing.T, documents docs.API) string {
+	t.Helper()
+	served, ok := documents.(http.Handler)
+	if !ok {
+		t.Fatalf("the document service %T serves no socket", documents)
+	}
+	answer := httptest.NewRecorder()
+	served.ServeHTTP(answer, httptest.NewRequest(http.MethodGet, "/ws/doc/00000000-0000-0000-0000-000000000001", nil))
+	process := answer.Header().Get(docs.ProcessHeader)
+	if process == "" {
+		t.Fatalf("the document service's own answer (%d %s) names no process in %s", answer.Code, strings.TrimSpace(answer.Body.String()), docs.ProcessHeader)
+	}
+	return process
+}
+
 // TestTheMountedServerAnswersEachReadOnlyTokenByItsClass walks the server register mounted, test
 // hooks in, with every kind of read-only token: every row that is not a read and GET /ws/live
 // answer 403 READ_ONLY_TOKEN; every read but whoami answers the token with a cut 403
 // AS_OF_TOKEN_NOT_SERVED naming the cut; and every other read answers its handler's own answer of
 // its probe path, which is neither refusal nor a 401, since the token resolved (or its scopes'
 // OAUTH_SCOPE_REQUIRED, for a token that does not hold them). GET /api/v1/whoami answers every
-// token 200 with the cut it carries, null for none, and GET /ws/doc/{room}, which reads no broker
-// token at all, answers 401. A row is counted once its assertions have run, and each token's
-// count is held to the rows the registered server mounts, as the walk above is.
+// token 200 with the cut it carries, null for none. GET /ws/doc/{room} answers each token the
+// broker issued 403 READ_ONLY_TOKEN, as GET /ws/live does, and each personal token 401
+// DOC_SOCKET_CREDENTIAL_REFUSED, since the document socket looks no personal token up; each of
+// those answers names the process the document service names (documentProcessOf). A row is
+// counted once its assertions have run, and each token's count is held to the rows the registered
+// server mounts, as the walk above is.
 func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -342,6 +365,7 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	tokens := readOnlyWalkTokens(t, rig, caller)
 	table := readOnlyTable()
 	mounted := len(rig.served.routeIndex)
+	process := documentProcessOf(t, rig.deps.Docs)
 
 	for _, token := range tokens {
 		var tally readOnlyTally
@@ -384,8 +408,17 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
 		}
 		room := "/ws/doc/00000000-0000-0000-0000-000000000001"
-		if document := rig.serve(token.presenting(t, caller, http.MethodGet, room, nil)); document.Code != http.StatusUnauthorized {
-			t.Errorf("%s: GET %s answered %d %s, want 401: the document socket takes a cookie alone", token.name, room, document.Code, document.Body.String())
+		document := rig.serve(token.presenting(t, caller, http.MethodGet, room, nil))
+		if token.personal {
+			if refusal := gateRefusalOf(document); document.Code != http.StatusUnauthorized || refusal.Code != "DOC_SOCKET_CREDENTIAL_REFUSED" {
+				t.Errorf("%s: GET %s answered %d %s, want 401 DOC_SOCKET_CREDENTIAL_REFUSED: the document socket looks no personal token up",
+					token.name, room, document.Code, strings.TrimSpace(document.Body.String()))
+			}
+		} else if why := notTheGatesRefusal(document, contracts.DispatchReadOnlyToken, token.cut); why != "" {
+			t.Errorf("%s: GET %s %s, want 403 %s, as GET %s answers it", token.name, room, why, contracts.DispatchReadOnlyToken, liveSocketPattern)
+		}
+		if named := document.Header().Get(docs.ProcessHeader); named != process {
+			t.Errorf("%s: GET %s names the process %q in %s, want %q, the one the document service names", token.name, room, named, docs.ProcessHeader, process)
 		}
 
 		if tally.walked == 0 || tally.walked != mounted {
