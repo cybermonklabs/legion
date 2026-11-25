@@ -132,13 +132,7 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 	// Each write is its own transaction, so a write that sets now() again sets a later time once the
 	// database's clock reads past the first one's: the wait ends on that clock.
-	waitUntil(t, "the database's clock to read past the first publish's time", func() bool {
-		var past bool
-		if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first.Holders[0].RecordedAt).Scan(&past); err != nil {
-			t.Fatalf("read the database's clock against the first publish's time: %v", err)
-		}
-		return past
-	})
+	awaitDatabaseClockPast(t, database, first.Holders[0].RecordedAt)
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)
@@ -291,13 +285,12 @@ func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
 
 		first := publish(t, shared, sharedPublication)
 		requireStoredRoleHolders(t, first, set, false)
+		if len(first) == 0 {
+			t.Fatalf("the shared token's publication of %v stored no pair", set)
+		}
 		// A pair written again would take its transaction's time, so wait until the database's clock
 		// has passed the first publication's: a kept pair then shows by its unchanged time.
-		waitUntil(t, "the database's clock to pass the first publication's recorded_at", func() bool {
-			var passed bool
-			err := rig.database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first[0].RecordedAt).Scan(&passed)
-			return err == nil && passed
-		})
+		awaitDatabaseClockPast(t, rig.database, first[0].RecordedAt)
 		rig.publishRoles(t, issue, set...)
 		marked := readStoredRoleHolders(t, rig.database, issue)
 		requireStoredRoleHolders(t, marked, set, true)
