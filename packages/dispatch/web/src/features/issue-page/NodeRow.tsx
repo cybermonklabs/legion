@@ -619,6 +619,11 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    // A reading is an agent's reading of a person's answer, inside the ask or the decision it
+    // reads, and always an agent's words: it takes an agent's quiet grey, never the colour of the
+    // question or the decision it reads, so it never reads as the person's decision itself (R9).
+    case "reading":
+      return "agent";
     case "plan_task":
       return "step";
     case "requirement":
