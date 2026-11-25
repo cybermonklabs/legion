@@ -6,6 +6,7 @@ import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
@@ -43,6 +44,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
+  PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -119,6 +121,7 @@ import {
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
   legionWakeSubject,
+  MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
   roleSubject,
   SUBJECT_MAX_BYTES,
@@ -344,6 +347,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return ${uncapturedTopicRefusalText}
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = ${JSON.stringify(MESSAGE_NOT_SENT_PREFIX)}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -541,6 +553,12 @@ const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = ${ISSUE_TITLE_MAX}
+
+// PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
+// the bound of an id the caller names and the length the id it derives from a title is cut to.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
+const PriorityIDMax = ${PRIORITY_ID_MAX}
 
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
 // ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
@@ -751,12 +769,19 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
+// a past time yet, so the route ran nothing rather than answer with the present. Generated from
+// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
+// client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

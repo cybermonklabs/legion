@@ -210,26 +210,36 @@ func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-" + strings.ToLower(issue), r.sandboxes[issue]
 }
 
-func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, issue, authorize, writing)
 }
 
 func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+	_, err := r.teardown(ctx, issue, authorize, nil)
+	return err
 }
 
 // teardown is both teardowns: once the store authorizes it, the issue's pod is deleted and its
-// Sandbox is gone.
-func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) error {
+// Sandbox is gone. It answers that it released a Sandbox whenever the store authorizes it: a
+// launch of this rig stands its pod up again without marking it (holdPod is the seed's), so an
+// authorized teardown always has a pod to take, and calls writing before it takes it.
+func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	act, err := authorize(ctx)
 	if err != nil || !act {
-		return err
+		return false, err
+	}
+	if writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, issue)
 	r.sandboxes[issue] = false
-	return nil
+	return true, nil
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
@@ -478,9 +488,9 @@ func (r *pauseDaemonRig) root(issue string, ph phase.Phase) record.Issue {
 		HandedOver: true, Rank: "U"}
 }
 
-// podLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
+// pauseRigPodLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
 // of an issue runs in its one pod.
-func podLocator(token claim.Token, issue string) *runtime.Locator {
+func pauseRigPodLocator(token claim.Token, issue string) *runtime.Locator {
 	pod := "pod-" + strings.ToLower(issue)
 	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "sandbox-" + strings.ToLower(issue), PodUID: pod,
@@ -498,7 +508,7 @@ func (r *pauseDaemonRig) running(issue string, role claim.Role, state supervise.
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: state, Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: podLocator(token, issue),
+		PluginContract: api.DaemonAPIVersion(), Locator: pauseRigPodLocator(token, issue),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -508,7 +518,7 @@ func (r *pauseDaemonRig) released(issue string, role claim.Role) supervise.Claim
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 }
 
 // unfinished is role's claim of issue as a daemon stopped mid-launch left it: launching, with no
@@ -517,11 +527,11 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateLaunching, Session: "ses-" + string(token),
-		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion,
+		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion(),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
-// inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
+// inPodRound is c in an update round over its issue's pod (pauseRigPodLocator's), opened at opened and
 // asked of c then, for the reason a pod that runs an outdated image gives.
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
@@ -838,7 +848,7 @@ func (r *pauseDaemonRig) controllerUp() *shim {
 	r.awaitState(token, supervise.StateShimConnected, "the controller's shim said hello")
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("register the controller = %d; body %s", status, body)

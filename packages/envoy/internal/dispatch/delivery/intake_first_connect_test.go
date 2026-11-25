@@ -40,6 +40,8 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // durable still delivers to the subject this intake bound, the hold is still this intake's, no line
 // says it stopped delivering, and a message published after the callback is handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
+	// The default logger, not the intake's: the row orders the bind against the bus client's own
+	// "envoy nats connected" line.
 	logs := captureLogs(t)
 	_, uri := testnats.Start(t)
 	// A client that connects in the foreground creates the stream before the intake's client
@@ -68,7 +70,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
-	intake := newIntake(client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	type firstBind struct {
 		subject string
 		landed  bool

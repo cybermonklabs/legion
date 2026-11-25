@@ -982,7 +982,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 		}
 		putClaim(t, cfg, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: role,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 		})
 		writePrompt(t, cfg, token)
 		unfinished[token] = role
@@ -1112,7 +1112,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 		t.Fatalf("controllerLocator before any controller = %+v, want none", state.ControllerLocator)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("controller secret = %d; body %s", status, body)
 	}
@@ -1122,7 +1122,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 	}
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d; body %s", status, body)
@@ -1175,8 +1175,8 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 }
 
 // startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
-// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
-// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
+// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
 // 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
 // other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {

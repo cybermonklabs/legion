@@ -90,7 +90,7 @@ func podClaims(contract int) []supervise.Claim {
 	return []supervise.Claim{
 		claimInPod("legion-legion-legion-208-planner", statePodUID, contract),
 		claimInPod("legion-legion-legion-208-implementer", statePodUID, contract),
-		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion),
+		claimInPod("legion-legion-legion-210-planner", "4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34", DaemonAPIVersion()),
 	}
 }
 
@@ -428,6 +428,24 @@ func withoutHeldKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutDispatchCredentialKey is a state body with no `dispatchCredential`, which is what a
+// caller below dispatchCredentialContract is served of a state that carries it (api's
+// withoutDispatchCredential). It serves the table below as withoutQuietKeys does: a row's baseline
+// is the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutDispatchCredentialKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "dispatchCredential")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its Dispatch credential: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutIntakeGiveUpsKey is a state body with no `intakeGiveUps`, which is what a caller below
 // intakeGiveUpsContract is served (api's withoutIntakeGiveUps). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -480,14 +498,8 @@ func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
 	}
 	for _, issue := range served["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
-		views := []any{issue["architect"]}
-		for _, worker := range issue["workers"].(map[string]any) {
-			views = append(views, worker.(map[string]any)["claim"])
-		}
-		for _, view := range views {
-			if view, ok := view.(map[string]any); ok {
-				delete(view, "leakCheckCause")
-			}
+		for _, view := range decodedClaimViews(issue) {
+			delete(view, "leakCheckCause")
 		}
 	}
 	encoded, err := json.Marshal(served)
@@ -584,15 +596,9 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 	if contract < shapedAnswersContract {
 		for _, issue := range served["issues"].(map[string]any) {
 			issue := issue.(map[string]any)
-			views := []any{issue["architect"]}
-			for _, worker := range issue["workers"].(map[string]any) {
-				views = append(views, worker.(map[string]any)["claim"])
-			}
-			for _, view := range views {
-				if view, ok := view.(map[string]any); ok {
-					for _, key := range roundReportKeys {
-						delete(view, key)
-					}
+			for _, view := range decodedClaimViews(issue) {
+				for _, key := range roundReportKeys {
+					delete(view, key)
 				}
 			}
 		}
@@ -694,6 +700,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract, the contract that added it), so a pod
 		// at it or above is served the key and every older pod is not.
 		apps bool
+		// credential is whether the caller is served `dispatchCredential`, the daemon's Dispatch
+		// credential under dispatch_token_broker (dispatchCredentialContract, the contract that
+		// added it). No pod is placed at it, since a plugin at shapedAnswersContract or later states
+		// its contract (podContracts), so every pod the table places is served no object, and a
+		// caller served this daemon's own body is served it.
+		credential bool
 		// pause is whether the caller is served the project's pause, `paused` here
 		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
 		// is served the key and every older pod is not.
@@ -824,9 +836,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract has landed, so the two are no longer equal. A caller at 193 is
 		// served the state without `intakeGiveUps` where it states its contract in the header
 		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion(), assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -916,6 +928,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
 				}
+				if !tc.credential {
+					want = withoutDispatchCredentialKey(t, want)
+				}
 				if !tc.plans {
 					want = withoutAssignmentPlanKeys(t, want)
 				}
@@ -979,9 +994,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// repositoriesLiveContract replaced (withoutRepositoriesLive), with `apps` gone from
 			// every entry of `repositories.mapped` and `repositories.refused`, the key
 			// repositoryAppsContract added (withoutRepositoryApps), with the project's pause gone,
-			// the `paused` contract 178 added (withoutPause), and with the repository caches'
+			// the `paused` contract 178 added (withoutPause), with the repository caches'
 			// capability row without its `source`, the value cachesSourceContract added
-			// (withoutUnadmittedCapabilitySources, stripCachesSources above).
+			// (withoutUnadmittedCapabilitySources, stripCachesSources above), and with
+			// `dispatchCredential` gone, the key dispatchCredentialContract added
+			// (withoutDispatchCredential).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -1000,6 +1017,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "intakeGiveUps")
 			delete(want, "contract")
 			delete(want, "paused")
+			delete(want, "dispatchCredential")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
@@ -1028,19 +1046,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)
 				}
-				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
-					worker := worker.(map[string]any)
 					if !tc.rounds {
-						delete(worker, backwardMovesField)
+						delete(worker.(map[string]any), backwardMovesField)
 					}
-					views = append(views, worker["claim"])
 				}
-				for _, view := range views {
-					view, ok := view.(map[string]any)
-					if !ok {
-						continue
-					}
+				for _, view := range decodedClaimViews(issue) {
 					if !tc.rounds {
 						delete(view, "updateRound")
 						delete(view, "updateHead")
@@ -1140,15 +1151,17 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 
 // servedShape applies to want, a body decoded from the state this contract writes, what an older
 // caller is served that no column of the tables calling it names: the stand-ins of keys a
-// contract removed, and two bands of keys this contract writes. A caller below checkRoleContract
+// contract removed, and three bands of keys this contract writes. A caller below checkRoleContract
 // is served each issue's check without `role` (api's withoutCheckRole); a caller below
 // fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
-// 3 in the settings block (withFixAttempts, withMaxFixAttempts); and a caller below
+// 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
-// (withoutStateMachineFields). Every other key of the settings block is served as this contract
-// writes it, since no reader types it (answers.go's typedSettings). One contract decides the
-// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
-// below fixAttemptsContract as every number this is called with is.
+// (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
+// but the three served this daemon's own body is below it. Every other key of the settings block is
+// served as this contract writes it, since no reader types it (answers.go's typedSettings). One
+// contract decides the stand-ins, because the two sides of a caller's shaping part only below
+// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
 	if contract < fixAttemptsContract {
@@ -1167,22 +1180,22 @@ func servedShape(want map[string]any, contract int) {
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")
 		}
+		views := decodedClaimViews(issue)
+		for _, view := range views {
+			if contract < causeTimesContract {
+				delete(view, "lastDeathAt")
+				delete(view, "lastStartFailureAt")
+			}
+			if contract < stateMachineContract {
+				deleteTurnRecord(view)
+			}
+		}
 		if contract >= stateMachineContract {
 			continue
 		}
-		if architect, carries := issue["architect"].(map[string]any); carries {
-			deleteTurnRecord(architect)
-		}
-		workers, carries := issue["workers"].(map[string]any)
-		if !carries {
-			continue
-		}
+		workers, _ := issue["workers"].(map[string]any)
 		for _, worker := range workers {
-			worker := worker.(map[string]any)
-			delete(worker, "pass")
-			if view, held := worker["claim"].(map[string]any); held {
-				deleteTurnRecord(view)
-			}
+			delete(worker.(map[string]any), "pass")
 		}
 	}
 }
@@ -1193,6 +1206,24 @@ func deleteTurnRecord(view map[string]any) {
 	for _, key := range []string{"lastTurnStart", "lastTurnEnd", "lastDeathCause", "lastStartFailure", "lastReady"} {
 		delete(view, key)
 	}
+}
+
+// decodedClaimViews is every claim view of one decoded issue, the architect's and each worker's,
+// as the maps the body decoded into, so a change made to one is made to the body.
+func decodedClaimViews(issue map[string]any) []map[string]any {
+	var views []map[string]any
+	if architect, carries := issue["architect"].(map[string]any); carries {
+		views = append(views, architect)
+	}
+	workers, _ := issue["workers"].(map[string]any)
+	for _, worker := range workers {
+		if worker, ok := worker.(map[string]any); ok {
+			if view, held := worker["claim"].(map[string]any); held {
+				views = append(views, view)
+			}
+		}
+	}
+	return views
 }
 
 // strandedServed is the report of claims nothing will wake of a state body, entry for entry as
@@ -1245,7 +1276,7 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(retiredStrandedContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), retired: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), retired: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), retired: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(retiredStrandedContract - 1), retired: true},
 	} {
@@ -1276,9 +1307,9 @@ func TestTheRetiredStrandedContractIsTheContractThatAddedTheState(t *testing.T) 
 		t.Fatalf("retiredStrandedContract = %d, want %d, the contract whose entry in version.go added `retired` to a stranded claim's state",
 			retiredStrandedContract, addedRetiredStranded)
 	}
-	if retiredStrandedContract > DaemonAPIVersion {
+	if retiredStrandedContract > DaemonAPIVersion() {
 		t.Fatalf("retiredStrandedContract = %d, above DaemonAPIVersion %d: no caller could be served a retired claim",
-			retiredStrandedContract, DaemonAPIVersion)
+			retiredStrandedContract, DaemonAPIVersion())
 	}
 }
 
@@ -1415,7 +1446,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		apps bool
 	}{
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), stated: repositoriesLiveContract - 1, apps: true},
-		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: repositoriesLiveContract - 1, apps: true},
+		{name: "a caller in no pod stating the contract before this one", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: repositoriesLiveContract - 1, apps: true},
 		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152), apps: true},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod at 152 asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(152), apps: true},
@@ -1509,8 +1540,8 @@ func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
 	}
-	if repositoriesLiveContract > DaemonAPIVersion {
+	if repositoriesLiveContract > DaemonAPIVersion() {
 		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
-			repositoriesLiveContract, DaemonAPIVersion)
+			repositoriesLiveContract, DaemonAPIVersion())
 	}
 }

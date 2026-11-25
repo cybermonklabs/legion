@@ -552,6 +552,9 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -587,6 +590,12 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -651,6 +660,95 @@ func (h hookedSandboxes) Get(ctx context.Context, name string, opts metav1.GetOp
 	u, err := h.ResourceInterface.Get(ctx, name, opts, subresources...)
 	h.hooks.afterGet(name)
 	return u, err
+}
+
+// withHeldSandboxEvents holds the runtime's Sandbox watch at the first event hold picks until
+// release is closed, and every event behind it with it, as a watch the API server is slow to
+// deliver holds them: meanwhile the API answers the write that event carries and the runtime's
+// store still holds the Sandbox as it last heard of it. Only the informers' watch goes through it;
+// every request reads the tracker.
+func withHeldSandboxEvents(release <-chan struct{}, hold func(watch.Event) bool) rigOption {
+	return func(g *rig, _ *Options) {
+		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			inner, err := sandboxTrackerWatch(g, a)
+			if err != nil {
+				return true, nil, err
+			}
+			return true, holdEvents(inner, release, hold), nil
+		})
+	}
+}
+
+// sandboxTrackerWatch is the tracker's watch of Sandboxes for the informers' watch action a, with
+// the list options a carries: the watch a reactor that reshapes the informers' feed wraps.
+func sandboxTrackerWatch(g *rig, a k8stesting.Action) (watch.Interface, error) {
+	var opts metav1.ListOptions
+	if w, ok := a.(k8stesting.WatchActionImpl); ok {
+		opts = w.ListOptions
+	}
+	return g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
+}
+
+// heldDeletion picks a Sandbox's deletion (withHeldSandboxEvents).
+func heldDeletion(event watch.Event) bool { return event.Type == watch.Deleted }
+
+// heldReleaseRecord picks the write of a release's record that a kept Sandbox's Secrets are
+// deleted (withHeldSandboxEvents, secretsReleasedAnnotation).
+func heldReleaseRecord(event watch.Event) bool {
+	u, ok := event.Object.(*unstructured.Unstructured)
+	return ok && event.Type == watch.Modified && recordsRelease(u, u.GetUID())
+}
+
+// heldEvents is a watch whose events are inner's, in inner's order, the first event hold picks and
+// every one after it held until release is closed (withHeldSandboxEvents). inner is read at once
+// into a queue, so the tracker's bounded fake watcher never fills while the events wait.
+type heldEvents struct {
+	inner   watch.Interface
+	events  chan watch.Event
+	done    chan struct{}
+	stopped sync.Once
+}
+
+func holdEvents(inner watch.Interface, release <-chan struct{}, hold func(watch.Event) bool) *heldEvents {
+	h := &heldEvents{inner: inner, events: make(chan watch.Event), done: make(chan struct{})}
+	queue := make(chan watch.Event, 1<<12)
+	go func() {
+		defer close(queue)
+		for event := range inner.ResultChan() {
+			select {
+			case queue <- event:
+			case <-h.done:
+				return
+			}
+		}
+	}()
+	go func() {
+		defer close(h.events)
+		for event := range queue {
+			if hold(event) {
+				select {
+				case <-release:
+				case <-h.done:
+					return
+				}
+			}
+			select {
+			case h.events <- event:
+			case <-h.done:
+				return
+			}
+		}
+	}()
+	return h
+}
+
+func (h *heldEvents) ResultChan() <-chan watch.Event { return h.events }
+
+func (h *heldEvents) Stop() {
+	h.stopped.Do(func() {
+		close(h.done)
+		h.inner.Stop()
+	})
 }
 
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
@@ -991,7 +1089,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1232,7 +1330,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
@@ -1265,6 +1363,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)
@@ -1287,6 +1388,27 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			}
 		}
 	}()
+}
+
+// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
+// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
+// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
+// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
+// connect from the controller stand-in's goroutine, where the test cannot fail.
+func (g *rig) keptSince(token claim.Token) time.Time {
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
+	if err != nil {
+		return time.Time{}
+	}
+	u, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return time.Time{}
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptVolumeSince(s)
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.
@@ -1507,11 +1629,7 @@ func modePatched(t *testing.T, body, mode string) bool {
 func withLaggingSandboxInformer(delay time.Duration) rigOption {
 	return func(g *rig, _ *Options) {
 		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
-			var opts metav1.ListOptions
-			if w, ok := a.(k8stesting.WatchActionImpl); ok {
-				opts = w.ListOptions
-			}
-			upstream, err := g.dyn.Tracker().Watch(sandboxGVR, a.GetNamespace(), opts)
+			upstream, err := sandboxTrackerWatch(g, a)
 			if err != nil {
 				return true, nil, err
 			}

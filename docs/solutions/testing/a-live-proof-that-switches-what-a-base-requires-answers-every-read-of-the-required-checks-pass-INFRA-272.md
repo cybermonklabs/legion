@@ -39,7 +39,8 @@ against a REST stand-in you control, on the shared harness (`scripts/e2e/lib/liv
   switch.
 - **Confirm the switch reached the store before you check that something is absent.** The pass
   runs at boot and then every `requiredChecksInterval` (2 minutes). Poll `pull_requests.required`
-  with your own loop bounded at 3 minutes: `testwait.Eventually` gives up after 1 minute. Then
+  with `testwait.Eventually`, which gives up 30 s before the test binary's deadline and so outlasts
+  that interval (it gave up after 1 minute before, which is why the row holds a loop of its own). Then
   pair the absence with a control that flips the same input and reads red.
 - **Run the fake runtime with `InPod = true`.** Otherwise a send-back's implementer start makes the
   daemon run a real `jj git clone` of the stand-in's repository from github.com.
